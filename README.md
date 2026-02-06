@@ -1,15 +1,18 @@
 # 2026-02-06-autofun
 
-To install dependencies:
+Bun starter configured to test Google Nano Banana Pro (`gemini-3-pro-image-preview`) via the official Google Gen AI SDK.
+
+## Install
 
 ```bash
 bun install
 ```
 
-To run:
+## Run
 
 ```bash
-bun run index.ts
+export GOOGLE_API_KEY="your-key"
+bun run index.ts "A tiny fox astronaut on the moon, cinematic lighting"
 ```
 
-This project was created using `bun init` in bun v1.3.5. [Bun](https://bun.com) is a fast all-in-one JavaScript runtime.
+If successful, the script writes `output.png` in this directory.
