@@ -25,6 +25,9 @@ version = "0.1.0"
 [[package]]
 name = "crab-scheduler"
 version = "0.1.0"
+dependencies = [
+ "crab-core",
+]
 
 [[package]]
 name = "crab-store"
