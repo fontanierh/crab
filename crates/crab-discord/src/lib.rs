@@ -37,6 +37,20 @@ impl RoutingKey {
             Self::DirectMessage { user_id } => user_id,
         }
     }
+
+    pub fn logical_session_id(&self) -> CrabResult<String> {
+        match self {
+            Self::Channel { channel_id } => {
+                build_logical_session_id("discord:channel", "channel_id", channel_id)
+            }
+            Self::Thread { thread_id } => {
+                build_logical_session_id("discord:thread", "thread_id", thread_id)
+            }
+            Self::DirectMessage { user_id } => {
+                build_logical_session_id("discord:dm", "user_id", user_id)
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -181,6 +195,22 @@ fn ensure_optional_field_not_blank(
     Ok(())
 }
 
+fn build_logical_session_id(
+    prefix: &str,
+    field_name: &'static str,
+    value: &str,
+) -> CrabResult<String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Err(CrabError::InvariantViolation {
+            context: "session_route",
+            message: format!("{field_name} must not be empty"),
+        });
+    }
+
+    Ok(format!("{prefix}:{trimmed}"))
+}
+
 #[cfg(test)]
 mod tests {
     use crab_core::CrabError;
@@ -276,6 +306,120 @@ mod tests {
             }
             .provider_scoped_id(),
             "u"
+        );
+    }
+
+    #[test]
+    fn maps_channel_routing_key_to_logical_session_id() {
+        let session_id = RoutingKey::Channel {
+            channel_id: "123".to_string(),
+        }
+        .logical_session_id()
+        .expect("mapping should succeed");
+        assert_eq!(session_id, "discord:channel:123");
+    }
+
+    #[test]
+    fn maps_thread_routing_key_to_logical_session_id() {
+        let session_id = RoutingKey::Thread {
+            thread_id: "456".to_string(),
+        }
+        .logical_session_id()
+        .expect("mapping should succeed");
+        assert_eq!(session_id, "discord:thread:456");
+    }
+
+    #[test]
+    fn maps_dm_routing_key_to_logical_session_id() {
+        let session_id = RoutingKey::DirectMessage {
+            user_id: "789".to_string(),
+        }
+        .logical_session_id()
+        .expect("mapping should succeed");
+        assert_eq!(session_id, "discord:dm:789");
+    }
+
+    #[test]
+    fn logical_session_id_mapping_is_stable() {
+        let key = RoutingKey::Thread {
+            thread_id: "thread-stable".to_string(),
+        };
+
+        let first = key
+            .logical_session_id()
+            .expect("first mapping should succeed");
+        let second = key
+            .logical_session_id()
+            .expect("second mapping should succeed");
+        assert_eq!(first, second);
+    }
+
+    #[test]
+    fn logical_session_id_mapping_trims_whitespace() {
+        let channel = RoutingKey::Channel {
+            channel_id: "  channel-9  ".to_string(),
+        };
+        let dm = RoutingKey::DirectMessage {
+            user_id: "  user-9  ".to_string(),
+        };
+
+        assert_eq!(
+            channel
+                .logical_session_id()
+                .expect("channel mapping should succeed"),
+            "discord:channel:channel-9"
+        );
+        assert_eq!(
+            dm.logical_session_id().expect("dm mapping should succeed"),
+            "discord:dm:user-9"
+        );
+    }
+
+    #[test]
+    fn rejects_blank_channel_routing_key_for_logical_session_id() {
+        let err = RoutingKey::Channel {
+            channel_id: " ".to_string(),
+        }
+        .logical_session_id()
+        .expect_err("blank channel id should fail");
+        assert_eq!(
+            err,
+            CrabError::InvariantViolation {
+                context: "session_route",
+                message: "channel_id must not be empty".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn rejects_blank_thread_routing_key_for_logical_session_id() {
+        let err = RoutingKey::Thread {
+            thread_id: " ".to_string(),
+        }
+        .logical_session_id()
+        .expect_err("blank thread id should fail");
+        assert_eq!(
+            err,
+            CrabError::InvariantViolation {
+                context: "session_route",
+                message: "thread_id must not be empty".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn rejects_blank_dm_routing_key_for_logical_session_id() {
+        let err = RoutingKey::DirectMessage {
+            user_id: " ".to_string(),
+        }
+        .logical_session_id()
+        .expect_err("blank user id should fail");
+        assert_eq!(
+            err,
+            CrabError::InvariantViolation {
+                context: "session_route",
+                message: "user_id must not be empty".to_string()
+            }
         );
     }
 
