@@ -1,18 +1,22 @@
-# 2026-02-06-autofun
+# Crab
 
-Bun starter configured to test Google Nano Banana Pro (`gemini-3-pro-image-preview`) via the official Google Gen AI SDK.
+Crab is a Rust harness for running coding agents (Claude Code, Codex CLI, OpenCode) behind a Discord bot.
 
-## Crab Quality Gates (Rust)
+## Docs
 
-The Crab harness quality bar is enforced locally and in CI.
+- Design: `crab/DESIGN.md`
+- Workstreams: `crab/WORKSTREAMS.md`
+- Project rules: `AGENTS.md`
 
-Run all required checks with:
+## Quality Gates
+
+Run all checks:
 
 ```bash
 make quality
 ```
 
-Individual commands:
+Individual checks:
 
 - `make fmt-check`
 - `make clippy`
@@ -21,17 +25,19 @@ Individual commands:
 - `make coverage-gate`
 - `make duplication-check`
 
-## Install
+## Prerequisites
+
+- Rust stable toolchain (from `rust-toolchain.toml`)
+- `cargo-llvm-cov`:
 
 ```bash
-bun install
+cargo install cargo-llvm-cov --version 0.6.21 --locked
 ```
 
-## Run
+- LLVM tools component:
 
 ```bash
-export GOOGLE_API_KEY="your-key"
-bun run index.ts "A tiny fox astronaut on the moon, cinematic lighting"
+rustup component add llvm-tools-preview
 ```
 
-If successful, the script writes `output.png` in this directory.
+- Node runtime (for `npx jscpd`)
