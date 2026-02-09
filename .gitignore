@@ -5,6 +5,10 @@ node_modules
 out
 dist
 *.tgz
+target/
+coverage/
+llvm-cov-target/
+**/*.profraw
 
 # code coverage
 coverage

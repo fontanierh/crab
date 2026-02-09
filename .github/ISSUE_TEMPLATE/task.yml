@@ -1,0 +1,43 @@
+name: Task
+about: Work item with explicit acceptance and test plan
+labels: ["type:task", "status:todo"]
+body:
+  - type: textarea
+    id: goal
+    attributes:
+      label: Goal
+      description: What outcome this task must deliver.
+    validations:
+      required: true
+
+  - type: textarea
+    id: in_scope
+    attributes:
+      label: In-scope changes
+      description: Specific work that is included.
+    validations:
+      required: true
+
+  - type: textarea
+    id: out_of_scope
+    attributes:
+      label: Out-of-scope changes
+      description: Explicitly excluded work.
+    validations:
+      required: true
+
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: Objective conditions for completion.
+    validations:
+      required: true
+
+  - type: textarea
+    id: test_plan
+    attributes:
+      label: Test plan
+      description: How correctness and coverage will be validated.
+    validations:
+      required: true

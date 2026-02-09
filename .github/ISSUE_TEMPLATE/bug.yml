@@ -1,0 +1,45 @@
+name: Bug
+about: Defect report with required reproduction and regression test intent
+labels: ["type:bug", "status:todo"]
+body:
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: Concise bug description.
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Reproduction steps
+      description: Deterministic steps to reproduce.
+      placeholder: |
+        1. ...
+        2. ...
+        3. ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+
+  - type: textarea
+    id: fix_plan
+    attributes:
+      label: Fix plan
+      description: Include regression test strategy.
+    validations:
+      required: true

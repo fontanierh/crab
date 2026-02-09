@@ -91,17 +91,64 @@ No bypasses on main branch.
   `https://github.com/fontanierh/2026-02-06-autofun`.
 - Do not create/edit issues in external repositories while working on this codebase.
 
-## 11. Initial Tooling Plan
+## 11. Enforced Quality Setup (Current)
 
-As code is introduced, add and wire these checks immediately:
+The repository now enforces quality with executable gates and CI automation.
 
-- `cargo fmt`
-- `cargo clippy`
-- `cargo test`
-- `cargo llvm-cov` (100% gate)
-- `jscpd` (duplication gate)
+### Canonical local command
 
-These rules are mandatory for all generated and handwritten code.
+- Run all required checks with:
+  `make quality`
+
+### Gate commands (local + CI)
+
+- Format check:
+  `make fmt-check`
+- Lint:
+  `make clippy`
+- Dead code/static check:
+  `make deadcode-check`
+- Tests:
+  `make test`
+- Coverage gate (100% lines/functions/regions):
+  `make coverage-gate`
+- Duplication gate:
+  `make duplication-check`
+
+### Source-of-truth files
+
+- Rust workspace and lints:
+  `Cargo.toml`
+- Pinned toolchain/components:
+  `rust-toolchain.toml`
+- Reproducible dependency graph:
+  `Cargo.lock`
+- Local gate runner:
+  `Makefile`
+- Duplication config:
+  `.jscpd.json`
+- CI workflow:
+  `.github/workflows/quality.yml`
+- PR quality checklist:
+  `.github/pull_request_template.md`
+- Issue templates:
+  `.github/ISSUE_TEMPLATE/task.yml`
+  `.github/ISSUE_TEMPLATE/bug.yml`
+  `.github/ISSUE_TEMPLATE/config.yml`
+
+### Required local prerequisites
+
+- Rust stable toolchain (installed via `rust-toolchain.toml`).
+- `cargo-llvm-cov` (compatible pinned version):
+  `cargo install cargo-llvm-cov --version 0.6.21 --locked`
+- LLVM tools component:
+  `rustup component add llvm-tools-preview`
+- Node runtime available for `npx` (used by `jscpd`).
+
+### CI behavior
+
+- CI runs `fmt`, `clippy`, `deadcode-check`, `test`, `coverage-gate`, and `duplication-check`.
+- Any gate failure blocks merge readiness.
 
 ## 12. Deferred for Later
 

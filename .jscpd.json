@@ -1,0 +1,15 @@
+{
+  "threshold": 0,
+  "reporters": ["console"],
+  "minLines": 5,
+  "minTokens": 50,
+  "formats": ["rust"],
+  "ignore": [
+    "**/target/**",
+    "**/node_modules/**",
+    "**/.git/**",
+    "**/untracked_references/**",
+    "**/coverage/**"
+  ],
+  "path": ["crates"]
+}

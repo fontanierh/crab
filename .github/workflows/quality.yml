@@ -1,0 +1,51 @@
+name: quality
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install llvm-tools
+        run: rustup component add llvm-tools-preview
+
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-llvm-cov@0.6.21
+
+      - name: Format check
+        run: make fmt-check
+
+      - name: Clippy
+        run: make clippy
+
+      - name: Dead code check
+        run: make deadcode-check
+
+      - name: Tests
+        run: make test
+
+      - name: Coverage gate (100%)
+        run: make coverage-gate
+
+      - name: Duplication gate
+        run: make duplication-check
