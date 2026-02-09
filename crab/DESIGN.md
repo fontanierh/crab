@@ -4,6 +4,8 @@ Rust harness that runs coding agents (Claude Code, Codex CLI, OpenCode) behind a
 
 This document defines the v1 architecture and operational semantics.
 
+Implementation breakdown is tracked in `crab/WORKSTREAMS.md`.
+
 ## 1) Goals and Non-Goals
 
 ### Goals
