@@ -71,6 +71,7 @@ No bypasses on main branch.
 - Avoid panics in production paths; return typed errors.
 - Log with structured, actionable messages.
 - Document non-obvious design decisions in code comments or short ADR notes.
+- When rejecting user actions (queue overflow, unsupported operation, invalid command), return explicit user-facing reasons; avoid opaque failure text.
 
 ## 8. Change Discipline
 
@@ -79,6 +80,8 @@ No bypasses on main branch.
 - Update docs/config/scripts when quality gates change.
 - Do not merge if any gate is skipped.
 - No `TODO`/`FIXME` in committed code without a linked GitHub issue in this repository.
+- Before commit/push, verify `git status` contains only intentional changes; remove accidental tool/agent artifact files.
+- If unexpected files or directories appear during implementation, pause and confirm handling before proceeding.
 
 ## 9. Toolchain and Lockfiles
 

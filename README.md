@@ -2,6 +2,13 @@
 
 Crab is a Rust harness for running coding agents (Claude Code, Codex CLI, OpenCode) behind a Discord bot.
 
+## Current Status (as of February 9, 2026)
+
+- `WS0` complete: workspace/bootstrap + enforced quality gates.
+- `WS1` complete: domain model plus session/event/checkpoint/outbound persistence stores.
+- `WS2` complete: per-session FIFO lanes, global concurrency cap, lane state machine, and explicit queue-overflow rejection messaging.
+- Next implementation target: `WS3` (Discord transport).
+
 ## Docs
 
 - Design: `crab/DESIGN.md`
