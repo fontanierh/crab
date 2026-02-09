@@ -62,6 +62,112 @@ pub struct IngressMessage {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StreamingDeliveryOp {
+    PostNew {
+        content: String,
+        chunk_index: u32,
+    },
+    EditExisting {
+        message_id: String,
+        content: String,
+        chunk_index: u32,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct StreamingDelivery {
+    rendered_text: String,
+    message_id: Option<String>,
+    awaiting_post_ack: bool,
+    last_sent_text: String,
+}
+
+impl StreamingDelivery {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn push_delta(&mut self, delta: &str) -> Option<StreamingDeliveryOp> {
+        if delta.is_empty() {
+            return None;
+        }
+        self.rendered_text.push_str(delta);
+
+        if let Some(message_id) = self.message_id.as_ref() {
+            self.last_sent_text = self.rendered_text.clone();
+            return Some(StreamingDeliveryOp::EditExisting {
+                message_id: message_id.clone(),
+                content: self.rendered_text.clone(),
+                chunk_index: 0,
+            });
+        }
+
+        if self.awaiting_post_ack {
+            return None;
+        }
+
+        self.awaiting_post_ack = true;
+        self.last_sent_text = self.rendered_text.clone();
+        Some(StreamingDeliveryOp::PostNew {
+            content: self.rendered_text.clone(),
+            chunk_index: 0,
+        })
+    }
+
+    pub fn acknowledge_post(
+        &mut self,
+        message_id: impl Into<String>,
+    ) -> CrabResult<Option<StreamingDeliveryOp>> {
+        let message_id = message_id.into();
+        ensure_non_empty_field("streaming_delivery_ack", "message_id", &message_id)?;
+
+        if let Some(existing) = self.message_id.as_ref() {
+            if existing == &message_id {
+                return Ok(None);
+            }
+            return Err(CrabError::InvariantViolation {
+                context: "streaming_delivery_ack",
+                message: format!(
+                    "message id already bound to {existing}; cannot rebind to {message_id}"
+                ),
+            });
+        }
+
+        if !self.awaiting_post_ack {
+            return Err(CrabError::InvariantViolation {
+                context: "streaming_delivery_ack",
+                message: "cannot acknowledge post before initial message send".to_string(),
+            });
+        }
+
+        self.awaiting_post_ack = false;
+        self.message_id = Some(message_id.clone());
+
+        if self.last_sent_text == self.rendered_text {
+            return Ok(None);
+        }
+        self.last_sent_text = self.rendered_text.clone();
+
+        Ok(Some(StreamingDeliveryOp::EditExisting {
+            message_id,
+            content: self.rendered_text.clone(),
+            chunk_index: 0,
+        }))
+    }
+
+    #[must_use]
+    pub fn rendered_text(&self) -> &str {
+        &self.rendered_text
+    }
+
+    #[must_use]
+    pub fn message_id(&self) -> Option<&str> {
+        self.message_id.as_deref()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GatewayIngress {
     bot_user_id: String,
 }
@@ -217,6 +323,7 @@ mod tests {
 
     use super::{
         extract_routing_key, GatewayConversationKind, GatewayIngress, GatewayMessage, RoutingKey,
+        StreamingDelivery, StreamingDeliveryOp,
     };
 
     fn sample_message(kind: GatewayConversationKind) -> GatewayMessage {
@@ -636,6 +743,184 @@ mod tests {
                 context: "gateway_message_validate",
                 message: "guild channel messages must not include thread_id; use thread kind"
                     .to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn streaming_delivery_posts_first_chunk() {
+        let mut streaming = StreamingDelivery::new();
+        let op = streaming
+            .push_delta("hello")
+            .expect("first delta should emit post");
+
+        assert_eq!(
+            op,
+            StreamingDeliveryOp::PostNew {
+                content: "hello".to_string(),
+                chunk_index: 0
+            }
+        );
+        assert_eq!(streaming.rendered_text(), "hello");
+        assert_eq!(streaming.message_id(), None);
+    }
+
+    #[test]
+    fn streaming_delivery_coalesces_deltas_while_waiting_for_ack() {
+        let mut streaming = StreamingDelivery::new();
+        let first = streaming
+            .push_delta("hel")
+            .expect("first delta should emit post");
+        assert_eq!(
+            first,
+            StreamingDeliveryOp::PostNew {
+                content: "hel".to_string(),
+                chunk_index: 0
+            }
+        );
+
+        let second = streaming.push_delta("lo");
+        assert_eq!(second, None);
+        assert_eq!(streaming.rendered_text(), "hello");
+    }
+
+    #[test]
+    fn streaming_delivery_ack_emits_catch_up_edit_when_buffer_advanced() {
+        let mut streaming = StreamingDelivery::new();
+        let _ = streaming
+            .push_delta("hel")
+            .expect("first delta should emit post");
+        let _ = streaming.push_delta("lo");
+
+        let ack = streaming
+            .acknowledge_post("discord-msg-1")
+            .expect("ack should succeed")
+            .expect("ack should emit catch-up edit");
+        assert_eq!(
+            ack,
+            StreamingDeliveryOp::EditExisting {
+                message_id: "discord-msg-1".to_string(),
+                content: "hello".to_string(),
+                chunk_index: 0
+            }
+        );
+        assert_eq!(streaming.message_id(), Some("discord-msg-1"));
+    }
+
+    #[test]
+    fn streaming_delivery_ack_without_new_delta_has_no_edit() {
+        let mut streaming = StreamingDelivery::new();
+        let _ = streaming
+            .push_delta("hello")
+            .expect("first delta should emit post");
+
+        let ack = streaming
+            .acknowledge_post("discord-msg-1")
+            .expect("ack should succeed");
+        assert_eq!(ack, None);
+        assert_eq!(streaming.message_id(), Some("discord-msg-1"));
+    }
+
+    #[test]
+    fn streaming_delivery_edits_in_place_after_ack() {
+        let mut streaming = StreamingDelivery::new();
+        let _ = streaming
+            .push_delta("hello")
+            .expect("first delta should emit post");
+        let _ = streaming
+            .acknowledge_post("discord-msg-1")
+            .expect("ack should succeed");
+
+        let edit = streaming
+            .push_delta(" world")
+            .expect("delta after ack should emit edit");
+        assert_eq!(
+            edit,
+            StreamingDeliveryOp::EditExisting {
+                message_id: "discord-msg-1".to_string(),
+                content: "hello world".to_string(),
+                chunk_index: 0
+            }
+        );
+    }
+
+    #[test]
+    fn streaming_delivery_ignores_empty_delta() {
+        let mut streaming = StreamingDelivery::new();
+        assert_eq!(streaming.push_delta(""), None);
+        assert_eq!(streaming.rendered_text(), "");
+    }
+
+    #[test]
+    fn streaming_delivery_rejects_blank_ack_message_id() {
+        let mut streaming = StreamingDelivery::new();
+        let _ = streaming
+            .push_delta("hello")
+            .expect("first delta should emit post");
+
+        let err = streaming
+            .acknowledge_post(" ")
+            .expect_err("blank ack message id should fail");
+        assert_eq!(
+            err,
+            CrabError::InvariantViolation {
+                context: "streaming_delivery_ack",
+                message: "message_id must not be empty".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn streaming_delivery_rejects_ack_before_post() {
+        let mut streaming = StreamingDelivery::new();
+        let err = streaming
+            .acknowledge_post("discord-msg-1")
+            .expect_err("ack before first post should fail");
+        assert_eq!(
+            err,
+            CrabError::InvariantViolation {
+                context: "streaming_delivery_ack",
+                message: "cannot acknowledge post before initial message send".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn streaming_delivery_allows_idempotent_ack_for_same_message() {
+        let mut streaming = StreamingDelivery::new();
+        let _ = streaming
+            .push_delta("hello")
+            .expect("first delta should emit post");
+        let _ = streaming
+            .acknowledge_post("discord-msg-1")
+            .expect("first ack should succeed");
+
+        let second = streaming
+            .acknowledge_post("discord-msg-1")
+            .expect("same ack should be idempotent");
+        assert_eq!(second, None);
+    }
+
+    #[test]
+    fn streaming_delivery_rejects_ack_rebind_to_different_message() {
+        let mut streaming = StreamingDelivery::new();
+        let _ = streaming
+            .push_delta("hello")
+            .expect("first delta should emit post");
+        let _ = streaming
+            .acknowledge_post("discord-msg-1")
+            .expect("first ack should succeed");
+
+        let err = streaming
+            .acknowledge_post("discord-msg-2")
+            .expect_err("rebind should fail");
+        assert_eq!(
+            err,
+            CrabError::InvariantViolation {
+                context: "streaming_delivery_ack",
+                message:
+                    "message id already bound to discord-msg-1; cannot rebind to discord-msg-2"
+                        .to_string()
             }
         );
     }
