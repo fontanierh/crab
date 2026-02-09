@@ -47,10 +47,7 @@ impl SessionLaneQueues {
         if queue.len() >= self.queue_limit {
             return Err(CrabError::InvariantViolation {
                 context: "lane_queue_overflow",
-                message: format!(
-                    "queue limit {} reached for {logical_session_id}",
-                    self.queue_limit
-                ),
+                message: queue_overflow_reason(self.queue_limit),
             });
         }
 
@@ -270,6 +267,12 @@ fn validate_run(run: &QueuedRun) -> CrabResult<()> {
     Ok(())
 }
 
+fn queue_overflow_reason(queue_limit: usize) -> String {
+    format!(
+        "Queue is full for this session (limit={queue_limit}). Please wait for in-flight runs to complete before retrying."
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use crab_core::{CrabError, LaneState};
@@ -388,8 +391,26 @@ mod tests {
             error,
             CrabError::InvariantViolation {
                 context: "lane_queue_overflow",
-                ..
-            }
+                message,
+            } if message == super::queue_overflow_reason(2)
+        ));
+    }
+
+    #[test]
+    fn lane_scheduler_overflow_rejection_has_user_facing_reason() {
+        let mut scheduler = LaneScheduler::new(2, 1).expect("scheduler init should succeed");
+        scheduler
+            .enqueue("discord:channel:overflow", run("first"))
+            .expect("first enqueue should succeed");
+        let error = scheduler
+            .enqueue("discord:channel:overflow", run("second"))
+            .expect_err("overflow enqueue should fail");
+        assert!(matches!(
+            error,
+            CrabError::InvariantViolation {
+                context: "lane_queue_overflow",
+                message,
+            } if message == super::queue_overflow_reason(1)
         ));
     }
 
