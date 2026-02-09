@@ -7,6 +7,10 @@ use async_trait::async_trait;
 use crab_core::{CrabError, CrabResult, InferenceProfile, PhysicalSession};
 use futures_core::Stream;
 
+pub mod claude;
+
+pub use claude::{ClaudeBackend, ClaudeProcess};
+
 pub type BackendEventStream = Pin<Box<dyn Stream<Item = BackendEvent> + Send>>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -147,7 +151,7 @@ fn validate_turn_input(input: &TurnInput) -> CrabResult<()> {
     Ok(())
 }
 
-fn ensure_non_empty_field(
+pub(crate) fn ensure_non_empty_field(
     context: &'static str,
     field_name: &'static str,
     value: &str,
