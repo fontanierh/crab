@@ -4,6 +4,8 @@ use crab_core::{CrabError, CrabResult, OutboundRecord};
 use crab_store::OutboundRecordStore;
 use sha2::{Digest, Sha256};
 
+pub const DISCORD_MESSAGE_CHAR_LIMIT: usize = 2000;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GatewayConversationKind {
     GuildChannel,
@@ -74,6 +76,12 @@ pub enum StreamingDeliveryOp {
         content: String,
         chunk_index: u32,
     },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DiscordMessageChunk {
+    pub chunk_index: u32,
+    pub content: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -166,6 +174,11 @@ impl StreamingDelivery {
     #[must_use]
     pub fn message_id(&self) -> Option<&str> {
         self.message_id.as_deref()
+    }
+
+    #[must_use]
+    pub fn rendered_chunks(&self) -> Vec<DiscordMessageChunk> {
+        split_discord_message(&self.rendered_text)
     }
 }
 
@@ -471,6 +484,38 @@ fn hex_encode(bytes: &[u8]) -> String {
     output
 }
 
+#[must_use]
+pub fn split_discord_message(content: &str) -> Vec<DiscordMessageChunk> {
+    if content.is_empty() {
+        return Vec::new();
+    }
+
+    let mut chunks = Vec::new();
+    let mut current_chunk = String::new();
+    let mut current_count = 0_usize;
+
+    for ch in content.chars() {
+        if current_count == DISCORD_MESSAGE_CHAR_LIMIT {
+            chunks.push(current_chunk);
+            current_chunk = String::new();
+            current_count = 0;
+        }
+        current_chunk.push(ch);
+        current_count += 1;
+    }
+
+    chunks.push(current_chunk);
+
+    chunks
+        .into_iter()
+        .enumerate()
+        .map(|(chunk_index, content)| DiscordMessageChunk {
+            chunk_index: chunk_index as u32,
+            content,
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use std::fs;
@@ -481,9 +526,10 @@ mod tests {
     use crab_store::OutboundRecordStore;
 
     use super::{
-        extract_routing_key, DeliveryAttempt, GatewayConversationKind, GatewayIngress,
-        GatewayMessage, IdempotentDeliveryLedger, MarkSentDecision, RoutingKey, ShouldSendDecision,
-        StreamingDelivery, StreamingDeliveryOp,
+        extract_routing_key, split_discord_message, DeliveryAttempt, DiscordMessageChunk,
+        GatewayConversationKind, GatewayIngress, GatewayMessage, IdempotentDeliveryLedger,
+        MarkSentDecision, RoutingKey, ShouldSendDecision, StreamingDelivery, StreamingDeliveryOp,
+        DISCORD_MESSAGE_CHAR_LIMIT,
     };
 
     fn sample_message(kind: GatewayConversationKind) -> GatewayMessage {
@@ -1107,6 +1153,103 @@ mod tests {
                         .to_string()
             }
         );
+    }
+
+    #[test]
+    fn split_discord_message_returns_empty_for_empty_content() {
+        assert!(split_discord_message("").is_empty());
+    }
+
+    #[test]
+    fn split_discord_message_keeps_short_content_in_single_chunk() {
+        let chunks = split_discord_message("hello");
+        assert_eq!(
+            chunks,
+            vec![DiscordMessageChunk {
+                chunk_index: 0,
+                content: "hello".to_string()
+            }]
+        );
+    }
+
+    #[test]
+    fn split_discord_message_keeps_exact_limit_in_single_chunk() {
+        let content = "a".repeat(DISCORD_MESSAGE_CHAR_LIMIT);
+        let chunks = split_discord_message(&content);
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0].chunk_index, 0);
+        assert_eq!(
+            chunks[0].content.chars().count(),
+            DISCORD_MESSAGE_CHAR_LIMIT
+        );
+    }
+
+    #[test]
+    fn split_discord_message_splits_when_over_limit() {
+        let content = "a".repeat(DISCORD_MESSAGE_CHAR_LIMIT + 1);
+        let chunks = split_discord_message(&content);
+        assert_eq!(chunks.len(), 2);
+        assert_eq!(chunks[0].chunk_index, 0);
+        assert_eq!(chunks[1].chunk_index, 1);
+        assert_eq!(
+            chunks[0].content.chars().count(),
+            DISCORD_MESSAGE_CHAR_LIMIT
+        );
+        assert_eq!(chunks[1].content.chars().count(), 1);
+    }
+
+    #[test]
+    fn split_discord_message_handles_unicode_by_character_count() {
+        let content = "🙂".repeat(DISCORD_MESSAGE_CHAR_LIMIT + 1);
+        let chunks = split_discord_message(&content);
+        assert_eq!(chunks.len(), 2);
+        assert_eq!(
+            chunks[0].content.chars().count(),
+            DISCORD_MESSAGE_CHAR_LIMIT
+        );
+        assert_eq!(chunks[1].content.chars().count(), 1);
+    }
+
+    #[test]
+    fn split_discord_message_is_deterministic() {
+        let content = "abc".repeat(900);
+        let first = split_discord_message(&content);
+        let second = split_discord_message(&content);
+        assert_eq!(first, second);
+    }
+
+    #[test]
+    fn split_discord_message_uses_contiguous_chunk_indices() {
+        let content = "x".repeat((DISCORD_MESSAGE_CHAR_LIMIT * 2) + 500);
+        let chunks = split_discord_message(&content);
+        assert_eq!(chunks.len(), 3);
+        assert_eq!(chunks[0].chunk_index, 0);
+        assert_eq!(chunks[1].chunk_index, 1);
+        assert_eq!(chunks[2].chunk_index, 2);
+        assert_eq!(
+            chunks[0].content.chars().count(),
+            DISCORD_MESSAGE_CHAR_LIMIT
+        );
+        assert_eq!(
+            chunks[1].content.chars().count(),
+            DISCORD_MESSAGE_CHAR_LIMIT
+        );
+        assert_eq!(chunks[2].content.chars().count(), 500);
+    }
+
+    #[test]
+    fn streaming_delivery_exposes_rendered_chunks() {
+        let mut streaming = StreamingDelivery::new();
+        let _ = streaming.push_delta(&"a".repeat(DISCORD_MESSAGE_CHAR_LIMIT + 5));
+        let chunks = streaming.rendered_chunks();
+        assert_eq!(chunks.len(), 2);
+        assert_eq!(chunks[0].chunk_index, 0);
+        assert_eq!(chunks[1].chunk_index, 1);
+        assert_eq!(
+            chunks[0].content.chars().count(),
+            DISCORD_MESSAGE_CHAR_LIMIT
+        );
+        assert_eq!(chunks[1].content.chars().count(), 5);
     }
 
     #[test]
