@@ -1,6 +1,8 @@
 //! Discord transport integration for Crab.
 
-use crab_core::{CrabError, CrabResult};
+use crab_core::{CrabError, CrabResult, OutboundRecord};
+use crab_store::OutboundRecordStore;
+use sha2::{Digest, Sha256};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GatewayConversationKind {
@@ -172,6 +174,79 @@ pub struct GatewayIngress {
     bot_user_id: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeliveryAttempt {
+    pub logical_session_id: String,
+    pub run_id: String,
+    pub channel_id: String,
+    pub message_id: String,
+    pub edit_generation: u32,
+    pub content: String,
+    pub delivered_at_epoch_ms: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShouldSendDecision {
+    Send,
+    SkipDuplicate,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MarkSentDecision {
+    Recorded,
+    AlreadyRecorded,
+}
+
+#[derive(Debug, Clone)]
+pub struct IdempotentDeliveryLedger {
+    store: OutboundRecordStore,
+}
+
+impl IdempotentDeliveryLedger {
+    #[must_use]
+    pub fn new(store: OutboundRecordStore) -> Self {
+        Self { store }
+    }
+
+    pub fn should_send(&self, attempt: &DeliveryAttempt) -> CrabResult<ShouldSendDecision> {
+        validate_delivery_attempt(attempt)?;
+        let attempt_hash = content_sha256_hex(&attempt.content);
+        let records = self
+            .store
+            .list_run_records(&attempt.logical_session_id, &attempt.run_id)?;
+
+        for record in records {
+            if !same_delivery_target(&record, attempt) {
+                continue;
+            }
+
+            if record.content_sha256 == attempt_hash {
+                return Ok(ShouldSendDecision::SkipDuplicate);
+            }
+            return Err(CrabError::InvariantViolation {
+                context: "idempotent_delivery_should_send",
+                message: format!(
+                    "conflicting content hash for channel={}, message={}, edit_generation={}",
+                    attempt.channel_id, attempt.message_id, attempt.edit_generation
+                ),
+            });
+        }
+
+        Ok(ShouldSendDecision::Send)
+    }
+
+    pub fn mark_sent(&self, attempt: &DeliveryAttempt) -> CrabResult<MarkSentDecision> {
+        validate_delivery_attempt(attempt)?;
+        let record = build_outbound_record(attempt);
+        let wrote_new_record = self.store.record_or_skip_duplicate(&record)?;
+        if wrote_new_record {
+            return Ok(MarkSentDecision::Recorded);
+        }
+
+        Ok(MarkSentDecision::AlreadyRecorded)
+    }
+}
+
 impl GatewayIngress {
     pub fn new(bot_user_id: impl Into<String>) -> CrabResult<Self> {
         let bot_user_id = bot_user_id.into();
@@ -317,12 +392,97 @@ fn build_logical_session_id(
     Ok(format!("{prefix}:{trimmed}"))
 }
 
+fn validate_delivery_attempt(attempt: &DeliveryAttempt) -> CrabResult<()> {
+    ensure_non_empty_field(
+        "idempotent_delivery_validate",
+        "logical_session_id",
+        &attempt.logical_session_id,
+    )?;
+    ensure_non_empty_field("idempotent_delivery_validate", "run_id", &attempt.run_id)?;
+    ensure_non_empty_field(
+        "idempotent_delivery_validate",
+        "channel_id",
+        &attempt.channel_id,
+    )?;
+    ensure_non_empty_field(
+        "idempotent_delivery_validate",
+        "message_id",
+        &attempt.message_id,
+    )?;
+    ensure_non_empty_field("idempotent_delivery_validate", "content", &attempt.content)?;
+    if attempt.delivered_at_epoch_ms == 0 {
+        return Err(CrabError::InvariantViolation {
+            context: "idempotent_delivery_validate",
+            message: "delivered_at_epoch_ms must be greater than 0".to_string(),
+        });
+    }
+    Ok(())
+}
+
+fn build_outbound_record(attempt: &DeliveryAttempt) -> OutboundRecord {
+    OutboundRecord {
+        record_id: delivery_record_id(attempt),
+        logical_session_id: attempt.logical_session_id.trim().to_string(),
+        run_id: attempt.run_id.trim().to_string(),
+        channel_id: attempt.channel_id.trim().to_string(),
+        message_id: attempt.message_id.trim().to_string(),
+        edit_generation: attempt.edit_generation,
+        content_sha256: content_sha256_hex(&attempt.content),
+        delivered_at_epoch_ms: attempt.delivered_at_epoch_ms,
+    }
+}
+
+fn delivery_record_id(attempt: &DeliveryAttempt) -> String {
+    format!(
+        "{}:{}:{}:{}:{}",
+        attempt.logical_session_id.trim(),
+        attempt.run_id.trim(),
+        attempt.channel_id.trim(),
+        attempt.message_id.trim(),
+        attempt.edit_generation
+    )
+}
+
+fn same_delivery_target(record: &OutboundRecord, attempt: &DeliveryAttempt) -> bool {
+    record.channel_id == attempt.channel_id.trim()
+        && record.message_id == attempt.message_id.trim()
+        && record.edit_generation == attempt.edit_generation
+}
+
+fn content_sha256_hex(content: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(content.as_bytes());
+    let digest = hasher.finalize();
+    hex_encode(&digest)
+}
+
+fn hex_encode(bytes: &[u8]) -> String {
+    const HEX: [char; 16] = [
+        '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'a', 'b', 'c', 'd', 'e', 'f',
+    ];
+
+    let mut output = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        let upper = usize::from(byte >> 4);
+        let lower = usize::from(byte & 0x0f);
+        output.push(HEX[upper]);
+        output.push(HEX[lower]);
+    }
+    output
+}
+
 #[cfg(test)]
 mod tests {
+    use std::fs;
+    use std::path::{Path, PathBuf};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
     use crab_core::CrabError;
+    use crab_store::OutboundRecordStore;
 
     use super::{
-        extract_routing_key, GatewayConversationKind, GatewayIngress, GatewayMessage, RoutingKey,
+        extract_routing_key, DeliveryAttempt, GatewayConversationKind, GatewayIngress,
+        GatewayMessage, IdempotentDeliveryLedger, MarkSentDecision, RoutingKey, ShouldSendDecision,
         StreamingDelivery, StreamingDeliveryOp,
     };
 
@@ -337,6 +497,30 @@ mod tests {
             content: "hello".to_string(),
             conversation_kind: kind,
         }
+    }
+
+    fn sample_attempt() -> DeliveryAttempt {
+        DeliveryAttempt {
+            logical_session_id: "discord:channel:abc".to_string(),
+            run_id: "run-1".to_string(),
+            channel_id: "abc".to_string(),
+            message_id: "message-1".to_string(),
+            edit_generation: 0,
+            content: "hello".to_string(),
+            delivered_at_epoch_ms: 1,
+        }
+    }
+
+    fn temp_root(prefix: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after unix epoch")
+            .as_nanos();
+        std::env::temp_dir().join(format!("crab-discord-{prefix}-{nanos}"))
+    }
+
+    fn cleanup(path: &Path) {
+        let _ = fs::remove_dir_all(path);
     }
 
     #[test]
@@ -923,5 +1107,271 @@ mod tests {
                         .to_string()
             }
         );
+    }
+
+    #[test]
+    fn idempotent_delivery_skips_retry_after_recorded_send() {
+        let root = temp_root("idempotent-retry");
+        let ledger = IdempotentDeliveryLedger::new(OutboundRecordStore::new(&root));
+        let attempt = sample_attempt();
+
+        assert_eq!(
+            ledger
+                .should_send(&attempt)
+                .expect("pre-send check should succeed"),
+            ShouldSendDecision::Send
+        );
+        assert_eq!(
+            ledger
+                .mark_sent(&attempt)
+                .expect("mark sent should succeed"),
+            MarkSentDecision::Recorded
+        );
+        assert_eq!(
+            ledger
+                .should_send(&attempt)
+                .expect("retry check should succeed"),
+            ShouldSendDecision::SkipDuplicate
+        );
+
+        cleanup(&root);
+    }
+
+    #[test]
+    fn idempotent_delivery_detects_conflicting_content_for_same_target() {
+        let root = temp_root("idempotent-conflict");
+        let ledger = IdempotentDeliveryLedger::new(OutboundRecordStore::new(&root));
+        let attempt = sample_attempt();
+        ledger
+            .mark_sent(&attempt)
+            .expect("initial mark sent should succeed");
+
+        let mut conflicting = sample_attempt();
+        conflicting.content = "different content".to_string();
+
+        let err = ledger
+            .should_send(&conflicting)
+            .expect_err("conflicting content should fail");
+        assert_eq!(
+            err,
+            CrabError::InvariantViolation {
+                context: "idempotent_delivery_should_send",
+                message:
+                    "conflicting content hash for channel=abc, message=message-1, edit_generation=0"
+                        .to_string()
+            }
+        );
+
+        cleanup(&root);
+    }
+
+    #[test]
+    fn idempotent_delivery_allows_new_edit_generation() {
+        let root = temp_root("idempotent-generation");
+        let ledger = IdempotentDeliveryLedger::new(OutboundRecordStore::new(&root));
+        let attempt = sample_attempt();
+        ledger
+            .mark_sent(&attempt)
+            .expect("initial mark sent should succeed");
+
+        let mut next = sample_attempt();
+        next.edit_generation = 1;
+        next.content = "hello world".to_string();
+
+        assert_eq!(
+            ledger
+                .should_send(&next)
+                .expect("new edit generation should be sendable"),
+            ShouldSendDecision::Send
+        );
+
+        cleanup(&root);
+    }
+
+    #[test]
+    fn idempotent_delivery_mark_sent_is_idempotent() {
+        let root = temp_root("idempotent-mark");
+        let ledger = IdempotentDeliveryLedger::new(OutboundRecordStore::new(&root));
+        let attempt = sample_attempt();
+
+        let first = ledger
+            .mark_sent(&attempt)
+            .expect("first mark should succeed");
+        let second = ledger
+            .mark_sent(&attempt)
+            .expect("second mark should be idempotent");
+
+        assert_eq!(first, MarkSentDecision::Recorded);
+        assert_eq!(second, MarkSentDecision::AlreadyRecorded);
+
+        cleanup(&root);
+    }
+
+    #[test]
+    fn idempotent_delivery_rejects_blank_logical_session_id() {
+        let root = temp_root("idempotent-blank-session");
+        let ledger = IdempotentDeliveryLedger::new(OutboundRecordStore::new(&root));
+        let mut attempt = sample_attempt();
+        attempt.logical_session_id = " ".to_string();
+
+        let err = ledger
+            .should_send(&attempt)
+            .expect_err("blank logical session id should fail");
+        assert_eq!(
+            err,
+            CrabError::InvariantViolation {
+                context: "idempotent_delivery_validate",
+                message: "logical_session_id must not be empty".to_string()
+            }
+        );
+
+        cleanup(&root);
+    }
+
+    #[test]
+    fn idempotent_delivery_rejects_zero_delivery_timestamp() {
+        let root = temp_root("idempotent-zero-delivered");
+        let ledger = IdempotentDeliveryLedger::new(OutboundRecordStore::new(&root));
+        let mut attempt = sample_attempt();
+        attempt.delivered_at_epoch_ms = 0;
+
+        let err = ledger
+            .mark_sent(&attempt)
+            .expect_err("zero delivery timestamp should fail");
+        assert_eq!(
+            err,
+            CrabError::InvariantViolation {
+                context: "idempotent_delivery_validate",
+                message: "delivered_at_epoch_ms must be greater than 0".to_string()
+            }
+        );
+
+        cleanup(&root);
+    }
+
+    #[test]
+    fn idempotent_delivery_rejects_blank_run_id() {
+        let root = temp_root("idempotent-blank-run");
+        let ledger = IdempotentDeliveryLedger::new(OutboundRecordStore::new(&root));
+        let mut attempt = sample_attempt();
+        attempt.run_id = " ".to_string();
+
+        let err = ledger
+            .should_send(&attempt)
+            .expect_err("blank run id should fail");
+        assert_eq!(
+            err,
+            CrabError::InvariantViolation {
+                context: "idempotent_delivery_validate",
+                message: "run_id must not be empty".to_string()
+            }
+        );
+
+        cleanup(&root);
+    }
+
+    #[test]
+    fn idempotent_delivery_rejects_blank_channel_id() {
+        let root = temp_root("idempotent-blank-channel");
+        let ledger = IdempotentDeliveryLedger::new(OutboundRecordStore::new(&root));
+        let mut attempt = sample_attempt();
+        attempt.channel_id = " ".to_string();
+
+        let err = ledger
+            .should_send(&attempt)
+            .expect_err("blank channel id should fail");
+        assert_eq!(
+            err,
+            CrabError::InvariantViolation {
+                context: "idempotent_delivery_validate",
+                message: "channel_id must not be empty".to_string()
+            }
+        );
+
+        cleanup(&root);
+    }
+
+    #[test]
+    fn idempotent_delivery_rejects_blank_message_id() {
+        let root = temp_root("idempotent-blank-message");
+        let ledger = IdempotentDeliveryLedger::new(OutboundRecordStore::new(&root));
+        let mut attempt = sample_attempt();
+        attempt.message_id = " ".to_string();
+
+        let err = ledger
+            .should_send(&attempt)
+            .expect_err("blank message id should fail");
+        assert_eq!(
+            err,
+            CrabError::InvariantViolation {
+                context: "idempotent_delivery_validate",
+                message: "message_id must not be empty".to_string()
+            }
+        );
+
+        cleanup(&root);
+    }
+
+    #[test]
+    fn idempotent_delivery_rejects_blank_content() {
+        let root = temp_root("idempotent-blank-content");
+        let ledger = IdempotentDeliveryLedger::new(OutboundRecordStore::new(&root));
+        let mut attempt = sample_attempt();
+        attempt.content = " ".to_string();
+
+        let err = ledger
+            .should_send(&attempt)
+            .expect_err("blank content should fail");
+        assert_eq!(
+            err,
+            CrabError::InvariantViolation {
+                context: "idempotent_delivery_validate",
+                message: "content must not be empty".to_string()
+            }
+        );
+
+        cleanup(&root);
+    }
+
+    #[test]
+    fn idempotent_delivery_should_send_surfaces_store_errors() {
+        let root = temp_root("idempotent-should-send-store-error");
+        fs::write(&root, "not-a-directory").expect("file setup should succeed");
+        let ledger = IdempotentDeliveryLedger::new(OutboundRecordStore::new(&root));
+        let attempt = sample_attempt();
+
+        let err = ledger
+            .should_send(&attempt)
+            .expect_err("store error should propagate");
+        assert!(matches!(
+            err,
+            CrabError::Io {
+                context: "outbound_record_store_layout",
+                ..
+            }
+        ));
+
+        let _ = fs::remove_file(&root);
+    }
+
+    #[test]
+    fn idempotent_delivery_mark_sent_surfaces_store_errors() {
+        let root = temp_root("idempotent-mark-store-error");
+        fs::write(&root, "not-a-directory").expect("file setup should succeed");
+        let ledger = IdempotentDeliveryLedger::new(OutboundRecordStore::new(&root));
+        let attempt = sample_attempt();
+
+        let err = ledger
+            .mark_sent(&attempt)
+            .expect_err("store error should propagate");
+        assert!(matches!(
+            err,
+            CrabError::Io {
+                context: "outbound_record_store_layout",
+                ..
+            }
+        ));
+
+        let _ = fs::remove_file(&root);
     }
 }
