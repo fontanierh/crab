@@ -108,3 +108,22 @@ These rules are mandatory for all generated and handwritten code.
 - Branch protection and required CI check enforcement.
 - Dependency/security gates (`cargo deny`, `cargo audit`).
 - Mutation testing on critical modules (useful, but enable once core foundations exist).
+
+## 13. GitHub Project Tracking (Private)
+
+- All workstream/task issues for this repo must be tracked in the private GitHub Project:
+  `https://github.com/users/fontanierh/projects/1` (`Crab Workstreams`).
+- Keep project visibility as `PRIVATE`.
+- When creating new implementation issues, add them to this project immediately.
+- Do not track this repo's work in external projects.
+
+### Project Ops Commands
+
+- Create project:
+  `gh project create --owner fontanierh --title "Crab Workstreams"`
+- Enforce private visibility:
+  `gh project edit 1 --owner fontanierh --visibility PRIVATE`
+- Add an issue to project:
+  `gh project item-add 1 --owner fontanierh --url https://github.com/fontanierh/2026-02-06-autofun/issues/<id>`
+- List project items:
+  `gh project item-list 1 --owner fontanierh --limit 500`
