@@ -2,7 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
-use crab_core::{CrabError, CrabResult};
+use crab_core::{CrabError, CrabResult, LaneState};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct QueuedRun {
@@ -191,6 +191,65 @@ impl LaneScheduler {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct LaneStateMachine {
+    state: LaneState,
+}
+
+impl Default for LaneStateMachine {
+    fn default() -> Self {
+        Self {
+            state: LaneState::Idle,
+        }
+    }
+}
+
+impl LaneStateMachine {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    #[must_use]
+    pub fn with_state(state: LaneState) -> Self {
+        Self { state }
+    }
+
+    #[must_use]
+    pub fn state(&self) -> LaneState {
+        self.state
+    }
+
+    pub fn transition_to(&mut self, next: LaneState) -> CrabResult<()> {
+        if self.state == next {
+            return Ok(());
+        }
+
+        if !is_valid_lane_transition(self.state, next) {
+            return Err(CrabError::InvariantViolation {
+                context: "lane_state_transition",
+                message: format!("invalid transition: {:?} -> {:?}", self.state, next),
+            });
+        }
+
+        self.state = next;
+        Ok(())
+    }
+}
+
+fn is_valid_lane_transition(current: LaneState, next: LaneState) -> bool {
+    matches!(
+        (current, next),
+        (LaneState::Idle, LaneState::Running | LaneState::Rotating)
+            | (
+                LaneState::Running,
+                LaneState::Idle | LaneState::Cancelling | LaneState::Rotating
+            )
+            | (LaneState::Cancelling, LaneState::Idle | LaneState::Rotating)
+            | (LaneState::Rotating, LaneState::Idle)
+    )
+}
+
 fn validate_session_id(logical_session_id: &str) -> CrabResult<()> {
     if logical_session_id.trim().is_empty() {
         return Err(CrabError::InvariantViolation {
@@ -213,9 +272,9 @@ fn validate_run(run: &QueuedRun) -> CrabResult<()> {
 
 #[cfg(test)]
 mod tests {
-    use crab_core::CrabError;
+    use crab_core::{CrabError, LaneState};
 
-    use super::{LaneScheduler, QueuedRun, SessionLaneQueues};
+    use super::{LaneScheduler, LaneStateMachine, QueuedRun, SessionLaneQueues};
 
     #[test]
     fn rejects_zero_queue_limit() {
@@ -587,6 +646,90 @@ mod tests {
             .complete_lane("discord:channel:a")
             .expect("active lane completion should succeed");
         assert!(scheduler.try_dispatch_next().is_none());
+    }
+
+    #[test]
+    fn lane_state_machine_defaults_to_idle() {
+        let machine = LaneStateMachine::new();
+        assert_eq!(machine.state(), LaneState::Idle);
+    }
+
+    #[test]
+    fn lane_state_machine_accepts_valid_transitions() {
+        let mut machine = LaneStateMachine::new();
+        machine
+            .transition_to(LaneState::Running)
+            .expect("idle -> running should be valid");
+        machine
+            .transition_to(LaneState::Cancelling)
+            .expect("running -> cancelling should be valid");
+        machine
+            .transition_to(LaneState::Rotating)
+            .expect("cancelling -> rotating should be valid");
+        machine
+            .transition_to(LaneState::Idle)
+            .expect("rotating -> idle should be valid");
+        machine
+            .transition_to(LaneState::Rotating)
+            .expect("idle -> rotating should be valid");
+        machine
+            .transition_to(LaneState::Idle)
+            .expect("rotating -> idle should be valid");
+
+        let mut from_running = LaneStateMachine::with_state(LaneState::Running);
+        from_running
+            .transition_to(LaneState::Idle)
+            .expect("running -> idle should be valid");
+        from_running
+            .transition_to(LaneState::Running)
+            .expect("idle -> running should be valid");
+        from_running
+            .transition_to(LaneState::Rotating)
+            .expect("running -> rotating should be valid");
+        from_running
+            .transition_to(LaneState::Idle)
+            .expect("rotating -> idle should be valid");
+
+        let mut cancelling = LaneStateMachine::with_state(LaneState::Cancelling);
+        cancelling
+            .transition_to(LaneState::Idle)
+            .expect("cancelling -> idle should be valid");
+    }
+
+    #[test]
+    fn lane_state_machine_rejects_invalid_transitions() {
+        let mut idle = LaneStateMachine::new();
+        let idle_error = idle
+            .transition_to(LaneState::Cancelling)
+            .expect_err("idle -> cancelling should be invalid");
+        assert!(matches!(
+            idle_error,
+            CrabError::InvariantViolation {
+                context: "lane_state_transition",
+                ..
+            }
+        ));
+
+        let mut rotating = LaneStateMachine::with_state(LaneState::Rotating);
+        let rotating_error = rotating
+            .transition_to(LaneState::Running)
+            .expect_err("rotating -> running should be invalid");
+        assert!(matches!(
+            rotating_error,
+            CrabError::InvariantViolation {
+                context: "lane_state_transition",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn lane_state_machine_allows_idempotent_transitions() {
+        let mut machine = LaneStateMachine::with_state(LaneState::Running);
+        machine
+            .transition_to(LaneState::Running)
+            .expect("same-state transition should be a no-op");
+        assert_eq!(machine.state(), LaneState::Running);
     }
 
     fn run(id: &str) -> QueuedRun {
