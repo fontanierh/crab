@@ -1,17 +1,34 @@
 #![deny(warnings, dead_code, unused_imports, unused_variables)]
 
-/// Canonical crate identifier for the crab runtime.
-#[must_use]
-pub fn crate_id() -> &'static str {
-    "crab-core"
-}
+pub mod config;
+pub mod domain;
+pub mod error;
+
+pub use config::RuntimeConfig;
+pub use domain::{
+    BackendKind, Checkpoint, EventEnvelope, EventKind, EventSource, InferenceProfile, LaneState,
+    LogicalSession, OutboundRecord, PhysicalSession, ReasoningLevel, Run, RunStatus,
+    TokenAccounting,
+};
+pub use error::{CrabError, CrabResult};
 
 #[cfg(test)]
 mod tests {
-    use super::crate_id;
+    use super::{CrabError, CrabResult};
 
     #[test]
-    fn returns_expected_crate_id() {
-        assert_eq!(crate_id(), "crab-core");
+    fn result_alias_is_usable() {
+        let ok_value: CrabResult<usize> = Ok(42);
+        assert_eq!(ok_value, Ok(42));
+
+        let err_value: CrabResult<usize> = Err(CrabError::MissingConfig {
+            key: "CRAB_DISCORD_TOKEN",
+        });
+        assert!(matches!(
+            err_value,
+            Err(CrabError::MissingConfig {
+                key: "CRAB_DISCORD_TOKEN"
+            })
+        ));
     }
 }

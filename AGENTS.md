@@ -90,6 +90,10 @@ No bypasses on main branch.
 - For this project, only create/edit/reference issues in:
   `https://github.com/fontanierh/2026-02-06-autofun`.
 - Do not create/edit issues in external repositories while working on this codebase.
+- Keep issue and project status current while implementing:
+  use `status:todo`, `status:in-progress`, `status:done` labels and mirror the same state in the project board.
+- Update acceptance checklist/task list in the issue as scope changes.
+- Link implementation artifacts (commit/PR) from the issue and close completed issues promptly.
 
 ## 11. Enforced Quality Setup (Current)
 

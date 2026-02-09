@@ -1,5 +1,12 @@
 [workspace]
-members = ["crates/crab-core"]
+members = [
+    "crates/crab-core",
+    "crates/crab-store",
+    "crates/crab-scheduler",
+    "crates/crab-discord",
+    "crates/crab-backends",
+    "crates/crab-app",
+]
 resolver = "2"
 
 [workspace.package]
