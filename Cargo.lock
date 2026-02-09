@@ -21,6 +21,9 @@ dependencies = [
 [[package]]
 name = "crab-discord"
 version = "0.1.0"
+dependencies = [
+ "crab-core",
+]
 
 [[package]]
 name = "crab-scheduler"
