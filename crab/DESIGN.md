@@ -1,527 +1,551 @@
 # Crab - Design Document
 
-A meta-harness that wraps CLI coding agents (Claude Code, Codex CLI, OpenCode) and exposes them through Discord. Inspired by [OpenClaw](https://github.com/openclaw/openclaw)'s architecture for memory, persona, and session management — but built in Rust, and backed by existing CLI agents rather than raw LLM APIs.
+Rust harness that runs coding agents (Claude Code, Codex CLI, OpenCode) behind a Discord bot.
 
-Informed by [Rivet's sandbox-agent](https://github.com/rivet-dev/sandbox-agent) which implements a universal adapter over these same agents.
+This document defines the v1 architecture and operational semantics.
 
-## Architecture Overview
+## 1) Goals and Non-Goals
 
-```
-Discord Server (primary UI)
-    │
-    ├── #project-x    ──┐
-    ├── #calendar       │  each channel/DM = one logical session
-    ├── DM: @user      ──┘
-    │
-    ▼
-┌──────────────────────────────────────────────────┐
-│                  Crab (Rust)                     │
-│                                                  │
-│  Discord Bot                                     │
-│    ├── Message listener (all channels/DMs)       │
-│    ├── Server management (create channels,       │
-│    │   pins, topics, threads)                    │
-│    └── Full admin permissions                    │
-│                                                  │
-│  Session Router                                  │
-│    ├── Maps Discord channel → logical session    │
-│    └── Manages physical session lifecycle        │
-│                                                  │
-│  Workspace                                       │
-│    ├── SOUL.md                                   │
-│    ├── IDENTITY.md                               │
-│    ├── AGENTS.md                                 │
-│    ├── MEMORY.md                                 │
-│    ├── USER.md                                   │
-│    └── memory/                                   │
-│         └── YYYY-MM-DD.md                        │
-│                                                  │
-│  Backend Manager                                 │
-│    ├── Claude Code backend (subprocess per turn) │
-│    ├── Codex CLI backend (persistent app-server) │
-│    └── OpenCode backend (persistent HTTP server) │
-└──────────────────────────────────────────────────┘
-```
+### Goals
 
-## Core Concepts
+- Provide one autonomous Discord-first coding agent runtime.
+- Support multiple backend agents behind one unified runtime contract.
+- Keep behavior reliable under long-running autonomous operation.
+- Preserve high-quality context through explicit memory and checkpointing.
+- Keep delivery semantics simple and non-buggy (idempotent, recoverable, observable).
 
-### Logical Session
+### Non-Goals (v1)
 
-A logical session is the ongoing conversation in a Discord channel or DM. It lives as long as the channel exists. It holds:
+- Multi-agent orchestration or parallel specialist swarms.
+- Complex permission workflows in Discord (default is autonomous operation).
+- Dependency/security gates and branch protection policy enforcement (deferred).
+- Pi agent integration unless it exposes a stable service interface we can adapt cleanly.
 
-- A reference to the Discord channel ID
-- An ordered list of checkpoints (summaries of past physical sessions)
-- The currently active physical session (if any)
-- An inactivity timer
-- The backend to use (Claude Code, Codex, or OpenCode — configurable per channel)
+## 2) Core Principles
 
-### Physical Session
+- Autonomy first: default execution policy is auto-approve.
+- Deterministic control plane: explicit state machine for sessions, runs, and resets.
+- Durable events: every run is reconstructible from persisted envelopes.
+- Explicit memory lifecycle: memory flush and checkpoint are separate protocol steps.
+- Trusted workspace model: users are trusted, but memory is still scoped per user.
 
-A physical session is a short-lived agent conversation that gets recycled via summarization. It maps to:
-
-- Claude Code: a `--resume`-able session identified by `session_id`
-- Codex CLI: a thread in the persistent `codex app-server` process, identified by `thread_id`
-- OpenCode: a session on the persistent HTTP server, identified by session ID
-
-A new physical session is spawned when:
-
-1. A message arrives and no active physical session exists
-2. Token budget is exceeded (tracked via token usage from agent event streams)
-3. Backend switch (e.g., Claude Code <-> Codex)
-4. Inactivity timeout fires and a new message arrives later
-
-Every physical session is bootstrapped with:
-
-- Workspace files (SOUL.md, IDENTITY.md, AGENTS.md, USER.md)
-- MEMORY.md + relevant memory/*.md files
-- The latest checkpoint (if any)
-
-### Checkpoint
-
-A checkpoint is a summary produced by the agent at the end of a physical session. It captures:
-
-- Key decisions and conclusions from the conversation
-- Open questions or pending tasks
-- Relevant context the next session needs
-
-The checkpoint is stored by the harness (not in the workspace) and injected into the next physical session's bootstrap context.
-
-### Inactivity Timeout
-
-Each logical session has a configurable inactivity timer (default: 30 minutes). When it fires:
-
-1. Memory flush: agent is asked to write durable notes to `memory/YYYY-MM-DD.md`
-2. Checkpoint: agent produces a summary of the conversation
-3. Physical session is killed
-
-Next message in that channel bootstraps a fresh physical session with the checkpoint. This ensures:
-
-- Stale sessions don't hold onto outdated context
-- Fresh sessions pick up any changes to SOUL.md, AGENTS.md, etc.
-- Memory is durably saved before the session dies
-
-## Workspace
-
-The workspace is a directory on disk shared across all sessions. It contains persona, identity, memory, and instruction files that are injected into every physical session.
+## 3) High-Level Architecture
 
 ```
-~/.crab/workspace/
-├── SOUL.md          # Persona: tone, personality, behavioral boundaries
-├── IDENTITY.md      # Name, emoji/avatar
-├── AGENTS.md        # Operating instructions, rules, conventions
-├── USER.md          # User profile and preferences
-├── MEMORY.md        # Curated long-term memory (manually maintained)
-└── memory/
-    ├── 2026-02-08.md  # Daily memory log (agent-written)
-    └── 2026-02-09.md
+Discord Gateway
+  -> Session Router
+  -> Lane Scheduler
+  -> Backend Adapter (Claude | Codex | OpenCode)
+  -> Event Log + Transcript Store
+  -> Checkpoint Store
+  -> Memory Files + Memory Search Index
 ```
 
-### File Purposes
+Major subsystems:
 
-**SOUL.md** — Defines who the agent *is*. Personality traits, communication style, behavioral boundaries. Injected into every session's system prompt.
+- Discord Bot: ingress, streaming edits, commands, server management.
+- Session Router: maps Discord contexts to logical sessions.
+- Lane Scheduler: per-session FIFO + global concurrency cap.
+- Backend Manager: lifecycle for subprocess/persistent backends.
+- Context Builder: workspace instructions + memory + checkpoint injection.
+- State Store: sessions, checkpoints, events, run metadata.
 
-**IDENTITY.md** — Agent's name and visual identity. Used by the Discord bot for display purposes.
+## 4) Session and Lane Model
 
-**AGENTS.md** — Operating instructions. What the agent should and shouldn't do, coding conventions, project-specific rules. This is the equivalent of OpenClaw's AGENTS.md or Claude Code's CLAUDE.md.
+### 4.1 Logical Session
 
-**USER.md** — Profile of the user(s). Preferences, timezone, communication style, relevant background.
+A logical session is the durable conversation identity.
 
-**MEMORY.md** — Curated long-term memory. Unlike `memory/*.md` (which the agent writes to), this file is meant to be human-curated. Contains the most important persistent facts.
+Default mapping:
 
-**memory/YYYY-MM-DD.md** — Daily memory logs. The agent writes here during memory flush (before compaction or inactivity timeout). These accumulate over time and serve as the agent's long-term recall.
+- Guild channel: `discord:channel:<channel_id>`
+- Thread: `discord:thread:<thread_id>`
+- DM: `discord:dm:<user_id>`
 
-### Context Injection
+Each logical session stores:
 
-When bootstrapping a physical session, the harness composes a system prompt from workspace files:
+- Active backend type.
+- Active physical session handle (optional).
+- Last successful checkpoint id.
+- Queue/lane state.
+- Last activity timestamp.
+- Token/accounting summaries.
 
-```
-[SOUL.md content]
-[IDENTITY.md content]
-[AGENTS.md content]
-[USER.md content]
+### 4.2 Physical Session
 
-## Long-term Memory
-[MEMORY.md content]
-[memory/today.md content]
-[memory/yesterday.md content]
+Backend-specific execution state reused across turns until rotation/reset:
 
-## Session Context
-[Latest checkpoint, if any]
-```
+- Claude Code: resumable session id.
+- Codex CLI: thread id on one `codex app-server`.
+- OpenCode: server-side session id.
 
-This composed prompt is injected via:
-- Claude Code: `--system-prompt` or `--append-system-prompt-file`
-- Codex CLI: written to `~/.codex/prompts/` before launch, or via app-server config
-- OpenCode: custom agent config or instructions in `opencode.json`
+### 4.3 Lane Model (Queue Semantics)
 
-Note: all three agents also auto-read instruction files from the working directory (Claude Code reads `CLAUDE.md`, Codex and OpenCode read `AGENTS.md`). We set the CWD to the workspace directory, so we can place an `AGENTS.md` there that all backends pick up natively. For Claude Code, we symlink `CLAUDE.md -> AGENTS.md` in the workspace.
+Each logical session has exactly one lane.
 
-## Backend Architecture
+Rules:
 
-The three backends fall into two process models (learned from [sandbox-agent](https://github.com/rivet-dev/sandbox-agent)):
+- Per-lane execution is strictly FIFO.
+- At most one active run per lane.
+- Global scheduler enforces `max_concurrent_lanes` across all lanes.
+- New messages enqueue on the lane (bounded queue).
+- On overflow: reject newest message with explicit error note (no silent drops).
 
-### Process Models
+Lane state machine:
 
-| Model | Backends | How it works |
-|---|---|---|
-| **Subprocess per turn** | Claude Code | Process spawned per message, reads JSONL from stdout. Resume via `--resume`. Stdin can stay open with `--input-format stream-json` for multi-turn within one process. |
-| **Persistent server** | Codex, OpenCode | Single long-lived process. Sessions multiplexed via JSON-RPC (Codex `app-server`) or HTTP API (OpenCode `serve`). No per-turn process overhead. |
+- `Idle`: no active run.
+- `Running`: one active run streaming events.
+- `Cancelling`: interruption requested, awaiting backend confirmation/timeout.
+- `Rotating`: flush/checkpoint/session handoff in progress.
 
-### Claude Code Backend
+This gives deterministic ordering while still allowing cross-channel parallelism.
 
-Claude Code is spawned as a subprocess per message exchange:
+## 5) Backend Integration
 
-```
-First message:
-  claude -p "<message>" \
-    --system-prompt-file /tmp/crab-context-XXXX.md \
-    --output-format stream-json
-
-Subsequent messages (same physical session):
-  claude -p "<message>" \
-    --resume <session_id> \
-    --output-format stream-json
-```
-
-- Each response includes `session_id` in the JSON output — must be captured for `--resume`
-- Events arrive as JSONL on stdout: `assistant`, `tool_use`, `tool_result`, `result`, etc.
-- Token usage reported in `result` events
-- Process exits after each turn; `--resume` restores conversation history on next spawn
-
-Alternatively, Claude Code supports `--input-format stream-json` to keep stdin open for multi-turn interaction within a single process. This avoids process spawn overhead but makes error recovery harder.
-
-### Codex CLI Backend
-
-Codex runs as a persistent app-server process with JSON-RPC over stdio:
-
-```
-Spawn once (on first Codex session):
-  codex app-server
-
-Initialize:
-  → {"jsonrpc":"2.0","id":1,"method":"initialize","params":{...}}
-  ← {"jsonrpc":"2.0","id":1,"result":{...}}
-  → {"jsonrpc":"2.0","method":"initialized"}
-
-Per physical session:
-  → {"jsonrpc":"2.0","id":N,"method":"thread/start","params":{"instructions":"..."}}
-  ← thread_id in response
-
-Per message:
-  → {"jsonrpc":"2.0","id":N,"method":"turn/start","params":{"thread_id":"...","prompt":"..."}}
-  ← Streaming notifications on stdout (item.started, item.delta, item.completed, etc.)
-```
-
-- One `codex app-server` process handles all Codex sessions concurrently via `thread_id`
-- Sessions are multiplexed — no per-turn process overhead
-- If the server crashes, restart it and create new threads (old threads are lost)
-- Token usage reported in `turn.completed` notifications
-
-### OpenCode Backend
-
-OpenCode runs as a persistent HTTP server:
-
-```
-Spawn once (on first OpenCode session):
-  opencode serve --port <port>
-
-Create session:
-  POST http://localhost:<port>/session
-  → session_id
-
-Send message:
-  POST http://localhost:<port>/session/<session_id>/prompt (async)
-  GET  http://localhost:<port>/event/subscribe (SSE stream)
-
-Resume session:
-  Same session_id — server maintains state internally
-```
-
-- Server persists across all sessions; port in range 4200-4300
-- SSE event stream for real-time updates (`message.part.updated`, `session.idle`, etc.)
-- Also usable via CLI: `opencode run -s <session_id> --format json "message"`
-- Token usage available in assistant message `info` field
-
-### Fallback: CLI Mode for Codex and OpenCode
-
-If the persistent server approach has issues, both Codex and OpenCode support simple subprocess-per-turn as a fallback:
-
-```
-Codex:    codex exec "message" --json
-          codex exec resume <session_id> "message" --json
-
-OpenCode: opencode run "message" --format json
-          opencode run -s <session_id> "message" --format json
-```
-
-## Unified Event Schema
-
-All three backends emit different event formats. The harness normalizes them into a unified schema (inspired by sandbox-agent's approach):
-
-```rust
-enum CrabEvent {
-    /// Agent is producing text output
-    TextDelta { text: String },
-
-    /// Agent is using a tool
-    ToolUse { id: String, name: String, input: serde_json::Value },
-
-    /// Tool produced a result
-    ToolResult { id: String, output: String, is_error: bool },
-
-    /// Turn completed with token usage
-    TurnComplete { tokens: TokenUsage },
-
-    /// Agent encountered an error
-    Error { message: String },
-}
-
-struct TokenUsage {
-    input_tokens: u64,
-    output_tokens: u64,
-    cache_read_tokens: Option<u64>,
-    cache_write_tokens: Option<u64>,
-}
-```
-
-When a backend doesn't emit certain events natively, the harness injects synthetic events to maintain a consistent sequence (sandwich-agent calls these "synthetic events").
-
-## Session Lifecycle
-
-```
-                    Message arrives in #channel
-                            │
-                            ▼
-                 ┌─ Active physical session? ─┐
-                 │                            │
-                Yes                           No
-                 │                            │
-                 ▼                            ▼
-          Reset inactivity           Latest checkpoint?
-          timer                       │            │
-                 │                   Yes           No
-                 ▼                    │            │
-          Send message via            ▼            ▼
-          backend.send()         Bootstrap     Bootstrap
-                 │               with ckpt     fresh
-                 │                    │            │
-                 ▼                    └─────┬──────┘
-          Parse response                   │
-                 │                         ▼
-                 │                  Create new physical
-                 │                  session via backend
-                 │                         │
-                 ▼                         ▼
-          Check token usage          Send message
-          from TurnComplete                │
-                 │                         ▼
-           ┌─────┴──────┐           Parse response
-           │             │                 │
-        Under          Over                ▼
-        budget         budget        Set inactivity timer
-           │             │
-           ▼             ▼
-         Done      Trigger compact:
-                   1. Memory flush
-                   2. Checkpoint
-                   3. End physical session
-                   4. Bootstrap fresh
-                   5. Continue
-```
-
-### Inactivity Timeout Flow
-
-```
-Timer fires (30 min idle)
-        │
-        ▼
-  Send to agent:
-  "Session ending due to inactivity.
-   Save important context to memory/YYYY-MM-DD.md.
-   Then produce a checkpoint summary."
-        │
-        ▼
-  Agent writes memory/ files + returns summary
-        │
-        ▼
-  Store checkpoint
-        │
-        ▼
-  End physical session
-        │
-        ▼
-  Logical session is now idle (no active physical session)
-```
-
-### Compact Flow (Token Budget Exceeded)
-
-```
-Token usage from TurnComplete exceeds threshold
-        │
-        ▼
-  Send to agent:
-  "This session is being compacted.
-   1. Save any important context to memory/YYYY-MM-DD.md
-   2. Produce a checkpoint summary of our conversation"
-        │
-        ▼
-  Agent writes memory/ files + returns summary
-        │
-        ▼
-  Store checkpoint
-        │
-        ▼
-  End physical session
-        │
-        ▼
-  Bootstrap fresh physical session with checkpoint
-        │
-        ▼
-  Continue with pending message (if any)
-```
-
-## Backend Trait
+### 5.1 Unified Backend Contract
 
 ```rust
 #[async_trait]
 trait Backend: Send + Sync {
-    /// Start a new physical session.
-    /// `context` contains the composed system prompt (SOUL + MEMORY + checkpoint).
-    /// Returns a session handle with the backend-specific session ID.
-    async fn create_session(&self, context: &SessionContext) -> Result<PhysicalSession>;
+    async fn create_session(&self, ctx: &SessionContext) -> Result<PhysicalSession>;
 
-    /// Send a message in an existing physical session.
-    /// Returns a stream of normalized CrabEvents.
-    async fn send_message(
+    async fn send_turn(
         &self,
         session: &mut PhysicalSession,
-        message: &str,
-    ) -> Result<Pin<Box<dyn Stream<Item = CrabEvent> + Send>>>;
+        input: TurnInput,
+    ) -> Result<Pin<Box<dyn Stream<Item = BackendEvent> + Send>>>;
 
-    /// End a physical session (cleanup resources).
-    /// For Claude Code: no-op (process already exited).
-    /// For Codex: optionally end the thread.
-    /// For OpenCode: optionally delete the session.
+    async fn interrupt_turn(
+        &self,
+        session: &PhysicalSession,
+        turn_id: &str,
+    ) -> Result<()>;
+
     async fn end_session(&self, session: &PhysicalSession) -> Result<()>;
 }
 ```
 
-## Discord Integration
+All backend streams are normalized into Crab event envelopes (section 9).
 
-### Bot Permissions
+### 5.2 Claude Code
 
-The bot has full admin access to the Discord server:
-- Read/send messages in all channels and DMs
-- Create/delete/rename channels
-- Create threads
-- Pin messages, set channel topics
-- Manage roles (optional)
-- Add reactions
+Model:
 
-### Message Routing
+- Subprocess per turn with resume id.
+- Stateless process lifecycle; state sits in Claude session id.
+
+Notes:
+
+- Best-effort interruption uses process termination semantics.
+- Recovery after crash is simple: spawn next turn with last known resume id; if invalid, rotate physical session from checkpoint.
+
+### 5.3 Codex CLI (validated on 2026-02-09, `codex-cli 0.98.0`)
+
+Model:
+
+- One persistent `codex app-server` process.
+- Multiple sessions via `threadId`.
+
+Key request methods:
+
+- `thread/start`
+- `thread/resume`
+- `turn/start` with required `threadId` and `input` (array of user inputs)
+- `turn/interrupt` with required `threadId` and `turnId`
+
+Important server-side requests/events:
+
+- Approval requests (command/file change): `item/*/requestApproval`
+- User input request (experimental): `item/tool/requestUserInput`
+
+Crab behavior:
+
+- Default policy: auto-approve locally; still log approval request envelopes.
+- `item/tool/requestUserInput` is handled as unattended mode by default (reject with a deterministic message, emit event, continue/fail the run according to backend response).
+- If app-server dies: restart process, create/resume thread where possible; if not possible, rotate physical session using latest checkpoint.
+
+### 5.4 OpenCode
+
+Model:
+
+- Persistent HTTP server.
+- Session ids managed by OpenCode service.
+- Streaming via server event stream.
+
+Crab behavior:
+
+- Keep one managed OpenCode server process.
+- Health-check and restart if unreachable.
+- On unrecoverable session loss, rotate physical session from latest checkpoint.
+
+## 6) Workspace, Context, and Memory
+
+### 6.1 Workspace
+
+Single shared workspace:
 
 ```
-Discord message event
-        │
-        ▼
-  Extract channel_id + author info
-        │
-        ▼
-  Look up logical session for channel_id
-  (create one if it doesn't exist)
-        │
-        ▼
-  Route to session handler
-        │
-        ▼
-  Agent response streamed back to Discord
-  (edit message in place as chunks arrive)
+~/.crab/workspace/
+  SOUL.md
+  IDENTITY.md
+  AGENTS.md
+  CLAUDE.md -> AGENTS.md
+  USER.md
+  MEMORY.md
+  memory/
+    global/YYYY-MM-DD.md
+    users/<discord_user_id>/YYYY-MM-DD.md
 ```
 
-### Discord-Specific Features
+### 6.2 Injection Order
 
-- **Streaming responses**: edit the bot's reply message as text chunks arrive from the agent
-- **Long responses**: split into multiple messages if over Discord's 2000-char limit
-- **Channel creation**: agent can request channel creation via tool use or explicit command
-- **Thread support**: optionally map threads to sub-sessions
-- **Typing indicator**: show typing while agent is processing
+Per turn, Crab composes context in this order:
 
-## Storage Layout
+1. `SOUL.md`
+2. `IDENTITY.md`
+3. `AGENTS.md`
+4. `USER.md`
+5. `MEMORY.md` (curated long-term)
+6. Memory snippets/files (global + current author scope)
+7. Latest checkpoint summary
+8. Current turn input
+
+### 6.3 Memory Scope Policy
+
+Trust model: server participants are trusted.
+
+Memory policy:
+
+- Use per-user memory files by default (`memory/users/<author_id>/...`).
+- Use global memory for channel-wide durable facts.
+- Inject current author memory + recent global memory for the turn.
+
+### 6.4 Memory Search
+
+Crab provides memory search (`memory_search`) and retrieval (`memory_get`) over memory markdown.
+
+Prompt rule in system instructions:
+
+- Prefer searching memory before saying information is unknown.
+
+## 7) Turn Lifecycle
+
+1. Ingress: Discord message arrives.
+2. Route: resolve logical session + lane.
+3. Enqueue: append run request to lane FIFO.
+4. Dequeue: scheduler starts run when lane head and global capacity available.
+5. Ensure physical session exists (create or resume).
+6. Build context and start backend turn.
+7. Stream backend events -> normalize -> persist -> deliver.
+8. Finalize run:
+   - update usage and last activity
+   - evaluate compaction/inactivity/reset rules
+   - ack completion in lane
+
+## 8) Memory Flush and Checkpoint Protocol (Explicit Spec)
+
+Memory flush and checkpoint are separate hidden operations.
+
+They run in this order whenever a rotation/reset requires state handoff.
+
+### 8.1 Trigger Conditions
+
+Run flush+checkpoint when:
+
+- Token budget compaction threshold exceeded.
+- Inactivity timeout expires and lane is idle.
+- Manual reset/compact command.
+
+Token budget source:
+
+- Prefer backend-reported usage.
+- Fall back to local token estimation when a backend does not provide usage for a completed turn.
+
+### 8.2 Step A: Memory Flush Turn (hidden)
+
+Purpose: persist durable facts to memory files.
+
+Protocol:
+
+- Execute hidden turn with flush instructions.
+- Agent may write memory files via tools.
+- Expected text output is one of:
+  - `NO_REPLY`
+  - `MEMORY_FLUSH_DONE`
+
+Harness behavior:
+
+- Output is not posted to Discord.
+- Timeout/failure does not block checkpoint step; it is logged.
+- Only one flush per compaction cycle (`memory_flush_cycle_id`).
+
+### 8.3 Step B: Checkpoint Turn (hidden)
+
+Purpose: produce resumable handoff summary.
+
+Expected output: strict JSON object
+
+```json
+{
+  "summary": "string",
+  "decisions": ["string"],
+  "open_questions": ["string"],
+  "next_actions": ["string"],
+  "artifacts": [{"path": "string", "note": "string"}]
+}
+```
+
+Harness behavior:
+
+- Validate JSON schema.
+- On parse/validation failure: retry once with corrective prompt.
+- If still invalid: write fallback checkpoint generated from transcript tail + durable metadata.
+
+Checkpoint storage:
+
+- Persist every checkpoint (append-only).
+- Inject only latest checkpoint by default into new physical sessions.
+
+## 9) Event Envelope and Persistence
+
+Every normalized event is stored as an envelope.
+
+```rust
+struct EventEnvelope {
+    event_id: String,            // ulid
+    ts_unix_ms: u64,
+    run_id: String,
+    turn_id: String,
+    lane_id: String,
+    logical_session_id: String,
+    physical_session_id: Option<String>,
+    backend: BackendKind,
+    seq: u64,                    // per-run monotonic sequence
+    kind: EventKind,
+    payload: serde_json::Value,
+}
+```
+
+Why this is required:
+
+- Replay UI updates after restart.
+- Deterministic dedupe for outbound edits/posts.
+- Accurate audit trail for approvals, tool calls, and cancellations.
+- Crash recovery from partially completed runs.
+
+### 9.1 Event Kinds
+
+Minimum set:
+
+- `run.started`
+- `turn.started`
+- `text.delta`
+- `tool.call`
+- `tool.result`
+- `approval.requested`
+- `turn.completed`
+- `turn.interrupted`
+- `checkpoint.created`
+- `run.failed`
+
+## 10) Discord Delivery Semantics
+
+### 10.1 Normal Reply vs Discord Tool
+
+Default behavior:
+
+- Normal assistant output is delivered by Crab as the channel reply stream.
+
+`discord` tool behavior:
+
+- Used for explicit Discord actions (send/edit/delete/react/moderation/proactive ops).
+
+Duplicate suppression:
+
+- If a messaging tool sends to the same provider+target for the same run, suppress duplicate final plain-text confirmation reply.
+
+### 10.2 Idempotent Message Delivery and Editing
+
+For each run, Crab tracks outbound records keyed by:
+
+- `(logical_session_id, turn_id, chunk_index)`
+
+Rules:
+
+- Prefer editing one in-flight bot message while streaming.
+- If message length or format constraints require split, create deterministic chunk indices.
+- Before sending/editing chunk `n`, check if record exists with same content hash.
+  - If yes: skip.
+  - If no: apply edit/post and persist record.
+- On Discord API errors that invalidate message id (deleted/not found), create a replacement message and remap current stream target.
+
+## 11) Cancellation Semantics
+
+### 11.1 User-Facing Cancellation
+
+`/cancel` applies to active lane run only.
+
+Behavior:
+
+- Mark run state `Cancelling`.
+- Send backend-specific interrupt:
+  - Claude: terminate process.
+  - Codex: `turn/interrupt` with `threadId`, `turnId`.
+  - OpenCode: server cancel endpoint/stream interruption.
+- Stop streaming to Discord.
+- Persist `turn.interrupted` envelope.
+- Leave physical session alive unless backend integrity requires rotation.
+
+### 11.2 Queue Cancellation
+
+- Pending (not started) run can be removed by id.
+- FIFO ordering for remaining runs is preserved.
+
+## 12) Reset and Rotation Policy
+
+A session rotates physical state when a trigger from section 8.1 fires, plus backend switches.
+
+Rotation sequence:
+
+1. Memory flush (hidden)
+2. Checkpoint (hidden)
+3. End physical session
+4. Clear active physical handle
+5. Next run bootstraps fresh physical session with latest checkpoint
+
+## 13) Crash Recovery
+
+### 13.1 Durable State Before Side Effects
+
+Before starting backend turn:
+
+- Persist `run.started` with lane/session ids.
+- Persist run metadata (backend handle, input hash, delivery target).
+
+### 13.2 Startup Reconciliation
+
+On process boot:
+
+- Load lanes and find runs in `Running`/`Cancelling` older than grace window.
+- Mark them `RecoveredAsInterrupted`.
+- Emit synthetic interruption/failure envelopes.
+- Reconcile backend managers:
+  - restart Codex/OpenCode services if dead.
+  - treat stale backend handles as invalid.
+- Keep logical session; force new physical session on next user message.
+
+### 13.3 Delivery Recovery
+
+Because outbound records are persisted, replay can continue without duplicate spam:
+
+- Already committed chunks are not resent.
+- Incomplete streams resume from next unsent chunk or finalize with an interruption note.
+
+## 14) Heartbeat and Health
+
+Crab runs three heartbeat loops:
+
+- Run heartbeat: updates `last_progress_at` while a turn streams.
+- Backend heartbeat: verifies persistent services (Codex/OpenCode) on interval.
+- Dispatcher heartbeat: checks lane scheduler forward progress.
+
+Stall policy:
+
+- If active run has no progress beyond `run_stall_timeout_secs`, attempt cancellation.
+- If cancellation fails, hard-stop backend handle, mark run failed, and rotate physical session.
+
+Heartbeat events are internal envelopes, not user-facing chat output.
+
+## 15) Discord Permissions
+
+Crab assumes full server ownership for the main bot.
+
+Required practical scope includes:
+
+- Read/send/edit messages
+- Manage channels/threads/topics
+- Reactions
+- Role and moderation actions
+
+This is intentional for autonomous server configuration and operations.
+
+## 16) Storage Layout
 
 ```
 ~/.crab/
-├── config.toml                    # Global configuration
-├── workspace/                     # Shared workspace (SOUL, MEMORY, etc.)
-│   ├── SOUL.md
-│   ├── IDENTITY.md
-│   ├── AGENTS.md
-│   ├── CLAUDE.md -> AGENTS.md     # Symlink for Claude Code compatibility
-│   ├── USER.md
-│   ├── MEMORY.md
-│   └── memory/
-│       ├── 2026-02-08.md
-│       └── 2026-02-09.md
-├── sessions/
-│   ├── index.json                 # Maps channel_id → logical session metadata
-│   └── <channel_id>/
-│       ├── session.json           # Logical session state
-│       ├── checkpoints/
-│       │   ├── 001.md             # Checkpoint from 1st physical session
-│       │   ├── 002.md             # Checkpoint from 2nd physical session
-│       │   └── 003.md
-│       └── transcript.jsonl       # Full message log (Discord messages + agent responses)
-└── logs/
-    └── crab.log
+  config.toml
+  workspace/
+    SOUL.md
+    IDENTITY.md
+    AGENTS.md
+    CLAUDE.md -> AGENTS.md
+    USER.md
+    MEMORY.md
+    memory/
+      global/
+        YYYY-MM-DD.md
+      users/
+        <discord_user_id>/
+          YYYY-MM-DD.md
+  sessions/
+    index.json
+    <logical_session_id>/
+      session.json
+      checkpoints/
+        000001.json
+        000002.json
+      events.jsonl
+      outbound.jsonl
+  backends/
+    codex/
+      manager_state.json
+    opencode/
+      manager_state.json
+  logs/
+    crab.log
 ```
 
-## Configuration
+## 17) Configuration (Draft)
 
 ```toml
-# ~/.crab/config.toml
-
 [discord]
-token = "..."                      # or via DISCORD_TOKEN env var
+token = "${DISCORD_TOKEN}"
 
 [defaults]
-backend = "claude-code"            # default backend for new channels
-inactivity_timeout_secs = 1800     # 30 minutes
-max_tokens_per_physical_session = 80000
+backend = "codex"
+inactivity_timeout_secs = 1800
+max_concurrent_lanes = 6
+lane_queue_limit = 32
+compaction_token_threshold = 80000
+run_stall_timeout_secs = 90
 
-[backends.claude-code]
-binary = "claude"                  # path to claude CLI
-# Process model: subprocess per turn with --resume
+[approvals]
+default_policy = "auto"   # auto | ask
+
+[backends.claude]
+binary = "claude"
 
 [backends.codex]
-binary = "codex"                   # path to codex CLI
-# Process model: persistent app-server (JSON-RPC over stdio)
+binary = "codex"
+mode = "app-server"
 
 [backends.opencode]
-binary = "opencode"                # path to opencode CLI
-port_range = [4200, 4300]          # port range for HTTP server
-# Process model: persistent HTTP server
+binary = "opencode"
+serve_port = 4210
 
-# Per-channel overrides
-[channels."project-x"]
-backend = "codex"
-inactivity_timeout_secs = 3600     # 1 hour for long-running projects
+[memory]
+search_enabled = true
+inject_days = 2
+per_user_scope = true
 
-[channels."calendar"]
-backend = "claude-code"
-inactivity_timeout_secs = 900      # 15 minutes for quick tasks
+[channels."discord:channel:1234567890"]
+backend = "claude"
+inactivity_timeout_secs = 3600
 ```
 
-## Open Questions
+## 18) Deferred Items
 
-1. **Memory search**: OpenClaw uses vector embeddings + BM25 for searching memory files. Do we need this, or is injecting recent memory files (today + yesterday) sufficient to start? Could add semantic search later.
-
-2. **Multi-user**: For now this is single-user (your personal assistant). If multiple people talk in the same channel, should each get their own session, or share the channel session?
-
-3. **File I/O from agent**: The agent needs to write to `memory/` during flush. We set CWD to the workspace directory so the agent's file-write tools can access `memory/` directly.
-
-4. **Agent-initiated actions**: Can the agent proactively create Discord channels, post messages, etc.? This would require exposing Discord actions as tools to the agent (via MCP or custom tool definitions).
-
-5. **Checkpoint chaining**: Should we keep only the latest checkpoint, or maintain a chain? A chain gives richer context but costs more tokens. Could keep last N checkpoints, or summarize the chain itself.
-
-6. **Error handling**: What happens if the CLI agent or persistent server crashes mid-session? We should detect this and either retry or start a fresh session with the last checkpoint. For persistent servers (Codex, OpenCode), we need health checks and auto-restart.
-
-7. **Human-in-the-loop**: All three agents can ask permission questions (file writes, command execution). Should we auto-approve (like sandbox-agent's `acceptEdits` mode), or surface these as Discord messages for the user to approve?
+- Branch protection and required CI checks.
+- Dependency/security policy gates (`cargo deny` / `cargo audit`).
+- Multi-agent orchestration.
+- Pi agent adapter (only if stable transport contract is available).
