@@ -65,6 +65,7 @@ Default mapping:
 Each logical session stores:
 
 - Active backend type.
+- Active inference profile (`model`, `reasoning_level`).
 - Active physical session handle (optional).
 - Last successful checkpoint id.
 - Queue/lane state.
@@ -178,6 +179,60 @@ Crab behavior:
 - Health-check and restart if unreachable.
 - On unrecoverable session loss, rotate physical session from latest checkpoint.
 
+### 5.5 Model Selection and Reasoning Policy
+
+Crab resolves an inference profile for every run:
+
+- `backend`
+- `model`
+- `reasoning_level`
+
+Canonical `reasoning_level` values:
+
+- `none`
+- `minimal`
+- `low`
+- `medium`
+- `high`
+- `xhigh`
+
+Resolution precedence (highest first):
+
+1. Per-turn override
+2. Session profile
+3. Channel override
+4. Backend default
+5. Global default
+
+Validation and fallback policy:
+
+- `strict`: reject the run if model/reasoning is unsupported for the selected backend.
+- `compatible` (default): choose the nearest compatible backend setting, emit a run note, and persist the fallback in run metadata.
+
+Backend mapping rules:
+
+- Claude Code:
+  - `model`: resolved to a backend-supported Claude model alias.
+  - `reasoning_level`: mapped by adapter to Claude-supported thinking mode; unsupported values are clamped under fallback policy.
+- Codex CLI:
+  - `model`: sent via `turn/start` model override when provided.
+  - `reasoning_level`: mapped directly to `turn/start.effort` (`none|minimal|low|medium|high|xhigh`).
+- OpenCode:
+  - `model`: applied through OpenCode session/turn model controls.
+  - `reasoning_level`: mapped to native setting when available; otherwise treated as best-effort and injected as run guidance.
+
+Profile stickiness:
+
+- The resolved profile is sticky across physical session rotations inside the same logical session.
+- It changes only via explicit command/override or config reload.
+
+Operator controls:
+
+- `/backend <name>`
+- `/model <name-or-auto>`
+- `/reasoning <none|minimal|low|medium|high|xhigh>`
+- `/profile` (show effective resolved profile and source)
+
 ## 6) Workspace, Context, and Memory
 
 ### 6.1 Workspace
@@ -234,10 +289,11 @@ Prompt rule in system instructions:
 2. Route: resolve logical session + lane.
 3. Enqueue: append run request to lane FIFO.
 4. Dequeue: scheduler starts run when lane head and global capacity available.
-5. Ensure physical session exists (create or resume).
-6. Build context and start backend turn.
-7. Stream backend events -> normalize -> persist -> deliver.
-8. Finalize run:
+5. Resolve effective inference profile (`backend`, `model`, `reasoning_level`).
+6. Ensure physical session exists (create or resume).
+7. Build context and start backend turn.
+8. Stream backend events -> normalize -> persist -> deliver.
+9. Finalize run:
    - update usage and last activity
    - evaluate compaction/inactivity/reset rules
    - ack completion in lane
@@ -320,6 +376,9 @@ struct EventEnvelope {
     logical_session_id: String,
     physical_session_id: Option<String>,
     backend: BackendKind,
+    resolved_model: Option<String>,
+    resolved_reasoning_level: Option<String>,
+    profile_source: Option<String>, // turn | session | channel | backend_default | global_default | fallback
     seq: u64,                    // per-run monotonic sequence
     kind: EventKind,
     payload: serde_json::Value,
@@ -420,7 +479,7 @@ Rotation sequence:
 Before starting backend turn:
 
 - Persist `run.started` with lane/session ids.
-- Persist run metadata (backend handle, input hash, delivery target).
+- Persist run metadata (backend handle, resolved profile, input hash, delivery target).
 
 ### 13.2 Startup Reconciliation
 
@@ -519,19 +578,32 @@ lane_queue_limit = 32
 compaction_token_threshold = 80000
 run_stall_timeout_secs = 90
 
+[defaults.inference]
+model = "auto"
+reasoning_level = "medium"
+fallback_policy = "compatible"   # strict | compatible
+
 [approvals]
 default_policy = "auto"   # auto | ask
 
 [backends.claude]
 binary = "claude"
+[backends.claude.inference]
+default_model = "auto"
+supported_reasoning_levels = ["none", "low", "medium", "high"]
 
 [backends.codex]
 binary = "codex"
 mode = "app-server"
+[backends.codex.inference]
+default_model = "auto"
 
 [backends.opencode]
 binary = "opencode"
 serve_port = 4210
+[backends.opencode.inference]
+default_model = "auto"
+reasoning_mode = "best-effort"   # native | best-effort
 
 [memory]
 search_enabled = true
@@ -540,6 +612,8 @@ per_user_scope = true
 
 [channels."discord:channel:1234567890"]
 backend = "claude"
+model = "auto"
+reasoning_level = "high"
 inactivity_timeout_secs = 3600
 ```
 
