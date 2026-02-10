@@ -11,6 +11,7 @@ pub mod error;
 pub mod fallback;
 pub mod heartbeat;
 pub mod memory_flush;
+pub mod memory_snippets;
 pub mod onboarding;
 pub mod onboarding_completion;
 pub mod onboarding_profile_files;
@@ -62,6 +63,11 @@ pub use heartbeat::{
 pub use memory_flush::{
     build_memory_flush_prompt, finalize_hidden_memory_flush, should_run_memory_flush_cycle,
     HiddenMemoryFlushOutcome, MemoryFlushAck, MEMORY_FLUSH_DONE_TOKEN, MEMORY_FLUSH_NO_REPLY_TOKEN,
+};
+pub use memory_snippets::{
+    resolve_scoped_memory_snippets, ScopedMemorySnippetResolverInput,
+    DEFAULT_MEMORY_GLOBAL_FILE_LIMIT, DEFAULT_MEMORY_GLOBAL_RECENCY_DAYS,
+    DEFAULT_MEMORY_USER_FILE_LIMIT,
 };
 pub use onboarding::{
     build_onboarding_prompt, default_onboarding_questions, parse_onboarding_capture_document,
