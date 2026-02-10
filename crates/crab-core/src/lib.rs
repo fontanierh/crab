@@ -10,6 +10,7 @@ pub mod fallback;
 pub mod memory_flush;
 pub mod profile;
 pub mod rotation;
+pub mod rotation_sequence;
 mod validation;
 
 pub use checkpoint_fallback::{
@@ -45,6 +46,9 @@ pub use profile::{
 pub use rotation::{
     evaluate_rotation_triggers, ManualRotationRequest, RotationTrigger, RotationTriggerDecision,
     RotationTriggerInput,
+};
+pub use rotation_sequence::{
+    execute_rotation_sequence, RotationSequenceOutcome, RotationSequenceRuntime,
 };
 
 #[cfg(test)]
