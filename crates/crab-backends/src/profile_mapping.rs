@@ -46,7 +46,7 @@ pub fn map_claude_inference_profile(profile: &InferenceProfile) -> ClaudeInferen
 pub fn map_codex_turn_config(profile: &InferenceProfile) -> CodexTurnConfig {
     CodexTurnConfig {
         model: model_override(profile),
-        effort: Some(reasoning_level_token(profile.reasoning_level).to_string()),
+        effort: Some(profile.reasoning_level.as_token().to_string()),
     }
 }
 
@@ -55,7 +55,7 @@ pub fn map_opencode_inference_profile(
     reasoning_mode: OpenCodeReasoningMode,
 ) -> OpenCodeInferenceMapping {
     let model = model_override(profile);
-    let reasoning_token = reasoning_level_token(profile.reasoning_level);
+    let reasoning_token = profile.reasoning_level.as_token();
 
     let (reasoning_level, guidance_note) = match reasoning_mode {
         OpenCodeReasoningMode::Native => (Some(reasoning_token.to_string()), None),
@@ -86,17 +86,6 @@ fn model_override(profile: &InferenceProfile) -> Option<String> {
         return None;
     }
     Some(profile.model.clone())
-}
-
-fn reasoning_level_token(level: ReasoningLevel) -> &'static str {
-    match level {
-        ReasoningLevel::None => "none",
-        ReasoningLevel::Minimal => "minimal",
-        ReasoningLevel::Low => "low",
-        ReasoningLevel::Medium => "medium",
-        ReasoningLevel::High => "high",
-        ReasoningLevel::XHigh => "xhigh",
-    }
 }
 
 #[cfg(test)]

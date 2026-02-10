@@ -9,6 +9,7 @@ pub mod error;
 pub mod fallback;
 pub mod heartbeat;
 pub mod memory_flush;
+pub mod operator_commands;
 pub mod profile;
 pub mod rotation;
 pub mod rotation_sequence;
@@ -44,6 +45,10 @@ pub use heartbeat::{
 pub use memory_flush::{
     build_memory_flush_prompt, finalize_hidden_memory_flush, should_run_memory_flush_cycle,
     HiddenMemoryFlushOutcome, MemoryFlushAck, MEMORY_FLUSH_DONE_TOKEN, MEMORY_FLUSH_NO_REPLY_TOKEN,
+};
+pub use operator_commands::{
+    apply_operator_command, parse_operator_command, render_active_profile_summary,
+    render_resolved_profile_summary, OperatorCommand, OperatorCommandOutcome, OperatorSessionState,
 };
 pub use profile::{
     resolve_inference_profile, BackendInferenceDefault, BackendInferenceDefaults,
