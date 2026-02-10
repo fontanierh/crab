@@ -11,6 +11,7 @@ pub mod claude;
 pub mod codex;
 pub mod codex_events;
 pub mod codex_protocol;
+pub mod codex_recovery;
 pub mod codex_unattended;
 
 pub use claude::{ClaudeBackend, ClaudeProcess};
@@ -20,6 +21,7 @@ pub use codex_events::{
     CodexTurnStatus,
 };
 pub use codex_protocol::{CodexProtocol, CodexRpcRequest, CodexRpcResponse, CodexRpcTransport};
+pub use codex_recovery::{recover_codex_session, CodexRecoveryOutcome, CodexRotationReason};
 pub use codex_unattended::{
     decide_unattended_response, CodexApprovalDecision, CodexApprovalPolicy,
     CodexInteractiveRequest, CodexRequestResponse, CodexUnattendedPolicy, CodexUserInputQuestion,
