@@ -71,18 +71,22 @@ fn render_runtime_profile_section(input: &PromptContractInput) -> String {
 fn render_memory_search_first_section(memory_tools_enabled: bool) -> String {
     let mut lines = vec![
         "## MEMORY_SEARCH_FIRST".to_string(),
-        "- Before claiming information is unknown, run `memory_search` for relevant prior context."
+        "- Before claiming information is unknown, search `MEMORY.md` and `memory/` for relevant prior context."
             .to_string(),
     ];
 
     if memory_tools_enabled {
         lines.push(
-            "- When citing stored context, call `memory_get` for exact line ranges before quoting."
+            "- Prefer `memory_search` for ranked recall, then `memory_get` for exact line ranges when citing."
+                .to_string(),
+        );
+        lines.push(
+            "- If needed, run native file search (`grep`/`read`) directly over memory files."
                 .to_string(),
         );
     } else {
         lines.push(
-            "- Memory tools are disabled for this run; explicitly note lookup limitations when relevant."
+            "- Memory tools are disabled for this run; use native file search (`grep`/`read`) over memory files and explicitly note lookup limitations when relevant."
                 .to_string(),
         );
     }
@@ -170,7 +174,7 @@ mod tests {
 
     fn expected_for(backend: &str, model: &str, reasoning: &str) -> String {
         format!(
-            "## RUNTIME_PROFILE\n- backend: {backend}\n- model: {model}\n- reasoning_level: {reasoning}\n\n## MEMORY_SEARCH_FIRST\n- Before claiming information is unknown, run `memory_search` for relevant prior context.\n- When citing stored context, call `memory_get` for exact line ranges before quoting.\n\n## OWNER_CONTEXT\n- sender_id: 1234567890\n- sender_is_owner: false\n- owner.machine_location: (none)\n- owner.machine_timezone: (none)\n- owner.default_backend: (none)\n- owner.default_model: (none)\n- owner.default_reasoning_level: (none)\n\n## RUNTIME_NOTES\n- Crab runs autonomously; approval routing is handled outside this prompt.\n- Keep behavior deterministic and avoid contradictory state updates.\n\n## MESSAGING_SEMANTICS\n- Normal assistant text is streamed by Crab to Discord as the channel reply.\n- Use Discord messaging tools only for explicit Discord actions (send/edit/delete/react/moderation/proactive operations).\n- Do not emit duplicate plain-text confirmations for actions already completed via Discord tools."
+            "## RUNTIME_PROFILE\n- backend: {backend}\n- model: {model}\n- reasoning_level: {reasoning}\n\n## MEMORY_SEARCH_FIRST\n- Before claiming information is unknown, search `MEMORY.md` and `memory/` for relevant prior context.\n- Prefer `memory_search` for ranked recall, then `memory_get` for exact line ranges when citing.\n- If needed, run native file search (`grep`/`read`) directly over memory files.\n\n## OWNER_CONTEXT\n- sender_id: 1234567890\n- sender_is_owner: false\n- owner.machine_location: (none)\n- owner.machine_timezone: (none)\n- owner.default_backend: (none)\n- owner.default_model: (none)\n- owner.default_reasoning_level: (none)\n\n## RUNTIME_NOTES\n- Crab runs autonomously; approval routing is handled outside this prompt.\n- Keep behavior deterministic and avoid contradictory state updates.\n\n## MESSAGING_SEMANTICS\n- Normal assistant text is streamed by Crab to Discord as the channel reply.\n- Use Discord messaging tools only for explicit Discord actions (send/edit/delete/react/moderation/proactive operations).\n- Do not emit duplicate plain-text confirmations for actions already completed via Discord tools."
         )
     }
 
@@ -235,10 +239,10 @@ mod tests {
 
         let rendered = compile_prompt_contract(&input).expect("prompt contract should compile");
         assert!(rendered.contains(
-            "Memory tools are disabled for this run; explicitly note lookup limitations when relevant."
+            "Memory tools are disabled for this run; use native file search (`grep`/`read`) over memory files and explicitly note lookup limitations when relevant."
         ));
         assert!(!rendered.contains(
-            "When citing stored context, call `memory_get` for exact line ranges before quoting."
+            "Prefer `memory_search` for ranked recall, then `memory_get` for exact line ranges when citing."
         ));
     }
 

@@ -13,6 +13,7 @@ pub mod error;
 pub mod fallback;
 pub mod heartbeat;
 pub mod memory_flush;
+pub mod memory_search;
 pub mod memory_snippets;
 pub mod onboarding;
 pub mod onboarding_completion;
@@ -78,6 +79,10 @@ pub use heartbeat::{
 pub use memory_flush::{
     build_memory_flush_prompt, finalize_hidden_memory_flush, should_run_memory_flush_cycle,
     HiddenMemoryFlushOutcome, MemoryFlushAck, MEMORY_FLUSH_DONE_TOKEN, MEMORY_FLUSH_NO_REPLY_TOKEN,
+};
+pub use memory_search::{
+    search_memory, MemorySearchInput, MemorySearchResult, DEFAULT_MEMORY_SEARCH_MAX_FILE_COUNT,
+    DEFAULT_MEMORY_SEARCH_RESULT_LIMIT, DEFAULT_MEMORY_SEARCH_SNIPPET_MAX_CHARS,
 };
 pub use memory_snippets::{
     resolve_scoped_memory_snippets, ScopedMemorySnippetResolverInput,
