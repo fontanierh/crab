@@ -1478,6 +1478,66 @@ mod tests {
     }
 
     #[test]
+    fn process_gateway_message_surfaces_token_accounting_merge_overflow() {
+        let workspace = TempWorkspace::new("turn-executor", "usage-merge-overflow");
+        let runtime = FakeRuntime::with_backend_events(
+            vec![
+                backend_event(
+                    1,
+                    BackendEventKind::RunNote,
+                    &[
+                        ("run_usage_input_tokens", "1"),
+                        ("run_usage_output_tokens", "0"),
+                        ("run_usage_total_tokens", "1"),
+                    ],
+                ),
+                backend_event(
+                    2,
+                    BackendEventKind::TurnCompleted,
+                    &[("stop_reason", "done")],
+                ),
+            ],
+            &[1, 2, 3, 4, 5, 6],
+        );
+        let mut executor = build_executor(&workspace, runtime, 8);
+        executor
+            .composition()
+            .state_stores
+            .session_store
+            .upsert_session(&crab_core::LogicalSession {
+                id: "discord:channel:777".to_string(),
+                active_backend: BackendKind::Codex,
+                active_profile: InferenceProfile {
+                    backend: BackendKind::Codex,
+                    model: "gpt-5-codex".to_string(),
+                    reasoning_level: ReasoningLevel::Medium,
+                },
+                active_physical_session_id: Some("physical-1".to_string()),
+                last_successful_checkpoint_id: None,
+                lane_state: LaneState::Idle,
+                queued_run_count: 0,
+                last_activity_epoch_ms: 1,
+                token_accounting: crab_core::TokenAccounting {
+                    input_tokens: u64::MAX,
+                    output_tokens: 0,
+                    total_tokens: 0,
+                },
+            })
+            .expect("session seed should succeed");
+
+        let error = executor
+            .process_gateway_message(gateway_message("m-usage-merge-overflow"))
+            .expect_err("overflow in token merge should fail");
+        assert_eq!(
+            error,
+            CrabError::InvariantViolation {
+                context: "turn_executor_usage_accounting",
+                message: "input token accounting overflow".to_string(),
+            }
+        );
+    }
+
+    #[test]
     fn process_gateway_message_preserves_owner_and_non_owner_profile_context() {
         let backend_events = vec![
             backend_event(1, BackendEventKind::TextDelta, &[("text", "hello")]),
@@ -2779,6 +2839,20 @@ mod tests {
 
     #[test]
     fn usage_accounting_helpers_reject_invalid_payloads() {
+        let run_usage_missing_field = super::resolve_backend_usage_accounting(&[backend_event(
+            1,
+            BackendEventKind::RunNote,
+            &[("run_usage_total_tokens", "1")],
+        )])
+        .expect_err("missing run_usage fields should fail");
+        assert_eq!(
+            run_usage_missing_field,
+            CrabError::InvariantViolation {
+                context: "turn_executor_usage_accounting",
+                message: "usage payload is missing required key run_usage_input_tokens while parsing run_usage_input_tokens/run_usage_output_tokens/run_usage_total_tokens".to_string(),
+            }
+        );
+
         let missing_field = super::resolve_backend_usage_accounting(&[backend_event(
             1,
             BackendEventKind::RunNote,
@@ -2809,6 +2883,34 @@ mod tests {
                 context: "turn_executor_usage_accounting",
                 message: "usage payload key usage_input_tokens must be an unsigned integer"
                     .to_string(),
+            }
+        );
+
+        let missing_output = super::resolve_backend_usage_accounting(&[backend_event(
+            1,
+            BackendEventKind::RunNote,
+            &[("usage_input_tokens", "1"), ("usage_total_tokens", "1")],
+        )])
+        .expect_err("missing output usage value should fail");
+        assert_eq!(
+            missing_output,
+            CrabError::InvariantViolation {
+                context: "turn_executor_usage_accounting",
+                message: "usage payload is missing required key usage_output_tokens while parsing usage_input_tokens/usage_output_tokens/usage_total_tokens".to_string(),
+            }
+        );
+
+        let missing_total = super::resolve_backend_usage_accounting(&[backend_event(
+            1,
+            BackendEventKind::RunNote,
+            &[("usage_input_tokens", "1"), ("usage_output_tokens", "1")],
+        )])
+        .expect_err("missing total usage value should fail");
+        assert_eq!(
+            missing_total,
+            CrabError::InvariantViolation {
+                context: "turn_executor_usage_accounting",
+                message: "usage payload is missing required key usage_total_tokens while parsing usage_input_tokens/usage_output_tokens/usage_total_tokens".to_string(),
             }
         );
 
@@ -2870,6 +2972,48 @@ mod tests {
             CrabError::InvariantViolation {
                 context: "turn_executor_usage_accounting",
                 message: "input token accounting overflow".to_string(),
+            }
+        );
+
+        let output_overflow = super::merge_token_accounting(
+            crab_core::TokenAccounting {
+                input_tokens: 0,
+                output_tokens: u64::MAX,
+                total_tokens: 0,
+            },
+            crab_core::TokenAccounting {
+                input_tokens: 0,
+                output_tokens: 1,
+                total_tokens: 0,
+            },
+        )
+        .expect_err("output merge overflow should fail");
+        assert_eq!(
+            output_overflow,
+            CrabError::InvariantViolation {
+                context: "turn_executor_usage_accounting",
+                message: "output token accounting overflow".to_string(),
+            }
+        );
+
+        let total_overflow = super::merge_token_accounting(
+            crab_core::TokenAccounting {
+                input_tokens: 0,
+                output_tokens: 0,
+                total_tokens: u64::MAX,
+            },
+            crab_core::TokenAccounting {
+                input_tokens: 0,
+                output_tokens: 0,
+                total_tokens: 1,
+            },
+        )
+        .expect_err("total merge overflow should fail");
+        assert_eq!(
+            total_overflow,
+            CrabError::InvariantViolation {
+                context: "turn_executor_usage_accounting",
+                message: "total token accounting overflow".to_string(),
             }
         );
     }

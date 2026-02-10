@@ -114,23 +114,19 @@ impl RuntimeConfig {
 }
 
 fn parse_positive_usize(key: &'static str, raw_value: &str) -> CrabResult<usize> {
-    let parsed = raw_value
-        .parse::<usize>()
-        .map_err(|_| CrabError::InvalidConfig {
-            key,
-            value: raw_value.to_string(),
-            reason: "must be a positive integer",
-        })?;
-
-    if parsed == 0 {
-        return Err(CrabError::InvalidConfig {
-            key,
-            value: raw_value.to_string(),
-            reason: "must be greater than 0",
-        });
+    let parsed = parse_positive_u64(key, raw_value)?;
+    #[cfg(target_pointer_width = "64")]
+    {
+        Ok(parsed as usize)
     }
-
-    Ok(parsed)
+    #[cfg(not(target_pointer_width = "64"))]
+    {
+        usize::try_from(parsed).map_err(|_| CrabError::InvalidConfig {
+            key,
+            value: raw_value.to_string(),
+            reason: "must fit in usize",
+        })
+    }
 }
 
 fn parse_positive_u64(key: &'static str, raw_value: &str) -> CrabResult<u64> {
