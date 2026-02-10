@@ -16,6 +16,7 @@ Crab is a Rust harness for running coding agents (Claude Code, Codex CLI, OpenCo
 - `WS9` complete: cancellation semantics, startup reconciliation, heartbeat loops, operator commands, and structured diagnostics.
 - `WS10` complete: workspace bootstrap templates, lifecycle ensure, bootstrap state detection, safe memory scope layout, and app startup integration diagnostics.
 - `WS11` complete: owner trust mapping, sender identity resolution, owner-aware run metadata, owner-only operator gates, and privacy safeguards for per-user memory scope isolation.
+- `WS14` in progress: deterministic memory recall core (`memory_search`/`memory_get`) and CLI exposure (`crab-memory-search`/`crab-memory-get`) are complete; citation policy and flush/recall interaction tests remain.
 
 ## Docs
 
@@ -39,6 +40,25 @@ Individual checks:
 - `make test`
 - `make coverage-gate`
 - `make duplication-check`
+
+## Memory CLI Commands
+
+Run memory recall commands with Cargo:
+
+```bash
+cargo run -p crab-app --bin crab-memory-search -- \
+  --workspace-root ~/.crab/workspace \
+  --user-scope 1234567890 \
+  --query "owner timezone"
+```
+
+```bash
+cargo run -p crab-app --bin crab-memory-get -- \
+  --workspace-root ~/.crab/workspace \
+  --user-scope 1234567890 \
+  --path memory/users/1234567890/2026-02-10.md \
+  --start-line 1 --end-line 40
+```
 
 ## Prerequisites
 

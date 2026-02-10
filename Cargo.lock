@@ -42,6 +42,7 @@ name = "crab-app"
 version = "0.1.0"
 dependencies = [
  "crab-core",
+ "serde_json",
 ]
 
 [[package]]
