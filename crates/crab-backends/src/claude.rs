@@ -45,6 +45,13 @@ pub enum ClaudeRawEvent {
     },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct UsageAccounting {
+    input_tokens: u64,
+    output_tokens: u64,
+    total_tokens: u64,
+}
+
 pub trait ClaudeProcess: Send + Sync {
     fn create_session(&self, context: &SessionContext) -> CrabResult<String>;
 
@@ -100,7 +107,11 @@ impl<P: ClaudeProcess> Backend for ClaudeBackend<P> {
         let raw_events = self
             .process
             .send_turn(&session.backend_session_id, &input)?;
-        let events = normalize_claude_events(raw_events)?;
+        let usage = extract_usage_from_raw_events(&raw_events);
+        let mut events = normalize_claude_events(raw_events)?;
+        if let Some(usage) = usage {
+            append_run_usage_metadata(&mut events, usage);
+        }
         session.last_turn_id = Some(input.turn_id);
         Ok(Box::pin(stream::iter(events)))
     }
@@ -128,6 +139,44 @@ fn normalize_claude_events(raw_events: Vec<ClaudeRawEvent>) -> CrabResult<Vec<Ba
 
 fn sequence_number(index: usize) -> u64 {
     index.saturating_add(1) as u64
+}
+
+fn extract_usage_from_raw_events(raw_events: &[ClaudeRawEvent]) -> Option<UsageAccounting> {
+    raw_events.iter().fold(None, |current, event| match event {
+        ClaudeRawEvent::Usage {
+            input_tokens,
+            output_tokens,
+            total_tokens,
+        } => Some(UsageAccounting {
+            input_tokens: *input_tokens,
+            output_tokens: *output_tokens,
+            total_tokens: *total_tokens,
+        }),
+        _ => current,
+    })
+}
+
+fn append_run_usage_metadata(events: &mut Vec<BackendEvent>, usage: UsageAccounting) {
+    let next_sequence = events.last().map_or(1, |event| event.sequence + 1);
+    events.push(BackendEvent {
+        sequence: next_sequence,
+        kind: BackendEventKind::RunNote,
+        payload: BTreeMap::from([
+            (
+                "run_usage_input_tokens".to_string(),
+                usage.input_tokens.to_string(),
+            ),
+            (
+                "run_usage_output_tokens".to_string(),
+                usage.output_tokens.to_string(),
+            ),
+            (
+                "run_usage_total_tokens".to_string(),
+                usage.total_tokens.to_string(),
+            ),
+            ("run_usage_source".to_string(), "claude".to_string()),
+        ]),
+    });
 }
 
 fn normalize_claude_event(sequence: u64, raw_event: ClaudeRawEvent) -> CrabResult<BackendEvent> {
@@ -460,6 +509,11 @@ mod tests {
                 kind: BackendEventKind::TurnCompleted,
                 payload: BTreeMap::from([("stop_reason".to_string(), "end_turn".to_string())]),
             },
+            BackendEvent {
+                sequence: 6,
+                kind: BackendEventKind::RunNote,
+                payload: run_usage_payload(7, 5, 12),
+            },
         ]
     }
 
@@ -498,6 +552,37 @@ mod tests {
             .err()
             .expect("invalid claude raw event should fail normalization");
         assert_eq!(err, expected_error);
+    }
+
+    fn send_turn_events(raw_events: Vec<ClaudeRawEvent>) -> Vec<BackendEvent> {
+        let process = FakeProcess::new("resume-1", raw_events);
+        let backend = ClaudeBackend::new(process);
+        let mut session = claude_session();
+        let stream =
+            block_on(backend.send_turn(&mut session, turn_input())).expect("send should succeed");
+        block_on(stream.collect::<Vec<_>>())
+    }
+
+    fn run_usage_payload(
+        input_tokens: u64,
+        output_tokens: u64,
+        total_tokens: u64,
+    ) -> BTreeMap<String, String> {
+        BTreeMap::from([
+            (
+                "run_usage_input_tokens".to_string(),
+                input_tokens.to_string(),
+            ),
+            (
+                "run_usage_output_tokens".to_string(),
+                output_tokens.to_string(),
+            ),
+            (
+                "run_usage_total_tokens".to_string(),
+                total_tokens.to_string(),
+            ),
+            ("run_usage_source".to_string(), "claude".to_string()),
+        ])
     }
 
     #[test]
@@ -545,13 +630,7 @@ mod tests {
         fixture_events.push(ClaudeRawEvent::Error {
             message: "backend failed".to_string(),
         });
-        let process = FakeProcess::new("resume-1", fixture_events);
-        let backend = ClaudeBackend::new(process);
-        let mut session = claude_session();
-
-        let stream =
-            block_on(backend.send_turn(&mut session, turn_input())).expect("send should succeed");
-        let events = block_on(stream.collect::<Vec<_>>());
+        let events = send_turn_events(fixture_events);
 
         let snapshot = render_snapshot(&events);
         assert_eq!(
@@ -563,8 +642,45 @@ mod tests {
 5|RunNote|note=checkpoint created\n\
 6|TurnCompleted|stop_reason=end_turn\n\
 7|TurnInterrupted|reason=cancelled\n\
-8|Error|message=backend failed"
+8|Error|message=backend failed\n\
+9|RunNote|run_usage_input_tokens=7;run_usage_output_tokens=5;run_usage_source=claude;run_usage_total_tokens=12"
         );
+    }
+
+    #[test]
+    fn run_usage_metadata_is_not_emitted_without_usage_events() {
+        let raw_events = vec![
+            ClaudeRawEvent::TextDelta {
+                text: "hello".to_string(),
+            },
+            ClaudeRawEvent::TurnCompleted {
+                stop_reason: "end_turn".to_string(),
+            },
+        ];
+        let events = send_turn_events(raw_events);
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].kind, BackendEventKind::TextDelta);
+        assert_eq!(events[1].kind, BackendEventKind::TurnCompleted);
+    }
+
+    #[test]
+    fn run_usage_metadata_uses_latest_usage_event() {
+        let raw_events = vec![
+            ClaudeRawEvent::Usage {
+                input_tokens: 3,
+                output_tokens: 2,
+                total_tokens: 5,
+            },
+            ClaudeRawEvent::Usage {
+                input_tokens: 10,
+                output_tokens: 6,
+                total_tokens: 16,
+            },
+        ];
+        let events = send_turn_events(raw_events);
+        assert_eq!(events.len(), 3);
+        assert_eq!(events[2].kind, BackendEventKind::RunNote);
+        assert_eq!(events[2].payload, run_usage_payload(10, 6, 16));
     }
 
     fn render_snapshot(events: &[BackendEvent]) -> String {
