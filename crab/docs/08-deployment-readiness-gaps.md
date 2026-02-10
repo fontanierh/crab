@@ -21,6 +21,10 @@ Recently closed:
 - `crab-app` now wires startup reconciliation and heartbeat scheduling in maintenance runtime:
   - `boot_runtime_with_processes*` runs reconciliation on boot.
   - `run_heartbeat_if_due` executes heartbeat ticks on deterministic interval state.
+- Deployment-gap validation tests cover token accounting -> trigger evaluation -> rotation -> replay safety:
+  - `process_gateway_message_rotates_when_token_threshold_is_reached`
+  - `restart_recovery_replays_missing_delivery_and_continues_next_run`
+  - `replay_delivery_for_run_redelivers_missing_generation_after_delivery_failure`
 
 Runtime policy env keys now supported:
 
