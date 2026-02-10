@@ -1,4 +1,6 @@
-use crate::{BackendKind, CrabError, CrabResult, InferenceProfile, ReasoningLevel};
+use crate::{
+    validation::validate_non_empty_text, BackendKind, CrabResult, InferenceProfile, ReasoningLevel,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProfileValueSource {
@@ -178,16 +180,6 @@ fn validate_resolution_input(input: &InferenceProfileResolutionInput) -> CrabRes
         validate_non_empty_text(context, "channel_override.model", model)?;
     }
 
-    Ok(())
-}
-
-fn validate_non_empty_text(context: &'static str, field: &str, value: &str) -> CrabResult<()> {
-    if value.trim().is_empty() {
-        return Err(CrabError::InvariantViolation {
-            context,
-            message: format!("{field} must not be empty"),
-        });
-    }
     Ok(())
 }
 

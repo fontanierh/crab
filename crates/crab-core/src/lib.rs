@@ -1,10 +1,16 @@
 #![deny(warnings, dead_code, unused_imports, unused_variables)]
 
+pub mod compatibility;
 pub mod config;
 pub mod domain;
 pub mod error;
 pub mod profile;
+mod validation;
 
+pub use compatibility::{
+    evaluate_profile_compatibility, BackendCompatibilityCatalog, BackendCompatibilityRules,
+    CompatibilityIssue, CompatibilityReport, AUTO_MODEL_ALIAS,
+};
 pub use config::RuntimeConfig;
 pub use domain::{
     BackendKind, Checkpoint, EventEnvelope, EventKind, EventSource, InferenceProfile, LaneState,
