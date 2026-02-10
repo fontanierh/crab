@@ -31,7 +31,7 @@ pub use compatibility::{
     evaluate_profile_compatibility, BackendCompatibilityCatalog, BackendCompatibilityRules,
     CompatibilityIssue, CompatibilityReport, AUTO_MODEL_ALIAS,
 };
-pub use config::RuntimeConfig;
+pub use config::{OwnerConfig, OwnerProfileDefaults, RuntimeConfig};
 pub use diagnostics::{
     build_diagnostic_record, parse_diagnostic_record_json, parse_diagnostics_fixture,
     render_diagnostic_record_json, render_diagnostics_fixture, DiagnosticCategory, DiagnosticEvent,
