@@ -17,6 +17,7 @@ pub mod opencode;
 pub mod opencode_events;
 pub mod opencode_protocol;
 pub mod opencode_recovery;
+pub mod profile_mapping;
 
 pub use claude::{ClaudeBackend, ClaudeProcess};
 pub use codex::{CodexAppServerProcess, CodexManager, CodexManagerState, CodexProcessHandle};
@@ -24,7 +25,9 @@ pub use codex_events::{
     normalize_codex_events, CodexCompletedItem, CodexNotification, CodexRawEvent, CodexRequest,
     CodexTurnStatus,
 };
-pub use codex_protocol::{CodexProtocol, CodexRpcRequest, CodexRpcResponse, CodexRpcTransport};
+pub use codex_protocol::{
+    CodexProtocol, CodexRpcRequest, CodexRpcResponse, CodexRpcTransport, CodexTurnConfig,
+};
 pub use codex_recovery::{recover_codex_session, CodexRecoveryOutcome, CodexRotationReason};
 pub use codex_unattended::{
     decide_unattended_response, CodexApprovalDecision, CodexApprovalPolicy,
@@ -43,6 +46,10 @@ pub use opencode_protocol::{
 pub use opencode_recovery::{
     recover_opencode_session, OpenCodeRecoveryOutcome, OpenCodeRecoveryPlan,
     OpenCodeRecoveryRuntime,
+};
+pub use profile_mapping::{
+    map_claude_inference_profile, map_codex_turn_config, map_opencode_inference_profile,
+    ClaudeInferenceConfig, ClaudeThinkingMode, OpenCodeInferenceMapping, OpenCodeReasoningMode,
 };
 
 pub type BackendEventStream = Pin<Box<dyn Stream<Item = BackendEvent> + Send>>;

@@ -15,6 +15,12 @@ pub struct CodexRpcRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct CodexTurnConfig {
+    pub model: Option<String>,
+    pub effort: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct CodexRpcResponse {
     pub fields: BTreeMap<String, String>,
 }
@@ -53,8 +59,14 @@ impl<T: CodexRpcTransport> CodexProtocol<T> {
         required_response_field(&response, "codex_thread_resume_response", THREAD_ID_FIELD)
     }
 
-    pub fn turn_start(&self, thread_id: &str, input: &[String]) -> CrabResult<String> {
+    pub fn turn_start(
+        &self,
+        thread_id: &str,
+        input: &[String],
+        config: CodexTurnConfig,
+    ) -> CrabResult<String> {
         ensure_non_empty_field("codex_turn_start_input", THREAD_ID_FIELD, thread_id)?;
+        validate_turn_config(&config)?;
         if input.is_empty() {
             return Err(CrabError::InvariantViolation {
                 context: "codex_turn_start_input",
@@ -70,9 +82,17 @@ impl<T: CodexRpcTransport> CodexProtocol<T> {
             )?;
         }
 
+        let mut params = BTreeMap::from([(THREAD_ID_FIELD.to_string(), thread_id.to_string())]);
+        if let Some(model) = config.model {
+            params.insert("model".to_string(), model);
+        }
+        if let Some(effort) = config.effort {
+            params.insert("effort".to_string(), effort);
+        }
+
         let response = self.transport.call(CodexRpcRequest {
             method: "turn/start".to_string(),
-            params: BTreeMap::from([(THREAD_ID_FIELD.to_string(), thread_id.to_string())]),
+            params,
             input: input.to_vec(),
         })?;
         required_response_field(&response, "codex_turn_start_response", TURN_ID_FIELD)
@@ -91,6 +111,18 @@ impl<T: CodexRpcTransport> CodexProtocol<T> {
         })?;
         Ok(())
     }
+}
+
+fn validate_turn_config(config: &CodexTurnConfig) -> CrabResult<()> {
+    for (field_name, value) in [
+        ("model", config.model.as_deref()),
+        ("effort", config.effort.as_deref()),
+    ] {
+        if let Some(value) = value {
+            ensure_non_empty_field("codex_turn_start_input", field_name, value)?;
+        }
+    }
+    Ok(())
 }
 
 fn required_response_field(
@@ -116,7 +148,9 @@ mod tests {
 
     use crab_core::{CrabError, CrabResult};
 
-    use super::{CodexProtocol, CodexRpcRequest, CodexRpcResponse, CodexRpcTransport};
+    use super::{
+        CodexProtocol, CodexRpcRequest, CodexRpcResponse, CodexRpcTransport, CodexTurnConfig,
+    };
 
     #[derive(Debug, Clone, Default, PartialEq, Eq)]
     struct FakeTransportStats {
@@ -228,7 +262,7 @@ mod tests {
         let (protocol, transport) = make_protocol(vec![Ok(response(&[("turnId", "turn-7")]))]);
         let input = vec!["hello".to_string(), "status".to_string()];
         let turn_id = protocol
-            .turn_start("thread-7", &input)
+            .turn_start("thread-7", &input, CodexTurnConfig::default())
             .expect("turn/start should parse turn id");
         assert_eq!(turn_id, "turn-7");
         assert_single_request(
@@ -236,6 +270,35 @@ mod tests {
             CodexRpcRequest {
                 method: "turn/start".to_string(),
                 params: BTreeMap::from([("threadId".to_string(), "thread-7".to_string())]),
+                input,
+            },
+        );
+    }
+
+    #[test]
+    fn turn_start_includes_optional_model_and_effort_when_provided() {
+        let (protocol, transport) = make_protocol(vec![Ok(response(&[("turnId", "turn-8")]))]);
+        let input = vec!["hello".to_string()];
+        let turn_id = protocol
+            .turn_start(
+                "thread-8",
+                &input,
+                CodexTurnConfig {
+                    model: Some("gpt-5-codex".to_string()),
+                    effort: Some("high".to_string()),
+                },
+            )
+            .expect("turn/start should parse turn id");
+        assert_eq!(turn_id, "turn-8");
+        assert_single_request(
+            &transport,
+            CodexRpcRequest {
+                method: "turn/start".to_string(),
+                params: BTreeMap::from([
+                    ("effort".to_string(), "high".to_string()),
+                    ("model".to_string(), "gpt-5-codex".to_string()),
+                    ("threadId".to_string(), "thread-8".to_string()),
+                ]),
                 input,
             },
         );
@@ -276,7 +339,7 @@ mod tests {
         );
 
         let empty_input_err = protocol
-            .turn_start("thread-1", &[])
+            .turn_start("thread-1", &[], CodexTurnConfig::default())
             .expect_err("empty turn input should fail");
         assert_eq!(
             empty_input_err,
@@ -287,7 +350,7 @@ mod tests {
         );
 
         let blank_message_err = protocol
-            .turn_start("thread-1", &[" ".to_string()])
+            .turn_start("thread-1", &[" ".to_string()], CodexTurnConfig::default())
             .expect_err("blank turn message should fail");
         assert_eq!(
             blank_message_err,
@@ -298,7 +361,7 @@ mod tests {
         );
 
         let turn_start_thread_err = protocol
-            .turn_start(" ", &["hello".to_string()])
+            .turn_start(" ", &["hello".to_string()], CodexTurnConfig::default())
             .expect_err("blank turn_start thread id should fail");
         assert_eq!(
             turn_start_thread_err,
@@ -330,6 +393,42 @@ mod tests {
             }
         );
 
+        let blank_model_err = protocol
+            .turn_start(
+                "thread-1",
+                &["hello".to_string()],
+                CodexTurnConfig {
+                    model: Some(" ".to_string()),
+                    effort: None,
+                },
+            )
+            .expect_err("blank model should fail");
+        assert_eq!(
+            blank_model_err,
+            CrabError::InvariantViolation {
+                context: "codex_turn_start_input",
+                message: "model must not be empty".to_string(),
+            }
+        );
+
+        let blank_effort_err = protocol
+            .turn_start(
+                "thread-1",
+                &["hello".to_string()],
+                CodexTurnConfig {
+                    model: None,
+                    effort: Some(" ".to_string()),
+                },
+            )
+            .expect_err("blank effort should fail");
+        assert_eq!(
+            blank_effort_err,
+            CrabError::InvariantViolation {
+                context: "codex_turn_start_input",
+                message: "effort must not be empty".to_string(),
+            }
+        );
+
         assert_eq!(transport.stats().call_count, 0);
     }
 
@@ -349,7 +448,11 @@ mod tests {
 
         let (protocol, _) = make_protocol(vec![Ok(response(&[("turnId", " ")]))]);
         let err = protocol
-            .turn_start("thread-1", &["hello".to_string()])
+            .turn_start(
+                "thread-1",
+                &["hello".to_string()],
+                CodexTurnConfig::default(),
+            )
             .expect_err("blank turn id should fail");
         assert_eq!(
             err,
@@ -381,7 +484,11 @@ mod tests {
 
         let (protocol, _) = make_protocol(vec![Err(transport_error.clone())]);
         let turn_start_err = protocol
-            .turn_start("thread-1", &["hello".to_string()])
+            .turn_start(
+                "thread-1",
+                &["hello".to_string()],
+                CodexTurnConfig::default(),
+            )
             .expect_err("transport error should propagate for turn start");
         assert_eq!(turn_start_err, transport_error);
 
