@@ -44,6 +44,14 @@ Behavior:
 - conflicting hash for same target/edit generation is rejected as invariant violation
 - successful sends are persisted as outbound records
 
+`DiscordRuntimeAdapter` (`crates/crab-discord/src/runtime_adapter.rs`) wraps outbound send/edit
+transport with bounded retry semantics:
+
+- retryable failures retry with configured fixed backoff
+- rate-limited failures retry using `retry_after_ms` when present (clamped to configured max backoff)
+- fatal failures fail immediately
+- `mark_sent` is only called after successful delivery, preserving ledger correctness on retries
+
 ## Replay Behavior
 
 `TurnExecutor.replay_delivery_for_run` replays persisted text-delta events and re-applies idempotent delivery checks before sending.
@@ -105,6 +113,7 @@ Implemented:
 - app-runtime maintenance integration:
   - `boot_runtime_with_processes*` runs startup reconciliation before runtime begins dispatching
   - `run_heartbeat_if_due` executes deterministic heartbeat ticks based on configured interval
+- Discord runtime adapter seam with deterministic retry/rate-limit handling for send/edit operations
 
 Remaining gap:
 

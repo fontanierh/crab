@@ -1,8 +1,15 @@
 //! Discord transport integration for Crab.
 
+mod runtime_adapter;
+
 use crab_core::{CrabError, CrabResult, OutboundRecord};
 use crab_store::OutboundRecordStore;
 use sha2::{Digest, Sha256};
+
+pub use runtime_adapter::{
+    DiscordPostedMessage, DiscordRetryPolicy, DiscordRuntimeAdapter, DiscordRuntimeEvent,
+    DiscordRuntimeTransport, DiscordTransportError,
+};
 
 pub const DISCORD_MESSAGE_CHAR_LIMIT: usize = 2000;
 

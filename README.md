@@ -20,6 +20,9 @@ Crab is a Rust harness for running coding agents (Claude Code, Codex CLI, OpenCo
 - `WS15` complete: composition-root wiring, turn executor pipeline, event envelope parity, delivery/replay integration, and deployment readiness integration tests are complete.
 - `WS16` complete: comprehensive architecture handbook covering onboarding, sessions, rotation/checkpointing, memory/context, reliability/recovery, backend contracts, state model, and deployment-gap tracking.
 - `WS17` complete: runtime policy config, token-accounting propagation, rotation trigger wiring, owner manual compact/reset commands, startup reconciliation + deterministic heartbeat scheduling integration, and deployment-gap validation/docs sync.
+- `WS18` in progress:
+  - `WS18-T1` complete: Discord runtime adapter boundary for ingress + outbound send/edit with deterministic retry/rate-limit handling.
+  - `WS18-T2` to `WS18-T5` pending.
 
 ## Docs
 

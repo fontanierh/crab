@@ -83,6 +83,18 @@ Current orchestration path in `crates/crab-app/src/turn_executor.rs`:
 - event sequence: monotonic per run
 - idempotency key persisted on envelopes
 
+## Discord Runtime Adapter Boundary
+
+`crates/crab-discord/src/runtime_adapter.rs` provides the runtime transport seam used by production wiring:
+
+- inbound: `DiscordRuntimeEvent::MessageCreate` -> `GatewayIngress` -> `IngressMessage`
+- outbound: `post_message` / `edit_message` with deterministic retry policy for retryable and
+  rate-limited transport errors
+- hard failures propagate as runtime errors (no silent drop)
+
+This keeps Discord SDK specifics in a transport implementation while preserving Crab's
+store/scheduler/turn-executor semantics.
+
 ## Sequence
 
 ```mermaid
@@ -117,4 +129,7 @@ sequenceDiagram
 
 - Lane scheduling and dispatch pipeline are implemented and tested.
 - Idempotent output replay is implemented.
-- Rotation-trigger evaluation is specified but not yet called in this turn-finalization path (see `crab/docs/03-rotation-checkpoint-and-compaction.md`).
+- Rotation-trigger evaluation is implemented in turn finalization.
+- Startup reconciliation + heartbeat maintenance entry points are implemented in `crab-app`.
+- Remaining deployment gap is the production runtime binary loop (`WS18-T2`) that wires Discord runtime
+  ingress, scheduler dispatch pumping, and heartbeat ticks together.
