@@ -9,10 +9,15 @@ use futures_core::Stream;
 
 pub mod claude;
 pub mod codex;
+pub mod codex_events;
 pub mod codex_protocol;
 
 pub use claude::{ClaudeBackend, ClaudeProcess};
 pub use codex::{CodexAppServerProcess, CodexManager, CodexManagerState, CodexProcessHandle};
+pub use codex_events::{
+    normalize_codex_events, CodexCompletedItem, CodexNotification, CodexRawEvent, CodexRequest,
+    CodexTurnStatus,
+};
 pub use codex_protocol::{CodexProtocol, CodexRpcRequest, CodexRpcResponse, CodexRpcTransport};
 
 pub type BackendEventStream = Pin<Box<dyn Stream<Item = BackendEvent> + Send>>;
