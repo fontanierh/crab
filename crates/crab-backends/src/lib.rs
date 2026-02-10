@@ -16,6 +16,7 @@ pub mod codex_unattended;
 pub mod opencode;
 pub mod opencode_events;
 pub mod opencode_protocol;
+pub mod opencode_recovery;
 
 pub use claude::{ClaudeBackend, ClaudeProcess};
 pub use codex::{CodexAppServerProcess, CodexManager, CodexManagerState, CodexProcessHandle};
@@ -38,6 +39,10 @@ pub use opencode_events::{
 pub use opencode_protocol::{
     OpenCodeApiRequest, OpenCodeApiResponse, OpenCodeApiTransport, OpenCodeProtocol,
     OpenCodeSessionConfig, OpenCodeTurnConfig,
+};
+pub use opencode_recovery::{
+    recover_opencode_session, OpenCodeRecoveryOutcome, OpenCodeRecoveryPlan,
+    OpenCodeRecoveryRuntime,
 };
 
 pub type BackendEventStream = Pin<Box<dyn Stream<Item = BackendEvent> + Send>>;
