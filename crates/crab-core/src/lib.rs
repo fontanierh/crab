@@ -1,5 +1,6 @@
 #![deny(warnings, dead_code, unused_imports, unused_variables)]
 
+pub mod checkpoint_fallback;
 pub mod checkpoint_turn;
 pub mod compatibility;
 pub mod config;
@@ -11,6 +12,10 @@ pub mod profile;
 pub mod rotation;
 mod validation;
 
+pub use checkpoint_fallback::{
+    build_fallback_checkpoint_document, TranscriptEntry, TranscriptEntryRole,
+    DEFAULT_FALLBACK_TRANSCRIPT_TAIL_LIMIT,
+};
 pub use checkpoint_turn::{
     build_checkpoint_prompt, parse_checkpoint_turn_document, resolve_checkpoint_turn_output,
     CheckpointTurnArtifact, CheckpointTurnDocument, CheckpointTurnResolution,
