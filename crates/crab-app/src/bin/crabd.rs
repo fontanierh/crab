@@ -1,22 +1,23 @@
-use std::collections::HashMap;
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::io::{self, BufRead, Write};
 use std::process::ExitCode;
 use std::str::FromStr;
-use std::thread;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::sync::{mpsc, Arc, Mutex};
+use std::time::Duration;
 #[cfg(test)]
 use std::{cell::RefCell, thread_local};
+#[cfg(not(test))]
+use std::{io::BufReader, thread};
 
 use crab_app::SystemDaemonLoopControl;
 use crab_app::{
-    run_daemon_loop_with_transport, DaemonConfig, DaemonLoopControl, DaemonLoopStats,
-    DEFAULT_DAEMON_TICK_INTERVAL_MS,
+    run_daemon_loop_with_transport, DaemonConfig, DaemonDiscordIo, DaemonLoopControl,
+    DaemonLoopStats, DEFAULT_DAEMON_TICK_INTERVAL_MS,
 };
 use crab_backends::{CodexAppServerProcess, CodexProcessHandle, OpenCodeServerHandle};
 use crab_core::{CrabError, CrabResult, RuntimeConfig};
 use crab_discord::{
-    DiscordPostedMessage, DiscordRuntimeEvent, DiscordRuntimeTransport, DiscordTransportError,
+    CrabdInboundFrame, CrabdOutboundOp, CrabdOutboundReceipt, CrabdOutboundReceiptStatus,
     GatewayMessage,
 };
 
@@ -105,31 +106,115 @@ impl LocalOpenCodeProcess {
     }
 }
 
-#[derive(Debug, Clone)]
-struct StdioJsonlTransport {
-    inbound_events: VecDeque<DiscordRuntimeEvent>,
-    next_sent_message_sequence: u64,
-    transport_instance_id: String,
+const DEFAULT_OUTBOUND_RECEIPT_TIMEOUT_MS: u64 = 120_000;
+
+#[derive(Debug)]
+struct StdioDiscordIo {
+    inbound_messages: Arc<Mutex<VecDeque<GatewayMessage>>>,
+    inbound_error: Arc<Mutex<Option<CrabError>>>,
+    pending_receipts: Arc<Mutex<BTreeMap<String, mpsc::Sender<CrabdOutboundReceipt>>>>,
+    early_receipts: Arc<Mutex<BTreeMap<String, CrabdOutboundReceipt>>>,
+    next_outbound_op_sequence: u64,
+    receipt_timeout_ms: u64,
 }
 
 #[cfg(test)]
-type OutboundWriteOverride =
-    fn(&serde_json::Value) -> Result<(), crab_discord::DiscordTransportError>;
+type OutboundWriteOverride = fn(&str) -> CrabResult<()>;
 
 #[cfg(test)]
 thread_local! {
     static OUTBOUND_WRITE_OVERRIDE: RefCell<Option<OutboundWriteOverride>> = RefCell::new(None);
 }
 
-impl StdioJsonlTransport {
-    #[cfg(test)]
-    fn from_reader<R: BufRead>(reader: R) -> CrabResult<Self> {
-        let mut reader = reader;
-        Self::from_bufread(&mut reader)
+impl StdioDiscordIo {
+    fn new(receipt_timeout_ms: u64) -> Self {
+        Self {
+            inbound_messages: Arc::new(Mutex::new(VecDeque::new())),
+            inbound_error: Arc::new(Mutex::new(None)),
+            pending_receipts: Arc::new(Mutex::new(BTreeMap::new())),
+            early_receipts: Arc::new(Mutex::new(BTreeMap::new())),
+            next_outbound_op_sequence: 0,
+            receipt_timeout_ms,
+        }
     }
 
-    fn from_bufread(reader: &mut dyn BufRead) -> CrabResult<Self> {
-        let mut inbound_events = VecDeque::new();
+    #[cfg(not(test))]
+    fn spawn_from_stdin(receipt_timeout_ms: u64) -> CrabResult<Self> {
+        let io = Self::new(receipt_timeout_ms);
+
+        let inbound_messages = Arc::clone(&io.inbound_messages);
+        let inbound_error = Arc::clone(&io.inbound_error);
+        let pending_receipts = Arc::clone(&io.pending_receipts);
+        let early_receipts = Arc::clone(&io.early_receipts);
+
+        thread::spawn(move || {
+            let stdin = io::stdin();
+            let reader = BufReader::new(stdin);
+
+            for line_result in reader.lines() {
+                let line = match line_result {
+                    Ok(line) => line,
+                    Err(error) => {
+                        let mut guard = inbound_error.lock().expect("lock should succeed");
+                        *guard = Some(CrabError::Io {
+                            context: "crabd_stdin_read",
+                            path: None,
+                            message: error.to_string(),
+                        });
+                        break;
+                    }
+                };
+
+                if line.trim().is_empty() {
+                    continue;
+                }
+
+                let frame = match serde_json::from_str::<CrabdInboundFrame>(&line) {
+                    Ok(frame) => frame,
+                    Err(error) => {
+                        let mut guard = inbound_error.lock().expect("lock should succeed");
+                        *guard = Some(CrabError::Serialization {
+                            context: "crabd_stdin_parse_inbound_frame",
+                            path: None,
+                            message: error.to_string(),
+                        });
+                        break;
+                    }
+                };
+
+                match frame {
+                    CrabdInboundFrame::GatewayMessage(message) => inbound_messages
+                        .lock()
+                        .expect("lock should succeed")
+                        .push_back(message),
+                    CrabdInboundFrame::OutboundReceipt(receipt) => {
+                        let mut pending = pending_receipts.lock().expect("lock should succeed");
+                        if let Some(sender) = pending.remove(&receipt.op_id) {
+                            let _ = sender.send(receipt);
+                        } else {
+                            early_receipts
+                                .lock()
+                                .expect("lock should succeed")
+                                .insert(receipt.op_id.clone(), receipt);
+                        }
+                    }
+                }
+            }
+        });
+
+        Ok(io)
+    }
+
+    #[cfg(test)]
+    fn from_reader<R: BufRead>(reader: R, receipt_timeout_ms: u64) -> CrabResult<Self> {
+        let mut reader = reader;
+        Self::from_bufread(&mut reader, receipt_timeout_ms)
+    }
+
+    #[cfg(test)]
+    fn from_bufread(reader: &mut dyn BufRead, receipt_timeout_ms: u64) -> CrabResult<Self> {
+        let mut io = Self::new(receipt_timeout_ms);
+
         for line in reader.lines() {
             let line = line.map_err(|error| CrabError::Io {
                 context: "crabd_stdin_read",
@@ -140,39 +225,51 @@ impl StdioJsonlTransport {
                 continue;
             }
 
-            let message = serde_json::from_str::<GatewayMessage>(&line).map_err(|error| {
+            let frame = serde_json::from_str::<CrabdInboundFrame>(&line).map_err(|error| {
                 CrabError::Serialization {
-                    context: "crabd_stdin_parse_gateway_message",
+                    context: "crabd_stdin_parse_inbound_frame",
                     path: None,
                     message: error.to_string(),
                 }
             })?;
-            inbound_events.push_back(DiscordRuntimeEvent::MessageCreate(message));
+            io.ingest_inbound_frame(frame);
         }
 
-        Ok(Self {
-            inbound_events,
-            next_sent_message_sequence: 0,
-            transport_instance_id: Self::new_transport_instance_id(),
-        })
+        Ok(io)
     }
 
-    fn new_transport_instance_id() -> String {
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|duration| duration.as_nanos())
-            .unwrap_or(0);
-        format!("{}-{nanos}", std::process::id())
+    #[cfg(test)]
+    fn ingest_inbound_frame(&mut self, frame: CrabdInboundFrame) {
+        match frame {
+            CrabdInboundFrame::GatewayMessage(message) => self
+                .inbound_messages
+                .lock()
+                .expect("lock should succeed")
+                .push_back(message),
+            CrabdInboundFrame::OutboundReceipt(receipt) => {
+                self.early_receipts
+                    .lock()
+                    .expect("lock should succeed")
+                    .insert(receipt.op_id.clone(), receipt);
+            }
+        }
     }
 
-    fn write_outbound_json(payload: &serde_json::Value) -> Result<(), DiscordTransportError> {
+    fn next_op_id(&mut self) -> String {
+        self.next_outbound_op_sequence = self.next_outbound_op_sequence.saturating_add(1);
+        format!("op-{}", self.next_outbound_op_sequence)
+    }
+
+    fn write_outbound_op(op: &CrabdOutboundOp) -> CrabResult<()> {
+        let line = serde_json::to_string(op).expect("outbound op serialization should not fail");
+
         #[cfg(test)]
         if let Some(write_override) = OUTBOUND_WRITE_OVERRIDE.with(|cell| *cell.borrow()) {
-            return write_override(payload);
+            return write_override(&line);
         }
 
         let mut stdout = io::stdout();
-        Self::write_outbound_json_to_writer(&mut stdout, payload)
+        Self::write_outbound_line_to_writer(&mut stdout, &line)
     }
 
     #[cfg(test)]
@@ -182,75 +279,166 @@ impl StdioJsonlTransport {
         });
     }
 
-    fn write_outbound_json_to_writer(
-        writer: &mut dyn Write,
-        payload: &serde_json::Value,
-    ) -> Result<(), DiscordTransportError> {
-        let line = payload.to_string();
+    fn write_outbound_line_to_writer(writer: &mut dyn Write, line: &str) -> CrabResult<()> {
         writer
             .write_all(line.as_bytes())
-            .map_err(|error| DiscordTransportError::Fatal {
+            .map_err(|error| CrabError::Io {
+                context: "crabd_stdout_write_outbound_op",
+                path: None,
                 message: format!("failed to write outbound payload: {error}"),
             })?;
-        writer
-            .write_all(b"\n")
-            .map_err(|error| DiscordTransportError::Fatal {
-                message: format!("failed to write outbound newline: {error}"),
-            })?;
-        writer
-            .flush()
-            .map_err(|error| DiscordTransportError::Fatal {
-                message: format!("failed to flush outbound payload: {error}"),
-            })?;
+        writer.write_all(b"\n").map_err(|error| CrabError::Io {
+            context: "crabd_stdout_write_outbound_op",
+            path: None,
+            message: format!("failed to write outbound newline: {error}"),
+        })?;
+        writer.flush().map_err(|error| CrabError::Io {
+            context: "crabd_stdout_write_outbound_op",
+            path: None,
+            message: format!("failed to flush outbound payload: {error}"),
+        })?;
         Ok(())
+    }
+
+    fn send_outbound_op_and_wait(
+        &mut self,
+        op: CrabdOutboundOp,
+    ) -> CrabResult<CrabdOutboundReceipt> {
+        let op_id = match &op {
+            CrabdOutboundOp::Post { op_id, .. } | CrabdOutboundOp::Edit { op_id, .. } => op_id,
+        }
+        .clone();
+
+        let (sender, receiver) = mpsc::channel();
+        self.pending_receipts
+            .lock()
+            .expect("lock should succeed")
+            .insert(op_id.clone(), sender);
+
+        if let Err(error) = Self::write_outbound_op(&op) {
+            let _ = self
+                .pending_receipts
+                .lock()
+                .expect("lock should succeed")
+                .remove(&op_id);
+            return Err(error);
+        }
+
+        if let Some(receipt) = self
+            .early_receipts
+            .lock()
+            .expect("lock should succeed")
+            .remove(&op_id)
+        {
+            // Tests can pre-load receipts before we emit the corresponding outbound op.
+            let _ = self
+                .pending_receipts
+                .lock()
+                .expect("lock should succeed")
+                .remove(&op_id);
+            return Ok(receipt);
+        }
+
+        match receiver.recv_timeout(Duration::from_millis(self.receipt_timeout_ms)) {
+            Ok(receipt) => Ok(receipt),
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                let _ = self
+                    .pending_receipts
+                    .lock()
+                    .expect("lock should succeed")
+                    .remove(&op_id);
+                Err(CrabError::InvariantViolation {
+                    context: "crabd_outbound_receipt_timeout",
+                    message: format!("timed out waiting for receipt for op_id={op_id}"),
+                })
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                let _ = self
+                    .pending_receipts
+                    .lock()
+                    .expect("lock should succeed")
+                    .remove(&op_id);
+                Err(CrabError::InvariantViolation {
+                    context: "crabd_outbound_receipt_channel",
+                    message: format!("receipt channel disconnected for op_id={op_id}"),
+                })
+            }
+        }
     }
 }
 
-impl DiscordRuntimeTransport for StdioJsonlTransport {
-    fn next_event(&mut self) -> CrabResult<Option<DiscordRuntimeEvent>> {
-        Ok(self.inbound_events.pop_front())
+impl DaemonDiscordIo for StdioDiscordIo {
+    fn next_gateway_message(&mut self) -> CrabResult<Option<GatewayMessage>> {
+        if let Some(error) = self
+            .inbound_error
+            .lock()
+            .expect("lock should succeed")
+            .clone()
+        {
+            return Err(error);
+        }
+
+        Ok(self
+            .inbound_messages
+            .lock()
+            .expect("lock should succeed")
+            .pop_front())
     }
 
-    fn send_message(
+    fn post_message(
         &mut self,
         channel_id: &str,
+        delivery_id: &str,
         content: &str,
-    ) -> Result<DiscordPostedMessage, DiscordTransportError> {
-        self.next_sent_message_sequence = self.next_sent_message_sequence.saturating_add(1);
-        let posted_message_id = format!(
-            "discord-msg-{}-{}",
-            self.transport_instance_id, self.next_sent_message_sequence
-        );
-        let payload = serde_json::json!({
-            "op": "post",
-            "channel_id": channel_id,
-            "message_id": posted_message_id,
-            "content": content,
-        });
-        Self::write_outbound_json(&payload)?;
-        Ok(DiscordPostedMessage {
-            message_id: posted_message_id,
+    ) -> CrabResult<()> {
+        let op_id = self.next_op_id();
+        let receipt = self.send_outbound_op_and_wait(CrabdOutboundOp::Post {
+            op_id: op_id.clone(),
+            channel_id: channel_id.to_string(),
+            delivery_id: delivery_id.to_string(),
+            content: content.to_string(),
+        })?;
+        if receipt.status == CrabdOutboundReceiptStatus::Ok {
+            return Ok(());
+        }
+
+        Err(CrabError::InvariantViolation {
+            context: "crabd_outbound_receipt_error",
+            message: format!(
+                "post failed for op_id={op_id}, delivery_id={delivery_id}: {}",
+                receipt
+                    .error_message
+                    .unwrap_or_else(|| "unknown error".to_string())
+            ),
         })
     }
 
     fn edit_message(
         &mut self,
         channel_id: &str,
-        message_id: &str,
+        delivery_id: &str,
         content: &str,
-    ) -> Result<(), DiscordTransportError> {
-        let payload = serde_json::json!({
-            "op": "edit",
-            "channel_id": channel_id,
-            "message_id": message_id,
-            "content": content,
-        });
-        Self::write_outbound_json(&payload)
-    }
+    ) -> CrabResult<()> {
+        let op_id = self.next_op_id();
+        let receipt = self.send_outbound_op_and_wait(CrabdOutboundOp::Edit {
+            op_id: op_id.clone(),
+            channel_id: channel_id.to_string(),
+            delivery_id: delivery_id.to_string(),
+            content: content.to_string(),
+        })?;
+        if receipt.status == CrabdOutboundReceiptStatus::Ok {
+            return Ok(());
+        }
 
-    fn wait_for_retry(&mut self, backoff_ms: u64) -> CrabResult<()> {
-        thread::sleep(Duration::from_millis(backoff_ms));
-        Ok(())
+        Err(CrabError::InvariantViolation {
+            context: "crabd_outbound_receipt_error",
+            message: format!(
+                "edit failed for op_id={op_id}, delivery_id={delivery_id}: {}",
+                receipt
+                    .error_message
+                    .unwrap_or_else(|| "unknown error".to_string())
+            ),
+        })
     }
 }
 
@@ -307,22 +495,40 @@ fn parse_required_u64(raw_value: &str, key: &'static str) -> CrabResult<u64> {
     Ok(value)
 }
 
-fn run_with_reader_and_control(
+fn parse_receipt_timeout_ms(values: &HashMap<String, String>) -> CrabResult<u64> {
+    parse_optional_u64(
+        values.get("CRAB_OUTBOUND_RECEIPT_TIMEOUT_MS"),
+        "CRAB_OUTBOUND_RECEIPT_TIMEOUT_MS",
+        DEFAULT_OUTBOUND_RECEIPT_TIMEOUT_MS,
+    )
+}
+
+fn run_with_values_and_discord_and_control(
     values: &HashMap<String, String>,
-    reader: &mut dyn BufRead,
+    discord: StdioDiscordIo,
     control: &mut dyn DaemonLoopControl,
 ) -> CrabResult<DaemonLoopStats> {
     let runtime_config = RuntimeConfig::from_map(values)?;
     let daemon_config = parse_daemon_config(values)?;
-    let transport = StdioJsonlTransport::from_bufread(reader)?;
     run_daemon_loop_with_transport(
         &runtime_config,
         &daemon_config,
         LocalCodexProcess,
         LocalOpenCodeProcess,
-        transport,
+        discord,
         control,
     )
+}
+
+#[cfg(test)]
+fn run_with_reader_and_control(
+    values: &HashMap<String, String>,
+    reader: &mut dyn BufRead,
+    control: &mut dyn DaemonLoopControl,
+) -> CrabResult<DaemonLoopStats> {
+    let receipt_timeout_ms = parse_receipt_timeout_ms(values)?;
+    let discord = StdioDiscordIo::from_bufread(reader, receipt_timeout_ms)?;
+    run_with_values_and_discord_and_control(values, discord, control)
 }
 
 fn run_main_with_runner(runner: fn() -> CrabResult<DaemonLoopStats>) -> ExitCode {
@@ -344,15 +550,23 @@ fn run_main_with_runner(runner: fn() -> CrabResult<DaemonLoopStats>) -> ExitCode
     }
 }
 
-fn run_with_env_and_stdio() -> CrabResult<DaemonLoopStats> {
-    let stdin = io::stdin();
-    let mut locked_stdin = stdin.lock();
-    run_with_env_and_reader_and_control_installer(
-        &mut locked_stdin,
-        SystemDaemonLoopControl::install,
-    )
+#[cfg(not(test))]
+fn run_with_env_and_control_installer(
+    control_installer: fn() -> CrabResult<SystemDaemonLoopControl>,
+) -> CrabResult<DaemonLoopStats> {
+    let values = std::env::vars().collect::<HashMap<_, _>>();
+    let receipt_timeout_ms = parse_receipt_timeout_ms(&values)?;
+    let discord = StdioDiscordIo::spawn_from_stdin(receipt_timeout_ms)?;
+    let mut control = control_installer()?;
+    run_with_values_and_discord_and_control(&values, discord, &mut control)
 }
 
+#[cfg(not(test))]
+fn run_with_env_and_stdio() -> CrabResult<DaemonLoopStats> {
+    run_with_env_and_control_installer(SystemDaemonLoopControl::install)
+}
+
+#[cfg(test)]
 fn run_with_env_and_reader_and_control_installer(
     reader: &mut dyn BufRead,
     control_installer: fn() -> CrabResult<SystemDaemonLoopControl>,
@@ -360,6 +574,12 @@ fn run_with_env_and_reader_and_control_installer(
     let values = std::env::vars().collect::<HashMap<_, _>>();
     let mut control = control_installer()?;
     run_with_reader_and_control(&values, reader, &mut control)
+}
+
+#[cfg(test)]
+fn run_with_env_and_stdio() -> CrabResult<DaemonLoopStats> {
+    let mut reader = std::io::Cursor::new("");
+    run_with_env_and_reader_and_control_installer(&mut reader, SystemDaemonLoopControl::install)
 }
 
 fn main() -> ExitCode {
@@ -371,21 +591,28 @@ mod tests {
     use super::{
         main, parse_daemon_config, parse_optional_u64, parse_required_u64, run_main_with_runner,
         run_with_env_and_reader_and_control_installer, run_with_reader_and_control,
-        LocalCodexProcess, LocalOpenCodeProcess, StdioJsonlTransport,
+        LocalCodexProcess, LocalOpenCodeProcess, StdioDiscordIo,
     };
-    use crab_app::{DaemonLoopControl, DaemonLoopStats};
+    use crab_app::{DaemonDiscordIo, DaemonLoopControl, DaemonLoopStats};
     use crab_backends::{
         CodexAppServerProcess, CodexProcessHandle, OpenCodeServerHandle, OpenCodeServerProcess,
     };
     use crab_core::{CrabError, CrabResult};
     use crab_discord::{
-        DiscordRuntimeTransport, DiscordTransportError, GatewayConversationKind, GatewayMessage,
+        CrabdInboundFrame, CrabdOutboundOp, CrabdOutboundReceipt, CrabdOutboundReceiptStatus,
+        GatewayConversationKind, GatewayMessage,
     };
     use std::collections::HashMap;
     use std::collections::VecDeque;
     use std::io::{self, Cursor, Read, Write};
-    use std::sync::{Mutex, OnceLock};
+    use std::mem;
+    use std::sync::{Arc, Mutex, OnceLock};
     use std::time::{SystemTime, UNIX_EPOCH};
+    use std::{cell::RefCell, thread_local};
+
+    thread_local! {
+        static CAPTURED_OUTBOUND_LINES: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+    }
 
     #[derive(Debug, Clone)]
     struct ScriptedControl {
@@ -469,8 +696,21 @@ mod tests {
         fn consume(&mut self, _amt: usize) {}
     }
 
-    fn fail_outbound_write(_payload: &serde_json::Value) -> Result<(), DiscordTransportError> {
-        Err(DiscordTransportError::Fatal {
+    fn capture_outbound_write(line: &str) -> CrabResult<()> {
+        CAPTURED_OUTBOUND_LINES.with(|cell| {
+            cell.borrow_mut().push(line.to_string());
+        });
+        Ok(())
+    }
+
+    fn take_captured_outbound_lines() -> Vec<String> {
+        CAPTURED_OUTBOUND_LINES.with(|cell| mem::take(&mut *cell.borrow_mut()))
+    }
+
+    fn fail_outbound_write(_line: &str) -> CrabResult<()> {
+        Err(CrabError::Io {
+            context: "crabd_test_outbound_write",
+            path: None,
             message: "forced outbound write failure".to_string(),
         })
     }
@@ -507,8 +747,8 @@ mod tests {
         })
     }
 
-    fn gateway_message_json(message_id: &str, content: &str) -> String {
-        serde_json::to_string(&GatewayMessage {
+    fn gateway_inbound_frame_json(message_id: &str, content: &str) -> String {
+        let message = GatewayMessage {
             message_id: message_id.to_string(),
             author_id: "111".to_string(),
             author_is_bot: false,
@@ -517,8 +757,21 @@ mod tests {
             thread_id: None,
             content: content.to_string(),
             conversation_kind: GatewayConversationKind::GuildChannel,
-        })
-        .expect("message json should serialize")
+        };
+        serde_json::to_string(&CrabdInboundFrame::GatewayMessage(message))
+            .expect("frame json should serialize")
+    }
+
+    fn ok_receipt_inbound_frame_json(op_id: &str, channel_id: &str, delivery_id: &str) -> String {
+        serde_json::to_string(&CrabdInboundFrame::OutboundReceipt(CrabdOutboundReceipt {
+            op_id: op_id.to_string(),
+            status: CrabdOutboundReceiptStatus::Ok,
+            channel_id: channel_id.to_string(),
+            delivery_id: delivery_id.to_string(),
+            discord_message_id: Some("discord-msg-1".to_string()),
+            error_message: None,
+        }))
+        .expect("receipt json should serialize")
     }
 
     fn runtime_values(workspace_root: &str) -> HashMap<String, String> {
@@ -531,6 +784,10 @@ mod tests {
             ("CRAB_BOT_USER_ID".to_string(), "999".to_string()),
             ("CRAB_DAEMON_TICK_INTERVAL_MS".to_string(), "1".to_string()),
             ("CRAB_DAEMON_MAX_ITERATIONS".to_string(), "1".to_string()),
+            (
+                "CRAB_OUTBOUND_RECEIPT_TIMEOUT_MS".to_string(),
+                "10".to_string(),
+            ),
         ])
     }
 
@@ -560,6 +817,7 @@ mod tests {
             "CRAB_BOT_USER_ID",
             "CRAB_DAEMON_TICK_INTERVAL_MS",
             "CRAB_DAEMON_MAX_ITERATIONS",
+            "CRAB_OUTBOUND_RECEIPT_TIMEOUT_MS",
         ];
         let previous: Vec<(String, Option<String>)> = keys
             .iter()
@@ -604,51 +862,55 @@ mod tests {
     }
 
     #[test]
-    fn transport_from_reader_parses_events_and_skips_blank_lines() {
+    fn stdio_discord_io_from_reader_parses_frames_and_skips_blank_lines() {
         let input = format!(
             "\n{}\n\n{}\n",
-            gateway_message_json("m1", "hello"),
-            gateway_message_json("m2", "world")
+            gateway_inbound_frame_json("m1", "hello"),
+            gateway_inbound_frame_json("m2", "world")
         );
-        let mut transport = StdioJsonlTransport::from_reader(Cursor::new(input))
-            .expect("jsonl reader should parse");
+        let mut io =
+            StdioDiscordIo::from_reader(Cursor::new(input), 10).expect("jsonl reader should parse");
 
-        assert!(transport
-            .next_event()
-            .expect("event 1 should parse")
-            .is_some());
-        assert!(transport
-            .next_event()
-            .expect("event 2 should parse")
-            .is_some());
-        assert!(transport
-            .next_event()
-            .expect("event queue should drain")
+        let first = io
+            .next_gateway_message()
+            .expect("message 1 should parse")
+            .expect("message 1 should be present");
+        assert_eq!(first.message_id, "m1");
+
+        let second = io
+            .next_gateway_message()
+            .expect("message 2 should parse")
+            .expect("message 2 should be present");
+        assert_eq!(second.message_id, "m2");
+
+        assert!(io
+            .next_gateway_message()
+            .expect("message queue should drain")
             .is_none());
     }
 
     #[test]
-    fn transport_from_reader_rejects_invalid_json() {
-        let error = StdioJsonlTransport::from_reader(Cursor::new("not-json\n"))
+    fn stdio_discord_io_from_reader_rejects_invalid_json() {
+        let error = StdioDiscordIo::from_reader(Cursor::new("not-json\n"), 10)
             .expect_err("invalid json should fail parsing");
         assert!(matches!(
             error,
             CrabError::Serialization {
-                context: "crabd_stdin_parse_gateway_message",
+                context: "crabd_stdin_parse_inbound_frame",
                 ..
             }
         ));
     }
 
     #[test]
-    fn transport_from_reader_surfaces_line_read_errors() {
+    fn stdio_discord_io_from_reader_surfaces_line_read_errors() {
         let mut reader = FailingLineReader;
         let mut scratch = [0_u8; 1];
         assert!(Read::read(&mut reader, &mut scratch).is_err());
         io::BufRead::consume(&mut reader, 0);
 
         let error =
-            StdioJsonlTransport::from_reader(reader).expect_err("reader errors should be mapped");
+            StdioDiscordIo::from_reader(reader, 10).expect_err("reader errors should be mapped");
         assert!(matches!(
             error,
             CrabError::Io {
@@ -660,100 +922,349 @@ mod tests {
     }
 
     #[test]
-    fn transport_send_edit_and_wait_paths_execute() {
-        let mut transport = StdioJsonlTransport::from_reader(Cursor::new(""))
-            .expect("empty reader should initialize transport");
-        let first = transport
-            .send_message("777", "hello")
-            .expect("send should succeed");
-        assert!(first.message_id.starts_with("discord-msg-"));
-        assert!(first.message_id.ends_with("-1"));
-        let second = transport
-            .send_message("777", "world")
-            .expect("second send should increment sequence");
-        assert!(second.message_id.starts_with("discord-msg-"));
-        assert!(second.message_id.ends_with("-2"));
-        let first_prefix = first
-            .message_id
-            .rsplit_once('-')
-            .expect("first id should contain sequence delimiter")
-            .0;
-        let second_prefix = second
-            .message_id
-            .rsplit_once('-')
-            .expect("second id should contain sequence delimiter")
-            .0;
-        assert_eq!(first_prefix, second_prefix);
-        transport
-            .edit_message("777", &second.message_id, "edit")
-            .expect("edit should succeed");
-        transport
-            .wait_for_retry(0)
-            .expect("zero backoff should sleep and return");
+    fn next_gateway_message_surfaces_inbound_errors() {
+        let mut io = StdioDiscordIo::new(10);
+        let injected = CrabError::InvariantViolation {
+            context: "test",
+            message: "boom".to_string(),
+        };
+        *io.inbound_error.lock().expect("lock should succeed") = Some(injected.clone());
+
+        let error = io
+            .next_gateway_message()
+            .expect_err("inbound error should surface");
+        assert_eq!(error, injected);
     }
 
     #[test]
-    fn transport_send_message_surfaces_outbound_write_errors() {
-        StdioJsonlTransport::set_outbound_write_override(Some(fail_outbound_write));
-        let mut transport = StdioJsonlTransport::from_reader(Cursor::new(""))
-            .expect("empty reader should initialize transport");
-        let error = transport
-            .send_message("777", "hello")
-            .expect_err("send should fail when outbound write is overridden");
-        assert_eq!(
-            error,
-            DiscordTransportError::Fatal {
-                message: "forced outbound write failure".to_string(),
+    fn send_outbound_op_and_wait_returns_early_receipt() {
+        StdioDiscordIo::set_outbound_write_override(Some(capture_outbound_write));
+        let _ = take_captured_outbound_lines();
+
+        let op_id = "op-1";
+        let channel_id = "channel-1";
+        let delivery_id = "delivery-1";
+
+        let mut io = StdioDiscordIo::new(10);
+        io.ingest_inbound_frame(CrabdInboundFrame::OutboundReceipt(CrabdOutboundReceipt {
+            op_id: op_id.to_string(),
+            status: CrabdOutboundReceiptStatus::Ok,
+            channel_id: channel_id.to_string(),
+            delivery_id: delivery_id.to_string(),
+            discord_message_id: Some("discord-msg-1".to_string()),
+            error_message: None,
+        }));
+
+        let receipt = io
+            .send_outbound_op_and_wait(CrabdOutboundOp::Post {
+                op_id: op_id.to_string(),
+                channel_id: channel_id.to_string(),
+                delivery_id: delivery_id.to_string(),
+                content: "hello".to_string(),
+            })
+            .expect("early receipt should be returned");
+        assert_eq!(receipt.op_id, op_id);
+
+        let captured = take_captured_outbound_lines();
+        assert_eq!(captured.len(), 1);
+        let op: CrabdOutboundOp =
+            serde_json::from_str(&captured[0]).expect("captured op should parse");
+        assert!(matches!(op, CrabdOutboundOp::Post { .. }));
+
+        assert!(!io
+            .pending_receipts
+            .lock()
+            .expect("lock should succeed")
+            .contains_key(op_id));
+
+        StdioDiscordIo::set_outbound_write_override(None);
+    }
+
+    #[test]
+    fn send_outbound_op_and_wait_receives_receipt_via_channel() {
+        StdioDiscordIo::set_outbound_write_override(Some(capture_outbound_write));
+        let _ = take_captured_outbound_lines();
+
+        let mut io = StdioDiscordIo::new(1000);
+        let pending = Arc::clone(&io.pending_receipts);
+        let (checked_tx, checked_rx) = std::sync::mpsc::channel();
+
+        let op_id = "op-1".to_string();
+        let channel_id = "channel-1".to_string();
+        let delivery_id = "delivery-1".to_string();
+        let receipt = CrabdOutboundReceipt {
+            op_id: op_id.clone(),
+            status: CrabdOutboundReceiptStatus::Ok,
+            channel_id: channel_id.clone(),
+            delivery_id: delivery_id.clone(),
+            discord_message_id: Some("discord-msg-1".to_string()),
+            error_message: None,
+        };
+
+        let sender_thread = std::thread::spawn(move || {
+            let mut signalled = false;
+            for _ in 0..10_000 {
+                let maybe_sender = pending.lock().expect("lock should succeed").remove(&op_id);
+                if !signalled {
+                    let _ = checked_tx.send(());
+                    signalled = true;
+                }
+                if let Some(sender) = maybe_sender {
+                    let _ = sender.send(receipt);
+                    return;
+                }
+                std::thread::yield_now();
             }
-        );
-        StdioJsonlTransport::set_outbound_write_override(None);
+        });
+
+        checked_rx
+            .recv_timeout(std::time::Duration::from_millis(50))
+            .expect("sender thread should observe pending map before we emit outbound op");
+        let receipt = io
+            .send_outbound_op_and_wait(CrabdOutboundOp::Post {
+                op_id: "op-1".to_string(),
+                channel_id: channel_id.clone(),
+                delivery_id: delivery_id.clone(),
+                content: "hello".to_string(),
+            })
+            .expect("receipt should be delivered through channel");
+        sender_thread.join().expect("sender thread should join");
+
+        assert_eq!(receipt.status, CrabdOutboundReceiptStatus::Ok);
+        StdioDiscordIo::set_outbound_write_override(None);
     }
 
     #[test]
-    fn write_outbound_json_writer_errors_are_mapped() {
-        let payload = serde_json::json!({"op": "post"});
+    fn send_outbound_op_and_wait_errors_on_timeout() {
+        StdioDiscordIo::set_outbound_write_override(Some(capture_outbound_write));
+
+        let mut io = StdioDiscordIo::new(1);
+        let error = io
+            .send_outbound_op_and_wait(CrabdOutboundOp::Post {
+                op_id: "op-1".to_string(),
+                channel_id: "channel-1".to_string(),
+                delivery_id: "delivery-1".to_string(),
+                content: "hello".to_string(),
+            })
+            .expect_err("missing receipt should time out");
+        assert!(matches!(
+            error,
+            CrabError::InvariantViolation {
+                context: "crabd_outbound_receipt_timeout",
+                ..
+            }
+        ));
+        StdioDiscordIo::set_outbound_write_override(None);
+    }
+
+    #[test]
+    fn send_outbound_op_and_wait_errors_on_disconnected_channel() {
+        StdioDiscordIo::set_outbound_write_override(Some(capture_outbound_write));
+
+        let mut io = StdioDiscordIo::new(1000);
+        let pending = Arc::clone(&io.pending_receipts);
+        let (checked_tx, checked_rx) = std::sync::mpsc::channel();
+        let op_id = "op-1".to_string();
+
+        let dropper_thread = std::thread::spawn(move || {
+            let mut signalled = false;
+            for _ in 0..10_000 {
+                if pending
+                    .lock()
+                    .expect("lock should succeed")
+                    .remove(&op_id)
+                    .is_some()
+                {
+                    return;
+                }
+                if !signalled {
+                    let _ = checked_tx.send(());
+                    signalled = true;
+                }
+                std::thread::yield_now();
+            }
+        });
+
+        checked_rx
+            .recv_timeout(std::time::Duration::from_millis(50))
+            .expect("dropper thread should observe pending map before sender exists");
+        let error = io
+            .send_outbound_op_and_wait(CrabdOutboundOp::Post {
+                op_id: "op-1".to_string(),
+                channel_id: "channel-1".to_string(),
+                delivery_id: "delivery-1".to_string(),
+                content: "hello".to_string(),
+            })
+            .expect_err("dropping sender should disconnect channel");
+        dropper_thread.join().expect("dropper thread should join");
+
+        assert!(matches!(
+            error,
+            CrabError::InvariantViolation {
+                context: "crabd_outbound_receipt_channel",
+                ..
+            }
+        ));
+
+        StdioDiscordIo::set_outbound_write_override(None);
+    }
+
+    #[test]
+    fn post_and_edit_message_wait_for_receipts_and_emit_ops() {
+        StdioDiscordIo::set_outbound_write_override(Some(capture_outbound_write));
+        let _ = take_captured_outbound_lines();
+
+        let mut io = StdioDiscordIo::new(10);
+        io.ingest_inbound_frame(CrabdInboundFrame::OutboundReceipt(CrabdOutboundReceipt {
+            op_id: "op-1".to_string(),
+            status: CrabdOutboundReceiptStatus::Ok,
+            channel_id: "channel-1".to_string(),
+            delivery_id: "delivery-1".to_string(),
+            discord_message_id: Some("discord-msg-1".to_string()),
+            error_message: None,
+        }));
+        io.ingest_inbound_frame(CrabdInboundFrame::OutboundReceipt(CrabdOutboundReceipt {
+            op_id: "op-2".to_string(),
+            status: CrabdOutboundReceiptStatus::Ok,
+            channel_id: "channel-1".to_string(),
+            delivery_id: "delivery-2".to_string(),
+            discord_message_id: Some("discord-msg-2".to_string()),
+            error_message: None,
+        }));
+
+        // Use dynamic dispatch at least once to ensure coverage catches any vtable shims.
+        let discord: &mut dyn DaemonDiscordIo = &mut io;
+        discord
+            .post_message("channel-1", "delivery-1", "hello")
+            .expect("post should succeed");
+        discord
+            .edit_message("channel-1", "delivery-2", "world")
+            .expect("edit should succeed");
+
+        let captured = take_captured_outbound_lines();
+        assert_eq!(captured.len(), 2);
+        let first: CrabdOutboundOp =
+            serde_json::from_str(&captured[0]).expect("first op should parse");
+        let second: CrabdOutboundOp =
+            serde_json::from_str(&captured[1]).expect("second op should parse");
+        assert!(matches!(first, CrabdOutboundOp::Post { .. }));
+        assert!(matches!(second, CrabdOutboundOp::Edit { .. }));
+
+        StdioDiscordIo::set_outbound_write_override(None);
+    }
+
+    #[test]
+    fn post_and_edit_message_map_error_receipts_to_invariant_violations() {
+        StdioDiscordIo::set_outbound_write_override(Some(capture_outbound_write));
+
+        let mut io = StdioDiscordIo::new(10);
+        io.ingest_inbound_frame(CrabdInboundFrame::OutboundReceipt(CrabdOutboundReceipt {
+            op_id: "op-1".to_string(),
+            status: CrabdOutboundReceiptStatus::Error,
+            channel_id: "channel-1".to_string(),
+            delivery_id: "delivery-1".to_string(),
+            discord_message_id: None,
+            error_message: None,
+        }));
+        io.ingest_inbound_frame(CrabdInboundFrame::OutboundReceipt(CrabdOutboundReceipt {
+            op_id: "op-2".to_string(),
+            status: CrabdOutboundReceiptStatus::Error,
+            channel_id: "channel-1".to_string(),
+            delivery_id: "delivery-2".to_string(),
+            discord_message_id: None,
+            error_message: None,
+        }));
+
+        let post_error = io
+            .post_message("channel-1", "delivery-1", "hello")
+            .expect_err("post error receipt should fail");
+        assert!(matches!(
+            post_error,
+            CrabError::InvariantViolation {
+                context: "crabd_outbound_receipt_error",
+                ..
+            }
+        ));
+
+        let edit_error = io
+            .edit_message("channel-1", "delivery-2", "world")
+            .expect_err("edit error receipt should fail");
+        assert!(matches!(
+            edit_error,
+            CrabError::InvariantViolation {
+                context: "crabd_outbound_receipt_error",
+                ..
+            }
+        ));
+
+        StdioDiscordIo::set_outbound_write_override(None);
+    }
+
+    #[test]
+    fn post_message_surfaces_outbound_write_errors() {
+        StdioDiscordIo::set_outbound_write_override(Some(fail_outbound_write));
+        let mut io = StdioDiscordIo::new(10);
+        let error = io
+            .post_message("channel-1", "delivery-1", "hello")
+            .expect_err("outbound writes should surface errors");
+        assert!(matches!(
+            error,
+            CrabError::Io {
+                context: "crabd_test_outbound_write",
+                ..
+            }
+        ));
+        StdioDiscordIo::set_outbound_write_override(None);
+    }
+
+    #[test]
+    fn write_outbound_line_writer_errors_are_mapped() {
+        let line = "payload";
 
         let mut fail_payload = ScriptedWriter {
             fail_payload_write: true,
             ..ScriptedWriter::default()
         };
-        let payload_error =
-            StdioJsonlTransport::write_outbound_json_to_writer(&mut fail_payload, &payload)
-                .expect_err("payload write failure should surface");
+        let payload_error = StdioDiscordIo::write_outbound_line_to_writer(&mut fail_payload, line)
+            .expect_err("payload write failure should surface");
         assert!(matches!(
             payload_error,
-            crab_discord::DiscordTransportError::Fatal { ref message }
-                if message.contains("failed to write outbound payload")
+            CrabError::Io {
+                context: "crabd_stdout_write_outbound_op",
+                ..
+            }
         ));
 
         let mut fail_newline = ScriptedWriter {
             fail_newline_write: true,
             ..ScriptedWriter::default()
         };
-        let newline_error =
-            StdioJsonlTransport::write_outbound_json_to_writer(&mut fail_newline, &payload)
-                .expect_err("newline write failure should surface");
+        let newline_error = StdioDiscordIo::write_outbound_line_to_writer(&mut fail_newline, line)
+            .expect_err("newline write failure should surface");
         assert!(matches!(
             newline_error,
-            crab_discord::DiscordTransportError::Fatal { ref message }
-                if message.contains("failed to write outbound newline")
+            CrabError::Io {
+                context: "crabd_stdout_write_outbound_op",
+                ..
+            }
         ));
 
         let mut fail_flush = ScriptedWriter {
             fail_flush: true,
             ..ScriptedWriter::default()
         };
-        let flush_error =
-            StdioJsonlTransport::write_outbound_json_to_writer(&mut fail_flush, &payload)
-                .expect_err("flush failure should surface");
+        let flush_error = StdioDiscordIo::write_outbound_line_to_writer(&mut fail_flush, line)
+            .expect_err("flush failure should surface");
         assert!(matches!(
             flush_error,
-            crab_discord::DiscordTransportError::Fatal { ref message }
-                if message.contains("failed to flush outbound payload")
+            CrabError::Io {
+                context: "crabd_stdout_write_outbound_op",
+                ..
+            }
         ));
 
         let mut success_writer = ScriptedWriter::default();
-        StdioJsonlTransport::write_outbound_json_to_writer(&mut success_writer, &payload)
+        StdioDiscordIo::write_outbound_line_to_writer(&mut success_writer, line)
             .expect("writer success path should serialize payload and newline");
         assert!(success_writer.bytes.ends_with(b"\n"));
     }
@@ -877,7 +1388,15 @@ mod tests {
     fn run_with_reader_and_control_processes_one_message() {
         let workspace_root = temp_workspace_root("run-success");
         let values = runtime_values(&workspace_root);
-        let input = format!("{}\n", gateway_message_json("m-1", "hello daemon"));
+        let input = format!(
+            "{}\n{}\n",
+            gateway_inbound_frame_json("m-1", "hello daemon"),
+            ok_receipt_inbound_frame_json(
+                "op-1",
+                "777",
+                "delivery:run:discord:channel:777:m-1:chunk:0"
+            )
+        );
         let mut control = ScriptedControl::with_now(vec![1_000, 1_001]);
         let mut reader = Cursor::new(input);
 

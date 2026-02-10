@@ -27,47 +27,43 @@ Implemented and validated in repository code/tests:
   - graceful shutdown control
 - First-party Discord connector process now exists: `crab-discord-connector`
   (`crates/crab-discord-connector/src/main.rs`) and performs:
-  - Discord Gateway ingress -> `GatewayMessage` JSONL into `crabd` stdin
-  - `crabd` outbound `post|edit` JSONL handling via Discord REST
+  - Discord Gateway ingress -> `CrabdInboundFrame::GatewayMessage` JSONL into `crabd` stdin
+  - `crabd` outbound `CrabdOutboundOp` (`op=post|edit`) JSONL handling via Discord REST
+  - explicit `CrabdOutboundReceipt` JSONL receipts back into `crabd` stdin for every outbound op
   - retry/rate-limit handling on Discord REST delivery paths
-  - persisted synthetic->actual message id mapping for edit continuity
+  - persisted deterministic `delivery_id` -> actual Discord message id mapping for edit continuity
 - Discord provisioning/secrets runbook exists: `crab/docs/09-discord-provisioning-and-secrets.md`.
 - Target-machine operations runbook exists: `crab/docs/10-target-machine-operations.md`.
 
 Important runtime shape today:
 
 - `crabd` and connector are separate processes with a JSONL IPC boundary.
-- Connector ingress writes raw `GatewayMessage` JSON lines to `crabd` stdin.
-- `crabd` outbound lines are JSON payloads with `op: post|edit`.
+- Connector ingress writes `CrabdInboundFrame` (`kind=gateway_message`) JSON lines to `crabd` stdin.
+- Connector emits `CrabdInboundFrame` (`kind=outbound_receipt`) JSON receipts back to `crabd` for every outbound operation.
+- `crabd` outbound lines are `CrabdOutboundOp` JSON payloads with `op: post|edit`, each including:
+  - `op_id` for request/receipt correlation
+  - deterministic `delivery_id` for idempotent post/edit mapping across restarts
 
 ## Remaining Gaps
 
-### Gap 1: Connector <-> `crabd` Delivery-Receipt Contract
+### Gap 1: Connector <-> `crabd` Delivery-Receipt Contract (CLOSED)
 
-Current status:
+Closed (February 10, 2026):
 
-- Connector is implemented and can post/edit Discord messages from `crabd` outbound ops.
-- Current IPC contract is one-way for delivery operations (`crabd` writes op, connector executes).
-- `crabd` does not currently receive a delivery receipt/ack with final Discord message id.
+- Connector and `crabd` exchange an explicit receipt for every outbound delivery operation.
+- Connector is idempotent on `post` when a mapping already exists for the `(channel_id, delivery_id)` pair.
+- `crabd` considers Discord output delivered only after a positive receipt is received.
 
 Impact:
 
-- Delivery failure after connector retries can still desynchronize `crabd` persistence from
-  real Discord state in edge cases.
-- Full replay/idempotency guarantees across connector failure boundaries are weaker than
-  the desired long-term contract.
-
-Required work:
-
-- Extend IPC protocol with explicit delivery receipts:
-  - include operation request id in outbound op frame
-  - connector returns success/failure receipt with actual Discord message id for `post`
-  - `crabd` persists outbound records only after positive receipt
-- Add crash/restart tests covering partial delivery, retry, and replay without duplication.
+This closes the reliability gap where connector/process failure could desynchronize `crabd` outbound persistence
+from actual Discord delivery.
 
 Exit evidence:
 
-- Replay tests prove no lost/duplicate delivery when connector fails mid-delivery.
+- Receipt and timeout behavior is covered in `crates/crab-app/src/bin/crabd.rs` tests.
+- End-to-end delivery wiring is covered in `crates/crab-app/src/daemon.rs` tests.
+- Connector idempotency and error receipts are covered in `crates/crab-discord-connector/src/main.rs` tests.
 
 ### Gap 2: Deployment Acceptance Execution Evidence
 
@@ -112,8 +108,7 @@ Go/no-go rule:
 
 ## Recommended Closure Order
 
-1. Close delivery-receipt contract gap between connector and `crabd` (Gap 1).
-2. Execute acceptance checklist on target machine and capture evidence (Gap 2).
+1. Execute acceptance checklist on target machine and capture evidence (Gap 2).
 
 ## Exit Criteria For "Deployment Ready"
 

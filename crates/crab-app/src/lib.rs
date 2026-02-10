@@ -14,8 +14,8 @@ pub use composition::{
     AppBackendManagers, AppComposition, AppStateStores, DEFAULT_LANE_QUEUE_LIMIT,
 };
 pub use daemon::{
-    run_daemon_loop_with_transport, DaemonConfig, DaemonLoopControl, DaemonLoopStats,
-    DaemonTurnRuntime, SystemDaemonLoopControl, DEFAULT_DAEMON_TICK_INTERVAL_MS,
+    run_daemon_loop_with_transport, DaemonConfig, DaemonDiscordIo, DaemonLoopControl,
+    DaemonLoopStats, DaemonTurnRuntime, SystemDaemonLoopControl, DEFAULT_DAEMON_TICK_INTERVAL_MS,
 };
 pub use maintenance::{
     boot_runtime_with_processes, boot_runtime_with_processes_and_queue_limit, run_heartbeat_if_due,

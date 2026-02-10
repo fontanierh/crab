@@ -11,13 +11,29 @@ use crab_core::{
     BackendKind, CrabError, CrabResult, InferenceProfile, OwnerConfig, OwnerProfileMetadata,
     ProfileValueSource, ReasoningLevel, Run, RunProfileTelemetry, RuntimeConfig,
 };
-use crab_discord::{
-    DiscordRetryPolicy, DiscordRuntimeAdapter, DiscordRuntimeTransport, IngressMessage,
-};
+use crab_discord::GatewayMessage;
 
 use crate::{boot_runtime_with_processes, run_heartbeat_if_due, TurnExecutor, TurnExecutorRuntime};
 
 pub const DEFAULT_DAEMON_TICK_INTERVAL_MS: u64 = 250;
+
+pub trait DaemonDiscordIo {
+    fn next_gateway_message(&mut self) -> CrabResult<Option<GatewayMessage>>;
+
+    fn post_message(
+        &mut self,
+        channel_id: &str,
+        delivery_id: &str,
+        content: &str,
+    ) -> CrabResult<()>;
+
+    fn edit_message(
+        &mut self,
+        channel_id: &str,
+        delivery_id: &str,
+        content: &str,
+    ) -> CrabResult<()>;
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DaemonConfig {
@@ -115,13 +131,12 @@ impl DaemonLoopControl for SystemDaemonLoopControl {
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct DaemonTurnRuntime<T: DiscordRuntimeTransport> {
-    discord: DiscordRuntimeAdapter<T>,
+#[derive(Debug)]
+pub struct DaemonTurnRuntime<D: DaemonDiscordIo> {
+    discord: D,
     owner: OwnerConfig,
     next_session_sequence: u64,
     physical_sessions: BTreeMap<String, crab_core::PhysicalSession>,
-    delivery_message_ids: BTreeMap<String, String>,
 }
 
 #[cfg(test)]
@@ -132,16 +147,13 @@ thread_local! {
     static SESSION_NOW_EPOCH_MS_OVERRIDE: RefCell<Option<SessionNowEpochMsOverride>> = RefCell::new(None);
 }
 
-impl<T: DiscordRuntimeTransport> DaemonTurnRuntime<T> {
-    pub fn new(bot_user_id: &str, owner: OwnerConfig, transport: T) -> CrabResult<Self> {
-        let discord =
-            DiscordRuntimeAdapter::new(bot_user_id, transport, DiscordRetryPolicy::default())?;
+impl<D: DaemonDiscordIo> DaemonTurnRuntime<D> {
+    pub fn new(owner: OwnerConfig, discord: D) -> CrabResult<Self> {
         Ok(Self {
             discord,
             owner,
             next_session_sequence: 0,
             physical_sessions: BTreeMap::new(),
-            delivery_message_ids: BTreeMap::new(),
         })
     }
 
@@ -160,8 +172,8 @@ impl<T: DiscordRuntimeTransport> DaemonTurnRuntime<T> {
         });
     }
 
-    pub fn next_ingress_message(&mut self) -> CrabResult<Option<IngressMessage>> {
-        self.discord.next_ingress_message()
+    pub fn next_gateway_message(&mut self) -> CrabResult<Option<GatewayMessage>> {
+        self.discord.next_gateway_message()
     }
 
     fn next_physical_session_id(&mut self, logical_session_id: &str) -> String {
@@ -198,7 +210,7 @@ impl<T: DiscordRuntimeTransport> DaemonTurnRuntime<T> {
     }
 }
 
-impl<T: DiscordRuntimeTransport> TurnExecutorRuntime for DaemonTurnRuntime<T> {
+impl<D: DaemonDiscordIo> TurnExecutorRuntime for DaemonTurnRuntime<D> {
     fn now_epoch_ms(&mut self) -> CrabResult<u64> {
         now_epoch_ms()
     }
@@ -354,37 +366,24 @@ impl<T: DiscordRuntimeTransport> TurnExecutorRuntime for DaemonTurnRuntime<T> {
         content: &str,
     ) -> CrabResult<()> {
         if edit_generation == 0 {
-            let posted = self.discord.post_message(channel_id, content)?;
-            self.delivery_message_ids
-                .insert(message_id.to_string(), posted.message_id);
-            return Ok(());
+            return self.discord.post_message(channel_id, message_id, content);
         }
-
-        if let Some(actual_message_id) = self.delivery_message_ids.get(message_id) {
-            self.discord
-                .edit_message(channel_id, actual_message_id, content)?;
-            return Ok(());
-        }
-
-        let posted = self.discord.post_message(channel_id, content)?;
-        self.delivery_message_ids
-            .insert(message_id.to_string(), posted.message_id);
-        Ok(())
+        self.discord.edit_message(channel_id, message_id, content)
     }
 }
 
-pub fn run_daemon_loop_with_transport<CP, OP, T, C>(
+pub fn run_daemon_loop_with_transport<CP, OP, D, C>(
     runtime_config: &RuntimeConfig,
     daemon_config: &DaemonConfig,
     codex_process: CP,
     opencode_process: OP,
-    transport: T,
+    discord: D,
     control: &mut C,
 ) -> CrabResult<DaemonLoopStats>
 where
     CP: CodexAppServerProcess,
     OP: OpenCodeServerProcess,
-    T: DiscordRuntimeTransport,
+    D: DaemonDiscordIo,
     C: DaemonLoopControl + ?Sized,
 {
     run_daemon_loop_with_transport_and_runtime_builder(
@@ -392,25 +391,25 @@ where
         daemon_config,
         codex_process,
         opencode_process,
-        transport,
+        discord,
         control,
         DaemonTurnRuntime::new,
     )
 }
 
-fn run_daemon_loop_with_transport_and_runtime_builder<CP, OP, T, C>(
+fn run_daemon_loop_with_transport_and_runtime_builder<CP, OP, D, C>(
     runtime_config: &RuntimeConfig,
     daemon_config: &DaemonConfig,
     codex_process: CP,
     opencode_process: OP,
-    transport: T,
+    discord: D,
     control: &mut C,
-    runtime_builder: fn(&str, OwnerConfig, T) -> CrabResult<DaemonTurnRuntime<T>>,
+    runtime_builder: fn(OwnerConfig, D) -> CrabResult<DaemonTurnRuntime<D>>,
 ) -> CrabResult<DaemonLoopStats>
 where
     CP: CodexAppServerProcess,
     OP: OpenCodeServerProcess,
-    T: DiscordRuntimeTransport,
+    D: DaemonDiscordIo,
     C: DaemonLoopControl + ?Sized,
 {
     daemon_config.validate()?;
@@ -426,11 +425,7 @@ where
     boot.composition.backends.opencode.ensure_running()?;
 
     let mut heartbeat_loop_state = boot.heartbeat_loop_state;
-    let runtime = runtime_builder(
-        &daemon_config.bot_user_id,
-        runtime_config.owner.clone(),
-        transport,
-    )?;
+    let runtime = runtime_builder(runtime_config.owner.clone(), discord)?;
     let mut executor = TurnExecutor::new(boot.composition, runtime);
     let mut stats = DaemonLoopStats::default();
 
@@ -445,9 +440,10 @@ where
 
         stats.iterations = stats.iterations.saturating_add(1);
 
-        if let Some(ingress) = executor.runtime_mut().next_ingress_message()? {
-            let _ = executor.enqueue_ingress_message(ingress)?;
-            stats.ingested_messages = stats.ingested_messages.saturating_add(1);
+        if let Some(message) = executor.runtime_mut().next_gateway_message()? {
+            if executor.enqueue_gateway_message(message)?.is_some() {
+                stats.ingested_messages = stats.ingested_messages.saturating_add(1);
+            }
         }
 
         while executor.dispatch_next_run()?.is_some() {
@@ -499,8 +495,8 @@ fn epoch_ms_from_duration(duration: Duration) -> CrabResult<u64> {
 mod tests {
     use super::{
         epoch_ms_from_duration, epoch_ms_from_system_time, run_daemon_loop_with_transport,
-        run_daemon_loop_with_transport_and_runtime_builder, DaemonConfig, DaemonLoopControl,
-        DaemonLoopStats, DaemonTurnRuntime, SystemDaemonLoopControl,
+        run_daemon_loop_with_transport_and_runtime_builder, DaemonConfig, DaemonDiscordIo,
+        DaemonLoopControl, DaemonLoopStats, DaemonTurnRuntime, SystemDaemonLoopControl,
     };
     use crate::test_support::{runtime_config_for_workspace_with_lanes, TempWorkspace};
     use crate::TurnExecutorRuntime;
@@ -511,10 +507,7 @@ mod tests {
         BackendKind, CrabError, CrabResult, InferenceProfile, OwnerConfig, ProfileValueSource,
         ReasoningLevel, Run, RunProfileTelemetry, RunStatus,
     };
-    use crab_discord::{
-        DiscordPostedMessage, DiscordRuntimeEvent, DiscordRuntimeTransport, DiscordTransportError,
-        GatewayConversationKind, GatewayMessage,
-    };
+    use crab_discord::{GatewayConversationKind, GatewayMessage};
     use std::collections::VecDeque;
     #[cfg(unix)]
     use std::process::Command;
@@ -676,81 +669,69 @@ mod tests {
     }
 
     #[derive(Debug, Clone, Default)]
-    struct TransportState {
-        events: VecDeque<CrabResult<Option<DiscordRuntimeEvent>>>,
-        post_results: VecDeque<Result<DiscordPostedMessage, DiscordTransportError>>,
-        edit_results: VecDeque<Result<(), DiscordTransportError>>,
-        wait_results: VecDeque<CrabResult<()>>,
-        posted: Vec<(String, String)>,
+    struct DiscordIoState {
+        inbound: VecDeque<CrabResult<Option<GatewayMessage>>>,
+        post_results: VecDeque<CrabResult<()>>,
+        edit_results: VecDeque<CrabResult<()>>,
+        posted: Vec<(String, String, String)>,
         edited: Vec<(String, String, String)>,
     }
 
     #[derive(Debug, Clone)]
-    struct ScriptedTransport {
-        state: Arc<Mutex<TransportState>>,
+    struct ScriptedDiscordIo {
+        state: Arc<Mutex<DiscordIoState>>,
     }
 
-    impl ScriptedTransport {
-        fn with_state(state: TransportState) -> Self {
+    impl ScriptedDiscordIo {
+        fn with_state(state: DiscordIoState) -> Self {
             Self {
                 state: Arc::new(Mutex::new(state)),
             }
         }
 
-        fn state(&self) -> TransportState {
+        fn state(&self) -> DiscordIoState {
             self.state.lock().expect("lock should succeed").clone()
         }
     }
 
-    impl DiscordRuntimeTransport for ScriptedTransport {
-        fn next_event(&mut self) -> CrabResult<Option<DiscordRuntimeEvent>> {
+    impl DaemonDiscordIo for ScriptedDiscordIo {
+        fn next_gateway_message(&mut self) -> CrabResult<Option<GatewayMessage>> {
             self.state
                 .lock()
                 .expect("lock should succeed")
-                .events
+                .inbound
                 .pop_front()
                 .unwrap_or(Ok(None))
         }
 
-        fn send_message(
+        fn post_message(
             &mut self,
             channel_id: &str,
+            delivery_id: &str,
             content: &str,
-        ) -> Result<DiscordPostedMessage, DiscordTransportError> {
+        ) -> CrabResult<()> {
             let mut state = self.state.lock().expect("lock should succeed");
-            state
-                .posted
-                .push((channel_id.to_string(), content.to_string()));
-            state
-                .post_results
-                .pop_front()
-                .unwrap_or(Ok(DiscordPostedMessage {
-                    message_id: format!("posted-{}", state.posted.len()),
-                }))
+            state.posted.push((
+                channel_id.to_string(),
+                delivery_id.to_string(),
+                content.to_string(),
+            ));
+            state.post_results.pop_front().unwrap_or(Ok(()))
         }
 
         fn edit_message(
             &mut self,
             channel_id: &str,
-            message_id: &str,
+            delivery_id: &str,
             content: &str,
-        ) -> Result<(), DiscordTransportError> {
+        ) -> CrabResult<()> {
             let mut state = self.state.lock().expect("lock should succeed");
             state.edited.push((
                 channel_id.to_string(),
-                message_id.to_string(),
+                delivery_id.to_string(),
                 content.to_string(),
             ));
             state.edit_results.pop_front().unwrap_or(Ok(()))
-        }
-
-        fn wait_for_retry(&mut self, _backoff_ms: u64) -> CrabResult<()> {
-            self.state
-                .lock()
-                .expect("lock should succeed")
-                .wait_results
-                .pop_front()
-                .unwrap_or(Ok(()))
         }
     }
 
@@ -820,10 +801,9 @@ mod tests {
     }
 
     fn runtime_builder_err(
-        _bot_user_id: &str,
         _owner: OwnerConfig,
-        _transport: ScriptedTransport,
-    ) -> CrabResult<DaemonTurnRuntime<ScriptedTransport>> {
+        _discord: ScriptedDiscordIo,
+    ) -> CrabResult<DaemonTurnRuntime<ScriptedDiscordIo>> {
         Err(CrabError::InvariantViolation {
             context: "daemon_runtime_builder",
             message: "forced runtime build failure".to_string(),
@@ -954,18 +934,14 @@ mod tests {
             tick_interval_ms: 5,
             max_iterations: Some(2),
         };
-        let transport = ScriptedTransport::with_state(TransportState {
-            events: VecDeque::from([
-                Ok(Some(DiscordRuntimeEvent::MessageCreate(gateway_message(
-                    "m-1",
-                    "111",
-                    "hello world",
-                )))),
+        let discord = ScriptedDiscordIo::with_state(DiscordIoState {
+            inbound: VecDeque::from([
+                Ok(Some(gateway_message("m-1", "111", "hello world"))),
                 Ok(None),
             ]),
-            ..TransportState::default()
+            ..DiscordIoState::default()
         });
-        let transport_state = transport.clone();
+        let discord_state = discord.clone();
         let codex = TrackingCodexProcess::new();
         let codex_state = codex.clone();
         let opencode = TrackingOpenCodeProcess::new();
@@ -977,7 +953,7 @@ mod tests {
             &daemon_config,
             codex,
             opencode,
-            transport,
+            discord,
             &mut control,
         )
         .expect("daemon loop should succeed");
@@ -992,9 +968,9 @@ mod tests {
             }
         );
 
-        let transport = transport_state.state();
-        assert_eq!(transport.posted.len(), 1);
-        assert!(transport.posted[0].1.contains("Crab stub response"));
+        let discord = discord_state.state();
+        assert_eq!(discord.posted.len(), 1);
+        assert!(discord.posted[0].2.contains("Crab stub response"));
 
         let codex_stats = codex_state.stats();
         assert_eq!(codex_stats.spawn_calls, 1);
@@ -1015,9 +991,9 @@ mod tests {
             tick_interval_ms: 1,
             max_iterations: Some(2),
         };
-        let transport = ScriptedTransport::with_state(TransportState {
-            events: VecDeque::from([Ok(None), Ok(None)]),
-            ..TransportState::default()
+        let discord = ScriptedDiscordIo::with_state(DiscordIoState {
+            inbound: VecDeque::from([Ok(None), Ok(None)]),
+            ..DiscordIoState::default()
         });
         let codex = TrackingCodexProcess::new();
         let opencode = TrackingOpenCodeProcess::new();
@@ -1028,7 +1004,7 @@ mod tests {
             &daemon_config,
             codex,
             opencode,
-            transport,
+            discord,
             &mut control,
         )
         .expect("daemon loop should succeed");
@@ -1045,7 +1021,7 @@ mod tests {
             tick_interval_ms: 1,
             max_iterations: None,
         };
-        let transport = ScriptedTransport::with_state(TransportState::default());
+        let discord = ScriptedDiscordIo::with_state(DiscordIoState::default());
         let codex = TrackingCodexProcess::new();
         let opencode = TrackingOpenCodeProcess::new();
         let mut control = ScriptedControl::with_now(vec![1_000]);
@@ -1056,7 +1032,7 @@ mod tests {
             &daemon_config,
             codex,
             opencode,
-            transport,
+            discord,
             &mut control,
         )
         .expect("daemon loop should succeed");
@@ -1073,7 +1049,7 @@ mod tests {
             tick_interval_ms: 1,
             max_iterations: None,
         };
-        let transport = ScriptedTransport::with_state(TransportState::default());
+        let discord = ScriptedDiscordIo::with_state(DiscordIoState::default());
         let codex = TrackingCodexProcess::new();
         let opencode = TrackingOpenCodeProcess::new();
         let mut control = ScriptedControl::with_now(vec![]);
@@ -1083,7 +1059,7 @@ mod tests {
             &daemon_config,
             codex,
             opencode,
-            transport,
+            discord,
             &mut control,
         )
         .expect_err("missing now should fail");
@@ -1105,7 +1081,7 @@ mod tests {
             tick_interval_ms: 0,
             max_iterations: Some(1),
         };
-        let transport = ScriptedTransport::with_state(TransportState::default());
+        let discord = ScriptedDiscordIo::with_state(DiscordIoState::default());
         let codex = TrackingCodexProcess::new();
         let opencode = TrackingOpenCodeProcess::new();
         let mut control = ScriptedControl::with_now(vec![1_000]);
@@ -1115,7 +1091,7 @@ mod tests {
             &daemon_config,
             codex,
             opencode,
-            transport,
+            discord,
             &mut control,
         )
         .expect_err("invalid daemon config should fail before loop starts");
@@ -1139,7 +1115,7 @@ mod tests {
             tick_interval_ms: 1,
             max_iterations: None,
         };
-        let transport = ScriptedTransport::with_state(TransportState::default());
+        let discord = ScriptedDiscordIo::with_state(DiscordIoState::default());
         let codex = TrackingCodexProcess::new();
         let opencode = TrackingOpenCodeProcess::new();
         let mut control = ScriptedControl::with_now(vec![1_000]);
@@ -1149,7 +1125,7 @@ mod tests {
             &daemon_config,
             codex,
             opencode,
-            transport,
+            discord,
             &mut control,
         )
         .expect_err("invalid workspace root should fail composition boot");
@@ -1172,7 +1148,7 @@ mod tests {
             tick_interval_ms: 1,
             max_iterations: Some(1),
         };
-        let transport = ScriptedTransport::with_state(TransportState::default());
+        let discord = ScriptedDiscordIo::with_state(DiscordIoState::default());
         let codex = TrackingCodexProcess::with_spawn_error("forced codex spawn failure");
         let opencode = TrackingOpenCodeProcess::new();
         let mut control = ScriptedControl::with_now(vec![1_000]);
@@ -1182,7 +1158,7 @@ mod tests {
             &daemon_config,
             codex,
             opencode,
-            transport,
+            discord,
             &mut control,
         )
         .expect_err("codex start failures should propagate");
@@ -1204,7 +1180,7 @@ mod tests {
             tick_interval_ms: 1,
             max_iterations: Some(1),
         };
-        let transport = ScriptedTransport::with_state(TransportState::default());
+        let discord = ScriptedDiscordIo::with_state(DiscordIoState::default());
         let codex = TrackingCodexProcess::new();
         let opencode = TrackingOpenCodeProcess::with_spawn_error("forced opencode spawn failure");
         let mut control = ScriptedControl::with_now(vec![1_000]);
@@ -1214,7 +1190,7 @@ mod tests {
             &daemon_config,
             codex,
             opencode,
-            transport,
+            discord,
             &mut control,
         )
         .expect_err("opencode start failures should propagate");
@@ -1236,7 +1212,7 @@ mod tests {
             tick_interval_ms: 1,
             max_iterations: Some(1),
         };
-        let transport = ScriptedTransport::with_state(TransportState::default());
+        let discord = ScriptedDiscordIo::with_state(DiscordIoState::default());
         let codex = TrackingCodexProcess::with_spawn_error("forced codex spawn failure");
         let opencode = TrackingOpenCodeProcess::new();
         let mut control = SleepFailControl::with_now(vec![1_000]);
@@ -1246,7 +1222,7 @@ mod tests {
             &daemon_config,
             codex,
             opencode,
-            transport,
+            discord,
             &mut control,
         )
         .expect_err("codex start failures should propagate for sleep-fail control");
@@ -1268,7 +1244,7 @@ mod tests {
             tick_interval_ms: 1,
             max_iterations: Some(1),
         };
-        let transport = ScriptedTransport::with_state(TransportState::default());
+        let discord = ScriptedDiscordIo::with_state(DiscordIoState::default());
         let codex = TrackingCodexProcess::new();
         let opencode = TrackingOpenCodeProcess::with_spawn_error("forced opencode spawn failure");
         let mut control = SleepFailControl::with_now(vec![1_000]);
@@ -1278,7 +1254,7 @@ mod tests {
             &daemon_config,
             codex,
             opencode,
-            transport,
+            discord,
             &mut control,
         )
         .expect_err("opencode start failures should propagate for sleep-fail control");
@@ -1300,7 +1276,7 @@ mod tests {
             tick_interval_ms: 1,
             max_iterations: Some(1),
         };
-        let transport = ScriptedTransport::with_state(TransportState::default());
+        let discord = ScriptedDiscordIo::with_state(DiscordIoState::default());
         let codex = TrackingCodexProcess::new();
         let opencode = TrackingOpenCodeProcess::new();
         let mut control = ScriptedControl::with_now(vec![1_000]);
@@ -1310,7 +1286,7 @@ mod tests {
             &daemon_config,
             codex,
             opencode,
-            transport,
+            discord,
             &mut control,
             runtime_builder_err,
         )
@@ -1333,12 +1309,12 @@ mod tests {
             tick_interval_ms: 1,
             max_iterations: Some(1),
         };
-        let transport = ScriptedTransport::with_state(TransportState {
-            events: VecDeque::from([Err(CrabError::InvariantViolation {
+        let discord = ScriptedDiscordIo::with_state(DiscordIoState {
+            inbound: VecDeque::from([Err(CrabError::InvariantViolation {
                 context: "daemon_test_ingress_poll",
                 message: "forced ingress poll failure".to_string(),
             })]),
-            ..TransportState::default()
+            ..DiscordIoState::default()
         });
         let codex = TrackingCodexProcess::new();
         let opencode = TrackingOpenCodeProcess::new();
@@ -1349,7 +1325,7 @@ mod tests {
             &daemon_config,
             codex,
             opencode,
-            transport,
+            discord,
             &mut control,
         )
         .expect_err("ingress poll failures should propagate");
@@ -1371,11 +1347,9 @@ mod tests {
             tick_interval_ms: 1,
             max_iterations: Some(1),
         };
-        let transport = ScriptedTransport::with_state(TransportState {
-            events: VecDeque::from([Ok(Some(DiscordRuntimeEvent::MessageCreate(
-                gateway_message("m-1", "111", ""),
-            )))]),
-            ..TransportState::default()
+        let discord = ScriptedDiscordIo::with_state(DiscordIoState {
+            inbound: VecDeque::from([Ok(Some(gateway_message("m-1", "111", "")))]),
+            ..DiscordIoState::default()
         });
         let codex = TrackingCodexProcess::new();
         let opencode = TrackingOpenCodeProcess::new();
@@ -1386,7 +1360,7 @@ mod tests {
             &daemon_config,
             codex,
             opencode,
-            transport,
+            discord,
             &mut control,
         )
         .expect_err("enqueue failures should propagate");
@@ -1402,14 +1376,13 @@ mod tests {
             tick_interval_ms: 1,
             max_iterations: Some(1),
         };
-        let transport = ScriptedTransport::with_state(TransportState {
-            events: VecDeque::from([Ok(Some(DiscordRuntimeEvent::MessageCreate(
-                gateway_message("m-1", "111", "hello"),
-            )))]),
-            post_results: VecDeque::from([Err(DiscordTransportError::Fatal {
+        let discord = ScriptedDiscordIo::with_state(DiscordIoState {
+            inbound: VecDeque::from([Ok(Some(gateway_message("m-1", "111", "hello")))]),
+            post_results: VecDeque::from([Err(CrabError::InvariantViolation {
+                context: "daemon_test_post",
                 message: "forced post failure".to_string(),
             })]),
-            ..TransportState::default()
+            ..DiscordIoState::default()
         });
         let codex = TrackingCodexProcess::new();
         let opencode = TrackingOpenCodeProcess::new();
@@ -1420,17 +1393,11 @@ mod tests {
             &daemon_config,
             codex,
             opencode,
-            transport,
+            discord,
             &mut control,
         )
         .expect_err("dispatch failures should propagate");
-        assert!(matches!(
-            error,
-            CrabError::InvariantViolation {
-                context: "discord_runtime_post_message",
-                ..
-            }
-        ));
+        assert!(error.to_string().contains("forced post failure"));
     }
 
     #[test]
@@ -1442,7 +1409,7 @@ mod tests {
             tick_interval_ms: 1,
             max_iterations: Some(1),
         };
-        let transport = ScriptedTransport::with_state(TransportState::default());
+        let discord = ScriptedDiscordIo::with_state(DiscordIoState::default());
         let codex = TrackingCodexProcess::new();
         let opencode = TrackingOpenCodeProcess::new();
         let mut control = ScriptedControl::with_now(vec![1_000]);
@@ -1452,7 +1419,7 @@ mod tests {
             &daemon_config,
             codex,
             opencode,
-            transport,
+            discord,
             &mut control,
         )
         .expect_err("missing heartbeat clock value should fail");
@@ -1474,7 +1441,7 @@ mod tests {
             tick_interval_ms: 1,
             max_iterations: Some(1),
         };
-        let transport = ScriptedTransport::with_state(TransportState::default());
+        let discord = ScriptedDiscordIo::with_state(DiscordIoState::default());
         let codex = TrackingCodexProcess::new();
         let opencode = TrackingOpenCodeProcess::new();
         let mut control = ScriptedControl::with_now(vec![1_000, 0]);
@@ -1484,7 +1451,7 @@ mod tests {
             &daemon_config,
             codex,
             opencode,
-            transport,
+            discord,
             &mut control,
         )
         .expect_err("heartbeat runtime invariants should propagate");
@@ -1506,7 +1473,7 @@ mod tests {
             tick_interval_ms: 1,
             max_iterations: Some(1),
         };
-        let transport = ScriptedTransport::with_state(TransportState::default());
+        let discord = ScriptedDiscordIo::with_state(DiscordIoState::default());
         let codex = TrackingCodexProcess::new();
         let opencode = TrackingOpenCodeProcess::new();
         let mut control = SleepFailControl::with_now(vec![1_000, 1_001]);
@@ -1516,7 +1483,7 @@ mod tests {
             &daemon_config,
             codex,
             opencode,
-            transport,
+            discord,
             &mut control,
         )
         .expect_err("sleep failures should propagate");
@@ -1538,7 +1505,7 @@ mod tests {
             tick_interval_ms: 1,
             max_iterations: Some(1),
         };
-        let transport = ScriptedTransport::with_state(TransportState::default());
+        let discord = ScriptedDiscordIo::with_state(DiscordIoState::default());
         let codex = TrackingCodexProcess::with_terminate_error("forced codex stop failure");
         let opencode = TrackingOpenCodeProcess::new();
         let mut control = ScriptedControl::with_now(vec![1_000, 1_001]);
@@ -1548,7 +1515,7 @@ mod tests {
             &daemon_config,
             codex,
             opencode,
-            transport,
+            discord,
             &mut control,
         )
         .expect_err("codex stop failures should propagate");
@@ -1570,7 +1537,7 @@ mod tests {
             tick_interval_ms: 1,
             max_iterations: Some(1),
         };
-        let transport = ScriptedTransport::with_state(TransportState::default());
+        let discord = ScriptedDiscordIo::with_state(DiscordIoState::default());
         let codex = TrackingCodexProcess::new();
         let opencode =
             TrackingOpenCodeProcess::with_terminate_error("forced opencode stop failure");
@@ -1581,7 +1548,7 @@ mod tests {
             &daemon_config,
             codex,
             opencode,
-            transport,
+            discord,
             &mut control,
         )
         .expect_err("opencode stop failures should propagate");
@@ -1595,41 +1562,25 @@ mod tests {
     }
 
     #[test]
-    fn daemon_runtime_new_rejects_blank_bot_user_id() {
-        let workspace = TempWorkspace::new("daemon", "runtime-new-error");
-        let config = runtime_config_for_workspace_with_lanes(&workspace.path, 1);
-        let transport = ScriptedTransport::with_state(TransportState::default());
-        let error = DaemonTurnRuntime::new(" ", config.owner.clone(), transport)
-            .expect_err("blank bot id should fail runtime construction");
-        assert!(matches!(
-            error,
-            CrabError::InvariantViolation {
-                context: "gateway_ingress_new",
-                message,
-            } if message == "bot_user_id must not be empty"
-        ));
-    }
-
-    #[test]
     fn daemon_runtime_ensure_physical_session_propagates_session_clock_errors() {
         let workspace = TempWorkspace::new("daemon", "session-clock-error");
         let config = runtime_config_for_workspace_with_lanes(&workspace.path, 1);
-        let transport = ScriptedTransport::with_state(TransportState::default());
+        let discord = ScriptedDiscordIo::with_state(DiscordIoState::default());
         let mut runtime =
-            DaemonTurnRuntime::new("999", config.owner.clone(), transport).expect("runtime builds");
+            DaemonTurnRuntime::new(config.owner.clone(), discord).expect("runtime builds");
         let profile = InferenceProfile {
             backend: BackendKind::Codex,
             model: "auto".to_string(),
             reasoning_level: ReasoningLevel::Medium,
         };
 
-        DaemonTurnRuntime::<ScriptedTransport>::set_session_now_epoch_ms_override(Some(
+        DaemonTurnRuntime::<ScriptedDiscordIo>::set_session_now_epoch_ms_override(Some(
             fail_session_now_epoch_ms,
         ));
         let error = runtime
             .ensure_physical_session("discord:channel:777", &profile, None)
             .expect_err("session clock failures should surface");
-        DaemonTurnRuntime::<ScriptedTransport>::set_session_now_epoch_ms_override(None);
+        DaemonTurnRuntime::<ScriptedDiscordIo>::set_session_now_epoch_ms_override(None);
 
         assert_eq!(
             error,
@@ -1641,70 +1592,53 @@ mod tests {
     }
 
     #[test]
-    fn daemon_runtime_delivery_propagates_post_edit_and_fallback_errors() {
+    fn daemon_runtime_delivery_propagates_post_and_edit_errors() {
         let workspace = TempWorkspace::new("daemon", "delivery-errors");
         let config = runtime_config_for_workspace_with_lanes(&workspace.path, 1);
         let run = sample_run("non-owner");
 
-        let transport = ScriptedTransport::with_state(TransportState {
-            post_results: VecDeque::from([Err(DiscordTransportError::Fatal {
+        let discord = ScriptedDiscordIo::with_state(DiscordIoState {
+            post_results: VecDeque::from([Err(CrabError::InvariantViolation {
+                context: "daemon_test_post",
                 message: "post failure".to_string(),
             })]),
-            ..TransportState::default()
+            ..DiscordIoState::default()
         });
         let mut runtime =
-            DaemonTurnRuntime::new("999", config.owner.clone(), transport).expect("runtime builds");
+            DaemonTurnRuntime::new(config.owner.clone(), discord).expect("runtime builds");
         let post_error = runtime
             .deliver_assistant_output(&run, "777", "source-msg-1", 0, "payload")
             .expect_err("post failures should surface");
-        assert!(matches!(
+        assert_eq!(
             post_error,
             CrabError::InvariantViolation {
-                context: "discord_runtime_post_message",
-                ..
+                context: "daemon_test_post",
+                message: "post failure".to_string(),
             }
-        ));
+        );
 
-        let transport = ScriptedTransport::with_state(TransportState {
-            edit_results: VecDeque::from([Err(DiscordTransportError::Fatal {
+        let discord = ScriptedDiscordIo::with_state(DiscordIoState {
+            edit_results: VecDeque::from([Err(CrabError::InvariantViolation {
+                context: "daemon_test_edit",
                 message: "edit failure".to_string(),
             })]),
-            ..TransportState::default()
+            ..DiscordIoState::default()
         });
         let mut runtime =
-            DaemonTurnRuntime::new("999", config.owner.clone(), transport).expect("runtime builds");
+            DaemonTurnRuntime::new(config.owner.clone(), discord).expect("runtime builds");
         runtime
             .deliver_assistant_output(&run, "777", "source-msg-1", 0, "first")
             .expect("initial post should succeed");
         let edit_error = runtime
             .deliver_assistant_output(&run, "777", "source-msg-1", 1, "edit")
             .expect_err("edit failures should surface");
-        assert!(matches!(
+        assert_eq!(
             edit_error,
             CrabError::InvariantViolation {
-                context: "discord_runtime_edit_message",
-                ..
+                context: "daemon_test_edit",
+                message: "edit failure".to_string(),
             }
-        ));
-
-        let transport = ScriptedTransport::with_state(TransportState {
-            post_results: VecDeque::from([Err(DiscordTransportError::Fatal {
-                message: "fallback post failure".to_string(),
-            })]),
-            ..TransportState::default()
-        });
-        let mut runtime =
-            DaemonTurnRuntime::new("999", config.owner.clone(), transport).expect("runtime builds");
-        let fallback_error = runtime
-            .deliver_assistant_output(&run, "777", "source-msg-2", 1, "fallback")
-            .expect_err("fallback post failures should surface");
-        assert!(matches!(
-            fallback_error,
-            CrabError::InvariantViolation {
-                context: "discord_runtime_post_message",
-                ..
-            }
-        ));
+        );
     }
 
     #[test]
@@ -1718,9 +1652,9 @@ mod tests {
         config.owner.machine_location = Some("Paris".to_string());
         config.owner.machine_timezone = Some("Europe/Paris".to_string());
 
-        let transport = ScriptedTransport::with_state(TransportState::default());
+        let discord = ScriptedDiscordIo::with_state(DiscordIoState::default());
         let mut runtime =
-            DaemonTurnRuntime::new("999", config.owner.clone(), transport).expect("runtime builds");
+            DaemonTurnRuntime::new(config.owner.clone(), discord).expect("runtime builds");
         let telemetry = runtime
             .resolve_run_profile("discord:channel:777", "123", "hello")
             .expect("profile resolution should succeed");
@@ -1749,9 +1683,9 @@ mod tests {
         config.owner.machine_location = None;
         config.owner.machine_timezone = None;
 
-        let transport = ScriptedTransport::with_state(TransportState::default());
+        let discord = ScriptedDiscordIo::with_state(DiscordIoState::default());
         let mut runtime =
-            DaemonTurnRuntime::new("999", config.owner.clone(), transport).expect("runtime builds");
+            DaemonTurnRuntime::new(config.owner.clone(), discord).expect("runtime builds");
         let telemetry = runtime
             .resolve_run_profile("discord:channel:777", "123", "hello")
             .expect("profile resolution should succeed");
@@ -1769,9 +1703,9 @@ mod tests {
     fn daemon_runtime_ensure_physical_session_reuses_active_session() {
         let workspace = TempWorkspace::new("daemon", "session-reuse");
         let config = runtime_config_for_workspace_with_lanes(&workspace.path, 1);
-        let transport = ScriptedTransport::with_state(TransportState::default());
+        let discord = ScriptedDiscordIo::with_state(DiscordIoState::default());
         let mut runtime =
-            DaemonTurnRuntime::new("999", config.owner.clone(), transport).expect("runtime builds");
+            DaemonTurnRuntime::new(config.owner.clone(), discord).expect("runtime builds");
         let profile = InferenceProfile {
             backend: BackendKind::Codex,
             model: "auto".to_string(),
@@ -1792,9 +1726,9 @@ mod tests {
     fn daemon_runtime_ensure_physical_session_uses_provided_id_when_missing_from_cache() {
         let workspace = TempWorkspace::new("daemon", "session-cache-miss");
         let config = runtime_config_for_workspace_with_lanes(&workspace.path, 1);
-        let transport = ScriptedTransport::with_state(TransportState::default());
+        let discord = ScriptedDiscordIo::with_state(DiscordIoState::default());
         let mut runtime =
-            DaemonTurnRuntime::new("999", config.owner.clone(), transport).expect("runtime builds");
+            DaemonTurnRuntime::new(config.owner.clone(), discord).expect("runtime builds");
         let profile = InferenceProfile {
             backend: BackendKind::Codex,
             model: "auto".to_string(),
@@ -1808,64 +1742,41 @@ mod tests {
     }
 
     #[test]
-    fn daemon_runtime_delivery_covers_post_edit_and_edit_fallback_paths() {
+    fn daemon_runtime_delivery_covers_post_and_edit_paths() {
         let workspace = TempWorkspace::new("daemon", "delivery");
         let config = runtime_config_for_workspace_with_lanes(&workspace.path, 1);
-        let transport = ScriptedTransport::with_state(TransportState::default());
-        let transport_state = transport.clone();
+        let discord = ScriptedDiscordIo::with_state(DiscordIoState::default());
+        let discord_state = discord.clone();
         let mut runtime =
-            DaemonTurnRuntime::new("999", config.owner.clone(), transport).expect("runtime builds");
+            DaemonTurnRuntime::new(config.owner.clone(), discord).expect("runtime builds");
         let run = sample_run("non-owner");
 
         runtime
-            .deliver_assistant_output(&run, "777", "source-msg-1", 0, "first payload")
+            .deliver_assistant_output(&run, "777", "delivery-1", 0, "first payload")
             .expect("first post should succeed");
         runtime
-            .deliver_assistant_output(&run, "777", "source-msg-1", 1, "edited payload")
-            .expect("known source id should edit");
-        runtime
-            .deliver_assistant_output(&run, "777", "source-msg-2", 1, "fallback payload")
-            .expect("unknown source id should fallback to post");
+            .deliver_assistant_output(&run, "777", "delivery-1", 1, "edited payload")
+            .expect("edit should succeed");
 
-        let state = transport_state.state();
-        assert_eq!(state.posted.len(), 2);
+        let state = discord_state.state();
+        assert_eq!(state.posted.len(), 1);
         assert_eq!(state.edited.len(), 1);
+        assert_eq!(
+            state.posted[0],
+            (
+                "777".to_string(),
+                "delivery-1".to_string(),
+                "first payload".to_string()
+            )
+        );
         assert_eq!(
             state.edited[0],
             (
                 "777".to_string(),
-                "posted-1".to_string(),
+                "delivery-1".to_string(),
                 "edited payload".to_string(),
             )
         );
-    }
-
-    #[test]
-    fn scripted_transport_edit_and_wait_helpers_cover_scripted_and_default_paths() {
-        let transport = ScriptedTransport::with_state(TransportState {
-            edit_results: VecDeque::from([Ok(())]),
-            wait_results: VecDeque::from([Ok(())]),
-            ..TransportState::default()
-        });
-        let transport_state = transport.clone();
-        let mut runtime_transport = transport;
-
-        runtime_transport
-            .edit_message("777", "discord-msg-1", "edit one")
-            .expect("scripted edit should succeed");
-        runtime_transport
-            .edit_message("777", "discord-msg-2", "edit two")
-            .expect("default edit path should succeed");
-        runtime_transport
-            .wait_for_retry(10)
-            .expect("scripted wait should succeed");
-        runtime_transport
-            .wait_for_retry(10)
-            .expect("default wait path should succeed");
-
-        let state = transport_state.state();
-        assert_eq!(state.edited.len(), 2);
-        assert!(state.wait_results.is_empty());
     }
 
     #[test]

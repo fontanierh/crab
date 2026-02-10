@@ -466,7 +466,7 @@ Rules:
 - If message length or format constraints require split, create deterministic chunk indices.
 - Before sending/editing chunk `n`, check if record exists with same content hash.
   - If yes: skip.
-  - If no: apply edit/post and persist record.
+  - If no: apply edit/post, await delivery confirmation, then persist record.
 - On Discord API errors that invalidate message id (deleted/not found), create a replacement message and remap current stream target.
 
 ## 11) Cancellation Semantics

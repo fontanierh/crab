@@ -34,6 +34,54 @@ pub struct GatewayMessage {
     pub conversation_kind: GatewayConversationKind,
 }
 
+/// JSONL IPC frame emitted by `crabd` (stdout) and consumed by `crab-discord-connector`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "op")]
+pub enum CrabdOutboundOp {
+    #[serde(rename = "post")]
+    Post {
+        op_id: String,
+        channel_id: String,
+        delivery_id: String,
+        content: String,
+    },
+    #[serde(rename = "edit")]
+    Edit {
+        op_id: String,
+        channel_id: String,
+        delivery_id: String,
+        content: String,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CrabdOutboundReceiptStatus {
+    Ok,
+    Error,
+}
+
+/// JSONL IPC receipt emitted by `crab-discord-connector` (stdin) and consumed by `crabd`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CrabdOutboundReceipt {
+    pub op_id: String,
+    pub status: CrabdOutboundReceiptStatus,
+    pub channel_id: String,
+    pub delivery_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub discord_message_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error_message: Option<String>,
+}
+
+/// JSONL IPC frame emitted by `crab-discord-connector` (stdin) and consumed by `crabd`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", content = "payload", rename_all = "snake_case")]
+pub enum CrabdInboundFrame {
+    GatewayMessage(GatewayMessage),
+    OutboundReceipt(CrabdOutboundReceipt),
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RoutingKey {
     Channel { channel_id: String },

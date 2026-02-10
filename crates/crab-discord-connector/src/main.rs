@@ -17,8 +17,10 @@ use crab_core::config::DEFAULT_WORKSPACE_ROOT;
 use crab_core::{CrabError, CrabResult};
 #[cfg(test)]
 use crab_discord::GatewayConversationKind;
-use crab_discord::GatewayMessage;
-use serde::{Deserialize, Serialize};
+use crab_discord::{
+    CrabdInboundFrame, CrabdOutboundOp, CrabdOutboundReceipt, CrabdOutboundReceiptStatus,
+    GatewayMessage,
+};
 #[cfg(test)]
 use std::collections::VecDeque;
 #[cfg(test)]
@@ -177,23 +179,6 @@ impl DiscordApiError {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
-#[serde(tag = "op")]
-enum CrabdOutboundOp {
-    #[serde(rename = "post")]
-    Post {
-        channel_id: String,
-        message_id: String,
-        content: String,
-    },
-    #[serde(rename = "edit")]
-    Edit {
-        channel_id: String,
-        message_id: String,
-        content: String,
-    },
-}
-
 trait DiscordIo {
     fn next_gateway_message(&mut self) -> CrabResult<Option<GatewayMessage>>;
 
@@ -211,7 +196,7 @@ trait DiscordIo {
 
 trait CrabdIo {
     fn next_outbound_op(&mut self) -> CrabResult<Option<CrabdOutboundOp>>;
-    fn send_gateway_message(&mut self, message: &GatewayMessage) -> CrabResult<()>;
+    fn send_inbound_frame(&mut self, frame: &CrabdInboundFrame) -> CrabResult<()>;
 }
 
 trait ConnectorLoopControl {
@@ -227,12 +212,12 @@ struct ConnectorLoopStats {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct MessageIdMapStore {
+struct DeliveryIdMapStore {
     path: PathBuf,
     map: BTreeMap<String, String>,
 }
 
-impl MessageIdMapStore {
+impl DeliveryIdMapStore {
     fn load(path: impl Into<PathBuf>) -> CrabResult<Self> {
         let path = path.into();
         let map = if path.exists() {
@@ -259,23 +244,19 @@ impl MessageIdMapStore {
         Ok(Self { path, map })
     }
 
-    fn resolve_message_id(&self, channel_id: &str, message_id: &str) -> String {
-        let key = Self::key(channel_id, message_id);
-        self.map
-            .get(&key)
-            .cloned()
-            .unwrap_or_else(|| message_id.to_string())
+    fn lookup_discord_message_id(&self, channel_id: &str, delivery_id: &str) -> Option<String> {
+        self.map.get(&Self::key(channel_id, delivery_id)).cloned()
     }
 
     fn remember_post_mapping(
         &mut self,
         channel_id: &str,
-        synthetic_message_id: &str,
-        actual_message_id: &str,
+        delivery_id: &str,
+        discord_message_id: &str,
     ) -> CrabResult<()> {
         self.map.insert(
-            Self::key(channel_id, synthetic_message_id),
-            actual_message_id.to_string(),
+            Self::key(channel_id, delivery_id),
+            discord_message_id.to_string(),
         );
         self.persist()
     }
@@ -323,15 +304,18 @@ fn parse_outbound_op_line(line: &str) -> CrabResult<CrabdOutboundOp> {
 
     match &op {
         CrabdOutboundOp::Post {
+            op_id,
             channel_id,
-            message_id,
+            delivery_id,
             content,
         }
         | CrabdOutboundOp::Edit {
+            op_id,
             channel_id,
-            message_id,
+            delivery_id,
             content,
         } => {
+            ensure_non_empty("connector_parse_crabd_outbound_op", "op_id", op_id)?;
             ensure_non_empty(
                 "connector_parse_crabd_outbound_op",
                 "channel_id",
@@ -339,8 +323,8 @@ fn parse_outbound_op_line(line: &str) -> CrabResult<CrabdOutboundOp> {
             )?;
             ensure_non_empty(
                 "connector_parse_crabd_outbound_op",
-                "message_id",
-                message_id,
+                "delivery_id",
+                delivery_id,
             )?;
             ensure_non_empty("connector_parse_crabd_outbound_op", "content", content)?;
         }
@@ -352,7 +336,7 @@ fn parse_outbound_op_line(line: &str) -> CrabResult<CrabdOutboundOp> {
 fn run_connector_loop<D, C>(
     discord: &mut D,
     crabd: &mut C,
-    message_id_map_store: &mut MessageIdMapStore,
+    delivery_id_map_store: &mut DeliveryIdMapStore,
     retry_policy: ConnectorRetryPolicy,
     idle_sleep_ms: u64,
     control: &mut dyn ConnectorLoopControl,
@@ -367,13 +351,17 @@ where
         let mut progressed = false;
 
         while let Some(message) = discord.next_gateway_message()? {
-            crabd.send_gateway_message(&message)?;
+            let frame = CrabdInboundFrame::GatewayMessage(message);
+            crabd.send_inbound_frame(&frame)?;
             progressed = true;
             stats.gateway_messages_forwarded = stats.gateway_messages_forwarded.saturating_add(1);
         }
 
         while let Some(op) = crabd.next_outbound_op()? {
-            process_outbound_op(discord, message_id_map_store, retry_policy, op, &mut stats)?;
+            let receipt =
+                process_outbound_op(discord, delivery_id_map_store, retry_policy, op, &mut stats);
+            let frame = CrabdInboundFrame::OutboundReceipt(receipt);
+            crabd.send_inbound_frame(&frame)?;
             progressed = true;
             stats.outbound_operations_processed =
                 stats.outbound_operations_processed.saturating_add(1);
@@ -389,43 +377,118 @@ where
 
 fn process_outbound_op<D>(
     discord: &mut D,
-    message_id_map_store: &mut MessageIdMapStore,
+    delivery_id_map_store: &mut DeliveryIdMapStore,
     retry_policy: ConnectorRetryPolicy,
     op: CrabdOutboundOp,
     stats: &mut ConnectorLoopStats,
-) -> CrabResult<()>
+) -> CrabdOutboundReceipt
 where
     D: DiscordIo,
 {
     match op {
         CrabdOutboundOp::Post {
+            op_id,
             channel_id,
-            message_id,
+            delivery_id,
             content,
-        } => {
-            let actual_message_id = execute_with_retry(
-                "connector_post_message",
-                discord,
-                retry_policy,
-                |discord| discord.post_message(&channel_id, &content),
-                stats,
-            )?;
-            message_id_map_store.remember_post_mapping(&channel_id, &message_id, &actual_message_id)
-        }
+        } => match delivery_id_map_store.lookup_discord_message_id(&channel_id, &delivery_id) {
+            Some(discord_message_id) => CrabdOutboundReceipt {
+                op_id,
+                status: CrabdOutboundReceiptStatus::Ok,
+                channel_id,
+                delivery_id,
+                discord_message_id: Some(discord_message_id),
+                error_message: None,
+            },
+            None => {
+                let actual_message_id = execute_with_retry(
+                    "connector_post_message",
+                    discord,
+                    retry_policy,
+                    |discord| discord.post_message(&channel_id, &content),
+                    stats,
+                );
+
+                match actual_message_id {
+                    Ok(actual_message_id) => match delivery_id_map_store.remember_post_mapping(
+                        &channel_id,
+                        &delivery_id,
+                        &actual_message_id,
+                    ) {
+                        Ok(()) => CrabdOutboundReceipt {
+                            op_id,
+                            status: CrabdOutboundReceiptStatus::Ok,
+                            channel_id,
+                            delivery_id,
+                            discord_message_id: Some(actual_message_id),
+                            error_message: None,
+                        },
+                        Err(error) => CrabdOutboundReceipt {
+                            op_id,
+                            status: CrabdOutboundReceiptStatus::Error,
+                            channel_id,
+                            delivery_id,
+                            discord_message_id: Some(actual_message_id),
+                            error_message: Some(error.to_string()),
+                        },
+                    },
+                    Err(error) => CrabdOutboundReceipt {
+                        op_id,
+                        status: CrabdOutboundReceiptStatus::Error,
+                        channel_id,
+                        delivery_id,
+                        discord_message_id: None,
+                        error_message: Some(error.to_string()),
+                    },
+                }
+            }
+        },
         CrabdOutboundOp::Edit {
+            op_id,
             channel_id,
-            message_id,
+            delivery_id,
             content,
         } => {
-            let resolved_message_id =
-                message_id_map_store.resolve_message_id(&channel_id, &message_id);
-            execute_with_retry(
+            let Some(discord_message_id) =
+                delivery_id_map_store.lookup_discord_message_id(&channel_id, &delivery_id)
+            else {
+                return CrabdOutboundReceipt {
+                    op_id,
+                    status: CrabdOutboundReceiptStatus::Error,
+                    channel_id,
+                    delivery_id,
+                    discord_message_id: None,
+                    error_message: Some(
+                        "missing discord message id mapping for delivery_id; cannot edit"
+                            .to_string(),
+                    ),
+                };
+            };
+
+            match execute_with_retry(
                 "connector_edit_message",
                 discord,
                 retry_policy,
-                |discord| discord.edit_message(&channel_id, &resolved_message_id, &content),
+                |discord| discord.edit_message(&channel_id, &discord_message_id, &content),
                 stats,
-            )
+            ) {
+                Ok(()) => CrabdOutboundReceipt {
+                    op_id,
+                    status: CrabdOutboundReceiptStatus::Ok,
+                    channel_id,
+                    delivery_id,
+                    discord_message_id: Some(discord_message_id),
+                    error_message: None,
+                },
+                Err(error) => CrabdOutboundReceipt {
+                    op_id,
+                    status: CrabdOutboundReceiptStatus::Error,
+                    channel_id,
+                    delivery_id,
+                    discord_message_id: Some(discord_message_id),
+                    error_message: Some(error.to_string()),
+                },
+            }
         }
     }
 }
@@ -744,9 +807,9 @@ impl CrabdIo for ChildCrabdIo {
         }
     }
 
-    fn send_gateway_message(&mut self, message: &GatewayMessage) -> CrabResult<()> {
-        let payload = serde_json::to_string(message).map_err(|error| CrabError::Serialization {
-            context: "connector_serialize_gateway_message",
+    fn send_inbound_frame(&mut self, frame: &CrabdInboundFrame) -> CrabResult<()> {
+        let payload = serde_json::to_string(frame).map_err(|error| CrabError::Serialization {
+            context: "connector_serialize_crabd_inbound_frame",
             path: None,
             message: error.to_string(),
         })?;
@@ -1121,7 +1184,7 @@ fn run_with_env_and_args() -> CrabResult<ConnectorLoopStats> {
     let args = std::env::args().skip(1).collect::<Vec<_>>();
     let config = ConnectorConfig::from_map_and_args(&values, &args)?;
 
-    let mut message_id_map_store = MessageIdMapStore::load(config.message_id_map_path)?;
+    let mut delivery_id_map_store = DeliveryIdMapStore::load(config.message_id_map_path)?;
     let mut discord = live_discord::LiveDiscordIo::connect(config.discord_token)?;
     let mut crabd = ChildCrabdIo::spawn(&config.crabd_path)?;
     let mut control = SystemConnectorLoopControl::install()?;
@@ -1129,7 +1192,7 @@ fn run_with_env_and_args() -> CrabResult<ConnectorLoopStats> {
     run_connector_loop(
         &mut discord,
         &mut crabd,
-        &mut message_id_map_store,
+        &mut delivery_id_map_store,
         config.retry_policy,
         config.idle_sleep_ms,
         &mut control,
@@ -1214,7 +1277,7 @@ mod tests {
     #[derive(Debug, Clone, Default)]
     struct ScriptedCrabdIo {
         outbound: VecDeque<CrabResult<Option<CrabdOutboundOp>>>,
-        forwarded: Vec<GatewayMessage>,
+        inbound_frames: Vec<CrabdInboundFrame>,
     }
 
     impl CrabdIo for ScriptedCrabdIo {
@@ -1222,8 +1285,8 @@ mod tests {
             self.outbound.pop_front().unwrap_or(Ok(None))
         }
 
-        fn send_gateway_message(&mut self, message: &GatewayMessage) -> CrabResult<()> {
-            self.forwarded.push(message.clone());
+        fn send_inbound_frame(&mut self, frame: &CrabdInboundFrame) -> CrabResult<()> {
+            self.inbound_frames.push(frame.clone());
             Ok(())
         }
     }
@@ -1272,6 +1335,40 @@ mod tests {
             thread_id: None,
             content: content.to_string(),
             conversation_kind: GatewayConversationKind::GuildChannel,
+        }
+    }
+
+    fn ok_receipt_frame(
+        op_id: &str,
+        channel_id: &str,
+        delivery_id: &str,
+        discord_message_id: &str,
+    ) -> CrabdInboundFrame {
+        CrabdInboundFrame::OutboundReceipt(CrabdOutboundReceipt {
+            op_id: op_id.to_string(),
+            status: CrabdOutboundReceiptStatus::Ok,
+            channel_id: channel_id.to_string(),
+            delivery_id: delivery_id.to_string(),
+            discord_message_id: Some(discord_message_id.to_string()),
+            error_message: None,
+        })
+    }
+
+    fn post_op(op_id: &str, channel_id: &str, delivery_id: &str, content: &str) -> CrabdOutboundOp {
+        CrabdOutboundOp::Post {
+            op_id: op_id.to_string(),
+            channel_id: channel_id.to_string(),
+            delivery_id: delivery_id.to_string(),
+            content: content.to_string(),
+        }
+    }
+
+    fn edit_op(op_id: &str, channel_id: &str, delivery_id: &str, content: &str) -> CrabdOutboundOp {
+        CrabdOutboundOp::Edit {
+            op_id: op_id.to_string(),
+            channel_id: channel_id.to_string(),
+            delivery_id: delivery_id.to_string(),
+            content: content.to_string(),
         }
     }
 
@@ -1392,25 +1489,26 @@ mod tests {
     #[test]
     fn message_id_map_store_load_resolve_and_persist_round_trip() {
         let path = temp_file_path("connector-map");
-        let mut store = MessageIdMapStore::load(&path).expect("map should initialize when missing");
+        let mut store =
+            DeliveryIdMapStore::load(&path).expect("map should initialize when missing");
 
         assert_eq!(
-            store.resolve_message_id("channel-1", "synthetic-1"),
-            "synthetic-1"
+            store.lookup_discord_message_id("channel-1", "delivery-1"),
+            None
         );
 
         store
-            .remember_post_mapping("channel-1", "synthetic-1", "actual-1")
+            .remember_post_mapping("channel-1", "delivery-1", "actual-1")
             .expect("mapping should persist");
         assert_eq!(
-            store.resolve_message_id("channel-1", "synthetic-1"),
-            "actual-1"
+            store.lookup_discord_message_id("channel-1", "delivery-1"),
+            Some("actual-1".to_string())
         );
 
-        let reloaded = MessageIdMapStore::load(&path).expect("map should reload");
+        let reloaded = DeliveryIdMapStore::load(&path).expect("map should reload");
         assert_eq!(
-            reloaded.resolve_message_id("channel-1", "synthetic-1"),
-            "actual-1"
+            reloaded.lookup_discord_message_id("channel-1", "delivery-1"),
+            Some("actual-1".to_string())
         );
 
         let _ = fs::remove_file(path);
@@ -1419,27 +1517,29 @@ mod tests {
     #[test]
     fn parse_outbound_op_line_validates_shape_and_required_fields() {
         let post = parse_outbound_op_line(
-            r#"{"op":"post","channel_id":"c1","message_id":"m1","content":"hello"}"#,
+            r#"{"op":"post","op_id":"op-1","channel_id":"c1","delivery_id":"d1","content":"hello"}"#,
         )
         .expect("post line should parse");
         assert_eq!(
             post,
             CrabdOutboundOp::Post {
+                op_id: "op-1".to_string(),
                 channel_id: "c1".to_string(),
-                message_id: "m1".to_string(),
+                delivery_id: "d1".to_string(),
                 content: "hello".to_string(),
             }
         );
 
         let edit = parse_outbound_op_line(
-            r#"{"op":"edit","channel_id":"c1","message_id":"m1","content":"hi"}"#,
+            r#"{"op":"edit","op_id":"op-2","channel_id":"c1","delivery_id":"d1","content":"hi"}"#,
         )
         .expect("edit line should parse");
         assert_eq!(
             edit,
             CrabdOutboundOp::Edit {
+                op_id: "op-2".to_string(),
                 channel_id: "c1".to_string(),
-                message_id: "m1".to_string(),
+                delivery_id: "d1".to_string(),
                 content: "hi".to_string(),
             }
         );
@@ -1455,7 +1555,7 @@ mod tests {
         ));
 
         let blank_content = parse_outbound_op_line(
-            r#"{"op":"post","channel_id":"c1","message_id":"m1","content":"   "}"#,
+            r#"{"op":"post","op_id":"op-1","channel_id":"c1","delivery_id":"d1","content":"   "}"#,
         )
         .expect_err("blank content should fail invariant validation");
         assert!(matches!(
@@ -1470,7 +1570,7 @@ mod tests {
     #[test]
     fn connector_loop_forwards_inbound_and_processes_outbound_with_mapping() {
         let map_path = temp_file_path("connector-loop-map");
-        let mut map_store = MessageIdMapStore::load(&map_path).expect("map store should init");
+        let mut map_store = DeliveryIdMapStore::load(&map_path).expect("map store should init");
 
         let mut discord = ScriptedDiscordIo {
             inbound: VecDeque::from([Ok(Some(gateway_message("msg-1", "hello"))), Ok(None)]),
@@ -1481,13 +1581,15 @@ mod tests {
         let mut crabd = ScriptedCrabdIo {
             outbound: VecDeque::from([
                 Ok(Some(CrabdOutboundOp::Post {
+                    op_id: "op-1".to_string(),
                     channel_id: "channel-1".to_string(),
-                    message_id: "synthetic-1".to_string(),
+                    delivery_id: "delivery-1".to_string(),
                     content: "first".to_string(),
                 })),
                 Ok(Some(CrabdOutboundOp::Edit {
+                    op_id: "op-2".to_string(),
                     channel_id: "channel-1".to_string(),
-                    message_id: "synthetic-1".to_string(),
+                    delivery_id: "delivery-1".to_string(),
                     content: "updated".to_string(),
                 })),
                 Ok(None),
@@ -1509,9 +1611,21 @@ mod tests {
         assert_eq!(stats.gateway_messages_forwarded, 1);
         assert_eq!(stats.outbound_operations_processed, 2);
         assert_eq!(stats.retry_waits, 0);
-        assert_eq!(crabd.forwarded.len(), 1);
         assert_eq!(discord.post_calls.len(), 1);
         assert_eq!(discord.edit_calls.len(), 1);
+        assert_eq!(crabd.inbound_frames.len(), 3);
+        assert_eq!(
+            crabd.inbound_frames[0],
+            CrabdInboundFrame::GatewayMessage(gateway_message("msg-1", "hello"))
+        );
+        assert_eq!(
+            crabd.inbound_frames[1],
+            ok_receipt_frame("op-1", "channel-1", "delivery-1", "actual-99")
+        );
+        assert_eq!(
+            crabd.inbound_frames[2],
+            ok_receipt_frame("op-2", "channel-1", "delivery-1", "actual-99")
+        );
         assert_eq!(
             discord.edit_calls[0],
             (
@@ -1525,9 +1639,9 @@ mod tests {
     }
 
     #[test]
-    fn connector_loop_retries_rate_limits_and_propagates_retry_exhaustion() {
+    fn connector_loop_retries_rate_limits_and_reports_retry_exhaustion() {
         let map_path = temp_file_path("connector-loop-retry");
-        let mut map_store = MessageIdMapStore::load(&map_path).expect("map store should init");
+        let mut map_store = DeliveryIdMapStore::load(&map_path).expect("map store should init");
 
         let mut discord = ScriptedDiscordIo {
             post_results: VecDeque::from([
@@ -1543,8 +1657,9 @@ mod tests {
         let mut crabd = ScriptedCrabdIo {
             outbound: VecDeque::from([
                 Ok(Some(CrabdOutboundOp::Post {
+                    op_id: "op-1".to_string(),
                     channel_id: "channel-1".to_string(),
-                    message_id: "synthetic-1".to_string(),
+                    delivery_id: "delivery-1".to_string(),
                     content: "first".to_string(),
                 })),
                 Ok(None),
@@ -1565,6 +1680,15 @@ mod tests {
 
         assert_eq!(stats.retry_waits, 1);
         assert_eq!(discord.wait_calls, vec![1234]);
+        assert_eq!(
+            crabd.inbound_frames,
+            vec![ok_receipt_frame(
+                "op-1",
+                "channel-1",
+                "delivery-1",
+                "actual-1"
+            )]
+        );
 
         let mut exhausted_discord = ScriptedDiscordIo {
             post_results: VecDeque::from([
@@ -1583,15 +1707,16 @@ mod tests {
 
         let mut exhausted_crabd = ScriptedCrabdIo {
             outbound: VecDeque::from([Ok(Some(CrabdOutboundOp::Post {
+                op_id: "op-2".to_string(),
                 channel_id: "channel-1".to_string(),
-                message_id: "synthetic-2".to_string(),
+                delivery_id: "delivery-2".to_string(),
                 content: "first".to_string(),
             }))]),
             ..ScriptedCrabdIo::default()
         };
         let mut exhausted_control = ScriptedControl::new(1);
 
-        let error = run_connector_loop(
+        let exhausted_stats = run_connector_loop(
             &mut exhausted_discord,
             &mut exhausted_crabd,
             &mut map_store,
@@ -1599,23 +1724,28 @@ mod tests {
             5,
             &mut exhausted_control,
         )
-        .expect_err("retry exhaustion should fail");
-
-        assert!(matches!(
-            error,
-            CrabError::InvariantViolation {
-                context: "connector_post_message",
+        .expect("retry exhaustion should be reported by receipt");
+        assert_eq!(exhausted_stats.outbound_operations_processed, 1);
+        assert_eq!(exhausted_stats.retry_waits, 2);
+        assert_eq!(exhausted_discord.post_calls.len(), 3);
+        assert_eq!(exhausted_discord.wait_calls, vec![500, 500]);
+        assert_eq!(exhausted_crabd.inbound_frames.len(), 1);
+        let is_error_receipt = matches!(
+            exhausted_crabd.inbound_frames[0],
+            CrabdInboundFrame::OutboundReceipt(CrabdOutboundReceipt {
+                status: CrabdOutboundReceiptStatus::Error,
                 ..
-            }
-        ));
+            })
+        );
+        assert!(is_error_receipt, "expected error receipt");
 
         let _ = fs::remove_file(map_path);
     }
 
     #[test]
-    fn connector_loop_surfaces_fatal_discord_errors_and_idle_sleep_paths() {
+    fn connector_loop_reports_fatal_discord_errors_and_idle_sleep_paths() {
         let map_path = temp_file_path("connector-loop-fatal");
-        let mut map_store = MessageIdMapStore::load(&map_path).expect("map store should init");
+        let mut map_store = DeliveryIdMapStore::load(&map_path).expect("map store should init");
 
         let mut discord = ScriptedDiscordIo {
             post_results: VecDeque::from([Err(DiscordApiError::Fatal {
@@ -1625,15 +1755,16 @@ mod tests {
         };
         let mut crabd = ScriptedCrabdIo {
             outbound: VecDeque::from([Ok(Some(CrabdOutboundOp::Post {
+                op_id: "op-1".to_string(),
                 channel_id: "channel-1".to_string(),
-                message_id: "synthetic-1".to_string(),
+                delivery_id: "delivery-1".to_string(),
                 content: "hello".to_string(),
             }))]),
             ..ScriptedCrabdIo::default()
         };
         let mut control = ScriptedControl::new(1);
 
-        let fatal_error = run_connector_loop(
+        let stats = run_connector_loop(
             &mut discord,
             &mut crabd,
             &mut map_store,
@@ -1641,14 +1772,18 @@ mod tests {
             10,
             &mut control,
         )
-        .expect_err("fatal post error should fail immediately");
-        assert!(matches!(
-            fatal_error,
-            CrabError::InvariantViolation {
-                context: "connector_post_message",
+        .expect("fatal post error should emit error receipt");
+        assert_eq!(stats.outbound_operations_processed, 1);
+        assert_eq!(stats.retry_waits, 0);
+        assert_eq!(crabd.inbound_frames.len(), 1);
+        let is_error_receipt = matches!(
+            crabd.inbound_frames[0],
+            CrabdInboundFrame::OutboundReceipt(CrabdOutboundReceipt {
+                status: CrabdOutboundReceiptStatus::Error,
                 ..
-            }
-        ));
+            })
+        );
+        assert!(is_error_receipt, "expected error receipt");
 
         let mut idle_discord = ScriptedDiscordIo::default();
         let mut idle_crabd = ScriptedCrabdIo::default();
@@ -1665,6 +1800,193 @@ mod tests {
         .expect("idle loop should shutdown cleanly");
         assert_eq!(idle_stats, ConnectorLoopStats::default());
         assert_eq!(idle_control.sleeps, vec![9, 9]);
+        assert_eq!(idle_crabd.inbound_frames, Vec::new());
+
+        let _ = fs::remove_file(map_path);
+    }
+
+    #[test]
+    fn connector_loop_skips_post_when_delivery_id_is_already_mapped() {
+        let map_path = temp_file_path("connector-loop-skip-post");
+        let mut map_store = DeliveryIdMapStore::load(&map_path).expect("map store should init");
+        map_store.map.insert(
+            DeliveryIdMapStore::key("channel-1", "delivery-1"),
+            "actual-99".to_string(),
+        );
+
+        let mut discord = ScriptedDiscordIo::default();
+        let mut crabd = ScriptedCrabdIo {
+            outbound: VecDeque::from([
+                Ok(Some(post_op("op-1", "channel-1", "delivery-1", "hello"))),
+                Ok(None),
+            ]),
+            ..ScriptedCrabdIo::default()
+        };
+        let mut control = ScriptedControl::new(1);
+
+        let stats = run_connector_loop(
+            &mut discord,
+            &mut crabd,
+            &mut map_store,
+            ConnectorRetryPolicy::default(),
+            5,
+            &mut control,
+        )
+        .expect("mapped delivery ids should short-circuit without posting");
+
+        assert_eq!(stats.outbound_operations_processed, 1);
+        assert_eq!(discord.post_calls.len(), 0);
+        assert_eq!(
+            crabd.inbound_frames,
+            vec![ok_receipt_frame(
+                "op-1",
+                "channel-1",
+                "delivery-1",
+                "actual-99"
+            )]
+        );
+        let _ = fs::remove_file(map_path);
+    }
+
+    #[test]
+    fn connector_loop_reports_post_mapping_persist_errors_in_receipt() {
+        let parent_file = temp_file_path("connector-loop-persist-error-parent");
+        fs::write(&parent_file, "not-a-directory").expect("parent file should be writable");
+        let map_path = parent_file.join("child.json");
+        let mut map_store = DeliveryIdMapStore::load(&map_path).expect("map store should init");
+
+        let mut discord = ScriptedDiscordIo::default();
+        let mut crabd = ScriptedCrabdIo {
+            outbound: VecDeque::from([
+                Ok(Some(post_op("op-1", "channel-1", "delivery-1", "hello"))),
+                Ok(None),
+            ]),
+            ..ScriptedCrabdIo::default()
+        };
+        let mut control = ScriptedControl::new(1);
+
+        let stats = run_connector_loop(
+            &mut discord,
+            &mut crabd,
+            &mut map_store,
+            ConnectorRetryPolicy::default(),
+            5,
+            &mut control,
+        )
+        .expect("post mapping persistence failures should emit receipts");
+
+        assert_eq!(stats.outbound_operations_processed, 1);
+        assert_eq!(discord.post_calls.len(), 1);
+        assert_eq!(crabd.inbound_frames.len(), 1);
+        let is_expected = matches!(
+            &crabd.inbound_frames[0],
+            CrabdInboundFrame::OutboundReceipt(CrabdOutboundReceipt {
+                op_id,
+                status: CrabdOutboundReceiptStatus::Error,
+                channel_id,
+                delivery_id,
+                discord_message_id: Some(discord_message_id),
+                error_message: Some(error_message),
+            }) if op_id == "op-1"
+                && channel_id == "channel-1"
+                && delivery_id == "delivery-1"
+                && discord_message_id == "actual-1"
+                && !error_message.trim().is_empty()
+        );
+        assert!(is_expected);
+
+        let _ = fs::remove_file(parent_file);
+    }
+
+    #[test]
+    fn connector_loop_rejects_edit_without_existing_message_id_mapping() {
+        let map_path = temp_file_path("connector-loop-edit-missing-map");
+        let mut map_store = DeliveryIdMapStore::load(&map_path).expect("map store should init");
+
+        let mut discord = ScriptedDiscordIo::default();
+        let mut crabd = ScriptedCrabdIo {
+            outbound: VecDeque::from([
+                Ok(Some(edit_op("op-1", "channel-1", "delivery-1", "updated"))),
+                Ok(None),
+            ]),
+            ..ScriptedCrabdIo::default()
+        };
+        let mut control = ScriptedControl::new(1);
+
+        let stats = run_connector_loop(
+            &mut discord,
+            &mut crabd,
+            &mut map_store,
+            ConnectorRetryPolicy::default(),
+            5,
+            &mut control,
+        )
+        .expect("missing mappings should emit error receipts");
+
+        assert_eq!(stats.outbound_operations_processed, 1);
+        assert_eq!(discord.edit_calls.len(), 0);
+        assert_eq!(crabd.inbound_frames.len(), 1);
+        let is_expected = matches!(
+            &crabd.inbound_frames[0],
+            CrabdInboundFrame::OutboundReceipt(CrabdOutboundReceipt {
+                status: CrabdOutboundReceiptStatus::Error,
+                discord_message_id: None,
+                error_message: Some(error_message),
+                ..
+            }) if error_message.contains("missing discord message id mapping")
+        );
+        assert!(is_expected);
+
+        let _ = fs::remove_file(map_path);
+    }
+
+    #[test]
+    fn connector_loop_reports_edit_discord_api_errors_in_receipt() {
+        let map_path = temp_file_path("connector-loop-edit-error");
+        let mut map_store = DeliveryIdMapStore::load(&map_path).expect("map store should init");
+        map_store.map.insert(
+            DeliveryIdMapStore::key("channel-1", "delivery-1"),
+            "actual-99".to_string(),
+        );
+
+        let mut discord = ScriptedDiscordIo {
+            edit_results: VecDeque::from([Err(DiscordApiError::Fatal {
+                message: "unauthorized".to_string(),
+            })]),
+            ..ScriptedDiscordIo::default()
+        };
+        let mut crabd = ScriptedCrabdIo {
+            outbound: VecDeque::from([
+                Ok(Some(edit_op("op-1", "channel-1", "delivery-1", "updated"))),
+                Ok(None),
+            ]),
+            ..ScriptedCrabdIo::default()
+        };
+        let mut control = ScriptedControl::new(1);
+
+        let stats = run_connector_loop(
+            &mut discord,
+            &mut crabd,
+            &mut map_store,
+            ConnectorRetryPolicy::default(),
+            5,
+            &mut control,
+        )
+        .expect("fatal edit errors should emit error receipts");
+
+        assert_eq!(stats.outbound_operations_processed, 1);
+        assert_eq!(discord.edit_calls.len(), 1);
+        assert_eq!(crabd.inbound_frames.len(), 1);
+        let is_expected = matches!(
+            &crabd.inbound_frames[0],
+            CrabdInboundFrame::OutboundReceipt(CrabdOutboundReceipt {
+                status: CrabdOutboundReceiptStatus::Error,
+                discord_message_id: Some(discord_message_id),
+                error_message: Some(error_message),
+                ..
+            }) if discord_message_id == "actual-99" && !error_message.trim().is_empty()
+        );
+        assert!(is_expected);
 
         let _ = fs::remove_file(map_path);
     }
@@ -1780,7 +2102,7 @@ mod tests {
         let path = temp_file_path("connector-map-errors");
 
         fs::write(&path, "{").expect("write should succeed");
-        let parse_error = MessageIdMapStore::load(&path).expect_err("parse should fail");
+        let parse_error = DeliveryIdMapStore::load(&path).expect_err("parse should fail");
         assert!(matches!(
             parse_error,
             CrabError::Serialization {
@@ -1790,7 +2112,7 @@ mod tests {
         ));
 
         fs::write(&path, "   \n").expect("write should succeed");
-        let empty_loaded = MessageIdMapStore::load(&path).expect("empty file should load");
+        let empty_loaded = DeliveryIdMapStore::load(&path).expect("empty file should load");
         assert!(empty_loaded.map.is_empty());
 
         let directory_path = env::temp_dir().join(format!(
@@ -1803,7 +2125,7 @@ mod tests {
         fs::create_dir(&directory_path).expect("create dir should succeed");
 
         let read_error =
-            MessageIdMapStore::load(&directory_path).expect_err("reading directory should fail");
+            DeliveryIdMapStore::load(&directory_path).expect_err("reading directory should fail");
         assert!(matches!(
             read_error,
             CrabError::Io {
@@ -1911,7 +2233,7 @@ mod tests {
         fs::write(&blocking_file, "x").expect("write blocking file");
 
         let path = blocking_file.join("map.json");
-        let mut store = MessageIdMapStore::load(&path).expect("load should succeed for missing");
+        let mut store = DeliveryIdMapStore::load(&path).expect("load should succeed for missing");
         let parent_error = store
             .remember_post_mapping("c", "s", "a")
             .expect_err("mkdir under file should fail");
@@ -1925,7 +2247,7 @@ mod tests {
 
         let path_with_tmp_file = root.join("map2.json");
         let mut store2 =
-            MessageIdMapStore::load(&path_with_tmp_file).expect("load should succeed for missing");
+            DeliveryIdMapStore::load(&path_with_tmp_file).expect("load should succeed for missing");
         store2.map.insert("k".to_string(), "v".to_string());
         let tmp_path = path_with_tmp_file.with_extension("tmp");
         fs::create_dir(&tmp_path).expect("tmp path directory should exist");
@@ -1943,7 +2265,7 @@ mod tests {
 
         let rename_target = root.join("map3.json");
         let mut store3 =
-            MessageIdMapStore::load(&rename_target).expect("load should succeed for missing");
+            DeliveryIdMapStore::load(&rename_target).expect("load should succeed for missing");
         store3.map.insert("k".to_string(), "v".to_string());
         fs::create_dir(&rename_target).expect("rename target directory should exist");
         let rename_error = store3.persist().expect_err("rename should fail");
@@ -1964,7 +2286,7 @@ mod tests {
 
     #[test]
     fn message_id_map_store_persist_skips_parent_mkdir_when_parent_is_none() {
-        let store = MessageIdMapStore {
+        let store = DeliveryIdMapStore {
             path: PathBuf::from(std::path::MAIN_SEPARATOR.to_string()),
             map: BTreeMap::from([("k".to_string(), "v".to_string())]),
         };

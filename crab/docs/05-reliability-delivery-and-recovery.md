@@ -52,6 +52,34 @@ transport with bounded retry semantics:
 - fatal failures fail immediately
 - `mark_sent` is only called after successful delivery, preserving ledger correctness on retries
 
+## Connector Receipt Protocol (`crabd` <-> `crab-discord-connector`)
+
+Crab runs Discord I/O via a separate connector process. The IPC contract is JSONL and the
+shared frame types live in `crates/crab-discord/src/lib.rs`:
+
+- `CrabdOutboundOp` (emitted by `crabd` stdout, consumed by connector)
+- `CrabdInboundFrame` (emitted by connector, consumed by `crabd` stdin)
+- `CrabdOutboundReceipt` (carried by `CrabdInboundFrame::OutboundReceipt`)
+
+Outbound operations:
+
+- `crabd` emits `CrabdOutboundOp` frames with:
+  - `op_id`: per-operation request id used to correlate receipts.
+  - `delivery_id`: deterministic identifier for the delivery target (stable across retries/restarts).
+
+Receipts:
+
+- Connector emits exactly one `CrabdOutboundReceipt` per outbound op (success or error).
+- `crabd` considers the Discord side effect complete only after receiving an `ok` receipt.
+  This is required for correctness of outbound persistence and replay after restart.
+
+Idempotency:
+
+- Connector persists a `(channel_id, delivery_id) -> discord_message_id` mapping.
+- On `post` when a mapping already exists, the connector does not post again; it returns an
+  `ok` receipt immediately with the existing Discord message id.
+- `edit` requires an existing mapping; missing mapping produces an `error` receipt.
+
 ## Replay Behavior
 
 `TurnExecutor.replay_delivery_for_run` replays persisted text-delta events and re-applies idempotent delivery checks before sending.
@@ -98,6 +126,7 @@ Lane/state invariants prevent ambiguous cancellation transitions.
 ## Failure Model Summary
 
 - Delivery failure after event append: replay can re-deliver missing output.
+- Connector crash/receipt loss: replay re-emits the same `delivery_id` and connector de-dupes based on its mapping store.
 - Process restart during running turn: startup reconciliation settles stale run.
 - Persistent backend unhealthy: heartbeat restarts manager.
 - Cancel path broken: heartbeat escalates to hard-stop-and-rotate.
@@ -117,4 +146,4 @@ Implemented:
 
 Remaining gap:
 
-- production Discord runtime binary still needs to call maintenance APIs in its long-running event loop (`WS18-T2`)
+- Deployment acceptance evidence is still pending on the target machine (see `crab/docs/08-deployment-readiness-gaps.md`).

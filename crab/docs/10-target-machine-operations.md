@@ -21,12 +21,13 @@ its transport boundary is currently `stdio` JSONL.
 
 Implications:
 
-- `crabd` expects inbound `GatewayMessage` JSON lines on stdin.
-- `crabd` emits outbound JSON lines (`op=post|edit`) on stdout.
+- `crabd` expects inbound `CrabdInboundFrame` JSON lines on stdin:
+  - `kind=gateway_message` frames for Discord ingress
+  - `kind=outbound_receipt` frames for connector delivery receipts
+- `crabd` emits outbound `CrabdOutboundOp` JSON lines (`op=post|edit`) on stdout.
 - `crab-discord-connector` is the in-repo process that bridges Discord Gateway/REST
   with this `crabd` JSONL contract.
-- The remaining protocol hardening gap is delivery receipts/acks (tracked in
-  `crab/docs/08-deployment-readiness-gaps.md`, Gap 1).
+- Connector receipts are required for `crabd` to consider outbound Discord delivery complete.
 
 ## Recommended Host Layout
 
