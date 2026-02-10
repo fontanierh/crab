@@ -2,6 +2,8 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
+use crate::profile::ProfileValueSource;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum BackendKind {
@@ -70,6 +72,17 @@ pub struct InferenceProfile {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RunProfileTelemetry {
+    pub requested_profile: Option<InferenceProfile>,
+    pub resolved_profile: InferenceProfile,
+    pub backend_source: ProfileValueSource,
+    pub model_source: ProfileValueSource,
+    pub reasoning_level_source: ProfileValueSource,
+    pub fallback_applied: bool,
+    pub fallback_notes: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TokenAccounting {
     pub input_tokens: u64,
     pub output_tokens: u64,
@@ -106,7 +119,7 @@ pub struct Run {
     pub physical_session_id: Option<String>,
     pub status: RunStatus,
     pub user_input: String,
-    pub inference_profile: InferenceProfile,
+    pub profile: RunProfileTelemetry,
     pub queued_at_epoch_ms: u64,
     pub started_at_epoch_ms: Option<u64>,
     pub completed_at_epoch_ms: Option<u64>,
@@ -133,6 +146,7 @@ pub struct EventEnvelope {
     pub source: EventSource,
     pub kind: EventKind,
     pub payload: BTreeMap<String, String>,
+    pub profile: Option<RunProfileTelemetry>,
     pub idempotency_key: Option<String>,
 }
 
@@ -158,9 +172,10 @@ mod tests {
 
     use super::{
         BackendKind, Checkpoint, EventEnvelope, EventKind, EventSource, InferenceProfile,
-        LaneState, LogicalSession, OutboundRecord, PhysicalSession, ReasoningLevel, Run, RunStatus,
-        TokenAccounting,
+        LaneState, LogicalSession, OutboundRecord, PhysicalSession, ReasoningLevel, Run,
+        RunProfileTelemetry, RunStatus, TokenAccounting,
     };
+    use crate::ProfileValueSource;
 
     fn assert_json_round_trip<T>(value: &T)
     where
@@ -184,6 +199,22 @@ mod tests {
             input_tokens: 1200,
             output_tokens: 300,
             total_tokens: 1500,
+        }
+    }
+
+    fn sample_run_profile_telemetry() -> RunProfileTelemetry {
+        RunProfileTelemetry {
+            requested_profile: Some(InferenceProfile {
+                backend: BackendKind::Codex,
+                model: "legacy".to_string(),
+                reasoning_level: ReasoningLevel::XHigh,
+            }),
+            resolved_profile: sample_profile(),
+            backend_source: ProfileValueSource::SessionProfile,
+            model_source: ProfileValueSource::BackendDefault,
+            reasoning_level_source: ProfileValueSource::TurnOverride,
+            fallback_applied: true,
+            fallback_notes: vec!["fallback profile applied".to_string()],
         }
     }
 
@@ -224,7 +255,7 @@ mod tests {
             physical_session_id: Some("physical_1".to_string()),
             status: RunStatus::Succeeded,
             user_input: "Please summarize the queue state.".to_string(),
-            inference_profile: sample_profile(),
+            profile: sample_run_profile_telemetry(),
             queued_at_epoch_ms: 1_739_173_200_200,
             started_at_epoch_ms: Some(1_739_173_200_250),
             completed_at_epoch_ms: Some(1_739_173_200_500),
@@ -267,6 +298,7 @@ mod tests {
             source: EventSource::Backend,
             kind: EventKind::TextDelta,
             payload,
+            profile: Some(sample_run_profile_telemetry()),
             idempotency_key: Some("run_001:7".to_string()),
         };
         assert_json_round_trip(&event);

@@ -15,8 +15,8 @@ pub use compatibility::{
 pub use config::RuntimeConfig;
 pub use domain::{
     BackendKind, Checkpoint, EventEnvelope, EventKind, EventSource, InferenceProfile, LaneState,
-    LogicalSession, OutboundRecord, PhysicalSession, ReasoningLevel, Run, RunStatus,
-    TokenAccounting,
+    LogicalSession, OutboundRecord, PhysicalSession, ReasoningLevel, Run, RunProfileTelemetry,
+    RunStatus, TokenAccounting,
 };
 pub use error::{CrabError, CrabResult};
 pub use fallback::{apply_fallback_policy, FallbackDecision, FallbackPolicyMode};

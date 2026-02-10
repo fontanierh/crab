@@ -1,8 +1,10 @@
 use crate::{
     validation::validate_non_empty_text, BackendKind, CrabResult, InferenceProfile, ReasoningLevel,
 };
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ProfileValueSource {
     TurnOverride,
     SessionProfile,
