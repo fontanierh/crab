@@ -7,6 +7,7 @@ pub mod config;
 pub mod domain;
 pub mod error;
 pub mod fallback;
+pub mod heartbeat;
 pub mod memory_flush;
 pub mod profile;
 pub mod rotation;
@@ -35,6 +36,11 @@ pub use domain::{
 };
 pub use error::{CrabError, CrabResult};
 pub use fallback::{apply_fallback_policy, FallbackDecision, FallbackPolicyMode};
+pub use heartbeat::{
+    execute_heartbeat_cycle, ActiveRunHeartbeat, BackendHeartbeat, DispatcherHeartbeat,
+    HeartbeatComponent, HeartbeatEvent, HeartbeatOutcome, HeartbeatPolicy, HeartbeatRunAction,
+    HeartbeatRuntime,
+};
 pub use memory_flush::{
     build_memory_flush_prompt, finalize_hidden_memory_flush, should_run_memory_flush_cycle,
     HiddenMemoryFlushOutcome, MemoryFlushAck, MEMORY_FLUSH_DONE_TOKEN, MEMORY_FLUSH_NO_REPLY_TOKEN,
