@@ -55,8 +55,9 @@ pub use memory_flush::{
     HiddenMemoryFlushOutcome, MemoryFlushAck, MEMORY_FLUSH_DONE_TOKEN, MEMORY_FLUSH_NO_REPLY_TOKEN,
 };
 pub use operator_commands::{
-    apply_operator_command, parse_operator_command, render_active_profile_summary,
-    render_resolved_profile_summary, OperatorCommand, OperatorCommandOutcome, OperatorSessionState,
+    apply_operator_command, authorize_operator_command, parse_operator_command,
+    render_active_profile_summary, render_resolved_profile_summary, OperatorActorContext,
+    OperatorCommand, OperatorCommandOutcome, OperatorSessionState,
 };
 pub use profile::{
     resolve_inference_profile, BackendInferenceDefault, BackendInferenceDefaults,

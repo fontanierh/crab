@@ -24,6 +24,12 @@ pub struct OperatorCommandOutcome {
     pub user_message: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OperatorActorContext {
+    pub sender_id: String,
+    pub sender_is_owner: bool,
+}
+
 pub fn parse_operator_command(input: &str) -> CrabResult<Option<OperatorCommand>> {
     let trimmed_input = input.trim();
     if !trimmed_input.starts_with('/') {
@@ -49,7 +55,9 @@ pub fn parse_operator_command(input: &str) -> CrabResult<Option<OperatorCommand>
 pub fn apply_operator_command(
     state: &mut OperatorSessionState,
     command: &OperatorCommand,
+    actor: &OperatorActorContext,
 ) -> CrabResult<OperatorCommandOutcome> {
+    authorize_operator_command(actor)?;
     match command {
         OperatorCommand::SetBackend { backend } => {
             let backend_changed = state.active_backend != *backend;
@@ -95,6 +103,21 @@ pub fn apply_operator_command(
             user_message: render_active_profile_summary(state),
         }),
     }
+}
+
+pub fn authorize_operator_command(actor: &OperatorActorContext) -> CrabResult<()> {
+    validate_non_empty_text("operator_command_authorize", "sender_id", &actor.sender_id)?;
+    if actor.sender_is_owner {
+        return Ok(());
+    }
+
+    Err(CrabError::InvariantViolation {
+        context: "operator_command_authorize",
+        message: format!(
+            "sender {} is not authorized to run operator commands",
+            actor.sender_id
+        ),
+    })
 }
 
 #[must_use]
@@ -214,12 +237,14 @@ fn profile_source_label(source: ProfileValueSource) -> &'static str {
 #[cfg(test)]
 mod tests {
     use crate::{
-        BackendKind, InferenceProfile, ProfileValueSource, ReasoningLevel, ResolvedInferenceProfile,
+        BackendKind, CrabError, InferenceProfile, ProfileValueSource, ReasoningLevel,
+        ResolvedInferenceProfile,
     };
 
     use super::{
-        apply_operator_command, parse_operator_command, render_active_profile_summary,
-        render_resolved_profile_summary, OperatorCommand, OperatorSessionState,
+        apply_operator_command, authorize_operator_command, parse_operator_command,
+        render_active_profile_summary, render_resolved_profile_summary, OperatorActorContext,
+        OperatorCommand, OperatorSessionState,
     };
 
     fn session_state() -> OperatorSessionState {
@@ -231,6 +256,20 @@ mod tests {
                 reasoning_level: ReasoningLevel::Medium,
             },
             active_physical_session_id: Some("thread-1".to_string()),
+        }
+    }
+
+    fn owner_actor() -> OperatorActorContext {
+        OperatorActorContext {
+            sender_id: "1234567890".to_string(),
+            sender_is_owner: true,
+        }
+    }
+
+    fn non_owner_actor() -> OperatorActorContext {
+        OperatorActorContext {
+            sender_id: "0987654321".to_string(),
+            sender_is_owner: false,
         }
     }
 
@@ -351,11 +390,13 @@ mod tests {
     #[test]
     fn applies_backend_command_with_rotation_semantics() {
         let mut state = session_state();
+        let owner = owner_actor();
         let outcome = apply_operator_command(
             &mut state,
             &OperatorCommand::SetBackend {
                 backend: BackendKind::Claude,
             },
+            &owner,
         )
         .expect("backend update should apply");
 
@@ -372,11 +413,13 @@ mod tests {
     #[test]
     fn backend_command_is_idempotent_when_value_matches() {
         let mut state = session_state();
+        let owner = owner_actor();
         let outcome = apply_operator_command(
             &mut state,
             &OperatorCommand::SetBackend {
                 backend: BackendKind::Codex,
             },
+            &owner,
         )
         .expect("backend update should apply");
 
@@ -391,11 +434,13 @@ mod tests {
     #[test]
     fn applies_model_and_reasoning_commands() {
         let mut state = session_state();
+        let owner = owner_actor();
         let model_outcome = apply_operator_command(
             &mut state,
             &OperatorCommand::SetModel {
                 model: "auto".to_string(),
             },
+            &owner,
         )
         .expect("model update should apply");
         assert_eq!(state.active_profile.model, "auto");
@@ -406,6 +451,7 @@ mod tests {
             &OperatorCommand::SetReasoning {
                 reasoning_level: ReasoningLevel::XHigh,
             },
+            &owner,
         )
         .expect("reasoning update should apply");
         assert_eq!(state.active_profile.reasoning_level, ReasoningLevel::XHigh);
@@ -415,11 +461,13 @@ mod tests {
     #[test]
     fn rejects_blank_model_update() {
         let mut state = session_state();
+        let owner = owner_actor();
         let error = apply_operator_command(
             &mut state,
             &OperatorCommand::SetModel {
                 model: " ".to_string(),
             },
+            &owner,
         )
         .expect_err("blank model should fail");
         assert_eq!(
@@ -431,7 +479,8 @@ mod tests {
     #[test]
     fn show_profile_command_renders_current_active_profile() {
         let mut state = session_state();
-        let outcome = apply_operator_command(&mut state, &OperatorCommand::ShowProfile)
+        let owner = owner_actor();
+        let outcome = apply_operator_command(&mut state, &OperatorCommand::ShowProfile, &owner)
             .expect("show profile should apply");
         assert!(!outcome.requires_rotation);
         assert_eq!(
@@ -439,6 +488,52 @@ mod tests {
             "backend=codex, model=gpt-5-codex, reasoning=medium"
         );
         assert_eq!(render_active_profile_summary(&state), outcome.user_message);
+    }
+
+    #[test]
+    fn authorization_gate_requires_owner_actor() {
+        let commands = [
+            OperatorCommand::SetBackend {
+                backend: BackendKind::Claude,
+            },
+            OperatorCommand::SetModel {
+                model: "gpt-5".to_string(),
+            },
+            OperatorCommand::SetReasoning {
+                reasoning_level: ReasoningLevel::Low,
+            },
+            OperatorCommand::ShowProfile,
+        ];
+
+        for command in commands {
+            let mut state = session_state();
+            let error = apply_operator_command(&mut state, &command, &non_owner_actor())
+                .expect_err("non-owner should be denied");
+            assert_eq!(
+                error,
+                CrabError::InvariantViolation {
+                    context: "operator_command_authorize",
+                    message: "sender 0987654321 is not authorized to run operator commands"
+                        .to_string(),
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn authorization_rejects_blank_sender_id() {
+        let error = authorize_operator_command(&OperatorActorContext {
+            sender_id: "  ".to_string(),
+            sender_is_owner: true,
+        })
+        .expect_err("blank sender_id should fail");
+        assert_eq!(
+            error,
+            CrabError::InvariantViolation {
+                context: "operator_command_authorize",
+                message: "sender_id must not be empty".to_string(),
+            }
+        );
     }
 
     #[test]
