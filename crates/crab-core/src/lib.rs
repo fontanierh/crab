@@ -10,6 +10,7 @@ pub mod error;
 pub mod fallback;
 pub mod heartbeat;
 pub mod memory_flush;
+pub mod onboarding;
 pub mod operator_commands;
 pub mod profile;
 pub mod rotation;
@@ -54,6 +55,10 @@ pub use heartbeat::{
 pub use memory_flush::{
     build_memory_flush_prompt, finalize_hidden_memory_flush, should_run_memory_flush_cycle,
     HiddenMemoryFlushOutcome, MemoryFlushAck, MEMORY_FLUSH_DONE_TOKEN, MEMORY_FLUSH_NO_REPLY_TOKEN,
+};
+pub use onboarding::{
+    build_onboarding_prompt, default_onboarding_questions, parse_onboarding_capture_document,
+    OnboardingCaptureDocument, OnboardingField, OnboardingQuestion, ONBOARDING_SCHEMA_VERSION,
 };
 pub use operator_commands::{
     apply_operator_command, authorize_operator_command, parse_operator_command,
