@@ -98,10 +98,16 @@ fn missing_home_error(value: &str) -> CrabError {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::VecDeque;
     use std::fs;
     use std::path::{Path, PathBuf};
 
-    use crab_core::{WorkspaceBootstrapState, BOOTSTRAP_FILE_NAME};
+    use crab_core::{
+        execute_onboarding_completion_protocol, CrabResult, EventEnvelope, EventKind,
+        OnboardingCaptureDocument, OnboardingCompletionEventRuntime, OnboardingCompletionInput,
+        WorkspaceBootstrapState, BOOTSTRAP_FILE_NAME, ONBOARDING_MEMORY_BASELINE_END_MARKER,
+        ONBOARDING_MEMORY_BASELINE_START_MARKER, ONBOARDING_SCHEMA_VERSION,
+    };
 
     use super::{
         initialize_runtime_startup, render_startup_diagnostics, resolve_workspace_root_with_home,
@@ -112,12 +118,79 @@ mod tests {
     };
     use crab_core::CrabError;
 
+    #[derive(Debug, Clone)]
+    struct FakeOnboardingCompletionRuntime {
+        next_event_sequences: VecDeque<CrabResult<u64>>,
+        appended_events: Vec<EventEnvelope>,
+    }
+
+    impl FakeOnboardingCompletionRuntime {
+        fn with_sequence(sequence: u64) -> Self {
+            Self {
+                next_event_sequences: VecDeque::from(vec![Ok(sequence)]),
+                appended_events: Vec::new(),
+            }
+        }
+    }
+
+    impl OnboardingCompletionEventRuntime for FakeOnboardingCompletionRuntime {
+        fn next_event_sequence(&self, _logical_session_id: &str, _run_id: &str) -> CrabResult<u64> {
+            self.next_event_sequences
+                .front()
+                .cloned()
+                .unwrap_or_else(|| {
+                    Err(CrabError::InvariantViolation {
+                        context: "startup_test_onboarding_runtime",
+                        message: "missing scripted event sequence".to_string(),
+                    })
+                })
+        }
+
+        fn append_event(&mut self, event: &EventEnvelope) -> CrabResult<()> {
+            let _ = self.next_event_sequences.pop_front();
+            self.appended_events.push(event.clone());
+            Ok(())
+        }
+    }
+
     fn assert_state(outcome: &AppStartupOutcome, expected: WorkspaceBootstrapState) {
         assert_eq!(outcome.bootstrap_state, expected);
         assert!(outcome
             .diagnostics
             .iter()
             .any(|line| line == &format!("workspace.bootstrap_state:{}", expected.as_token())));
+    }
+
+    fn sample_onboarding_capture() -> OnboardingCaptureDocument {
+        OnboardingCaptureDocument {
+            schema_version: ONBOARDING_SCHEMA_VERSION.to_string(),
+            agent_identity: "Crab".to_string(),
+            owner_identity: "Henry".to_string(),
+            primary_goals: vec![
+                "Ship reliable automation".to_string(),
+                "Keep strict quality gates".to_string(),
+            ],
+            machine_location: "Paris, France".to_string(),
+            machine_timezone: "Europe/Paris".to_string(),
+        }
+    }
+
+    #[test]
+    fn fake_onboarding_completion_runtime_reports_missing_sequence() {
+        let runtime = FakeOnboardingCompletionRuntime {
+            next_event_sequences: VecDeque::new(),
+            appended_events: Vec::new(),
+        };
+        let error = runtime
+            .next_event_sequence("discord:channel:777", "run:discord:channel:777:onboarding")
+            .expect_err("missing scripted sequence should fail");
+        assert_eq!(
+            error,
+            CrabError::InvariantViolation {
+                context: "startup_test_onboarding_runtime",
+                message: "missing scripted event sequence".to_string(),
+            }
+        );
     }
 
     #[test]
@@ -162,6 +235,44 @@ mod tests {
         assert_state(&outcome, WorkspaceBootstrapState::Ready);
         assert!(outcome.created_paths.is_empty());
         assert!(outcome.repaired_paths.is_empty());
+    }
+
+    #[test]
+    fn first_interaction_onboarding_completion_transitions_workspace_to_ready() {
+        let workspace = TempWorkspace::new("startup", "onboarding-first-interaction");
+        let config = runtime_config_for_workspace(&workspace.path);
+
+        let initial = initialize_runtime_startup(&config).expect("first startup should succeed");
+        assert_state(&initial, WorkspaceBootstrapState::NewWorkspace);
+        let pending = initialize_runtime_startup(&config).expect("second startup should succeed");
+        assert_state(&pending, WorkspaceBootstrapState::PendingBootstrap);
+
+        let mut runtime = FakeOnboardingCompletionRuntime::with_sequence(1);
+        let completion_input = OnboardingCompletionInput {
+            logical_session_id: "discord:channel:777".to_string(),
+            run_id: "run:discord:channel:777:onboarding".to_string(),
+            onboarding_session_id: "onboarding-1".to_string(),
+            completed_at_epoch_ms: 1_739_173_200_100,
+            capture: sample_onboarding_capture(),
+            profile: None,
+        };
+        let completion_outcome = execute_onboarding_completion_protocol(
+            &mut runtime,
+            &workspace.path,
+            &completion_input,
+        )
+        .expect("onboarding completion should succeed");
+        assert!(completion_outcome.bootstrap_retired);
+        assert_eq!(completion_outcome.emitted_event.kind, EventKind::RunNote);
+        assert_eq!(runtime.appended_events.len(), 1);
+
+        let memory_contents =
+            fs::read_to_string(workspace.path.join("MEMORY.md")).expect("memory should be written");
+        assert!(memory_contents.contains(ONBOARDING_MEMORY_BASELINE_START_MARKER));
+        assert!(memory_contents.contains(ONBOARDING_MEMORY_BASELINE_END_MARKER));
+
+        let ready = initialize_runtime_startup(&config).expect("startup should report ready");
+        assert_state(&ready, WorkspaceBootstrapState::Ready);
     }
 
     #[test]

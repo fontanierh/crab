@@ -714,7 +714,7 @@ mod tests {
     use crab_backends::BackendEventKind;
     use crab_core::{
         BackendKind, CrabError, CrabResult, EventKind, InferenceProfile, LaneState,
-        ProfileValueSource, ReasoningLevel, RunProfileTelemetry, RunStatus,
+        OwnerProfileMetadata, ProfileValueSource, ReasoningLevel, RunProfileTelemetry, RunStatus,
     };
     use crab_discord::{GatewayConversationKind, GatewayMessage};
 
@@ -920,6 +920,20 @@ mod tests {
             sender_is_owner: false,
             resolved_owner_profile: None,
         }
+    }
+
+    fn owner_profile_telemetry() -> RunProfileTelemetry {
+        let mut telemetry = sample_profile_telemetry();
+        telemetry.sender_id = "999999999999999999".to_string();
+        telemetry.sender_is_owner = true;
+        telemetry.resolved_owner_profile = Some(OwnerProfileMetadata {
+            machine_location: Some("Paris, France".to_string()),
+            machine_timezone: Some("Europe/Paris".to_string()),
+            default_backend: Some(BackendKind::Codex),
+            default_model: Some("gpt-5-codex".to_string()),
+            default_reasoning_level: Some(ReasoningLevel::High),
+        });
+        telemetry
     }
 
     fn gateway_message(message_id: &str) -> GatewayMessage {
@@ -1180,6 +1194,172 @@ mod tests {
                 0,
                 "hello".to_string(),
             )]
+        );
+    }
+
+    #[test]
+    fn process_gateway_message_preserves_owner_and_non_owner_profile_context() {
+        let backend_events = vec![
+            backend_event(1, BackendEventKind::TextDelta, &[("text", "hello")]),
+            backend_event(2, BackendEventKind::TurnCompleted, &[("finish", "done")]),
+        ];
+
+        let owner_workspace = TempWorkspace::new("turn-executor", "owner-run");
+        let mut owner_runtime =
+            FakeRuntime::with_backend_events(backend_events.clone(), &[1, 2, 3, 4, 5, 6, 7]);
+        owner_runtime.resolve_profile_results = VecDeque::from(vec![Ok(owner_profile_telemetry())]);
+        let mut owner_executor = build_executor(&owner_workspace, owner_runtime, 8);
+        owner_executor
+            .process_gateway_message(gateway_message("m-owner"))
+            .expect("owner pipeline should succeed")
+            .expect("owner run should dispatch");
+        let owner_run = owner_executor
+            .composition()
+            .state_stores
+            .run_store
+            .get_run("discord:channel:777", "run:discord:channel:777:m-owner")
+            .expect("owner run lookup should succeed")
+            .expect("owner run should exist");
+        assert!(owner_run.profile.sender_is_owner);
+        let owner_profile = owner_run
+            .profile
+            .resolved_owner_profile
+            .expect("owner profile metadata should persist");
+        assert_eq!(
+            owner_profile.machine_location,
+            Some("Paris, France".to_string())
+        );
+        assert_eq!(
+            owner_profile.machine_timezone,
+            Some("Europe/Paris".to_string())
+        );
+        let owner_events = owner_executor
+            .composition()
+            .state_stores
+            .event_store
+            .replay_run("discord:channel:777", "run:discord:channel:777:m-owner")
+            .expect("owner event replay should succeed");
+        assert!(owner_events.iter().all(|event| {
+            event
+                .profile
+                .as_ref()
+                .map(|profile| profile.sender_is_owner && profile.resolved_owner_profile.is_some())
+                .unwrap_or(false)
+        }));
+
+        let non_owner_workspace = TempWorkspace::new("turn-executor", "non-owner-run");
+        let non_owner_runtime =
+            FakeRuntime::with_backend_events(backend_events, &[11, 12, 13, 14, 15, 16, 17]);
+        let mut non_owner_executor = build_executor(&non_owner_workspace, non_owner_runtime, 8);
+        non_owner_executor
+            .process_gateway_message(gateway_message("m-non-owner"))
+            .expect("non-owner pipeline should succeed")
+            .expect("non-owner run should dispatch");
+        let non_owner_run = non_owner_executor
+            .composition()
+            .state_stores
+            .run_store
+            .get_run("discord:channel:777", "run:discord:channel:777:m-non-owner")
+            .expect("non-owner run lookup should succeed")
+            .expect("non-owner run should exist");
+        assert!(!non_owner_run.profile.sender_is_owner);
+        assert!(non_owner_run.profile.resolved_owner_profile.is_none());
+        let non_owner_events = non_owner_executor
+            .composition()
+            .state_stores
+            .event_store
+            .replay_run("discord:channel:777", "run:discord:channel:777:m-non-owner")
+            .expect("non-owner event replay should succeed");
+        assert!(non_owner_events.iter().all(|event| {
+            event
+                .profile
+                .as_ref()
+                .map(|profile| !profile.sender_is_owner && profile.resolved_owner_profile.is_none())
+                .unwrap_or(false)
+        }));
+    }
+
+    #[test]
+    fn restart_recovery_replays_missing_delivery_and_continues_next_run() {
+        let workspace = TempWorkspace::new("turn-executor", "restart-recovery-continuity");
+        let first_runtime = FakeRuntime::with_backend_events(
+            vec![
+                backend_event(1, BackendEventKind::TextDelta, &[("text", "hello")]),
+                backend_event(2, BackendEventKind::TurnCompleted, &[("finish", "done")]),
+            ],
+            &[1, 2, 3, 4, 5, 6, 7],
+        )
+        .with_delivery_results(vec![Err(CrabError::InvariantViolation {
+            context: "deliver",
+            message: "network down".to_string(),
+        })]);
+        let mut first_executor = build_executor(&workspace, first_runtime, 8);
+        let first_error = first_executor
+            .process_gateway_message(gateway_message("m-restart-failed"))
+            .expect_err("first run should fail when delivery fails");
+        assert_eq!(
+            first_error,
+            CrabError::InvariantViolation {
+                context: "deliver",
+                message: "network down".to_string(),
+            }
+        );
+
+        let restart_runtime = FakeRuntime::with_backend_events(
+            vec![
+                backend_event(1, BackendEventKind::TextDelta, &[("text", "world")]),
+                backend_event(2, BackendEventKind::TurnCompleted, &[("finish", "done")]),
+            ],
+            &[11, 12, 13, 14, 15, 16, 17],
+        );
+        let mut restarted_executor = build_executor(&workspace, restart_runtime, 8);
+        let replayed = restarted_executor
+            .replay_delivery_for_run(
+                "discord:channel:777",
+                "run:discord:channel:777:m-restart-failed",
+            )
+            .expect("restart replay should redeliver missing output");
+        assert_eq!(replayed, 1);
+
+        let next_dispatch = restarted_executor
+            .process_gateway_message(gateway_message("m-restart-next"))
+            .expect("next run after restart should succeed")
+            .expect("next run should dispatch");
+        assert_eq!(next_dispatch.status, RunStatus::Succeeded);
+
+        let recovered_outbound = restarted_executor
+            .composition()
+            .state_stores
+            .outbound_record_store
+            .list_run_records(
+                "discord:channel:777",
+                "run:discord:channel:777:m-restart-failed",
+            )
+            .expect("recovered run outbound records should list");
+        assert_eq!(recovered_outbound.len(), 1);
+        assert_eq!(recovered_outbound[0].edit_generation, 0);
+
+        let restarted_runtime = restarted_executor.runtime_mut();
+        assert_eq!(restarted_runtime.delivered_outputs.len(), 2);
+        assert_eq!(
+            restarted_runtime.delivered_outputs[0],
+            (
+                "discord:channel:777".to_string(),
+                "777".to_string(),
+                "delivery:run:discord:channel:777:m-restart-failed:chunk:0".to_string(),
+                0,
+                "hello".to_string(),
+            )
+        );
+        assert_eq!(
+            restarted_runtime.delivered_outputs[1],
+            (
+                "discord:channel:777".to_string(),
+                "777".to_string(),
+                "delivery:run:discord:channel:777:m-restart-next:chunk:0".to_string(),
+                0,
+                "world".to_string(),
+            )
         );
     }
 
