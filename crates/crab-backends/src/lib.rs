@@ -14,6 +14,7 @@ pub mod codex_protocol;
 pub mod codex_recovery;
 pub mod codex_unattended;
 pub mod opencode;
+pub mod opencode_events;
 pub mod opencode_protocol;
 
 pub use claude::{ClaudeBackend, ClaudeProcess};
@@ -30,6 +31,9 @@ pub use codex_unattended::{
 };
 pub use opencode::{
     OpenCodeManager, OpenCodeManagerState, OpenCodeServerHandle, OpenCodeServerProcess,
+};
+pub use opencode_events::{
+    normalize_opencode_events, OpenCodeRawEvent, OpenCodeTokenUsage, OpenCodeTurnState,
 };
 pub use opencode_protocol::{
     OpenCodeApiRequest, OpenCodeApiResponse, OpenCodeApiTransport, OpenCodeProtocol,
