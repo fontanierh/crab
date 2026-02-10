@@ -8,8 +8,10 @@ use crab_core::{CrabError, CrabResult, InferenceProfile, PhysicalSession};
 use futures_core::Stream;
 
 pub mod claude;
+pub mod codex;
 
 pub use claude::{ClaudeBackend, ClaudeProcess};
+pub use codex::{CodexAppServerProcess, CodexManager, CodexManagerState, CodexProcessHandle};
 
 pub type BackendEventStream = Pin<Box<dyn Stream<Item = BackendEvent> + Send>>;
 
