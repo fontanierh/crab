@@ -11,6 +11,7 @@ pub mod claude;
 pub mod codex;
 pub mod codex_events;
 pub mod codex_protocol;
+pub mod codex_unattended;
 
 pub use claude::{ClaudeBackend, ClaudeProcess};
 pub use codex::{CodexAppServerProcess, CodexManager, CodexManagerState, CodexProcessHandle};
@@ -19,6 +20,10 @@ pub use codex_events::{
     CodexTurnStatus,
 };
 pub use codex_protocol::{CodexProtocol, CodexRpcRequest, CodexRpcResponse, CodexRpcTransport};
+pub use codex_unattended::{
+    decide_unattended_response, CodexApprovalDecision, CodexApprovalPolicy,
+    CodexInteractiveRequest, CodexRequestResponse, CodexUnattendedPolicy, CodexUserInputQuestion,
+};
 
 pub type BackendEventStream = Pin<Box<dyn Stream<Item = BackendEvent> + Send>>;
 
