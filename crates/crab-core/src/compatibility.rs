@@ -25,9 +25,7 @@ impl BackendCompatibilityRules {
         if self.supported_reasoning_levels.is_empty() {
             return true;
         }
-        self.supported_reasoning_levels
-            .iter()
-            .any(|value| *value == reasoning_level)
+        self.supported_reasoning_levels.contains(&reasoning_level)
     }
 }
 
