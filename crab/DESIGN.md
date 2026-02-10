@@ -40,7 +40,7 @@ Discord Gateway
   -> Backend Adapter (Claude | Codex | OpenCode)
   -> Event Log + Transcript Store
   -> Checkpoint Store
-  -> Memory Files + Memory Search Index
+  -> Memory Files + Memory CLI Commands
 ```
 
 Major subsystems:
@@ -235,6 +235,22 @@ Operator controls:
 - `/reasoning <none|minimal|low|medium|high|xhigh>`
 - `/profile` (show effective resolved profile and source)
 
+### 5.6 Memory Access Surface (Prompt + CLI)
+
+Crab uses a prompt-first memory workflow and does not register backend-specific custom memory tools.
+
+Memory access is exposed as CLI commands available to the agent runtime:
+
+- `crab-memory-search` for ranked keyword + recency recall across `MEMORY.md` and `memory/`.
+- `crab-memory-get` for exact line-range retrieval from allowed memory paths.
+- Native file search/read fallback (`rg`/`grep` + direct file reads over `memory/`).
+
+Rules:
+
+- Keep the command surface uniform across Claude/Codex/OpenCode.
+- Keep command behavior deterministic and path-safe.
+- Defer embedding/vector semantic search in v1; keyword + curated memory is the default.
+
 ## 6) Workspace, Context, and Memory
 
 ### 6.1 Workspace
@@ -277,13 +293,15 @@ Memory policy:
 - Use global memory for channel-wide durable facts.
 - Inject current author memory + recent global memory for the turn.
 
-### 6.4 Memory Search
+### 6.4 Memory Recall (Prompt + CLI)
 
-Crab provides memory search (`memory_search`) and retrieval (`memory_get`) over memory markdown.
+Crab memory recall is prompt-driven and CLI-executed.
 
-Prompt rule in system instructions:
+Prompt rules in system instructions:
 
-- Prefer searching memory before saying information is unknown.
+- Before claiming information is unknown, search `MEMORY.md` and `memory/`.
+- Prefer `crab-memory-search` first, then `crab-memory-get` for exact citations.
+- If needed, run direct `rg`/`grep` and file reads over memory files.
 
 ## 7) Turn Lifecycle
 
@@ -326,7 +344,7 @@ Purpose: persist durable facts to memory files.
 Protocol:
 
 - Execute hidden turn with flush instructions.
-- Agent may write memory files via tools.
+- Agent may write memory files using normal shell/file-edit primitives.
 - Expected text output is one of:
   - `NO_REPLY`
   - `MEMORY_FLUSH_DONE`
@@ -608,7 +626,8 @@ default_model = "auto"
 reasoning_mode = "best-effort"   # native | best-effort
 
 [memory]
-search_enabled = true
+access_mode = "cli"             # cli (v1)
+search_mode = "keyword"         # keyword (v1); semantic deferred
 inject_days = 2
 per_user_scope = true
 

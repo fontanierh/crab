@@ -31,7 +31,7 @@ This document breaks the Crab implementation into execution workstreams and issu
 | WS11 | Owner model and trust mapping | Sender->owner resolution and policy context |
 | WS12 | First-run onboarding flow | Bootstrap conversation and identity capture |
 | WS13 | Context and prompt assembly | Ordered context injection and prompt contract |
-| WS14 | Memory tools runtime | `memory_search`/`memory_get` with scoped retrieval |
+| WS14 | Memory recall runtime | Prompt + CLI memory retrieval (`memory_search`/`memory_get` via CLI surface) |
 | WS15 | End-to-end runtime orchestration | `discord -> lane -> backend -> store -> discord` loop |
 
 ## 3) Detailed Workstreams and Tasks
@@ -340,7 +340,7 @@ This document breaks the Crab implementation into execution workstreams and issu
 
 ### WS13-T3 - Prompt contract compiler
 - Build backend-neutral system prompt sections:
-  memory-search-first rule, owner context line, runtime notes, messaging semantics.
+  memory recall guidance (CLI-first), owner context line, runtime notes, messaging semantics.
 - Done criteria: prompt snapshot tests pass.
 
 ### WS13-T4 - Context budget + truncation policy
@@ -352,11 +352,12 @@ This document breaks the Crab implementation into execution workstreams and issu
 - Emit context report (files injected, sizes, truncation decisions) for debugging.
 - Done criteria: diagnostics report fixture tests pass.
 
-### WS14 - Memory Tools Runtime
+### WS14 - Memory Recall Runtime (Prompt + CLI)
 
 ### WS14-T1 - `memory_search` implementation
-- Implement semantic/keyword search over `MEMORY.md` + memory files.
+- Implement ranked keyword + recency search over `MEMORY.md` + memory files.
 - Return scored snippets with path metadata.
+- Keep v1 search mode deterministic; defer embedding/vector semantic search.
 - Done criteria: search correctness tests pass.
 
 ### WS14-T2 - `memory_get` implementation
@@ -364,18 +365,19 @@ This document breaks the Crab implementation into execution workstreams and issu
 - Reject path traversal and invalid ranges.
 - Done criteria: retrieval and safety tests pass.
 
-### WS14-T3 - Tool exposure and backend wiring
-- Expose memory tools uniformly across Claude/Codex/OpenCode adapters.
-- Keep tool contract stable in normalized events.
-- Done criteria: backend tool wiring tests pass.
+### WS14-T3 - CLI exposure + prompt/backend parity wiring
+- Expose memory recall uniformly via CLI commands (`crab-memory-search`, `crab-memory-get`) and prompt contract across Claude/Codex/OpenCode.
+- Avoid backend-specific custom memory tool registration.
+- Keep CLI contracts stable and adapter-agnostic.
+- Done criteria: backend prompt/wiring conformance tests pass.
 
 ### WS14-T4 - Citation and disclosure policy
-- Add citation mode policy (`auto|on|off`) for memory tool snippets.
+- Add citation mode policy (`auto|on|off`) for memory CLI snippets.
 - Default behavior should reduce leakage in shared contexts.
 - Done criteria: citation policy tests pass.
 
-### WS14-T5 - Flush + tools interaction tests
-- Validate hidden memory flush writes are discoverable by memory tools in subsequent turns.
+### WS14-T5 - Flush + CLI interaction tests
+- Validate hidden memory flush writes are discoverable by memory CLI commands in subsequent turns.
 - Done criteria: end-to-end memory continuity tests pass.
 
 ### WS15 - End-to-End Runtime Orchestration
@@ -443,7 +445,7 @@ Codex/OpenCode parity path:
 
 ### Milestone M5 - Memory recall + full runtime loop
 - Scope: WS14, WS15.
-- Exit criteria: memory tools and end-to-end orchestration are production-ready for deployment on target machine.
+- Exit criteria: prompt + CLI memory recall and end-to-end orchestration are production-ready for deployment on target machine.
 
 ## 6) Issue Template for Task Tickets
 
