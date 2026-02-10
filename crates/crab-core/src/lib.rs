@@ -6,6 +6,7 @@ pub mod domain;
 pub mod error;
 pub mod fallback;
 pub mod profile;
+pub mod rotation;
 mod validation;
 
 pub use compatibility::{
@@ -24,6 +25,10 @@ pub use profile::{
     resolve_inference_profile, BackendInferenceDefault, BackendInferenceDefaults,
     InferenceProfileOverride, InferenceProfileResolutionInput, ProfileValueSource,
     ResolvedInferenceProfile,
+};
+pub use rotation::{
+    evaluate_rotation_triggers, ManualRotationRequest, RotationTrigger, RotationTriggerDecision,
+    RotationTriggerInput,
 };
 
 #[cfg(test)]
