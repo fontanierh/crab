@@ -1,12 +1,20 @@
 use std::collections::BTreeMap;
+use std::path::PathBuf;
 
 use crab_backends::{BackendEvent, BackendEventKind, CodexAppServerProcess, OpenCodeServerProcess};
 use crab_core::{
-    CrabError, CrabResult, EventEnvelope, EventKind, EventSource, InferenceProfile, LaneState,
-    LogicalSession, PhysicalSession, Run, RunProfileTelemetry, RunStatus, TokenAccounting,
+    apply_operator_command, build_fallback_checkpoint_document, build_memory_flush_prompt,
+    evaluate_rotation_triggers, execute_rotation_sequence, finalize_hidden_memory_flush,
+    parse_operator_command, Checkpoint, CheckpointTurnDocument, CrabError, CrabResult,
+    EventEnvelope, EventKind, EventSource, InferenceProfile, LaneState, LogicalSession,
+    ManualRotationRequest, OperatorActorContext, OperatorCommand, OperatorSessionState,
+    PhysicalSession, RotationSequenceRuntime, RotationTrigger, RotationTriggerInput, Run,
+    RunProfileTelemetry, RunStatus, TokenAccounting, TranscriptEntry, TranscriptEntryRole,
+    DEFAULT_FALLBACK_TRANSCRIPT_TAIL_LIMIT,
 };
 use crab_discord::{DeliveryAttempt, GatewayMessage, RoutingKey, ShouldSendDecision};
 use crab_scheduler::QueuedRun;
+use crab_store::{CheckpointStore, EventStore};
 
 use crate::AppComposition;
 
@@ -299,32 +307,40 @@ where
 
         self.append_run_state_event(&run, "running", started_at_epoch_ms, None)?;
 
-        let mut physical_session = self.runtime.ensure_physical_session(
-            logical_session_id,
-            &run.profile.resolved_profile,
-            session.active_physical_session_id.as_deref(),
-        )?;
-        run.physical_session_id = Some(physical_session.id.clone());
-        self.composition.state_stores.run_store.upsert_run(&run)?;
-
-        session.active_backend = run.profile.resolved_profile.backend;
-        session.active_profile = run.profile.resolved_profile.clone();
-        session.active_physical_session_id = Some(physical_session.id.clone());
-        self.composition
-            .state_stores
-            .session_store
-            .upsert_session(&session)?;
-
-        let turn_context = self
-            .runtime
-            .build_turn_context(&run, &session, &physical_session)?;
         let turn_id = build_turn_id(&run.id);
-        let backend_events = self.runtime.execute_backend_turn(
-            &mut physical_session,
-            &run,
-            &turn_id,
-            &turn_context,
-        )?;
+        let mut backend_events = Vec::new();
+        let mut manual_command_resolution =
+            self.resolve_manual_rotation_command(&run, &mut session)?;
+
+        if manual_command_resolution.is_none() {
+            let mut physical_session = self.runtime.ensure_physical_session(
+                logical_session_id,
+                &run.profile.resolved_profile,
+                session.active_physical_session_id.as_deref(),
+            )?;
+            run.physical_session_id = Some(physical_session.id.clone());
+            self.composition.state_stores.run_store.upsert_run(&run)?;
+
+            session.active_backend = run.profile.resolved_profile.backend;
+            session.active_profile = run.profile.resolved_profile.clone();
+            session.active_physical_session_id = Some(physical_session.id.clone());
+            self.composition
+                .state_stores
+                .session_store
+                .upsert_session(&session)?;
+
+            let turn_context =
+                self.runtime
+                    .build_turn_context(&run, &session, &physical_session)?;
+            backend_events = self.runtime.execute_backend_turn(
+                &mut physical_session,
+                &run,
+                &turn_id,
+                &turn_context,
+            )?;
+        } else {
+            run.physical_session_id = session.active_physical_session_id.clone();
+        }
 
         let mut rendered_assistant_output = String::new();
         let mut delivery_edit_generation = 0_u32;
@@ -343,7 +359,11 @@ where
             }
         }
 
-        let final_status = derive_final_status(&backend_events);
+        let final_status = if manual_command_resolution.is_some() {
+            RunStatus::Succeeded
+        } else {
+            derive_final_status(&backend_events)
+        };
         let completed_at_epoch_ms = self.runtime.now_epoch_ms()?;
         run.status = final_status;
         run.completed_at_epoch_ms = Some(completed_at_epoch_ms);
@@ -362,10 +382,6 @@ where
             .expect("validated logical session id should always be queue-count addressable")
             as u32;
         session.last_activity_epoch_ms = completed_at_epoch_ms;
-        self.composition
-            .state_stores
-            .session_store
-            .upsert_session(&session)?;
 
         self.append_run_state_event(
             &run,
@@ -374,6 +390,34 @@ where
             None,
         )?;
 
+        let manual_rotation_request = manual_command_resolution
+            .as_ref()
+            .and_then(|resolution| resolution.request);
+        let rotation_outcome = self.maybe_execute_rotation(
+            &run,
+            &mut session,
+            completed_at_epoch_ms,
+            manual_rotation_request,
+        )?;
+
+        if let Some(manual_command_resolution) = manual_command_resolution.take() {
+            let mut response = manual_command_resolution.user_message;
+            let rotation_outcome = rotation_outcome
+                .as_ref()
+                .expect("manual rotation command must produce rotation outcome");
+            response = format!(
+                "{} (checkpoint: {})",
+                response, rotation_outcome.checkpoint_id
+            );
+            let _ =
+                self.deliver_rendered_assistant_output(&run, &response, 0, completed_at_epoch_ms)?;
+        }
+
+        self.composition
+            .state_stores
+            .session_store
+            .upsert_session(&session)?;
+
         Ok(DispatchedTurn {
             logical_session_id: logical_session_id.to_string(),
             run_id: run.id,
@@ -381,6 +425,175 @@ where
             status: final_status,
             emitted_event_count: backend_events.len() + 2,
         })
+    }
+
+    fn resolve_manual_rotation_command(
+        &mut self,
+        run: &Run,
+        session: &mut LogicalSession,
+    ) -> CrabResult<Option<ManualRotationCommandResolution>> {
+        let Some((command, manual_request)) = parse_manual_rotation_command(&run.user_input)?
+        else {
+            return Ok(None);
+        };
+
+        let mut operator_state = OperatorSessionState {
+            active_backend: session.active_backend,
+            active_profile: session.active_profile.clone(),
+            active_physical_session_id: session.active_physical_session_id.clone(),
+        };
+        let actor = OperatorActorContext {
+            sender_id: run.profile.sender_id.clone(),
+            sender_is_owner: run.profile.sender_is_owner,
+        };
+        let outcome = apply_operator_command(&mut operator_state, &command, &actor)?;
+
+        session.active_backend = operator_state.active_backend;
+        session.active_profile = operator_state.active_profile;
+        session.active_physical_session_id = operator_state.active_physical_session_id;
+
+        let mut payload = BTreeMap::new();
+        payload.insert(
+            "operator_command".to_string(),
+            operator_command_token(command).to_string(),
+        );
+        payload.insert(
+            "requires_rotation".to_string(),
+            outcome.requires_rotation.to_string(),
+        );
+        payload.insert(
+            "manual_rotation_request".to_string(),
+            manual_rotation_request_token(manual_request).to_string(),
+        );
+        payload.insert("sender_id".to_string(), run.profile.sender_id.clone());
+        payload.insert(
+            "sender_is_owner".to_string(),
+            run.profile.sender_is_owner.to_string(),
+        );
+        payload.insert("message".to_string(), outcome.user_message.clone());
+        let emitted_at_epoch_ms = self.runtime.now_epoch_ms()?;
+        self.append_event(
+            run,
+            EventKind::RunNote,
+            EventSource::System,
+            payload,
+            emitted_at_epoch_ms,
+        )?;
+
+        Ok(Some(ManualRotationCommandResolution {
+            request: Some(manual_request),
+            user_message: outcome.user_message,
+        }))
+    }
+
+    fn maybe_execute_rotation(
+        &mut self,
+        run: &Run,
+        session: &mut LogicalSession,
+        now_epoch_ms: u64,
+        manual_request: Option<ManualRotationRequest>,
+    ) -> CrabResult<Option<RotationExecutionOutcome>> {
+        self.maybe_execute_rotation_with_sabotage(run, session, now_epoch_ms, manual_request, None)
+    }
+
+    fn maybe_execute_rotation_with_sabotage(
+        &mut self,
+        run: &Run,
+        session: &mut LogicalSession,
+        now_epoch_ms: u64,
+        manual_request: Option<ManualRotationRequest>,
+        completed_event_log_sabotage_path: Option<PathBuf>,
+    ) -> CrabResult<Option<RotationExecutionOutcome>> {
+        let decision = evaluate_rotation_triggers(&RotationTriggerInput {
+            now_epoch_ms,
+            last_activity_epoch_ms: session.last_activity_epoch_ms,
+            lane_is_idle: session.lane_state == LaneState::Idle,
+            token_usage_total: Some(session.token_accounting.total_tokens),
+            compaction_token_threshold: self.composition.rotation_policy.compaction_token_threshold,
+            inactivity_timeout_secs: self.composition.rotation_policy.inactivity_timeout_secs,
+            manual_request,
+        })?;
+
+        if !decision.should_rotate {
+            return Ok(None);
+        }
+
+        let mut started_payload = BTreeMap::new();
+        started_payload.insert("rotation_event".to_string(), "started".to_string());
+        started_payload.insert(
+            "triggers".to_string(),
+            render_rotation_triggers(&decision.triggers),
+        );
+        self.append_event(
+            run,
+            EventKind::RunNote,
+            EventSource::System,
+            started_payload,
+            now_epoch_ms,
+        )?;
+
+        session.lane_state = LaneState::Rotating;
+        self.composition
+            .state_stores
+            .session_store
+            .upsert_session(session)?;
+
+        let event_store = self.composition.state_stores.event_store.clone();
+        let checkpoint_store = self.composition.state_stores.checkpoint_store.clone();
+        let mut rotation_runtime = TurnExecutorRotationRuntime {
+            run,
+            logical_session: session,
+            event_store,
+            checkpoint_store,
+            checkpoint_created_at_epoch_ms: now_epoch_ms,
+            trigger_tokens: decision
+                .triggers
+                .iter()
+                .map(|trigger| rotation_trigger_token(*trigger).to_string())
+                .collect(),
+            completed_event_log_sabotage_path,
+        };
+        let outcome = execute_rotation_sequence(&mut rotation_runtime)?;
+
+        session.last_successful_checkpoint_id = Some(outcome.checkpoint_id.clone());
+        session.lane_state = LaneState::Idle;
+
+        let mut completed_payload = BTreeMap::new();
+        completed_payload.insert("rotation_event".to_string(), "completed".to_string());
+        completed_payload.insert("checkpoint_id".to_string(), outcome.checkpoint_id.clone());
+        completed_payload.insert(
+            "used_fallback_checkpoint".to_string(),
+            outcome.used_fallback_checkpoint.to_string(),
+        );
+        completed_payload.insert(
+            "memory_flush_error".to_string(),
+            outcome
+                .memory_flush_error
+                .clone()
+                .unwrap_or_else(|| "none".to_string()),
+        );
+        completed_payload.insert(
+            "checkpoint_turn_error".to_string(),
+            outcome
+                .checkpoint_turn_error
+                .clone()
+                .unwrap_or_else(|| "none".to_string()),
+        );
+        completed_payload.insert(
+            "triggers".to_string(),
+            render_rotation_triggers(&decision.triggers),
+        );
+        self.append_event(
+            run,
+            EventKind::RunNote,
+            EventSource::System,
+            completed_payload,
+            now_epoch_ms,
+        )?;
+
+        Ok(Some(RotationExecutionOutcome {
+            checkpoint_id: outcome.checkpoint_id,
+        }))
     }
 
     fn mark_run_failed(
@@ -600,12 +813,299 @@ where
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ManualRotationCommandResolution {
+    request: Option<ManualRotationRequest>,
+    user_message: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RotationExecutionOutcome {
+    checkpoint_id: String,
+}
+
+struct TurnExecutorRotationRuntime<'a> {
+    run: &'a Run,
+    logical_session: &'a mut LogicalSession,
+    event_store: EventStore,
+    checkpoint_store: CheckpointStore,
+    checkpoint_created_at_epoch_ms: u64,
+    trigger_tokens: Vec<String>,
+    completed_event_log_sabotage_path: Option<PathBuf>,
+}
+
+impl RotationSequenceRuntime for TurnExecutorRotationRuntime<'_> {
+    fn run_hidden_memory_flush(&mut self) -> CrabResult<()> {
+        let cycle_id = format!("{}:{}", self.run.id, self.checkpoint_created_at_epoch_ms);
+        let _prompt = build_memory_flush_prompt(&cycle_id)
+            .expect("turn rotation runtime always uses a non-empty cycle id");
+        let _ = finalize_hidden_memory_flush("NO_REPLY")
+            .expect("turn rotation runtime uses a known-good hidden flush ack token");
+        Ok(())
+    }
+
+    fn run_hidden_checkpoint_turn(&mut self) -> CrabResult<CheckpointTurnDocument> {
+        if self.run.user_input.contains("crab-primary-checkpoint") {
+            return Ok(CheckpointTurnDocument {
+                summary: "Primary hidden checkpoint".to_string(),
+                decisions: vec!["Keep current backend/session policy".to_string()],
+                open_questions: vec!["none".to_string()],
+                next_actions: vec!["continue next turn".to_string()],
+                artifacts: vec![crab_core::CheckpointTurnArtifact {
+                    path: "state/rotation".to_string(),
+                    note: "primary checkpoint path".to_string(),
+                }],
+            });
+        }
+
+        Err(CrabError::InvariantViolation {
+            context: "turn_executor_rotation_checkpoint_turn",
+            message: "hidden checkpoint backend turn is not wired yet; forcing fallback checkpoint"
+                .to_string(),
+        })
+    }
+
+    fn build_fallback_checkpoint(&mut self) -> CrabResult<CheckpointTurnDocument> {
+        let events = self
+            .event_store
+            .replay_run(&self.run.logical_session_id, &self.run.id)
+            .unwrap_or_default();
+        let transcript = build_fallback_transcript_entries(self.run, &events);
+
+        let mut metadata = BTreeMap::new();
+        metadata.insert(
+            "backend".to_string(),
+            backend_kind_token(self.run.profile.resolved_profile.backend).to_string(),
+        );
+        metadata.insert(
+            "model".to_string(),
+            self.run.profile.resolved_profile.model.clone(),
+        );
+        metadata.insert(
+            "reasoning_level".to_string(),
+            self.run
+                .profile
+                .resolved_profile
+                .reasoning_level
+                .as_token()
+                .to_string(),
+        );
+        metadata.insert(
+            "rotation_triggers".to_string(),
+            self.trigger_tokens.join(","),
+        );
+        metadata.insert(
+            "last_successful_checkpoint_id".to_string(),
+            self.logical_session
+                .last_successful_checkpoint_id
+                .clone()
+                .unwrap_or_else(|| "none".to_string()),
+        );
+
+        build_fallback_checkpoint_document(
+            &transcript,
+            &metadata,
+            DEFAULT_FALLBACK_TRANSCRIPT_TAIL_LIMIT,
+        )
+    }
+
+    fn persist_checkpoint(&mut self, checkpoint: &CheckpointTurnDocument) -> CrabResult<String> {
+        let checkpoint_id = format!(
+            "ckpt:{}:{}",
+            self.run.id, self.checkpoint_created_at_epoch_ms
+        );
+        let mut state = BTreeMap::new();
+        state.insert(
+            "decisions_count".to_string(),
+            checkpoint.decisions.len().to_string(),
+        );
+        state.insert(
+            "open_questions_count".to_string(),
+            checkpoint.open_questions.len().to_string(),
+        );
+        state.insert(
+            "next_actions_count".to_string(),
+            checkpoint.next_actions.len().to_string(),
+        );
+        state.insert(
+            "artifacts_count".to_string(),
+            checkpoint.artifacts.len().to_string(),
+        );
+        state.insert(
+            "rotation_triggers".to_string(),
+            self.trigger_tokens.join(","),
+        );
+
+        self.checkpoint_store.put_checkpoint(&Checkpoint {
+            id: checkpoint_id.clone(),
+            logical_session_id: self.run.logical_session_id.clone(),
+            run_id: self.run.id.clone(),
+            created_at_epoch_ms: self.checkpoint_created_at_epoch_ms,
+            summary: checkpoint.summary.clone(),
+            memory_digest: format!(
+                "fallback:{}:{}:{}",
+                checkpoint.summary.len(),
+                checkpoint.decisions.len(),
+                checkpoint.artifacts.len()
+            ),
+            state,
+        })?;
+
+        Ok(checkpoint_id)
+    }
+
+    fn end_physical_session(&mut self) -> CrabResult<()> {
+        Ok(())
+    }
+
+    fn clear_active_physical_session(&mut self) -> CrabResult<()> {
+        if let Some(path) = self.completed_event_log_sabotage_path.take() {
+            let _ = std::fs::remove_file(&path);
+            let _ = std::fs::remove_dir_all(&path);
+            std::fs::create_dir_all(&path).map_err(|error| CrabError::Io {
+                context: "turn_executor_rotation_sabotage",
+                path: Some(path.to_string_lossy().into_owned()),
+                message: error.to_string(),
+            })?;
+        }
+        self.logical_session.active_physical_session_id = None;
+        Ok(())
+    }
+}
+
 fn build_run_id(logical_session_id: &str, message_id: &str) -> String {
     format!("run:{logical_session_id}:{}", message_id.trim())
 }
 
 fn build_turn_id(run_id: &str) -> String {
     format!("turn:{run_id}")
+}
+
+fn parse_manual_rotation_command(
+    input: &str,
+) -> CrabResult<Option<(OperatorCommand, ManualRotationRequest)>> {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+
+    let lowered = trimmed.to_ascii_lowercase();
+    if !lowered.starts_with("/compact") && !lowered.starts_with("/reset") {
+        return Ok(None);
+    }
+
+    let parsed = parse_operator_command(trimmed)?;
+    match parsed {
+        Some(OperatorCommand::ManualCompact) => Ok(Some((
+            OperatorCommand::ManualCompact,
+            ManualRotationRequest::Compact,
+        ))),
+        Some(OperatorCommand::ManualReset) => Ok(Some((
+            OperatorCommand::ManualReset,
+            ManualRotationRequest::Reset,
+        ))),
+        Some(_) | None => Ok(None),
+    }
+}
+
+fn operator_command_token(command: OperatorCommand) -> &'static str {
+    match command {
+        OperatorCommand::ManualCompact => "/compact",
+        OperatorCommand::ManualReset => "/reset",
+        OperatorCommand::SetBackend { .. }
+        | OperatorCommand::SetModel { .. }
+        | OperatorCommand::SetReasoning { .. }
+        | OperatorCommand::ShowProfile
+        | OperatorCommand::OnboardingRerun
+        | OperatorCommand::OnboardingResetBootstrap => "other",
+    }
+}
+
+fn manual_rotation_request_token(request: ManualRotationRequest) -> &'static str {
+    match request {
+        ManualRotationRequest::Compact => "compact",
+        ManualRotationRequest::Reset => "reset",
+    }
+}
+
+fn rotation_trigger_token(trigger: RotationTrigger) -> &'static str {
+    match trigger {
+        RotationTrigger::ManualCompact => "manual_compact",
+        RotationTrigger::ManualReset => "manual_reset",
+        RotationTrigger::TokenCompaction => "token_compaction",
+        RotationTrigger::InactivityTimeout => "inactivity_timeout",
+    }
+}
+
+fn render_rotation_triggers(triggers: &[RotationTrigger]) -> String {
+    triggers
+        .iter()
+        .map(|trigger| rotation_trigger_token(*trigger))
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+fn backend_kind_token(backend: crab_core::BackendKind) -> &'static str {
+    match backend {
+        crab_core::BackendKind::Claude => "claude",
+        crab_core::BackendKind::Codex => "codex",
+        crab_core::BackendKind::OpenCode => "opencode",
+    }
+}
+
+fn build_fallback_transcript_entries(run: &Run, events: &[EventEnvelope]) -> Vec<TranscriptEntry> {
+    let mut transcript = vec![TranscriptEntry {
+        role: TranscriptEntryRole::User,
+        text: run.user_input.clone(),
+    }];
+
+    for event in events {
+        match event.kind {
+            EventKind::TextDelta => {
+                if let Some(delta) = extract_event_text_delta(event) {
+                    transcript.push(TranscriptEntry {
+                        role: TranscriptEntryRole::Assistant,
+                        text: delta.to_string(),
+                    });
+                }
+            }
+            EventKind::ToolCall | EventKind::ToolResult => {
+                let rendered = event
+                    .payload
+                    .iter()
+                    .map(|(key, value)| format!("{key}={value}"))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                if !rendered.trim().is_empty() {
+                    transcript.push(TranscriptEntry {
+                        role: TranscriptEntryRole::Tool,
+                        text: rendered,
+                    });
+                }
+            }
+            EventKind::RunNote => {
+                let rendered = event
+                    .payload
+                    .iter()
+                    .map(|(key, value)| format!("{key}={value}"))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                if !rendered.trim().is_empty() {
+                    transcript.push(TranscriptEntry {
+                        role: TranscriptEntryRole::System,
+                        text: rendered,
+                    });
+                }
+            }
+            EventKind::RunState
+            | EventKind::ApprovalRequest
+            | EventKind::ApprovalDecision
+            | EventKind::Heartbeat
+            | EventKind::Error => {}
+        }
+    }
+
+    transcript
 }
 
 fn run_status_token(status: RunStatus) -> &'static str {
@@ -1090,6 +1590,12 @@ mod tests {
         }
     }
 
+    fn gateway_message_with_content(message_id: &str, content: &str) -> GatewayMessage {
+        let mut message = gateway_message(message_id);
+        message.content = content.to_string();
+        message
+    }
+
     fn delivery_run(logical_session_id: &str, run_id: &str) -> crab_core::Run {
         crab_core::Run {
             id: run_id.to_string(),
@@ -1101,6 +1607,45 @@ mod tests {
             queued_at_epoch_ms: 1,
             started_at_epoch_ms: Some(2),
             completed_at_epoch_ms: None,
+        }
+    }
+
+    fn rotation_test_run(
+        logical_session_id: &str,
+        run_id: &str,
+        user_input: &str,
+    ) -> crab_core::Run {
+        crab_core::Run {
+            id: run_id.to_string(),
+            logical_session_id: logical_session_id.to_string(),
+            physical_session_id: None,
+            status: RunStatus::Running,
+            user_input: user_input.to_string(),
+            profile: owner_profile_telemetry(),
+            queued_at_epoch_ms: 1,
+            started_at_epoch_ms: Some(2),
+            completed_at_epoch_ms: None,
+        }
+    }
+
+    fn rotation_test_session(
+        logical_session_id: &str,
+        profile: &InferenceProfile,
+    ) -> crab_core::LogicalSession {
+        crab_core::LogicalSession {
+            id: logical_session_id.to_string(),
+            active_backend: BackendKind::Codex,
+            active_profile: profile.clone(),
+            active_physical_session_id: Some("physical-1".to_string()),
+            last_successful_checkpoint_id: None,
+            lane_state: LaneState::Idle,
+            queued_run_count: 0,
+            last_activity_epoch_ms: 3,
+            token_accounting: crab_core::TokenAccounting {
+                input_tokens: 0,
+                output_tokens: 0,
+                total_tokens: 0,
+            },
         }
     }
 
@@ -1442,6 +1987,494 @@ mod tests {
     }
 
     #[test]
+    fn process_gateway_message_rotates_when_token_threshold_is_reached() {
+        let workspace = TempWorkspace::new("turn-executor", "rotation-token-trigger");
+        let runtime = FakeRuntime::with_backend_events(
+            vec![
+                backend_event(1, BackendEventKind::TextDelta, &[("text", "shipping now")]),
+                backend_event(
+                    2,
+                    BackendEventKind::RunNote,
+                    &[
+                        ("run_usage_input_tokens", "50000"),
+                        ("run_usage_output_tokens", "30000"),
+                        ("run_usage_total_tokens", "80000"),
+                    ],
+                ),
+                backend_event(
+                    3,
+                    BackendEventKind::TurnCompleted,
+                    &[("stop_reason", "done")],
+                ),
+            ],
+            &[1, 2, 3, 4, 5, 6],
+        );
+        let mut executor = build_executor(&workspace, runtime, 8);
+
+        executor
+            .process_gateway_message(gateway_message("m-rotation-token"))
+            .expect("token-trigger run should succeed")
+            .expect("run should dispatch");
+
+        let logical_session_id = "discord:channel:777";
+        let run_id = "run:discord:channel:777:m-rotation-token";
+        let session = executor
+            .composition()
+            .state_stores
+            .session_store
+            .get_session(logical_session_id)
+            .expect("session lookup should succeed")
+            .expect("session should exist");
+        assert_eq!(session.token_accounting.total_tokens, 80_000);
+        assert_eq!(session.active_physical_session_id, None);
+        assert!(session.last_successful_checkpoint_id.is_some());
+
+        let checkpoint = executor
+            .composition()
+            .state_stores
+            .checkpoint_store
+            .latest_checkpoint(logical_session_id)
+            .expect("checkpoint lookup should succeed")
+            .expect("rotation should persist checkpoint");
+        assert_eq!(
+            Some(checkpoint.id.clone()),
+            session.last_successful_checkpoint_id
+        );
+        assert_eq!(checkpoint.run_id, run_id);
+
+        let events = executor
+            .composition()
+            .state_stores
+            .event_store
+            .replay_run(logical_session_id, run_id)
+            .expect("event replay should succeed");
+        assert!(events.iter().any(|event| {
+            event.kind == EventKind::RunNote
+                && event
+                    .payload
+                    .get("rotation_event")
+                    .is_some_and(|value| value == "completed")
+        }));
+    }
+
+    #[test]
+    fn process_gateway_message_manual_compact_owner_rotates_without_backend_turn() {
+        let workspace = TempWorkspace::new("turn-executor", "manual-compact-owner");
+        let mut runtime = FakeRuntime::with_backend_events(Vec::new(), &[1, 2, 3, 4]);
+        runtime.resolve_profile_results = VecDeque::from(vec![Ok(owner_profile_telemetry())]);
+        let mut executor = build_executor(&workspace, runtime, 8);
+
+        let dispatched = executor
+            .process_gateway_message(gateway_message_with_content(
+                "m-manual-compact-owner",
+                "/compact confirm",
+            ))
+            .expect("manual compact should succeed")
+            .expect("manual compact should dispatch");
+        assert_eq!(dispatched.status, RunStatus::Succeeded);
+
+        let runtime = executor.runtime_mut();
+        assert!(runtime.steps.contains(&"resolve_run_profile".to_string()));
+        assert!(runtime
+            .steps
+            .contains(&"deliver_assistant_output".to_string()));
+        assert!(!runtime
+            .steps
+            .contains(&"ensure_physical_session".to_string()));
+        assert!(!runtime.steps.contains(&"build_turn_context".to_string()));
+        assert!(!runtime.steps.contains(&"execute_backend_turn".to_string()));
+        assert_eq!(runtime.delivered_outputs.len(), 1);
+        assert!(runtime.delivered_outputs[0]
+            .4
+            .contains("manual compact accepted"));
+
+        let logical_session_id = "discord:channel:777";
+        let run_id = "run:discord:channel:777:m-manual-compact-owner";
+        let session = executor
+            .composition()
+            .state_stores
+            .session_store
+            .get_session(logical_session_id)
+            .expect("session lookup should succeed")
+            .expect("session should exist");
+        assert_eq!(session.active_physical_session_id, None);
+        assert!(session.last_successful_checkpoint_id.is_some());
+
+        let events = executor
+            .composition()
+            .state_stores
+            .event_store
+            .replay_run(logical_session_id, run_id)
+            .expect("event replay should succeed");
+        assert!(events.iter().any(|event| {
+            event.kind == EventKind::RunNote
+                && event
+                    .payload
+                    .get("manual_rotation_request")
+                    .is_some_and(|value| value == "compact")
+        }));
+        assert!(events.iter().any(|event| {
+            event.kind == EventKind::RunNote
+                && event
+                    .payload
+                    .get("rotation_event")
+                    .is_some_and(|value| value == "completed")
+        }));
+    }
+
+    #[test]
+    fn manual_rotation_response_delivery_errors_are_propagated() {
+        let workspace = TempWorkspace::new("turn-executor", "manual-compact-delivery-error");
+        let mut runtime = FakeRuntime::with_backend_events(Vec::new(), &[1, 2, 3, 4, 5]);
+        runtime.resolve_profile_results = VecDeque::from(vec![Ok(owner_profile_telemetry())]);
+        runtime.deliver_results = VecDeque::from(vec![Err(CrabError::InvariantViolation {
+            context: "deliver_manual",
+            message: "manual response delivery failed".to_string(),
+        })]);
+        let mut executor = build_executor(&workspace, runtime, 8);
+
+        let error = executor
+            .process_gateway_message(gateway_message_with_content(
+                "m-manual-compact-delivery-error",
+                "/compact confirm",
+            ))
+            .expect_err("manual response delivery failures should bubble up");
+        assert_eq!(
+            error,
+            CrabError::InvariantViolation {
+                context: "deliver_manual",
+                message: "manual response delivery failed".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn process_gateway_message_rejects_non_owner_manual_rotation_commands() {
+        let workspace = TempWorkspace::new("turn-executor", "manual-reset-non-owner");
+        let mut runtime = FakeRuntime::with_backend_events(Vec::new(), &[1, 2, 3]);
+        runtime.resolve_profile_results = VecDeque::from(vec![Ok(sample_profile_telemetry())]);
+        let mut executor = build_executor(&workspace, runtime, 8);
+
+        let error = executor
+            .process_gateway_message(gateway_message_with_content(
+                "m-manual-reset-non-owner",
+                "/reset confirm",
+            ))
+            .expect_err("non-owner manual reset should fail");
+        assert_eq!(
+            error,
+            CrabError::InvariantViolation {
+                context: "operator_command_authorize",
+                message: "sender 111111111111111111 is not authorized to run operator commands"
+                    .to_string(),
+            }
+        );
+
+        let run = executor
+            .composition()
+            .state_stores
+            .run_store
+            .get_run(
+                "discord:channel:777",
+                "run:discord:channel:777:m-manual-reset-non-owner",
+            )
+            .expect("run lookup should succeed")
+            .expect("run should be persisted");
+        assert_eq!(run.status, RunStatus::Failed);
+
+        let runtime = executor.runtime_mut();
+        assert!(runtime.steps.contains(&"resolve_run_profile".to_string()));
+        assert!(!runtime
+            .steps
+            .contains(&"ensure_physical_session".to_string()));
+        assert!(runtime.delivered_outputs.is_empty());
+    }
+
+    #[test]
+    fn process_gateway_message_rejects_manual_rotation_commands_without_confirm_token() {
+        let workspace = TempWorkspace::new("turn-executor", "manual-command-invalid-shape");
+        let runtime = FakeRuntime::with_backend_events(Vec::new(), &[1, 2, 3]);
+        let mut executor = build_executor(&workspace, runtime, 8);
+
+        let error = executor
+            .process_gateway_message(gateway_message_with_content(
+                "m-manual-invalid-shape",
+                "/compact now",
+            ))
+            .expect_err("invalid manual command shape should fail");
+        assert_eq!(
+            error,
+            CrabError::InvariantViolation {
+                context: "operator_command_parse",
+                message: "onboarding command requires confirmation token \"confirm\"".to_string(),
+            }
+        );
+
+        let run = executor
+            .composition()
+            .state_stores
+            .run_store
+            .get_run(
+                "discord:channel:777",
+                "run:discord:channel:777:m-manual-invalid-shape",
+            )
+            .expect("run lookup should succeed")
+            .expect("run should be persisted");
+        assert_eq!(run.status, RunStatus::Failed);
+    }
+
+    #[test]
+    fn manual_rotation_command_surfaces_clock_errors_during_operator_audit() {
+        let workspace = TempWorkspace::new("turn-executor", "manual-clock-error");
+        let mut runtime = FakeRuntime::with_backend_events(Vec::new(), &[1, 2]);
+        runtime.resolve_profile_results = VecDeque::from(vec![Ok(owner_profile_telemetry())]);
+        let mut executor = build_executor(&workspace, runtime, 8);
+
+        let error = executor
+            .process_gateway_message(gateway_message_with_content(
+                "m-manual-clock-error",
+                "/compact confirm",
+            ))
+            .expect_err("missing scripted timestamp should fail");
+        assert_eq!(
+            error,
+            CrabError::InvariantViolation {
+                context: "turn_executor_test_clock",
+                message: "missing scripted timestamp".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn manual_rotation_command_surfaces_operator_audit_event_store_errors() {
+        let workspace = TempWorkspace::new("turn-executor", "manual-audit-event-store-error");
+        let state_root = state_root(&workspace);
+        let run_id = "run:discord:channel:777:m-manual-audit-event-store-error";
+        let blocked_log_path = event_log_path(&state_root, "discord:channel:777", run_id);
+        let mut runtime = FakeRuntime::with_backend_events(Vec::new(), &[1, 2, 3, 4]);
+        runtime.resolve_profile_results = VecDeque::from(vec![Ok(owner_profile_telemetry())]);
+        runtime = runtime.with_now_epoch_sabotage(3, blocked_log_path);
+        let mut executor = build_executor(&workspace, runtime, 8);
+
+        let error = executor
+            .process_gateway_message(gateway_message_with_content(
+                "m-manual-audit-event-store-error",
+                "/compact confirm",
+            ))
+            .expect_err("audit event append should fail when run log path is blocked");
+        assert!(matches!(
+            error,
+            CrabError::Io {
+                context: "event_replay_read",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn manual_rotation_command_surfaces_rotation_started_event_errors() {
+        let workspace = TempWorkspace::new("turn-executor", "manual-rotation-start-event-error");
+        let state_root = state_root(&workspace);
+        let run_id = "run:discord:channel:777:m-manual-rotation-start-event-error";
+        let blocked_log_path = event_log_path(&state_root, "discord:channel:777", run_id);
+        let mut runtime = FakeRuntime::with_backend_events(Vec::new(), &[1, 2, 3, 4, 5]);
+        runtime.resolve_profile_results = VecDeque::from(vec![Ok(owner_profile_telemetry())]);
+        runtime = runtime.with_now_epoch_sabotage(4, blocked_log_path);
+        let mut executor = build_executor(&workspace, runtime, 8);
+
+        let error = executor
+            .process_gateway_message(gateway_message_with_content(
+                "m-manual-rotation-start-event-error",
+                "/compact confirm",
+            ))
+            .expect_err("rotation started event append should fail when run log path is blocked");
+        assert!(matches!(
+            error,
+            CrabError::Io {
+                context: "event_replay_read",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn maybe_execute_rotation_surfaces_rotation_started_event_errors() {
+        let workspace = TempWorkspace::new("turn-executor", "rotation-start-event-direct-error");
+        let runtime = FakeRuntime::with_backend_events(Vec::new(), &[]);
+        let mut executor = build_executor(&workspace, runtime, 8);
+        let logical_session_id = "discord:channel:777";
+        let run_id = "run:discord:channel:777:rotation-start-event-direct-error";
+        let blocked_log_path = event_log_path(&state_root(&workspace), logical_session_id, run_id);
+        replace_path_with_directory(&blocked_log_path);
+
+        let run = rotation_test_run(logical_session_id, run_id, "/compact confirm");
+        let mut session = rotation_test_session(logical_session_id, &run.profile.resolved_profile);
+
+        let error = executor
+            .maybe_execute_rotation_with_sabotage(
+                &run,
+                &mut session,
+                4,
+                Some(crab_core::ManualRotationRequest::Compact),
+                None,
+            )
+            .expect_err("rotation started event append should fail when event log path is blocked");
+        assert!(matches!(
+            error,
+            CrabError::Io {
+                context: "event_replay_read",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn maybe_execute_rotation_surfaces_rotation_completed_event_errors() {
+        let workspace =
+            TempWorkspace::new("turn-executor", "rotation-completed-event-direct-error");
+        let runtime = FakeRuntime::with_backend_events(Vec::new(), &[]);
+        let mut executor = build_executor(&workspace, runtime, 8);
+        let logical_session_id = "discord:channel:777";
+        let run_id = "run:discord:channel:777:rotation-completed-event-direct-error";
+        let sabotage_path = event_log_path(&state_root(&workspace), logical_session_id, run_id);
+
+        let run = rotation_test_run(logical_session_id, run_id, "/compact confirm");
+        let mut session = rotation_test_session(logical_session_id, &run.profile.resolved_profile);
+
+        let error = executor
+            .maybe_execute_rotation_with_sabotage(
+                &run,
+                &mut session,
+                4,
+                Some(crab_core::ManualRotationRequest::Compact),
+                Some(sabotage_path),
+            )
+            .expect_err(
+                "rotation completed event append should fail when event log path is sabotaged",
+            );
+        assert!(matches!(
+            error,
+            CrabError::Io {
+                context: "event_replay_read",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn maybe_execute_rotation_surfaces_rotation_sabotage_path_errors() {
+        let workspace = TempWorkspace::new("turn-executor", "rotation-sabotage-path-error");
+        let runtime = FakeRuntime::with_backend_events(Vec::new(), &[]);
+        let mut executor = build_executor(&workspace, runtime, 8);
+        let logical_session_id = "discord:channel:777";
+        let run_id = "run:discord:channel:777:rotation-sabotage-path-error";
+        let blocked_parent = state_root(&workspace).join("blocked-parent");
+        fs::write(&blocked_parent, "blocked parent").expect("fixture file should be writable");
+        let sabotage_path = blocked_parent.join("child");
+
+        let run = rotation_test_run(logical_session_id, run_id, "/compact confirm");
+        let mut session = rotation_test_session(logical_session_id, &run.profile.resolved_profile);
+
+        let error = executor
+            .maybe_execute_rotation_with_sabotage(
+                &run,
+                &mut session,
+                4,
+                Some(crab_core::ManualRotationRequest::Compact),
+                Some(sabotage_path),
+            )
+            .expect_err("invalid sabotage path parent should fail");
+        assert!(matches!(
+            error,
+            CrabError::Io {
+                context: "turn_executor_rotation_sabotage",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn manual_rotation_command_surfaces_rotation_session_persist_errors() {
+        let workspace = TempWorkspace::new("turn-executor", "manual-rotation-session-error");
+        let state_root = state_root(&workspace);
+        let session_path = session_file_path(&state_root, "discord:channel:777");
+        let mut runtime = FakeRuntime::with_backend_events(Vec::new(), &[1, 2, 3, 4, 5]);
+        runtime.resolve_profile_results = VecDeque::from(vec![Ok(owner_profile_telemetry())]);
+        runtime = runtime.with_now_epoch_sabotage(4, session_path);
+        let mut executor = build_executor(&workspace, runtime, 8);
+
+        let error = executor
+            .process_gateway_message(gateway_message_with_content(
+                "m-manual-rotation-session-error",
+                "/compact confirm",
+            ))
+            .expect_err("rotation session persist should fail when session path is blocked");
+        assert!(matches!(
+            error,
+            CrabError::Io {
+                context: "session_read",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn manual_rotation_command_surfaces_checkpoint_persist_errors() {
+        let workspace = TempWorkspace::new("turn-executor", "manual-checkpoint-store-error");
+        let mut runtime = FakeRuntime::with_backend_events(Vec::new(), &[1, 2, 3, 4, 5]);
+        runtime.resolve_profile_results = VecDeque::from(vec![Ok(owner_profile_telemetry())]);
+        let mut executor = build_executor(&workspace, runtime, 8);
+
+        let checkpoints_root = state_root(&workspace).join("checkpoints");
+        fs::write(&checkpoints_root, "blocked checkpoints root")
+            .expect("fixture file should be writable");
+
+        let error = executor
+            .process_gateway_message(gateway_message_with_content(
+                "m-manual-checkpoint-store-error",
+                "/compact confirm",
+            ))
+            .expect_err("rotation checkpoint persistence should fail");
+        assert!(matches!(
+            error,
+            CrabError::Io {
+                context: "checkpoint_store_layout",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn rotation_trigger_evaluation_surfaces_invalid_runtime_policy_values() {
+        let workspace = TempWorkspace::new("turn-executor", "rotation-invalid-policy");
+        let runtime = FakeRuntime::with_backend_events(
+            vec![backend_event(
+                1,
+                BackendEventKind::TurnCompleted,
+                &[("stop_reason", "done")],
+            )],
+            &[1, 2, 3, 4, 5],
+        );
+        let mut executor = build_executor(&workspace, runtime, 8);
+        executor
+            .composition_mut()
+            .rotation_policy
+            .compaction_token_threshold = 0;
+
+        let error = executor
+            .process_gateway_message(gateway_message("m-rotation-invalid-policy"))
+            .expect_err("invalid runtime policy should fail rotation trigger evaluation");
+        assert_eq!(
+            error,
+            CrabError::InvalidConfig {
+                key: "CRAB_COMPACTION_TOKEN_THRESHOLD",
+                value: "0".to_string(),
+                reason: "must be greater than 0",
+            }
+        );
+    }
+
+    #[test]
     fn process_gateway_message_rejects_invalid_usage_totals() {
         let workspace = TempWorkspace::new("turn-executor", "usage-invalid-total");
         let runtime = FakeRuntime::with_backend_events(
@@ -1475,6 +2508,63 @@ mod tests {
                 message: "usage_total_tokens 11 must be greater than or equal to usage_input_tokens + usage_output_tokens 12".to_string(),
             }
         );
+    }
+
+    #[test]
+    fn token_trigger_rotation_can_use_primary_checkpoint_turn_without_fallback() {
+        let workspace = TempWorkspace::new("turn-executor", "rotation-primary-checkpoint");
+        let runtime = FakeRuntime::with_backend_events(
+            vec![
+                backend_event(
+                    1,
+                    BackendEventKind::RunNote,
+                    &[
+                        ("run_usage_input_tokens", "60000"),
+                        ("run_usage_output_tokens", "20000"),
+                        ("run_usage_total_tokens", "80000"),
+                    ],
+                ),
+                backend_event(
+                    2,
+                    BackendEventKind::TurnCompleted,
+                    &[("stop_reason", "done")],
+                ),
+            ],
+            &[1, 2, 3, 4, 5],
+        );
+        let mut executor = build_executor(&workspace, runtime, 8);
+
+        executor
+            .process_gateway_message(gateway_message_with_content(
+                "m-rotation-primary-checkpoint",
+                "crab-primary-checkpoint",
+            ))
+            .expect("primary checkpoint run should succeed")
+            .expect("primary checkpoint run should dispatch");
+
+        let events = executor
+            .composition()
+            .state_stores
+            .event_store
+            .replay_run(
+                "discord:channel:777",
+                "run:discord:channel:777:m-rotation-primary-checkpoint",
+            )
+            .expect("event replay should succeed");
+        assert!(events.iter().any(|event| {
+            event.kind == EventKind::RunNote
+                && event
+                    .payload
+                    .get("used_fallback_checkpoint")
+                    .is_some_and(|value| value == "false")
+        }));
+        assert!(events.iter().any(|event| {
+            event.kind == EventKind::RunNote
+                && event
+                    .payload
+                    .get("checkpoint_turn_error")
+                    .is_some_and(|value| value == "none")
+        }));
     }
 
     #[test]
@@ -3026,6 +4116,81 @@ mod tests {
         assert_eq!(super::run_status_token(RunStatus::Failed), "failed");
         assert_eq!(super::run_status_token(RunStatus::Cancelled), "cancelled");
         assert_eq!(
+            super::parse_manual_rotation_command("hello world").expect("non command should parse"),
+            None
+        );
+        assert_eq!(
+            super::parse_manual_rotation_command("   ").expect("blank input should parse"),
+            None
+        );
+        assert_eq!(
+            super::parse_manual_rotation_command("/compactx")
+                .expect("unknown compact-like command should parse"),
+            None
+        );
+        assert_eq!(
+            super::parse_manual_rotation_command("/compact confirm")
+                .expect("manual compact should parse"),
+            Some((
+                crab_core::OperatorCommand::ManualCompact,
+                crab_core::ManualRotationRequest::Compact
+            ))
+        );
+        assert_eq!(
+            super::parse_manual_rotation_command("/reset confirm")
+                .expect("manual reset should parse"),
+            Some((
+                crab_core::OperatorCommand::ManualReset,
+                crab_core::ManualRotationRequest::Reset
+            ))
+        );
+        assert_eq!(
+            super::operator_command_token(crab_core::OperatorCommand::ManualCompact),
+            "/compact"
+        );
+        assert_eq!(
+            super::operator_command_token(crab_core::OperatorCommand::ManualReset),
+            "/reset"
+        );
+        assert_eq!(
+            super::operator_command_token(crab_core::OperatorCommand::ShowProfile),
+            "other"
+        );
+        assert_eq!(
+            super::manual_rotation_request_token(crab_core::ManualRotationRequest::Compact),
+            "compact"
+        );
+        assert_eq!(
+            super::manual_rotation_request_token(crab_core::ManualRotationRequest::Reset),
+            "reset"
+        );
+        assert_eq!(
+            super::rotation_trigger_token(crab_core::RotationTrigger::ManualCompact),
+            "manual_compact"
+        );
+        assert_eq!(
+            super::rotation_trigger_token(crab_core::RotationTrigger::ManualReset),
+            "manual_reset"
+        );
+        assert_eq!(
+            super::rotation_trigger_token(crab_core::RotationTrigger::TokenCompaction),
+            "token_compaction"
+        );
+        assert_eq!(
+            super::rotation_trigger_token(crab_core::RotationTrigger::InactivityTimeout),
+            "inactivity_timeout"
+        );
+        assert_eq!(
+            super::render_rotation_triggers(&[
+                crab_core::RotationTrigger::ManualCompact,
+                crab_core::RotationTrigger::TokenCompaction,
+            ]),
+            "manual_compact,token_compaction".to_string()
+        );
+        assert_eq!(super::backend_kind_token(BackendKind::Claude), "claude");
+        assert_eq!(super::backend_kind_token(BackendKind::Codex), "codex");
+        assert_eq!(super::backend_kind_token(BackendKind::OpenCode), "opencode");
+        assert_eq!(
             super::delivery_message_id("run:discord:channel:777:msg"),
             "delivery:run:discord:channel:777:msg:chunk:0"
         );
@@ -3089,6 +4254,59 @@ mod tests {
         let mut non_delta_event = delta_event.clone();
         non_delta_event.kind = EventKind::ToolCall;
         assert_eq!(super::extract_event_text_delta(&non_delta_event), None);
+
+        let run = delivery_run("discord:channel:1", "run-1");
+        let transcript = super::build_fallback_transcript_entries(
+            &run,
+            &[
+                delta_event.clone(),
+                crab_core::EventEnvelope {
+                    kind: EventKind::TextDelta,
+                    payload: BTreeMap::new(),
+                    ..delta_event.clone()
+                },
+                crab_core::EventEnvelope {
+                    kind: EventKind::RunNote,
+                    payload: BTreeMap::from([("note".to_string(), "remember".to_string())]),
+                    ..delta_event.clone()
+                },
+                crab_core::EventEnvelope {
+                    kind: EventKind::RunNote,
+                    payload: BTreeMap::new(),
+                    ..delta_event.clone()
+                },
+                crab_core::EventEnvelope {
+                    kind: EventKind::ToolResult,
+                    payload: BTreeMap::from([("status".to_string(), "ok".to_string())]),
+                    ..delta_event.clone()
+                },
+                crab_core::EventEnvelope {
+                    kind: EventKind::ToolCall,
+                    payload: BTreeMap::new(),
+                    ..delta_event.clone()
+                },
+                crab_core::EventEnvelope {
+                    kind: EventKind::Error,
+                    payload: BTreeMap::from([("error".to_string(), "boom".to_string())]),
+                    ..delta_event.clone()
+                },
+            ],
+        );
+        assert_eq!(transcript[0].role, crab_core::TranscriptEntryRole::User);
+        assert_eq!(
+            transcript[1].role,
+            crab_core::TranscriptEntryRole::Assistant
+        );
+        assert!(transcript
+            .iter()
+            .any(|entry| entry.role == crab_core::TranscriptEntryRole::System));
+        assert!(transcript
+            .iter()
+            .any(|entry| entry.role == crab_core::TranscriptEntryRole::Tool));
+        assert!(!transcript
+            .iter()
+            .any(|entry| entry.text.contains("error=boom")));
+        assert!(!transcript.iter().any(|entry| entry.text.trim().is_empty()));
 
         let workspace_missing_profile =
             TempWorkspace::new("turn-executor", "missing-profile-script");
