@@ -13,8 +13,7 @@ Crab is a Rust harness for running coding agents (Claude Code, Codex CLI, OpenCo
 - `WS6` complete: OpenCode adapter lifecycle/protocol/recovery.
 - `WS7` complete: model/reasoning policy resolution, compatibility, fallback, mapping, and telemetry persistence.
 - `WS8` complete: trigger evaluation, hidden memory flush/checkpoint turns, fallback checkpointing, and rotation sequence.
-- `WS9` in progress: `WS9-T1` cancellation semantics, `WS9-T2` startup reconciliation, `WS9-T3` heartbeat loops, and `WS9-T4` operator commands complete.
-- Next implementation target: `WS9-T5` (structured diagnostics).
+- `WS9` complete: cancellation semantics, startup reconciliation, heartbeat loops, operator commands, and structured diagnostics.
 
 ## Docs
 

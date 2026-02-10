@@ -4,6 +4,7 @@ pub mod checkpoint_fallback;
 pub mod checkpoint_turn;
 pub mod compatibility;
 pub mod config;
+pub mod diagnostics;
 pub mod domain;
 pub mod error;
 pub mod fallback;
@@ -30,6 +31,11 @@ pub use compatibility::{
     CompatibilityIssue, CompatibilityReport, AUTO_MODEL_ALIAS,
 };
 pub use config::RuntimeConfig;
+pub use diagnostics::{
+    build_diagnostic_record, parse_diagnostic_record_json, parse_diagnostics_fixture,
+    render_diagnostic_record_json, render_diagnostics_fixture, DiagnosticCategory, DiagnosticEvent,
+    DiagnosticRecord, DiagnosticSeverity,
+};
 pub use domain::{
     BackendKind, Checkpoint, EventEnvelope, EventKind, EventSource, InferenceProfile, LaneState,
     LogicalSession, OutboundRecord, PhysicalSession, ReasoningLevel, Run, RunProfileTelemetry,
