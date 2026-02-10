@@ -16,6 +16,7 @@ pub mod rotation;
 pub mod rotation_sequence;
 pub mod startup_reconciliation;
 mod validation;
+pub mod workspace;
 
 pub use checkpoint_fallback::{
     build_fallback_checkpoint_document, TranscriptEntry, TranscriptEntryRole,
@@ -71,6 +72,12 @@ pub use rotation_sequence::{
 pub use startup_reconciliation::{
     execute_startup_reconciliation, StartupReconciliationOutcome,
     StartupReconciliationRecoveredRun, StartupReconciliationRuntime,
+};
+pub use workspace::{
+    default_workspace_templates, detect_workspace_bootstrap_state, ensure_user_memory_scope,
+    ensure_workspace_layout, WorkspaceBootstrapState, WorkspaceEnsureOutcome, WorkspaceTemplate,
+    AGENTS_FILE_NAME, BOOTSTRAP_FILE_NAME, CLAUDE_LINK_NAME, IDENTITY_FILE_NAME, MEMORY_FILE_NAME,
+    SOUL_FILE_NAME, USER_FILE_NAME,
 };
 
 #[cfg(test)]

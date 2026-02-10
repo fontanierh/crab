@@ -40,6 +40,9 @@ dependencies = [
 [[package]]
 name = "crab-app"
 version = "0.1.0"
+dependencies = [
+ "crab-core",
+]
 
 [[package]]
 name = "crab-backends"

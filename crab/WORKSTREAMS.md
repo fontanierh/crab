@@ -27,6 +27,12 @@ This document breaks the Crab implementation into execution workstreams and issu
 | WS7 | Model/reasoning policy | Effective profile resolution and fallback |
 | WS8 | Memory flush + checkpoint | Hidden protocol turns and rotation handoff |
 | WS9 | Reliability + ops UX | Cancel, recovery, heartbeat, operator commands |
+| WS10 | Workspace bootstrap runtime | Deterministic identity/memory file lifecycle |
+| WS11 | Owner model and trust mapping | Sender->owner resolution and policy context |
+| WS12 | First-run onboarding flow | Bootstrap conversation and identity capture |
+| WS13 | Context and prompt assembly | Ordered context injection and prompt contract |
+| WS14 | Memory tools runtime | `memory_search`/`memory_get` with scoped retrieval |
+| WS15 | End-to-end runtime orchestration | `discord -> lane -> backend -> store -> discord` loop |
 
 ## 3) Detailed Workstreams and Tasks
 
@@ -240,6 +246,160 @@ This document breaks the Crab implementation into execution workstreams and issu
 - Add high-signal logs and run/session correlation ids.
 - Done criteria: diagnostics fixture tests pass.
 
+### WS10 - Workspace Bootstrap Runtime
+
+### WS10-T1 - Bootstrap template set
+- Define default templates for `AGENTS.md`, `SOUL.md`, `IDENTITY.md`, `USER.md`, `MEMORY.md`, and `BOOTSTRAP.md`.
+- Keep templates small and deterministic for testability.
+- Done criteria: template load/render tests pass.
+
+### WS10-T2 - Workspace ensure lifecycle
+- Implement startup ensure logic for workspace root and required files.
+- Create/repair `CLAUDE.md -> AGENTS.md` symlink idempotently.
+- Done criteria: repeated ensure runs are no-op and tested.
+
+### WS10-T3 - Bootstrap state detector
+- Detect first-run state (new workspace or pending bootstrap completion).
+- Surface bootstrap state in runtime/session metadata.
+- Done criteria: bootstrap state matrix tests pass.
+
+### WS10-T4 - Memory directory bootstrap
+- Ensure `memory/global/` and `memory/users/<discord_user_id>/` layout exists.
+- Keep per-user memory roots deterministic and safe.
+- Done criteria: layout and path-safety tests pass.
+
+### WS10-T5 - Startup integration in app runtime
+- Wire workspace ensure into process startup before accepting Discord ingress.
+- Emit startup diagnostics when files are created/repaired.
+- Done criteria: startup integration tests pass.
+
+### WS11 - Owner Model and Trust Mapping
+
+### WS11-T1 - Owner config schema
+- Add owner identity config (`discord_user_ids`, aliases, profile defaults, machine location/timezone fields).
+- Validate config with explicit error messages.
+- Done criteria: config parse/validation tests pass.
+
+### WS11-T2 - Sender identity resolver
+- Resolve inbound Discord sender to canonical user key and owner boolean.
+- Support DM/thread/channel consistently.
+- Done criteria: resolver matrix tests pass.
+
+### WS11-T3 - Owner-aware run context
+- Persist `sender_id`, `sender_is_owner`, and resolved owner profile in run metadata/events.
+- Make metadata available to prompt assembly.
+- Done criteria: persistence and replay tests pass.
+
+### WS11-T4 - Owner policy gates
+- Define owner-only operator/admin command behavior.
+- Keep default assistant behavior autonomous (no Discord approval UI dependency).
+- Done criteria: command authorization tests pass.
+
+### WS11-T5 - Trust and privacy safeguards
+- Enforce per-user memory scope default on shared Discord surfaces.
+- Prevent owner-specific context bleed to non-owner runs.
+- Done criteria: privacy regression tests pass.
+
+### WS12 - First-Run Onboarding Flow
+
+### WS12-T1 - Onboarding question contract
+- Define first-conversation capture contract covering who the agent is, who the owner is, primary goals, and machine location/timezone.
+- Done criteria: onboarding prompt contract tests pass.
+
+### WS12-T2 - Bootstrap state machine
+- Implement onboarding states: `Pending`, `InProgress`, `Completed`, `Skipped`.
+- Support resume after interruption/restart.
+- Done criteria: state transition tests pass.
+
+### WS12-T3 - Identity/profile file writers
+- Write normalized updates to `IDENTITY.md`, `USER.md`, and `SOUL.md`.
+- Preserve user-authored sections where possible.
+- Done criteria: merge/update behavior tests pass.
+
+### WS12-T4 - Bootstrap completion protocol
+- On successful onboarding: update memory baseline and remove/retire `BOOTSTRAP.md`.
+- Emit bootstrap completion event envelope.
+- Done criteria: completion protocol tests pass.
+
+### WS12-T5 - Manual onboarding commands
+- Add operator command(s) to re-run onboarding or reset bootstrap state.
+- Keep behavior explicit and auditable.
+- Done criteria: manual reset/restart tests pass.
+
+### WS13 - Context and Prompt Assembly
+
+### WS13-T1 - Injection-order context assembler
+- Implement design-specified order:
+  `SOUL.md -> IDENTITY.md -> AGENTS.md -> USER.md -> MEMORY.md -> memory snippets -> latest checkpoint -> turn input`.
+- Done criteria: deterministic ordering tests pass.
+
+### WS13-T2 - Scoped memory snippet resolver
+- Inject per-user + recent global memory according to policy.
+- Keep context small and deterministic.
+- Done criteria: scope and selection tests pass.
+
+### WS13-T3 - Prompt contract compiler
+- Build backend-neutral system prompt sections:
+  memory-search-first rule, owner context line, runtime notes, messaging semantics.
+- Done criteria: prompt snapshot tests pass.
+
+### WS13-T4 - Context budget + truncation policy
+- Add predictable truncation behavior with explicit truncation markers.
+- Ensure budgeting is stable across runs.
+- Done criteria: token/char budget tests pass.
+
+### WS13-T5 - Context diagnostics
+- Emit context report (files injected, sizes, truncation decisions) for debugging.
+- Done criteria: diagnostics report fixture tests pass.
+
+### WS14 - Memory Tools Runtime
+
+### WS14-T1 - `memory_search` implementation
+- Implement semantic/keyword search over `MEMORY.md` + memory files.
+- Return scored snippets with path metadata.
+- Done criteria: search correctness tests pass.
+
+### WS14-T2 - `memory_get` implementation
+- Implement safe line-range retrieval by relative path.
+- Reject path traversal and invalid ranges.
+- Done criteria: retrieval and safety tests pass.
+
+### WS14-T3 - Tool exposure and backend wiring
+- Expose memory tools uniformly across Claude/Codex/OpenCode adapters.
+- Keep tool contract stable in normalized events.
+- Done criteria: backend tool wiring tests pass.
+
+### WS14-T4 - Citation and disclosure policy
+- Add citation mode policy (`auto|on|off`) for memory tool snippets.
+- Default behavior should reduce leakage in shared contexts.
+- Done criteria: citation policy tests pass.
+
+### WS14-T5 - Flush + tools interaction tests
+- Validate hidden memory flush writes are discoverable by memory tools in subsequent turns.
+- Done criteria: end-to-end memory continuity tests pass.
+
+### WS15 - End-to-End Runtime Orchestration
+
+### WS15-T1 - `crab-app` composition root
+- Build runtime wiring for stores, scheduler, Discord transport, and backend managers.
+- Done criteria: composition tests pass.
+
+### WS15-T2 - Turn executor pipeline
+- Implement `ingress -> route -> enqueue -> dispatch -> context build -> backend turn -> finalize`.
+- Done criteria: pipeline integration tests pass.
+
+### WS15-T3 - Event envelope parity
+- Align persisted event envelope fields with design requirements (run/turn/lane/session/profile/sequence metadata).
+- Done criteria: schema parity + replay tests pass.
+
+### WS15-T4 - Delivery and replay integration
+- Connect normalized events to Discord delivery with idempotent resend/edit recovery.
+- Done criteria: crash-replay duplicate-suppression tests pass.
+
+### WS15-T5 - Deployment readiness slice
+- Add integration tests for first interaction onboarding, normal owner/non-owner runs, and restart recovery continuity.
+- Done criteria: end-to-end suite green with quality gates.
+
 ## 4) Dependency Order and Critical Path
 
 Execution order:
@@ -249,10 +409,15 @@ Execution order:
 3. WS5 and WS6 after WS4 baseline contract is stable
 4. WS8 after at least one backend is production-ready (WS4+)
 5. WS9 after WS3 and one backend are stable
+6. WS10 before WS12, WS13, WS14, and WS15
+7. WS11 in parallel with WS10; required before owner-aware WS12/WS13/WS15 behavior
+8. WS12 and WS13 after WS10 and WS11
+9. WS14 after WS10 and WS13
+10. WS15 after WS10, WS11, WS12, WS13, and WS14
 
 Critical path to MVP:
 
-- WS0, WS1, WS2, WS3, WS4, WS7, WS8, WS9
+- WS0, WS1, WS2, WS3, WS4, WS7, WS8, WS9, WS10, WS11, WS12, WS13, WS14, WS15
 
 Codex/OpenCode parity path:
 
@@ -271,6 +436,14 @@ Codex/OpenCode parity path:
 ### Milestone M3 - Backend parity
 - Scope: WS5, WS6.
 - Exit criteria: Codex and OpenCode both pass adapter conformance and replay/recovery tests.
+
+### Milestone M4 - Identity/bootstrap vertical slice
+- Scope: WS10, WS11, WS12, WS13.
+- Exit criteria: first run reliably captures identity/owner context, writes workspace files, and injects context in deterministic order.
+
+### Milestone M5 - Memory recall + full runtime loop
+- Scope: WS14, WS15.
+- Exit criteria: memory tools and end-to-end orchestration are production-ready for deployment on target machine.
 
 ## 6) Issue Template for Task Tickets
 
