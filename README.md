@@ -19,6 +19,11 @@ Crab is a Rust harness for running coding agents (Claude Code, Codex CLI, OpenCo
 - `WS14` complete: deterministic memory recall core (`memory_search`/`memory_get`), CLI exposure (`crab-memory-search`/`crab-memory-get`), citation/disclosure policy, and flush/recall continuity tests are complete.
 - `WS15` complete: composition-root wiring, turn executor pipeline, event envelope parity, delivery/replay integration, and deployment readiness integration tests are complete.
 - `WS16` complete: comprehensive architecture handbook covering onboarding, sessions, rotation/checkpointing, memory/context, reliability/recovery, backend contracts, state model, and deployment-gap tracking.
+- `WS17` in progress:
+  - `WS17-T1` complete: runtime config surface for rotation/heartbeat policy.
+  - `WS17-T2` complete: token accounting propagation from normalized usage payloads.
+  - `WS17-T3` complete: post-run rotation trigger wiring + owner-only `/compact confirm` and `/reset confirm`.
+  - `WS17-T4` and `WS17-T5` pending.
 
 ## Docs
 

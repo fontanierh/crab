@@ -12,6 +12,12 @@ Recently closed:
 - Runtime policy config surface is now implemented in `RuntimeConfig`.
 - Session token accounting is now aggregated from normalized backend usage payloads at
   turn finalization.
+- Turn executor finalization now invokes
+  `evaluate_rotation_triggers` + `execute_rotation_sequence`.
+- Owner-only manual rotation commands are implemented:
+  - `/compact confirm`
+  - `/reset confirm`
+- Rotation lifecycle/audit run-note events are persisted for automatic and manual rotation.
 
 Runtime policy env keys now supported:
 
@@ -23,38 +29,21 @@ Runtime policy env keys now supported:
 - `CRAB_BACKEND_STALL_TIMEOUT_SECS` (default `30`)
 - `CRAB_DISPATCHER_STALL_TIMEOUT_SECS` (default `20`)
 
-## Gap 1: Rotation Trigger Integration In Turn Finalization
+## Closed Gaps
 
-Current status:
+### Closed Gap A: Rotation Trigger Integration In Turn Finalization
 
-- Rotation primitives exist in `crab-core`.
-- Turn executor finalization still does not invoke
-  `evaluate_rotation_triggers` + `execute_rotation_sequence`.
+- Closed on February 10, 2026 in `main` commit `583ec53`.
+- `TurnExecutor` now evaluates rotation triggers and executes rotation sequence in
+  post-run finalization.
 
-Impact:
+### Closed Gap B: Manual Compact/Reset Operator Surface
 
-- token/inactivity/manual rotation policy is not yet active end-to-end.
+- Closed on February 10, 2026 in `main` commit `583ec53`.
+- Owner-only `/compact confirm` and `/reset confirm` are now parsed, authorized,
+  audited, and wired through rotation execution.
 
-Required work:
-
-- wire trigger evaluation and rotation sequence execution into post-run finalization.
-
-## Gap 2: Manual Compact/Reset Operator Surface
-
-Current status:
-
-- owner-gated operator framework exists for profile/onboarding commands.
-- explicit compact/reset commands are not yet part of operator parsing/app flow.
-
-Impact:
-
-- no explicit owner command path to force compaction/reset rotation.
-
-Required work:
-
-- add owner-only compact/reset commands and persist audit events.
-
-## Gap 3: Startup Reconciliation + Heartbeat Runtime Loop Wiring
+## Gap 1: Startup Reconciliation + Heartbeat Runtime Loop Wiring
 
 Current status:
 
@@ -71,7 +60,7 @@ Required work:
 - invoke reconciliation on startup and heartbeat cycles on configured interval without
   duplicate user-visible delivery.
 
-## Gap 4: Full Bot Runtime Entrypoint
+## Gap 2: Full Bot Runtime Entrypoint
 
 Current status:
 
@@ -89,10 +78,8 @@ Required work:
 
 ## Recommended Closure Order
 
-1. rotation trigger + sequence wiring
-2. manual compact/reset commands
-3. startup reconciliation + heartbeat schedule integration
-4. production runtime binary and deployment playbook
+1. startup reconciliation + heartbeat schedule integration
+2. production runtime binary and deployment playbook
 
 ## Exit Criteria For "Deployment Ready"
 

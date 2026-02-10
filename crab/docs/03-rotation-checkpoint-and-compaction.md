@@ -140,8 +140,14 @@ Implemented:
 - rotation sequence primitives
 - token accounting propagation from normalized backend usage payloads into
   `LogicalSession.token_accounting` during run finalization
+- `TurnExecutor` post-run finalization wiring into
+  `evaluate_rotation_triggers` + `execute_rotation_sequence`
+- owner-only manual rotation commands:
+  - `/compact confirm`
+  - `/reset confirm`
+- auditable operator and rotation lifecycle run-note events for manual and automatic rotation
 
-Not yet fully integrated in app runtime path:
+Still pending:
 
-- turn-finalization wiring from `crab-app` into rotation trigger evaluation and sequence execution
-- explicit operator command surface for manual compact/reset
+- production runtime loop integration for startup reconciliation + heartbeat scheduling
+  (tracked in `crab/docs/08-deployment-readiness-gaps.md`)

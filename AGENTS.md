@@ -79,6 +79,8 @@ No bypasses on main branch.
 - Include: what changed, why, and how it was validated.
 - Update docs/config/scripts when quality gates change.
 - Keep architecture docs current when behavior changes (`crab/DESIGN.md` and `crab/docs/`).
+- When behavior ships, update the relevant docs and issue/project status in the same work session
+  (do not defer synchronization to a later pass).
 - Do not merge if any gate is skipped.
 - No `TODO`/`FIXME` in committed code without a linked GitHub issue in this repository.
 - Before commit/push, verify `git status` contains only intentional changes; remove accidental tool/agent artifact files.
