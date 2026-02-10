@@ -41,7 +41,11 @@ dependencies = [
 name = "crab-app"
 version = "0.1.0"
 dependencies = [
+ "crab-backends",
  "crab-core",
+ "crab-discord",
+ "crab-scheduler",
+ "crab-store",
  "serde_json",
 ]
 

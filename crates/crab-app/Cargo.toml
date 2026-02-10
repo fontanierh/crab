@@ -7,6 +7,10 @@ license.workspace = true
 
 [dependencies]
 crab-core = { path = "../crab-core" }
+crab-backends = { path = "../crab-backends" }
+crab-discord = { path = "../crab-discord" }
+crab-scheduler = { path = "../crab-scheduler" }
+crab-store = { path = "../crab-store" }
 serde_json = "1.0.139"
 
 [lints]

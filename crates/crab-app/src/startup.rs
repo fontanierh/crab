@@ -98,56 +98,19 @@ fn missing_home_error(value: &str) -> CrabError {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
     use std::fs;
     use std::path::{Path, PathBuf};
-    use std::sync::atomic::{AtomicU64, Ordering};
 
-    use crab_core::{RuntimeConfig, WorkspaceBootstrapState, BOOTSTRAP_FILE_NAME};
+    use crab_core::{WorkspaceBootstrapState, BOOTSTRAP_FILE_NAME};
 
     use super::{
         initialize_runtime_startup, render_startup_diagnostics, resolve_workspace_root_with_home,
         AppStartupOutcome,
     };
+    use crate::test_support::{
+        runtime_config_for_workspace, runtime_config_for_workspace_root, TempWorkspace,
+    };
     use crab_core::CrabError;
-
-    static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
-
-    struct TempWorkspace {
-        path: PathBuf,
-    }
-
-    impl TempWorkspace {
-        fn new(label: &str) -> Self {
-            let suffix = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
-            let path = std::env::temp_dir().join(format!(
-                "crab-app-startup-{label}-{}-{suffix}",
-                std::process::id()
-            ));
-            let _ = fs::remove_dir_all(&path);
-            Self { path }
-        }
-    }
-
-    impl Drop for TempWorkspace {
-        fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.path);
-        }
-    }
-
-    fn config_for_workspace_root(raw_workspace_root: &str) -> RuntimeConfig {
-        let mut values = HashMap::new();
-        values.insert("CRAB_DISCORD_TOKEN".to_string(), "token".to_string());
-        values.insert(
-            "CRAB_WORKSPACE_ROOT".to_string(),
-            raw_workspace_root.to_string(),
-        );
-        RuntimeConfig::from_map(&values).expect("runtime config should parse")
-    }
-
-    fn config_for_path(path: &Path) -> RuntimeConfig {
-        config_for_workspace_root(&path.to_string_lossy())
-    }
 
     fn assert_state(outcome: &AppStartupOutcome, expected: WorkspaceBootstrapState) {
         assert_eq!(outcome.bootstrap_state, expected);
@@ -159,8 +122,8 @@ mod tests {
 
     #[test]
     fn initialize_runtime_startup_initializes_workspace_before_runtime() {
-        let workspace = TempWorkspace::new("init");
-        let config = config_for_path(&workspace.path);
+        let workspace = TempWorkspace::new("startup", "init");
+        let config = runtime_config_for_workspace(&workspace.path);
         let outcome = initialize_runtime_startup(&config).expect("startup should succeed");
 
         assert_state(&outcome, WorkspaceBootstrapState::NewWorkspace);
@@ -173,8 +136,8 @@ mod tests {
 
     #[test]
     fn initialize_runtime_startup_reports_noop_when_workspace_is_stable() {
-        let workspace = TempWorkspace::new("noop");
-        let config = config_for_path(&workspace.path);
+        let workspace = TempWorkspace::new("startup", "noop");
+        let config = runtime_config_for_workspace(&workspace.path);
         initialize_runtime_startup(&config).expect("first startup should succeed");
 
         let outcome = initialize_runtime_startup(&config).expect("second startup should succeed");
@@ -189,8 +152,8 @@ mod tests {
 
     #[test]
     fn initialize_runtime_startup_reports_ready_after_bootstrap_marker_removed() {
-        let workspace = TempWorkspace::new("ready");
-        let config = config_for_path(&workspace.path);
+        let workspace = TempWorkspace::new("startup", "ready");
+        let config = runtime_config_for_workspace(&workspace.path);
         initialize_runtime_startup(&config).expect("first startup should succeed");
         fs::remove_file(workspace.path.join(BOOTSTRAP_FILE_NAME))
             .expect("bootstrap marker should be removable");
@@ -203,7 +166,7 @@ mod tests {
 
     #[test]
     fn initialize_runtime_startup_rejects_blank_workspace_root() {
-        let config = config_for_workspace_root("   ");
+        let config = runtime_config_for_workspace_root("   ");
         let error = initialize_runtime_startup(&config)
             .expect_err("blank workspace root should be rejected");
         assert_eq!(
@@ -217,9 +180,9 @@ mod tests {
 
     #[test]
     fn initialize_runtime_startup_propagates_workspace_layout_errors() {
-        let workspace = TempWorkspace::new("layout-error");
+        let workspace = TempWorkspace::new("startup", "layout-error");
         fs::write(&workspace.path, "root-file").expect("root file should be writable");
-        let config = config_for_path(&workspace.path);
+        let config = runtime_config_for_workspace(&workspace.path);
         let error = initialize_runtime_startup(&config)
             .expect_err("workspace layout errors should propagate");
         assert_eq!(
