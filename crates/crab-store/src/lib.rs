@@ -2329,6 +2329,59 @@ mod tests {
     }
 
     #[test]
+    fn event_store_replay_accepts_legacy_events_without_extended_metadata() {
+        let root = temp_root("event-legacy-schema");
+        let store = EventStore::new(&root);
+        let logical_session_id = "discord:channel:events";
+        let run_id = "run-legacy";
+        let log_path = event_log_path(&root, logical_session_id, run_id);
+        fs::create_dir_all(
+            log_path
+                .parent()
+                .expect("legacy event log path should have parent"),
+        )
+        .expect("event parent directory should be creatable");
+
+        let legacy_line = serde_json::json!({
+            "event_id": "evt-legacy-1",
+            "run_id": run_id,
+            "logical_session_id": logical_session_id,
+            "sequence": 1,
+            "emitted_at_epoch_ms": 1_739_173_200_001_u64,
+            "source": "backend",
+            "kind": "text_delta",
+            "payload": {
+                "text": "legacy payload"
+            },
+            "profile": null,
+            "idempotency_key": "legacy:1"
+        })
+        .to_string();
+        fs::write(&log_path, format!("{legacy_line}\n"))
+            .expect("legacy event log should be writable");
+
+        let replayed = store
+            .replay_run(logical_session_id, run_id)
+            .expect("legacy event replay should succeed");
+        assert_eq!(replayed.len(), 1);
+        let legacy = &replayed[0];
+        assert_eq!(legacy.event_id, "evt-legacy-1");
+        assert_eq!(legacy.turn_id, None);
+        assert_eq!(legacy.lane_id, None);
+        assert_eq!(legacy.physical_session_id, None);
+        assert_eq!(legacy.backend, None);
+        assert_eq!(legacy.resolved_model, None);
+        assert_eq!(legacy.resolved_reasoning_level, None);
+        assert_eq!(legacy.profile_source, None);
+        assert_eq!(
+            legacy.payload.get("text"),
+            Some(&"legacy payload".to_string())
+        );
+
+        cleanup(&root);
+    }
+
+    #[test]
     fn event_store_replay_missing_run_is_empty() {
         let root = temp_root("event-missing-run");
         let store = EventStore::new(&root);
@@ -3494,7 +3547,14 @@ mod tests {
         EventEnvelope {
             event_id: format!("evt-{run_id}-{sequence}"),
             run_id: run_id.to_string(),
+            turn_id: Some(format!("turn:{run_id}")),
+            lane_id: Some(logical_session_id.to_string()),
             logical_session_id: logical_session_id.to_string(),
+            physical_session_id: Some("physical-1".to_string()),
+            backend: Some(BackendKind::Codex),
+            resolved_model: Some("gpt-5-codex".to_string()),
+            resolved_reasoning_level: Some("high".to_string()),
+            profile_source: Some("fallback".to_string()),
             sequence,
             emitted_at_epoch_ms: 1_739_173_200_000 + sequence,
             source: EventSource::Backend,

@@ -455,7 +455,20 @@ where
                 run.logical_session_id, run.id, sequence
             ),
             run_id: run.id.clone(),
+            turn_id: Some(build_turn_id(&run.id)),
+            lane_id: Some(run.logical_session_id.clone()),
             logical_session_id: run.logical_session_id.clone(),
+            physical_session_id: run.physical_session_id.clone(),
+            backend: Some(run.profile.resolved_profile.backend),
+            resolved_model: Some(run.profile.resolved_profile.model.clone()),
+            resolved_reasoning_level: Some(
+                run.profile
+                    .resolved_profile
+                    .reasoning_level
+                    .as_token()
+                    .to_string(),
+            ),
+            profile_source: Some(run.profile.profile_source_token().to_string()),
             sequence,
             emitted_at_epoch_ms,
             source,
@@ -892,6 +905,27 @@ mod tests {
         assert_eq!(
             events[7].payload.get("state"),
             Some(&"succeeded".to_string())
+        );
+        for event in &events {
+            assert_eq!(
+                event.turn_id,
+                Some("turn:run:discord:channel:777:m-1".to_string())
+            );
+            assert_eq!(event.lane_id, Some("discord:channel:777".to_string()));
+            assert_eq!(event.backend, Some(BackendKind::Codex));
+            assert_eq!(event.resolved_model, Some("gpt-5-codex".to_string()));
+            assert_eq!(event.resolved_reasoning_level, Some("medium".to_string()));
+            assert_eq!(event.profile_source, Some("global_default".to_string()));
+        }
+        assert_eq!(events[0].physical_session_id, None);
+        assert_eq!(events[1].physical_session_id, None);
+        assert_eq!(
+            events[2].physical_session_id,
+            Some("physical-1".to_string())
+        );
+        assert_eq!(
+            events[7].physical_session_id,
+            Some("physical-1".to_string())
         );
 
         assert_eq!(

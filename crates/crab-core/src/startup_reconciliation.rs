@@ -175,7 +175,20 @@ fn build_startup_recovery_event(
             run.logical_session_id, run.id, sequence
         ),
         run_id: run.id.clone(),
+        turn_id: Some(format!("turn:{}", run.id)),
+        lane_id: Some(run.logical_session_id.clone()),
         logical_session_id: run.logical_session_id.clone(),
+        physical_session_id: run.physical_session_id.clone(),
+        backend: Some(run.profile.resolved_profile.backend),
+        resolved_model: Some(run.profile.resolved_profile.model.clone()),
+        resolved_reasoning_level: Some(
+            run.profile
+                .resolved_profile
+                .reasoning_level
+                .as_token()
+                .to_string(),
+        ),
+        profile_source: Some(run.profile.profile_source_token().to_string()),
         sequence,
         emitted_at_epoch_ms,
         source: EventSource::System,
@@ -438,6 +451,13 @@ mod tests {
         assert_eq!(event.sequence, 7);
         assert_eq!(event.kind, crate::EventKind::RunState);
         assert_eq!(event.source, crate::EventSource::System);
+        assert_eq!(event.turn_id, Some("turn:run-1".to_string()));
+        assert_eq!(event.lane_id, Some("discord:channel:a".to_string()));
+        assert_eq!(event.physical_session_id, Some("phys-1".to_string()));
+        assert_eq!(event.backend, Some(BackendKind::Codex));
+        assert_eq!(event.resolved_model, Some("gpt-5-codex".to_string()));
+        assert_eq!(event.resolved_reasoning_level, Some("medium".to_string()));
+        assert_eq!(event.profile_source, Some("session".to_string()));
         assert_eq!(
             event.payload.get("reason"),
             Some(&"startup_recovered_as_interrupted".to_string())

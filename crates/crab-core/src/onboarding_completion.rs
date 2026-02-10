@@ -309,6 +309,26 @@ fn build_completion_event(
     bootstrap_retired: bool,
     sequence: u64,
 ) -> EventEnvelope {
+    let backend = input
+        .profile
+        .as_ref()
+        .map(|profile| profile.resolved_profile.backend);
+    let resolved_model = input
+        .profile
+        .as_ref()
+        .map(|profile| profile.resolved_profile.model.clone());
+    let resolved_reasoning_level = input.profile.as_ref().map(|profile| {
+        profile
+            .resolved_profile
+            .reasoning_level
+            .as_token()
+            .to_string()
+    });
+    let profile_source = input
+        .profile
+        .as_ref()
+        .map(|profile| profile.profile_source_token().to_string());
+
     let payload = BTreeMap::from([
         ("event".to_string(), "bootstrap_completed".to_string()),
         (
@@ -328,7 +348,14 @@ fn build_completion_event(
             input.logical_session_id, input.run_id, sequence
         ),
         run_id: input.run_id.clone(),
+        turn_id: Some(format!("turn:{}", input.run_id)),
+        lane_id: Some(input.logical_session_id.clone()),
         logical_session_id: input.logical_session_id.clone(),
+        physical_session_id: None,
+        backend,
+        resolved_model,
+        resolved_reasoning_level,
+        profile_source,
         sequence,
         emitted_at_epoch_ms: input.completed_at_epoch_ms,
         source: EventSource::System,
@@ -553,7 +580,14 @@ mod tests {
         EventEnvelope {
             event_id: "evt-1".to_string(),
             run_id: "run-1".to_string(),
+            turn_id: Some("turn:run-1".to_string()),
+            lane_id: Some("discord:channel:1".to_string()),
             logical_session_id: "discord:channel:1".to_string(),
+            physical_session_id: Some("physical-1".to_string()),
+            backend: Some(BackendKind::Codex),
+            resolved_model: Some("gpt-5-codex".to_string()),
+            resolved_reasoning_level: Some("medium".to_string()),
+            profile_source: Some("global_default".to_string()),
             sequence: 1,
             emitted_at_epoch_ms: 1,
             source: crate::EventSource::System,
@@ -650,6 +684,28 @@ mod tests {
             assert!(outcome.bootstrap_retired);
             assert_eq!(outcome.emitted_event.kind, crate::EventKind::RunNote);
             assert_eq!(outcome.emitted_event.source, crate::EventSource::System);
+            assert_eq!(
+                outcome.emitted_event.turn_id,
+                Some("turn:run-1".to_string())
+            );
+            assert_eq!(
+                outcome.emitted_event.lane_id,
+                Some("discord:channel:1".to_string())
+            );
+            assert_eq!(outcome.emitted_event.physical_session_id, None);
+            assert_eq!(outcome.emitted_event.backend, Some(BackendKind::Codex));
+            assert_eq!(
+                outcome.emitted_event.resolved_model,
+                Some("gpt-5-codex".to_string())
+            );
+            assert_eq!(
+                outcome.emitted_event.resolved_reasoning_level,
+                Some("medium".to_string())
+            );
+            assert_eq!(
+                outcome.emitted_event.profile_source,
+                Some("global_default".to_string())
+            );
             assert_eq!(
                 outcome
                     .emitted_event

@@ -112,6 +112,43 @@ pub struct RunProfileTelemetry {
     pub resolved_owner_profile: Option<OwnerProfileMetadata>,
 }
 
+impl RunProfileTelemetry {
+    #[must_use]
+    pub fn profile_source_token(&self) -> &'static str {
+        if self.fallback_applied {
+            return "fallback";
+        }
+
+        let mut strongest_source = self.backend_source;
+        for source in [self.model_source, self.reasoning_level_source] {
+            if profile_source_rank(source) < profile_source_rank(strongest_source) {
+                strongest_source = source;
+            }
+        }
+        profile_source_token(strongest_source)
+    }
+}
+
+const fn profile_source_rank(source: ProfileValueSource) -> u8 {
+    match source {
+        ProfileValueSource::TurnOverride => 0,
+        ProfileValueSource::SessionProfile => 1,
+        ProfileValueSource::ChannelOverride => 2,
+        ProfileValueSource::BackendDefault => 3,
+        ProfileValueSource::GlobalDefault => 4,
+    }
+}
+
+const fn profile_source_token(source: ProfileValueSource) -> &'static str {
+    match source {
+        ProfileValueSource::TurnOverride => "turn",
+        ProfileValueSource::SessionProfile => "session",
+        ProfileValueSource::ChannelOverride => "channel",
+        ProfileValueSource::BackendDefault => "backend_default",
+        ProfileValueSource::GlobalDefault => "global_default",
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OwnerProfileMetadata {
     pub machine_location: Option<String>,
@@ -179,7 +216,14 @@ pub struct Checkpoint {
 pub struct EventEnvelope {
     pub event_id: String,
     pub run_id: String,
+    pub turn_id: Option<String>,
+    pub lane_id: Option<String>,
     pub logical_session_id: String,
+    pub physical_session_id: Option<String>,
+    pub backend: Option<BackendKind>,
+    pub resolved_model: Option<String>,
+    pub resolved_reasoning_level: Option<String>,
+    pub profile_source: Option<String>,
     pub sequence: u64,
     pub emitted_at_epoch_ms: u64,
     pub source: EventSource,
@@ -340,7 +384,14 @@ mod tests {
         let event = EventEnvelope {
             event_id: "evt_001".to_string(),
             run_id: "run_001".to_string(),
+            turn_id: Some("turn_001".to_string()),
+            lane_id: Some("discord:channel:123".to_string()),
             logical_session_id: "discord:channel:123".to_string(),
+            physical_session_id: Some("physical_1".to_string()),
+            backend: Some(BackendKind::Codex),
+            resolved_model: Some("gpt-5-codex".to_string()),
+            resolved_reasoning_level: Some("high".to_string()),
+            profile_source: Some("fallback".to_string()),
             sequence: 7,
             emitted_at_epoch_ms: 1_739_173_201_010,
             source: EventSource::Backend,
@@ -350,6 +401,56 @@ mod tests {
             idempotency_key: Some("run_001:7".to_string()),
         };
         assert_json_round_trip(&event);
+    }
+
+    #[test]
+    fn run_profile_source_token_prefers_highest_precedence_source() {
+        let profile = RunProfileTelemetry {
+            requested_profile: None,
+            resolved_profile: sample_profile(),
+            backend_source: ProfileValueSource::GlobalDefault,
+            model_source: ProfileValueSource::SessionProfile,
+            reasoning_level_source: ProfileValueSource::TurnOverride,
+            fallback_applied: false,
+            fallback_notes: Vec::new(),
+            sender_id: "123456789012345678".to_string(),
+            sender_is_owner: false,
+            resolved_owner_profile: None,
+        };
+        assert_eq!(profile.profile_source_token(), "turn");
+    }
+
+    #[test]
+    fn run_profile_source_token_maps_all_source_levels() {
+        let cases = [
+            (ProfileValueSource::TurnOverride, "turn"),
+            (ProfileValueSource::SessionProfile, "session"),
+            (ProfileValueSource::ChannelOverride, "channel"),
+            (ProfileValueSource::BackendDefault, "backend_default"),
+            (ProfileValueSource::GlobalDefault, "global_default"),
+        ];
+
+        for (source, expected) in cases {
+            let profile = RunProfileTelemetry {
+                requested_profile: None,
+                resolved_profile: sample_profile(),
+                backend_source: source,
+                model_source: source,
+                reasoning_level_source: source,
+                fallback_applied: false,
+                fallback_notes: Vec::new(),
+                sender_id: "123456789012345678".to_string(),
+                sender_is_owner: false,
+                resolved_owner_profile: None,
+            };
+            assert_eq!(profile.profile_source_token(), expected);
+        }
+    }
+
+    #[test]
+    fn run_profile_source_token_reports_fallback_when_applied() {
+        let profile = sample_run_profile_telemetry();
+        assert_eq!(profile.profile_source_token(), "fallback");
     }
 
     #[test]
