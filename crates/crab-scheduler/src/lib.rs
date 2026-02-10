@@ -15,6 +15,24 @@ pub struct DispatchedRun {
     pub run: QueuedRun,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ActiveRun {
+    pub run_id: String,
+    pub cancellation_requested: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ActiveRunCancellation {
+    pub run_id: String,
+    pub already_cancelling: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CancelledQueuedRun {
+    pub logical_session_id: String,
+    pub run_id: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct SessionLaneQueues {
     queue_limit: usize,
@@ -116,13 +134,51 @@ impl SessionLaneQueues {
         }
         next
     }
+
+    fn cancel_queued_run_by_id(&mut self, run_id: &str) -> CrabResult<Option<String>> {
+        validate_run_id("lane_queue_cancel_queued", run_id)?;
+        let mut matched_lane_id: Option<String> = None;
+
+        for (lane_id, queue) in &self.queues {
+            let match_count = queue
+                .iter()
+                .filter(|queued| queued.run_id == run_id)
+                .count();
+            if match_count == 0 {
+                continue;
+            }
+            if match_count > 1 || matched_lane_id.is_some() {
+                return Err(CrabError::InvariantViolation {
+                    context: "lane_queue_cancel_queued",
+                    message: format!("run_id {run_id} is queued more than once"),
+                });
+            }
+            matched_lane_id = Some(lane_id.clone());
+        }
+
+        let Some(lane_id) = matched_lane_id else {
+            return Ok(None);
+        };
+
+        let queue = self
+            .queues
+            .get_mut(&lane_id)
+            .expect("matched lane should still exist");
+        queue.retain(|queued| queued.run_id != run_id);
+
+        if queue.is_empty() {
+            let _ = self.queues.remove(&lane_id);
+        }
+
+        Ok(Some(lane_id))
+    }
 }
 
 #[derive(Debug, Clone)]
 pub struct LaneScheduler {
     queues: SessionLaneQueues,
     max_concurrent_lanes: usize,
-    active_lanes: BTreeSet<String>,
+    active_lanes: BTreeMap<String, ActiveRun>,
 }
 
 impl LaneScheduler {
@@ -138,7 +194,7 @@ impl LaneScheduler {
         Ok(Self {
             queues: SessionLaneQueues::new(queue_limit)?,
             max_concurrent_lanes,
-            active_lanes: BTreeSet::new(),
+            active_lanes: BTreeMap::new(),
         })
     }
 
@@ -151,11 +207,18 @@ impl LaneScheduler {
             return None;
         }
 
+        let active_lane_ids: BTreeSet<String> = self.active_lanes.keys().cloned().collect();
         let lane_id = self
             .queues
-            .first_dispatchable_lane_id_excluding(&self.active_lanes)?;
+            .first_dispatchable_lane_id_excluding(&active_lane_ids)?;
         let run = self.queues.pop_front_from_known_non_empty(&lane_id);
-        let _ = self.active_lanes.insert(lane_id.clone());
+        self.active_lanes.insert(
+            lane_id.clone(),
+            ActiveRun {
+                run_id: run.run_id.clone(),
+                cancellation_requested: false,
+            },
+        );
         Some(DispatchedRun {
             logical_session_id: lane_id,
             run,
@@ -164,13 +227,66 @@ impl LaneScheduler {
 
     pub fn complete_lane(&mut self, logical_session_id: &str) -> CrabResult<()> {
         validate_session_id(logical_session_id)?;
-        if !self.active_lanes.remove(logical_session_id) {
+        if self.active_lanes.remove(logical_session_id).is_none() {
             return Err(CrabError::InvariantViolation {
                 context: "lane_scheduler_complete",
                 message: format!("lane {logical_session_id} is not active"),
             });
         }
         Ok(())
+    }
+
+    pub fn active_run(&self, logical_session_id: &str) -> CrabResult<Option<ActiveRun>> {
+        validate_session_id(logical_session_id)?;
+        Ok(self.active_lanes.get(logical_session_id).cloned())
+    }
+
+    pub fn request_cancel_active_run(
+        &mut self,
+        logical_session_id: &str,
+    ) -> CrabResult<ActiveRunCancellation> {
+        validate_session_id(logical_session_id)?;
+        let Some(active_run) = self.active_lanes.get_mut(logical_session_id) else {
+            return Err(CrabError::InvariantViolation {
+                context: "lane_scheduler_cancel_active",
+                message: format!("lane {logical_session_id} is not active"),
+            });
+        };
+
+        let already_cancelling = active_run.cancellation_requested;
+        active_run.cancellation_requested = true;
+        Ok(ActiveRunCancellation {
+            run_id: active_run.run_id.clone(),
+            already_cancelling,
+        })
+    }
+
+    pub fn cancel_queued_run_by_id(
+        &mut self,
+        run_id: &str,
+    ) -> CrabResult<Option<CancelledQueuedRun>> {
+        validate_run_id("lane_scheduler_cancel_queued", run_id)?;
+
+        if self
+            .active_lanes
+            .values()
+            .any(|active_run| active_run.run_id == run_id)
+        {
+            return Err(CrabError::InvariantViolation {
+                context: "lane_scheduler_cancel_queued",
+                message: format!(
+                    "run_id {run_id} is currently active and cannot be cancelled as queued"
+                ),
+            });
+        }
+
+        let Some(logical_session_id) = self.queues.cancel_queued_run_by_id(run_id)? else {
+            return Ok(None);
+        };
+        Ok(Some(CancelledQueuedRun {
+            logical_session_id,
+            run_id: run_id.to_string(),
+        }))
     }
 
     #[must_use]
@@ -258,9 +374,13 @@ fn validate_session_id(logical_session_id: &str) -> CrabResult<()> {
 }
 
 fn validate_run(run: &QueuedRun) -> CrabResult<()> {
-    if run.run_id.trim().is_empty() {
+    validate_run_id("lane_queue_validate_run", &run.run_id)
+}
+
+fn validate_run_id(context: &'static str, run_id: &str) -> CrabResult<()> {
+    if run_id.trim().is_empty() {
         return Err(CrabError::InvariantViolation {
-            context: "lane_queue_validate_run",
+            context,
             message: "run_id must not be empty".to_string(),
         });
     }
@@ -277,7 +397,7 @@ fn queue_overflow_reason(queue_limit: usize) -> String {
 mod tests {
     use crab_core::{CrabError, LaneState};
 
-    use super::{LaneScheduler, LaneStateMachine, QueuedRun, SessionLaneQueues};
+    use super::{ActiveRun, LaneScheduler, LaneStateMachine, QueuedRun, SessionLaneQueues};
 
     #[test]
     fn rejects_zero_queue_limit() {
@@ -667,6 +787,244 @@ mod tests {
             .complete_lane("discord:channel:a")
             .expect("active lane completion should succeed");
         assert!(scheduler.try_dispatch_next().is_none());
+    }
+
+    #[test]
+    fn request_cancel_active_run_marks_run_as_cancelling() {
+        let mut scheduler = LaneScheduler::new(1, 2).expect("scheduler init should succeed");
+        scheduler
+            .enqueue("discord:channel:a", run("run-a"))
+            .expect("enqueue should succeed");
+        let _ = scheduler
+            .try_dispatch_next()
+            .expect("dispatch should return queued run");
+
+        let first = scheduler
+            .request_cancel_active_run("discord:channel:a")
+            .expect("active run cancellation request should succeed");
+        assert_eq!(first.run_id, "run-a");
+        assert!(!first.already_cancelling);
+        assert_eq!(
+            scheduler
+                .active_run("discord:channel:a")
+                .expect("active run lookup should succeed"),
+            Some(ActiveRun {
+                run_id: "run-a".to_string(),
+                cancellation_requested: true,
+            })
+        );
+
+        let second = scheduler
+            .request_cancel_active_run("discord:channel:a")
+            .expect("duplicate cancellation request should be idempotent");
+        assert_eq!(second.run_id, "run-a");
+        assert!(second.already_cancelling);
+    }
+
+    #[test]
+    fn request_cancel_active_run_validates_and_requires_active_lane() {
+        let mut scheduler = LaneScheduler::new(1, 2).expect("scheduler init should succeed");
+
+        let invalid_error = scheduler
+            .request_cancel_active_run(" ")
+            .expect_err("blank session id should fail");
+        assert!(matches!(
+            invalid_error,
+            CrabError::InvariantViolation {
+                context: "lane_queue_validate_session",
+                ..
+            }
+        ));
+
+        let missing_error = scheduler
+            .request_cancel_active_run("discord:channel:missing")
+            .expect_err("cancelling missing lane should fail");
+        assert!(matches!(
+            missing_error,
+            CrabError::InvariantViolation {
+                context: "lane_scheduler_cancel_active",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn active_run_lookup_reports_none_for_inactive_lane() {
+        let scheduler = LaneScheduler::new(1, 2).expect("scheduler init should succeed");
+        assert_eq!(
+            scheduler
+                .active_run("discord:channel:a")
+                .expect("active run lookup should validate"),
+            None
+        );
+    }
+
+    #[test]
+    fn active_run_lookup_validates_session_id() {
+        let scheduler = LaneScheduler::new(1, 2).expect("scheduler init should succeed");
+        let error = scheduler
+            .active_run(" ")
+            .expect_err("blank session id should fail");
+        assert!(matches!(
+            error,
+            CrabError::InvariantViolation {
+                context: "lane_queue_validate_session",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn cancel_queued_run_by_id_removes_pending_run_and_preserves_fifo() {
+        let mut scheduler = LaneScheduler::new(2, 4).expect("scheduler init should succeed");
+        scheduler
+            .enqueue("discord:channel:a", run("run-a1"))
+            .expect("enqueue should succeed");
+        scheduler
+            .enqueue("discord:channel:a", run("run-a2"))
+            .expect("enqueue should succeed");
+        scheduler
+            .enqueue("discord:channel:b", run("run-b1"))
+            .expect("enqueue should succeed");
+
+        let cancelled = scheduler
+            .cancel_queued_run_by_id("run-a2")
+            .expect("queued cancellation should succeed");
+        assert_eq!(
+            cancelled,
+            Some(super::CancelledQueuedRun {
+                logical_session_id: "discord:channel:a".to_string(),
+                run_id: "run-a2".to_string(),
+            })
+        );
+        assert_eq!(
+            scheduler
+                .queued_count("discord:channel:a")
+                .expect("lane count should succeed"),
+            1
+        );
+        assert_eq!(scheduler.total_queued_count(), 2);
+
+        let first = scheduler
+            .try_dispatch_next()
+            .expect("dispatch should return remaining lane a run");
+        let second = scheduler
+            .try_dispatch_next()
+            .expect("dispatch should return lane b run");
+        assert_eq!(first.logical_session_id, "discord:channel:a");
+        assert_eq!(first.run, run("run-a1"));
+        assert_eq!(second.logical_session_id, "discord:channel:b");
+        assert_eq!(second.run, run("run-b1"));
+    }
+
+    #[test]
+    fn cancel_queued_run_by_id_returns_none_when_missing() {
+        let mut scheduler = LaneScheduler::new(1, 2).expect("scheduler init should succeed");
+        scheduler
+            .enqueue("discord:channel:a", run("run-a1"))
+            .expect("enqueue should succeed");
+
+        let cancelled = scheduler
+            .cancel_queued_run_by_id("run-missing")
+            .expect("missing queued cancellation should succeed");
+        assert_eq!(cancelled, None);
+        assert_eq!(scheduler.total_queued_count(), 1);
+    }
+
+    #[test]
+    fn cancel_queued_run_by_id_removes_empty_lane_entry() {
+        let mut scheduler = LaneScheduler::new(1, 2).expect("scheduler init should succeed");
+        scheduler
+            .enqueue("discord:channel:solo", run("run-solo"))
+            .expect("enqueue should succeed");
+
+        let cancelled = scheduler
+            .cancel_queued_run_by_id("run-solo")
+            .expect("queued cancellation should succeed");
+        assert_eq!(
+            cancelled,
+            Some(super::CancelledQueuedRun {
+                logical_session_id: "discord:channel:solo".to_string(),
+                run_id: "run-solo".to_string(),
+            })
+        );
+        assert_eq!(scheduler.total_queued_count(), 0);
+        assert_eq!(
+            scheduler
+                .queued_count("discord:channel:solo")
+                .expect("missing lane count should be 0"),
+            0
+        );
+    }
+
+    #[test]
+    fn cancel_queued_run_by_id_rejects_active_run_and_blank_input() {
+        let mut scheduler = LaneScheduler::new(1, 2).expect("scheduler init should succeed");
+        scheduler
+            .enqueue("discord:channel:a", run("run-a1"))
+            .expect("enqueue should succeed");
+        let _ = scheduler
+            .try_dispatch_next()
+            .expect("dispatch should return queued run");
+
+        let active_error = scheduler
+            .cancel_queued_run_by_id("run-a1")
+            .expect_err("active run cannot be cancelled as queued");
+        assert!(matches!(
+            active_error,
+            CrabError::InvariantViolation {
+                context: "lane_scheduler_cancel_queued",
+                ..
+            }
+        ));
+
+        let blank_error = scheduler
+            .cancel_queued_run_by_id(" ")
+            .expect_err("blank run_id should fail validation");
+        assert!(matches!(
+            blank_error,
+            CrabError::InvariantViolation {
+                context: "lane_scheduler_cancel_queued",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn cancel_queued_run_by_id_rejects_ambiguous_duplicate_queue_ids() {
+        let mut scheduler = LaneScheduler::new(2, 3).expect("scheduler init should succeed");
+        scheduler
+            .enqueue("discord:channel:a", run("run-dup"))
+            .expect("enqueue should succeed");
+        scheduler
+            .enqueue("discord:channel:b", run("run-dup"))
+            .expect("enqueue should succeed");
+
+        let error = scheduler
+            .cancel_queued_run_by_id("run-dup")
+            .expect_err("duplicate queued run ids should be rejected");
+        assert!(matches!(
+            error,
+            CrabError::InvariantViolation {
+                context: "lane_queue_cancel_queued",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn session_lane_cancel_queued_validates_run_id() {
+        let mut lanes = SessionLaneQueues::new(2).expect("queue init should succeed");
+        let error = lanes
+            .cancel_queued_run_by_id(" ")
+            .expect_err("blank run_id should fail");
+        assert!(matches!(
+            error,
+            CrabError::InvariantViolation {
+                context: "lane_queue_cancel_queued",
+                ..
+            }
+        ));
     }
 
     #[test]
