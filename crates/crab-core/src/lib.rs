@@ -18,6 +18,7 @@ pub mod onboarding_profile_files;
 pub mod onboarding_state;
 pub mod operator_commands;
 pub mod profile;
+pub mod prompt_contract;
 pub mod rotation;
 pub mod rotation_sequence;
 pub mod sender_identity;
@@ -97,6 +98,7 @@ pub use profile::{
     InferenceProfileOverride, InferenceProfileResolutionInput, ProfileValueSource,
     ResolvedInferenceProfile,
 };
+pub use prompt_contract::{compile_prompt_contract, PromptContractInput};
 pub use rotation::{
     evaluate_rotation_triggers, ManualRotationRequest, RotationTrigger, RotationTriggerDecision,
     RotationTriggerInput,
