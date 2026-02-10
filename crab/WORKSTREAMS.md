@@ -34,6 +34,8 @@ This document breaks the Crab implementation into execution workstreams and issu
 | WS14 | Memory recall runtime | Prompt + CLI memory retrieval (`memory_search`/`memory_get` via CLI surface) |
 | WS15 | End-to-end runtime orchestration | `discord -> lane -> backend -> store -> discord` loop |
 | WS16 | Comprehensive architecture documentation | Design decisions, lifecycle docs, deployment runbook/gaps |
+| WS17 | Runtime deployment gap closure | Rotation/config/token-accounting/manual controls/heartbeats wired end-to-end |
+| WS18 | Discord auth + production deployment | Real Discord bot runtime, OAuth provisioning runbook, target-machine service playbook |
 
 ## 3) Detailed Workstreams and Tasks
 
@@ -429,6 +431,70 @@ This document breaks the Crab implementation into execution workstreams and issu
 - Keep this register updated as implementation lands.
 - Done criteria: `crab/docs/08-deployment-readiness-gaps.md` is current and actionable.
 
+### WS17 - Runtime Deployment Gap Closure
+
+### WS17-T1 - Rotation and heartbeat runtime config surface
+- Extend runtime config/env parsing with compaction threshold, inactivity timeout, stale-run reconciliation grace, and heartbeat policy values.
+- Keep validation explicit and fail-fast on invalid values.
+- Update docs: `crab/DESIGN.md` and `crab/docs/08-deployment-readiness-gaps.md`.
+- Done criteria: config parse/validation tests pass and docs reflect supported env keys.
+
+### WS17-T2 - Token accounting propagation in turn finalization
+- Parse normalized backend usage run-note payloads and aggregate into session token accounting.
+- Persist updated accounting deterministically at run completion.
+- Update docs: `crab/docs/03-rotation-checkpoint-and-compaction.md` and `crab/docs/08-deployment-readiness-gaps.md`.
+- Done criteria: accounting persistence tests pass and compaction trigger input can be computed from stored state.
+
+### WS17-T3 - Rotation trigger wiring + owner manual compact/reset commands
+- Wire `evaluate_rotation_triggers` and `execute_rotation_sequence` into post-run finalization flow.
+- Add owner-only manual compact/reset operator commands with explicit audit events.
+- Update docs: `crab/docs/03-rotation-checkpoint-and-compaction.md`, `crab/docs/05-reliability-delivery-and-recovery.md`, and `crab/docs/08-deployment-readiness-gaps.md`.
+- Done criteria: automatic and manual rotation integration tests pass; unauthorized callers are rejected.
+
+### WS17-T4 - Startup reconciliation and heartbeat loop integration
+- Wire startup reconciliation at boot and heartbeat execution on a deterministic runtime schedule.
+- Ensure escalation paths are observable and do not duplicate user-visible Discord output.
+- Update docs: `crab/docs/05-reliability-delivery-and-recovery.md`.
+- Done criteria: crash/restart + stall handling integration tests pass with deterministic outcomes.
+
+### WS17-T5 - Deployment-gap closure validation and documentation sync
+- Add integration tests that exercise full gap closure path (token accounting -> trigger -> rotation -> replay safety).
+- Reconcile and close resolved items in `crab/docs/08-deployment-readiness-gaps.md` with concrete status notes.
+- Update `README.md` deployment-readiness section with current state.
+- Done criteria: gap register is current, and quality gates stay green.
+
+### WS18 - Discord Auth and Production Deployment
+
+### WS18-T1 - Real Discord runtime adapter
+- Implement Discord client runtime boundary for ingress events and outbound send/edit operations.
+- Enforce idempotent delivery semantics with retry/rate-limit handling compatible with persisted outbound records.
+- Update docs: `crab/docs/02-sessions-lanes-and-turn-lifecycle.md` and `crab/docs/05-reliability-delivery-and-recovery.md`.
+- Done criteria: Discord transport integration tests pass against runtime adapter seams.
+
+### WS18-T2 - Production bot runtime binary
+- Add production runtime binary (for example `crabd`) that loads config, composes runtime, runs startup hooks, ingests Discord events, dispatches queued turns, and handles graceful shutdown.
+- Keep backend manager lifecycle and lane scheduler execution explicit and observable.
+- Update docs: `README.md` and `crab/docs/README.md`.
+- Done criteria: binary runs end-to-end locally with documented launch command.
+
+### WS18-T3 - Discord OAuth/install + token operations runbook
+- Document Discord Developer Portal provisioning flow: app creation, bot setup, required intents, OAuth scopes, invite URL generation, and permission profile.
+- Document token storage, rotation, and incident response expectations for `CRAB_DISCORD_TOKEN`.
+- Update docs: add `crab/docs/09-discord-provisioning-and-secrets.md` and link from `crab/docs/README.md`.
+- Done criteria: operator can provision and secure bot credentials using only repository docs.
+
+### WS18-T4 - Target-machine service and operational playbook
+- Provide service templates/scripts for persistent runtime execution on target machine (launchd/systemd as applicable).
+- Document bootstrap, restart policy, logging, upgrade, rollback, and disaster-recovery steps.
+- Update docs: add `crab/docs/10-target-machine-operations.md`.
+- Done criteria: documented service setup supports reboot persistence and crash restart.
+
+### WS18-T5 - Deployment acceptance checklist and final documentation pass
+- Add an explicit deployment checklist covering onboarding first turn, owner profile capture, idempotent replay, rotation triggers, and heartbeat behavior.
+- Ensure final docs are coherent and non-duplicative across `README.md`, `crab/DESIGN.md`, and `crab/docs/`.
+- Update `crab/docs/08-deployment-readiness-gaps.md` with final go/no-go criteria and residual risks.
+- Done criteria: checklist exists, is executable, and can be attached to deployment evidence.
+
 ## 4) Dependency Order and Critical Path
 
 Execution order:
@@ -444,10 +510,12 @@ Execution order:
 9. WS14 after WS10 and WS13
 10. WS15 after WS10, WS11, WS12, WS13, and WS14
 11. WS16 runs across all phases; must be current before deployment milestones are declared complete
+12. WS17 after WS15; required before production deployment cutover
+13. WS18 after WS17 and WS3; required for target-machine rollout
 
 Critical path to MVP:
 
-- WS0, WS1, WS2, WS3, WS4, WS7, WS8, WS9, WS10, WS11, WS12, WS13, WS14, WS15, WS16
+- WS0, WS1, WS2, WS3, WS4, WS7, WS8, WS9, WS10, WS11, WS12, WS13, WS14, WS15, WS16, WS17, WS18
 
 Codex/OpenCode parity path:
 
@@ -478,6 +546,10 @@ Codex/OpenCode parity path:
 ### Milestone M6 - Documentation And Deployment Handoff
 - Scope: WS16.
 - Exit criteria: architecture docs comprehensively cover onboarding, sessions, rotation, memory, reliability, and current deployment gaps.
+
+### Milestone M7 - Production Deployment Cutover
+- Scope: WS17, WS18.
+- Exit criteria: runtime gap register resolved, production bot runtime is executable on target machine, and Discord provisioning/service runbooks are validated end-to-end.
 
 ## 6) Issue Template for Task Tickets
 

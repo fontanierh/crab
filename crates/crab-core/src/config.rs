@@ -5,6 +5,23 @@ use crate::error::{CrabError, CrabResult};
 
 pub const DEFAULT_WORKSPACE_ROOT: &str = "~/.crab/workspace";
 pub const DEFAULT_MAX_CONCURRENT_LANES: usize = 4;
+pub const DEFAULT_COMPACTION_TOKEN_THRESHOLD: u64 = 80_000;
+pub const DEFAULT_INACTIVITY_TIMEOUT_SECS: u64 = 1_800;
+pub const DEFAULT_STARTUP_RECONCILIATION_GRACE_PERIOD_SECS: u64 = 90;
+pub const DEFAULT_HEARTBEAT_INTERVAL_SECS: u64 = 10;
+pub const DEFAULT_RUN_STALL_TIMEOUT_SECS: u64 = 90;
+pub const DEFAULT_BACKEND_STALL_TIMEOUT_SECS: u64 = 30;
+pub const DEFAULT_DISPATCHER_STALL_TIMEOUT_SECS: u64 = 20;
+
+const COMPACTION_TOKEN_THRESHOLD_KEY: &str = "CRAB_COMPACTION_TOKEN_THRESHOLD";
+const INACTIVITY_TIMEOUT_SECS_KEY: &str = "CRAB_INACTIVITY_TIMEOUT_SECS";
+const STARTUP_RECONCILIATION_GRACE_PERIOD_SECS_KEY: &str =
+    "CRAB_STARTUP_RECONCILIATION_GRACE_PERIOD_SECS";
+const HEARTBEAT_INTERVAL_SECS_KEY: &str = "CRAB_HEARTBEAT_INTERVAL_SECS";
+const RUN_STALL_TIMEOUT_SECS_KEY: &str = "CRAB_RUN_STALL_TIMEOUT_SECS";
+const BACKEND_STALL_TIMEOUT_SECS_KEY: &str = "CRAB_BACKEND_STALL_TIMEOUT_SECS";
+const DISPATCHER_STALL_TIMEOUT_SECS_KEY: &str = "CRAB_DISPATCHER_STALL_TIMEOUT_SECS";
+
 const OWNER_DISCORD_USER_IDS_KEY: &str = "CRAB_OWNER_DISCORD_USER_IDS";
 const OWNER_ALIASES_KEY: &str = "CRAB_OWNER_ALIASES";
 const OWNER_DEFAULT_BACKEND_KEY: &str = "CRAB_OWNER_DEFAULT_BACKEND";
@@ -29,11 +46,33 @@ pub struct OwnerConfig {
     pub machine_timezone: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RotationPolicyConfig {
+    pub compaction_token_threshold: u64,
+    pub inactivity_timeout_secs: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StartupReconciliationConfig {
+    pub grace_period_secs: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HeartbeatConfig {
+    pub interval_secs: u64,
+    pub run_stall_timeout_secs: u64,
+    pub backend_stall_timeout_secs: u64,
+    pub dispatcher_stall_timeout_secs: u64,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RuntimeConfig {
     pub discord_token: String,
     pub workspace_root: String,
     pub max_concurrent_lanes: usize,
+    pub rotation: RotationPolicyConfig,
+    pub startup_reconciliation: StartupReconciliationConfig,
+    pub heartbeat: HeartbeatConfig,
     pub owner: OwnerConfig,
 }
 
@@ -57,12 +96,18 @@ impl RuntimeConfig {
             None => DEFAULT_MAX_CONCURRENT_LANES,
         };
 
+        let rotation = parse_rotation_policy(values)?;
+        let startup_reconciliation = parse_startup_reconciliation_config(values)?;
+        let heartbeat = parse_heartbeat_config(values)?;
         let owner = parse_owner_config(values)?;
 
         Ok(Self {
             discord_token,
             workspace_root,
             max_concurrent_lanes,
+            rotation,
+            startup_reconciliation,
+            heartbeat,
             owner,
         })
     }
@@ -86,6 +131,81 @@ fn parse_positive_usize(key: &'static str, raw_value: &str) -> CrabResult<usize>
     }
 
     Ok(parsed)
+}
+
+fn parse_positive_u64(key: &'static str, raw_value: &str) -> CrabResult<u64> {
+    let parsed = raw_value
+        .parse::<u64>()
+        .map_err(|_| CrabError::InvalidConfig {
+            key,
+            value: raw_value.to_string(),
+            reason: "must be a positive integer",
+        })?;
+
+    if parsed == 0 {
+        return Err(CrabError::InvalidConfig {
+            key,
+            value: raw_value.to_string(),
+            reason: "must be greater than 0",
+        });
+    }
+
+    Ok(parsed)
+}
+
+fn parse_rotation_policy(values: &HashMap<String, String>) -> CrabResult<RotationPolicyConfig> {
+    let compaction_token_threshold = match values.get(COMPACTION_TOKEN_THRESHOLD_KEY) {
+        Some(raw_value) => parse_positive_u64(COMPACTION_TOKEN_THRESHOLD_KEY, raw_value)?,
+        None => DEFAULT_COMPACTION_TOKEN_THRESHOLD,
+    };
+    let inactivity_timeout_secs = match values.get(INACTIVITY_TIMEOUT_SECS_KEY) {
+        Some(raw_value) => parse_positive_u64(INACTIVITY_TIMEOUT_SECS_KEY, raw_value)?,
+        None => DEFAULT_INACTIVITY_TIMEOUT_SECS,
+    };
+
+    Ok(RotationPolicyConfig {
+        compaction_token_threshold,
+        inactivity_timeout_secs,
+    })
+}
+
+fn parse_startup_reconciliation_config(
+    values: &HashMap<String, String>,
+) -> CrabResult<StartupReconciliationConfig> {
+    let grace_period_secs = match values.get(STARTUP_RECONCILIATION_GRACE_PERIOD_SECS_KEY) {
+        Some(raw_value) => {
+            parse_positive_u64(STARTUP_RECONCILIATION_GRACE_PERIOD_SECS_KEY, raw_value)?
+        }
+        None => DEFAULT_STARTUP_RECONCILIATION_GRACE_PERIOD_SECS,
+    };
+
+    Ok(StartupReconciliationConfig { grace_period_secs })
+}
+
+fn parse_heartbeat_config(values: &HashMap<String, String>) -> CrabResult<HeartbeatConfig> {
+    let interval_secs = match values.get(HEARTBEAT_INTERVAL_SECS_KEY) {
+        Some(raw_value) => parse_positive_u64(HEARTBEAT_INTERVAL_SECS_KEY, raw_value)?,
+        None => DEFAULT_HEARTBEAT_INTERVAL_SECS,
+    };
+    let run_stall_timeout_secs = match values.get(RUN_STALL_TIMEOUT_SECS_KEY) {
+        Some(raw_value) => parse_positive_u64(RUN_STALL_TIMEOUT_SECS_KEY, raw_value)?,
+        None => DEFAULT_RUN_STALL_TIMEOUT_SECS,
+    };
+    let backend_stall_timeout_secs = match values.get(BACKEND_STALL_TIMEOUT_SECS_KEY) {
+        Some(raw_value) => parse_positive_u64(BACKEND_STALL_TIMEOUT_SECS_KEY, raw_value)?,
+        None => DEFAULT_BACKEND_STALL_TIMEOUT_SECS,
+    };
+    let dispatcher_stall_timeout_secs = match values.get(DISPATCHER_STALL_TIMEOUT_SECS_KEY) {
+        Some(raw_value) => parse_positive_u64(DISPATCHER_STALL_TIMEOUT_SECS_KEY, raw_value)?,
+        None => DEFAULT_DISPATCHER_STALL_TIMEOUT_SECS,
+    };
+
+    Ok(HeartbeatConfig {
+        interval_secs,
+        run_stall_timeout_secs,
+        backend_stall_timeout_secs,
+        dispatcher_stall_timeout_secs,
+    })
 }
 
 fn parse_owner_config(values: &HashMap<String, String>) -> CrabResult<OwnerConfig> {
@@ -320,8 +440,13 @@ mod tests {
     use crate::{BackendKind, ReasoningLevel};
 
     use super::{
-        is_discord_user_id, OwnerConfig, OwnerProfileDefaults, RuntimeConfig,
-        DEFAULT_MAX_CONCURRENT_LANES, DEFAULT_WORKSPACE_ROOT,
+        is_discord_user_id, HeartbeatConfig, OwnerConfig, OwnerProfileDefaults,
+        RotationPolicyConfig, RuntimeConfig, StartupReconciliationConfig,
+        DEFAULT_BACKEND_STALL_TIMEOUT_SECS, DEFAULT_COMPACTION_TOKEN_THRESHOLD,
+        DEFAULT_DISPATCHER_STALL_TIMEOUT_SECS, DEFAULT_HEARTBEAT_INTERVAL_SECS,
+        DEFAULT_INACTIVITY_TIMEOUT_SECS, DEFAULT_MAX_CONCURRENT_LANES,
+        DEFAULT_RUN_STALL_TIMEOUT_SECS, DEFAULT_STARTUP_RECONCILIATION_GRACE_PERIOD_SECS,
+        DEFAULT_WORKSPACE_ROOT,
     };
     use crate::error::CrabError;
 
@@ -348,6 +473,13 @@ mod tests {
             ("CRAB_DISCORD_TOKEN", "test-token"),
             ("CRAB_WORKSPACE_ROOT", "/tmp/crab"),
             ("CRAB_MAX_CONCURRENT_LANES", "8"),
+            ("CRAB_COMPACTION_TOKEN_THRESHOLD", "90000"),
+            ("CRAB_INACTIVITY_TIMEOUT_SECS", "3600"),
+            ("CRAB_STARTUP_RECONCILIATION_GRACE_PERIOD_SECS", "120"),
+            ("CRAB_HEARTBEAT_INTERVAL_SECS", "15"),
+            ("CRAB_RUN_STALL_TIMEOUT_SECS", "91"),
+            ("CRAB_BACKEND_STALL_TIMEOUT_SECS", "31"),
+            ("CRAB_DISPATCHER_STALL_TIMEOUT_SECS", "21"),
             ("CRAB_OWNER_DISCORD_USER_IDS", "12345,67890"),
             ("CRAB_OWNER_ALIASES", "Henry,Ops"),
             ("CRAB_OWNER_DEFAULT_BACKEND", "codex"),
@@ -361,6 +493,28 @@ mod tests {
         assert_eq!(parsed.discord_token, "test-token");
         assert_eq!(parsed.workspace_root, "/tmp/crab");
         assert_eq!(parsed.max_concurrent_lanes, 8);
+        assert_eq!(
+            parsed.rotation,
+            RotationPolicyConfig {
+                compaction_token_threshold: 90_000,
+                inactivity_timeout_secs: 3_600,
+            }
+        );
+        assert_eq!(
+            parsed.startup_reconciliation,
+            StartupReconciliationConfig {
+                grace_period_secs: 120,
+            }
+        );
+        assert_eq!(
+            parsed.heartbeat,
+            HeartbeatConfig {
+                interval_secs: 15,
+                run_stall_timeout_secs: 91,
+                backend_stall_timeout_secs: 31,
+                dispatcher_stall_timeout_secs: 21,
+            }
+        );
         assert_eq!(
             parsed.owner,
             OwnerConfig {
@@ -383,6 +537,28 @@ mod tests {
         let parsed = RuntimeConfig::from_map(&input).expect("config should parse");
         assert_eq!(parsed.workspace_root, DEFAULT_WORKSPACE_ROOT);
         assert_eq!(parsed.max_concurrent_lanes, DEFAULT_MAX_CONCURRENT_LANES);
+        assert_eq!(
+            parsed.rotation,
+            RotationPolicyConfig {
+                compaction_token_threshold: DEFAULT_COMPACTION_TOKEN_THRESHOLD,
+                inactivity_timeout_secs: DEFAULT_INACTIVITY_TIMEOUT_SECS,
+            }
+        );
+        assert_eq!(
+            parsed.startup_reconciliation,
+            StartupReconciliationConfig {
+                grace_period_secs: DEFAULT_STARTUP_RECONCILIATION_GRACE_PERIOD_SECS,
+            }
+        );
+        assert_eq!(
+            parsed.heartbeat,
+            HeartbeatConfig {
+                interval_secs: DEFAULT_HEARTBEAT_INTERVAL_SECS,
+                run_stall_timeout_secs: DEFAULT_RUN_STALL_TIMEOUT_SECS,
+                backend_stall_timeout_secs: DEFAULT_BACKEND_STALL_TIMEOUT_SECS,
+                dispatcher_stall_timeout_secs: DEFAULT_DISPATCHER_STALL_TIMEOUT_SECS,
+            }
+        );
         assert_eq!(parsed.owner, OwnerConfig::default());
     }
 
@@ -419,6 +595,132 @@ mod tests {
             err,
             CrabError::InvalidConfig {
                 key: "CRAB_MAX_CONCURRENT_LANES",
+                value: "0".to_string(),
+                reason: "must be greater than 0",
+            }
+        );
+    }
+
+    #[test]
+    fn rejects_non_numeric_compaction_threshold() {
+        let err = parse_with_token(&[("CRAB_COMPACTION_TOKEN_THRESHOLD", "eighty-thousand")])
+            .expect_err("compaction threshold must be numeric");
+        assert_eq!(
+            err,
+            CrabError::InvalidConfig {
+                key: "CRAB_COMPACTION_TOKEN_THRESHOLD",
+                value: "eighty-thousand".to_string(),
+                reason: "must be a positive integer",
+            }
+        );
+    }
+
+    #[test]
+    fn rejects_zero_compaction_threshold() {
+        let err = parse_with_token(&[("CRAB_COMPACTION_TOKEN_THRESHOLD", "0")])
+            .expect_err("compaction threshold must be positive");
+        assert_eq!(
+            err,
+            CrabError::InvalidConfig {
+                key: "CRAB_COMPACTION_TOKEN_THRESHOLD",
+                value: "0".to_string(),
+                reason: "must be greater than 0",
+            }
+        );
+    }
+
+    #[test]
+    fn rejects_zero_inactivity_timeout() {
+        let err = parse_with_token(&[("CRAB_INACTIVITY_TIMEOUT_SECS", "0")])
+            .expect_err("inactivity timeout must be positive");
+        assert_eq!(
+            err,
+            CrabError::InvalidConfig {
+                key: "CRAB_INACTIVITY_TIMEOUT_SECS",
+                value: "0".to_string(),
+                reason: "must be greater than 0",
+            }
+        );
+    }
+
+    #[test]
+    fn rejects_non_numeric_startup_reconciliation_grace_period() {
+        let err = parse_with_token(&[("CRAB_STARTUP_RECONCILIATION_GRACE_PERIOD_SECS", "soon")])
+            .expect_err("grace period must be numeric");
+        assert_eq!(
+            err,
+            CrabError::InvalidConfig {
+                key: "CRAB_STARTUP_RECONCILIATION_GRACE_PERIOD_SECS",
+                value: "soon".to_string(),
+                reason: "must be a positive integer",
+            }
+        );
+    }
+
+    #[test]
+    fn rejects_zero_startup_reconciliation_grace_period() {
+        let err = parse_with_token(&[("CRAB_STARTUP_RECONCILIATION_GRACE_PERIOD_SECS", "0")])
+            .expect_err("grace period must be positive");
+        assert_eq!(
+            err,
+            CrabError::InvalidConfig {
+                key: "CRAB_STARTUP_RECONCILIATION_GRACE_PERIOD_SECS",
+                value: "0".to_string(),
+                reason: "must be greater than 0",
+            }
+        );
+    }
+
+    #[test]
+    fn rejects_zero_heartbeat_interval() {
+        let err = parse_with_token(&[("CRAB_HEARTBEAT_INTERVAL_SECS", "0")])
+            .expect_err("heartbeat interval must be positive");
+        assert_eq!(
+            err,
+            CrabError::InvalidConfig {
+                key: "CRAB_HEARTBEAT_INTERVAL_SECS",
+                value: "0".to_string(),
+                reason: "must be greater than 0",
+            }
+        );
+    }
+
+    #[test]
+    fn rejects_non_numeric_run_stall_timeout() {
+        let err = parse_with_token(&[("CRAB_RUN_STALL_TIMEOUT_SECS", "never")])
+            .expect_err("run stall timeout must be numeric");
+        assert_eq!(
+            err,
+            CrabError::InvalidConfig {
+                key: "CRAB_RUN_STALL_TIMEOUT_SECS",
+                value: "never".to_string(),
+                reason: "must be a positive integer",
+            }
+        );
+    }
+
+    #[test]
+    fn rejects_zero_backend_stall_timeout() {
+        let err = parse_with_token(&[("CRAB_BACKEND_STALL_TIMEOUT_SECS", "0")])
+            .expect_err("backend stall timeout must be positive");
+        assert_eq!(
+            err,
+            CrabError::InvalidConfig {
+                key: "CRAB_BACKEND_STALL_TIMEOUT_SECS",
+                value: "0".to_string(),
+                reason: "must be greater than 0",
+            }
+        );
+    }
+
+    #[test]
+    fn rejects_zero_dispatcher_stall_timeout() {
+        let err = parse_with_token(&[("CRAB_DISPATCHER_STALL_TIMEOUT_SECS", "0")])
+            .expect_err("dispatcher stall timeout must be positive");
+        assert_eq!(
+            err,
+            CrabError::InvalidConfig {
+                key: "CRAB_DISPATCHER_STALL_TIMEOUT_SECS",
                 value: "0".to_string(),
                 reason: "must be greater than 0",
             }

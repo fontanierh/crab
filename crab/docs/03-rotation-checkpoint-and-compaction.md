@@ -35,6 +35,17 @@ Trigger input includes:
 - inactivity timeout
 - optional manual request
 
+Token usage source for trigger evaluation:
+
+- `TurnExecutor` now parses normalized backend usage payloads and persists cumulative
+  `LogicalSession.token_accounting` on run completion.
+- Supported normalized payload key families:
+  - `run_usage_input_tokens` / `run_usage_output_tokens` / `run_usage_total_tokens`
+  - `usage_input_tokens` / `usage_output_tokens` / `usage_total_tokens`
+  - `input_tokens` / `output_tokens` / `total_tokens`
+- Token-triggered compaction should consume `token_accounting.total_tokens` from persisted
+  session state.
+
 ## Hidden Step A: Memory Flush
 
 Memory flush contract (`crates/crab-core/src/memory_flush.rs`):
@@ -127,9 +138,10 @@ Implemented:
 - hidden memory flush primitives
 - checkpoint parser/retry/fallback primitives
 - rotation sequence primitives
+- token accounting propagation from normalized backend usage payloads into
+  `LogicalSession.token_accounting` during run finalization
 
 Not yet fully integrated in app runtime path:
 
 - turn-finalization wiring from `crab-app` into rotation trigger evaluation and sequence execution
-- session token accounting updates required to drive token-triggered rotation
 - explicit operator command surface for manual compact/reset

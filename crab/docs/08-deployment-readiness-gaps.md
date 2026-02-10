@@ -2,95 +2,97 @@
 
 ## Scope
 
-This document lists concrete gaps to close before deploying Crab on the target machine.
+This document tracks unresolved runtime and deployment gaps before Crab is deployed on
+the target machine.
 
-## Summary
+## Status Snapshot (February 10, 2026)
 
-Core architecture modules are present and heavily tested, but a few integration points remain to fully match the design contract in production runtime behavior.
+Recently closed:
+
+- Runtime policy config surface is now implemented in `RuntimeConfig`.
+- Session token accounting is now aggregated from normalized backend usage payloads at
+  turn finalization.
+
+Runtime policy env keys now supported:
+
+- `CRAB_COMPACTION_TOKEN_THRESHOLD` (default `80000`)
+- `CRAB_INACTIVITY_TIMEOUT_SECS` (default `1800`)
+- `CRAB_STARTUP_RECONCILIATION_GRACE_PERIOD_SECS` (default `90`)
+- `CRAB_HEARTBEAT_INTERVAL_SECS` (default `10`)
+- `CRAB_RUN_STALL_TIMEOUT_SECS` (default `90`)
+- `CRAB_BACKEND_STALL_TIMEOUT_SECS` (default `30`)
+- `CRAB_DISPATCHER_STALL_TIMEOUT_SECS` (default `20`)
 
 ## Gap 1: Rotation Trigger Integration In Turn Finalization
 
 Current status:
 
 - Rotation primitives exist in `crab-core`.
-- Turn executor finalization currently completes runs without invoking rotation trigger evaluation/sequence.
+- Turn executor finalization still does not invoke
+  `evaluate_rotation_triggers` + `execute_rotation_sequence`.
 
 Impact:
 
-- token/inactivity/manual rotation policy will not fire end-to-end yet.
+- token/inactivity/manual rotation policy is not yet active end-to-end.
 
 Required work:
 
-- wire `evaluate_rotation_triggers` and `execute_rotation_sequence` into app runtime flow.
+- wire trigger evaluation and rotation sequence execution into post-run finalization.
 
-## Gap 2: Token Accounting Propagation For Compaction Decisions
+## Gap 2: Manual Compact/Reset Operator Surface
 
 Current status:
 
-- backend normalizers emit usage notes/events.
-- session token accounting fields exist.
-- turn executor does not currently aggregate/update session token accounting from backend events.
+- owner-gated operator framework exists for profile/onboarding commands.
+- explicit compact/reset commands are not yet part of operator parsing/app flow.
 
 Impact:
 
-- token-threshold compaction trigger cannot operate reliably.
+- no explicit owner command path to force compaction/reset rotation.
 
 Required work:
 
-- parse usage run-note payloads and persist token accounting updates at run completion.
+- add owner-only compact/reset commands and persist audit events.
 
-## Gap 3: Runtime Config Surface For Rotation/Heartbeat Policies
+## Gap 3: Startup Reconciliation + Heartbeat Runtime Loop Wiring
 
 Current status:
 
-- `RuntimeConfig` currently includes token/workspace/max lanes/owner settings.
-- compaction threshold, inactivity timeout, and heartbeat timeout fields are not yet represented in runtime config loader.
+- `execute_startup_reconciliation` and `execute_heartbeat_cycle` primitives exist and are tested.
+- production runtime loop does not yet call them on deterministic schedule.
 
 Impact:
 
-- deployment policy tuning requires code-level defaults instead of explicit config.
+- crash recovery and stall handling contracts are implemented in isolation but not yet
+  executed by a long-running runtime process.
 
 Required work:
 
-- extend config schema and env parsing for compaction/inactivity/heartbeat policy values.
+- invoke reconciliation on startup and heartbeat cycles on configured interval without
+  duplicate user-visible delivery.
 
-## Gap 4: Manual Compact/Reset Operator Surface
+## Gap 4: Full Bot Runtime Entrypoint
 
 Current status:
 
-- operator commands currently cover backend/model/reasoning/profile and onboarding reset/rerun.
-- compact/reset commands from design are not yet exposed in operator parser.
+- `crab-app` exposes composition/orchestration library and memory CLIs.
+- no production Discord runtime binary is present yet.
 
 Impact:
 
-- no explicit operator-triggered rotation command path.
+- deployment cannot run a single managed service process.
 
 Required work:
 
-- add and test owner-only manual compact/reset command handling.
-
-## Gap 5: Full Bot Runtime Entrypoint
-
-Current status:
-
-- `crab-app` currently exposes library orchestration and memory CLI binaries.
-- no production Discord bot runtime binary is present yet in `crab-app/src/bin`.
-
-Impact:
-
-- deployment cannot run a single packaged runtime process yet.
-
-Required work:
-
-- add runtime executable wiring startup, ingress loop, scheduler dispatch, heartbeats, and reconciliation.
+- add runtime executable wiring startup, ingress loop, scheduler dispatch, heartbeat loop,
+  reconciliation, and graceful shutdown.
 
 ## Recommended Closure Order
 
-1. runtime config extensions
-2. token accounting propagation
-3. rotation trigger + sequence wiring
-4. manual compact/reset commands
-5. final bot runtime binary integration and deployment playbook
+1. rotation trigger + sequence wiring
+2. manual compact/reset commands
+3. startup reconciliation + heartbeat schedule integration
+4. production runtime binary and deployment playbook
 
 ## Exit Criteria For "Deployment Ready"
 

@@ -607,7 +607,11 @@ inactivity_timeout_secs = 1800
 max_concurrent_lanes = 6
 lane_queue_limit = 32
 compaction_token_threshold = 80000
+startup_reconciliation_grace_period_secs = 90
+heartbeat_interval_secs = 10
 run_stall_timeout_secs = 90
+backend_stall_timeout_secs = 30
+dispatcher_stall_timeout_secs = 20
 
 [defaults.inference]
 model = "auto"

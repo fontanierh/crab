@@ -349,6 +349,11 @@ where
         run.completed_at_epoch_ms = Some(completed_at_epoch_ms);
         self.composition.state_stores.run_store.upsert_run(&run)?;
 
+        if let Some(run_usage) = resolve_backend_usage_accounting(&backend_events)? {
+            session.token_accounting =
+                merge_token_accounting(session.token_accounting.clone(), run_usage)?;
+        }
+
         session.lane_state = LaneState::Idle;
         session.queued_run_count = self
             .composition
@@ -668,6 +673,142 @@ fn extract_event_text_delta(event: &EventEnvelope) -> Option<&str> {
         .get("text")
         .or_else(|| event.payload.get("delta"))
         .map(String::as_str)
+}
+
+fn resolve_backend_usage_accounting(
+    events: &[BackendEvent],
+) -> CrabResult<Option<TokenAccounting>> {
+    let mut latest_usage = None;
+    for event in events {
+        if let Some(usage) = parse_usage_from_backend_payload(event.kind, &event.payload)? {
+            latest_usage = Some(usage);
+        }
+    }
+    Ok(latest_usage)
+}
+
+fn parse_usage_from_backend_payload(
+    kind: BackendEventKind,
+    payload: &BTreeMap<String, String>,
+) -> CrabResult<Option<TokenAccounting>> {
+    if !matches!(
+        kind,
+        BackendEventKind::RunNote
+            | BackendEventKind::TurnCompleted
+            | BackendEventKind::TurnInterrupted
+            | BackendEventKind::Error
+    ) {
+        return Ok(None);
+    }
+
+    if let Some(usage) = parse_usage_triplet(
+        payload,
+        "run_usage_input_tokens",
+        "run_usage_output_tokens",
+        "run_usage_total_tokens",
+    )? {
+        return Ok(Some(usage));
+    }
+    if let Some(usage) = parse_usage_triplet(
+        payload,
+        "usage_input_tokens",
+        "usage_output_tokens",
+        "usage_total_tokens",
+    )? {
+        return Ok(Some(usage));
+    }
+    parse_usage_triplet(payload, "input_tokens", "output_tokens", "total_tokens")
+}
+
+fn parse_usage_triplet(
+    payload: &BTreeMap<String, String>,
+    input_key: &'static str,
+    output_key: &'static str,
+    total_key: &'static str,
+) -> CrabResult<Option<TokenAccounting>> {
+    let has_any = payload.contains_key(input_key)
+        || payload.contains_key(output_key)
+        || payload.contains_key(total_key);
+    if !has_any {
+        return Ok(None);
+    }
+
+    let parse_required = |key: &'static str| -> CrabResult<u64> {
+        let raw_value = payload
+            .get(key)
+            .ok_or_else(|| CrabError::InvariantViolation {
+                context: "turn_executor_usage_accounting",
+                message: format!(
+                    "usage payload is missing required key {key} while parsing {input_key}/{output_key}/{total_key}"
+                ),
+            })?;
+        raw_value
+            .parse::<u64>()
+            .map_err(|_| CrabError::InvariantViolation {
+                context: "turn_executor_usage_accounting",
+                message: format!("usage payload key {key} must be an unsigned integer"),
+            })
+    };
+
+    let input_tokens = parse_required(input_key)?;
+    let output_tokens = parse_required(output_key)?;
+    let total_tokens = parse_required(total_key)?;
+
+    let minimum_total =
+        input_tokens
+            .checked_add(output_tokens)
+            .ok_or(CrabError::InvariantViolation {
+                context: "turn_executor_usage_accounting",
+                message: format!(
+                    "usage payload overflow while adding {input_key} and {output_key}"
+                ),
+            })?;
+    if total_tokens < minimum_total {
+        return Err(CrabError::InvariantViolation {
+            context: "turn_executor_usage_accounting",
+            message: format!(
+                "{total_key} {total_tokens} must be greater than or equal to {input_key} + {output_key} {minimum_total}"
+            ),
+        });
+    }
+
+    Ok(Some(TokenAccounting {
+        input_tokens,
+        output_tokens,
+        total_tokens,
+    }))
+}
+
+fn merge_token_accounting(
+    existing: TokenAccounting,
+    increment: TokenAccounting,
+) -> CrabResult<TokenAccounting> {
+    let input_tokens = existing
+        .input_tokens
+        .checked_add(increment.input_tokens)
+        .ok_or(CrabError::InvariantViolation {
+            context: "turn_executor_usage_accounting",
+            message: "input token accounting overflow".to_string(),
+        })?;
+    let output_tokens = existing
+        .output_tokens
+        .checked_add(increment.output_tokens)
+        .ok_or(CrabError::InvariantViolation {
+            context: "turn_executor_usage_accounting",
+            message: "output token accounting overflow".to_string(),
+        })?;
+    let total_tokens = existing
+        .total_tokens
+        .checked_add(increment.total_tokens)
+        .ok_or(CrabError::InvariantViolation {
+            context: "turn_executor_usage_accounting",
+            message: "total token accounting overflow".to_string(),
+        })?;
+    Ok(TokenAccounting {
+        input_tokens,
+        output_tokens,
+        total_tokens,
+    })
 }
 
 fn delivery_channel_id(logical_session_id: &str) -> CrabResult<String> {
@@ -1194,6 +1335,145 @@ mod tests {
                 0,
                 "hello".to_string(),
             )]
+        );
+    }
+
+    #[test]
+    fn process_gateway_message_accumulates_session_token_accounting_from_usage_events() {
+        let workspace = TempWorkspace::new("turn-executor", "usage-accounting");
+        let mut runtime = FakeRuntime::with_backend_events(
+            vec![
+                backend_event(
+                    1,
+                    BackendEventKind::RunNote,
+                    &[
+                        ("usage_input_tokens", "7"),
+                        ("usage_output_tokens", "5"),
+                        ("usage_total_tokens", "12"),
+                    ],
+                ),
+                backend_event(
+                    2,
+                    BackendEventKind::TurnCompleted,
+                    &[("stop_reason", "done")],
+                ),
+            ],
+            &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],
+        );
+        runtime.execute_turn_results = VecDeque::from(vec![
+            Ok(vec![
+                backend_event(
+                    1,
+                    BackendEventKind::RunNote,
+                    &[
+                        ("usage_input_tokens", "7"),
+                        ("usage_output_tokens", "5"),
+                        ("usage_total_tokens", "12"),
+                    ],
+                ),
+                backend_event(
+                    2,
+                    BackendEventKind::TurnCompleted,
+                    &[("stop_reason", "done")],
+                ),
+            ]),
+            Ok(vec![
+                backend_event(
+                    1,
+                    BackendEventKind::RunNote,
+                    &[
+                        ("run_usage_input_tokens", "3"),
+                        ("run_usage_output_tokens", "4"),
+                        ("run_usage_total_tokens", "9"),
+                    ],
+                ),
+                backend_event(
+                    2,
+                    BackendEventKind::TurnCompleted,
+                    &[("stop_reason", "done")],
+                ),
+            ]),
+        ]);
+        runtime.resolve_profile_results = VecDeque::from(vec![
+            Ok(sample_profile_telemetry()),
+            Ok(sample_profile_telemetry()),
+        ]);
+        runtime.ensure_session_results = VecDeque::from(vec![
+            Ok(crab_core::PhysicalSession {
+                id: "physical-1".to_string(),
+                logical_session_id: "discord:channel:777".to_string(),
+                backend: BackendKind::Codex,
+                backend_session_id: "thread-abc".to_string(),
+                created_at_epoch_ms: 1_739_173_200_000,
+                last_turn_id: None,
+            }),
+            Ok(crab_core::PhysicalSession {
+                id: "physical-1".to_string(),
+                logical_session_id: "discord:channel:777".to_string(),
+                backend: BackendKind::Codex,
+                backend_session_id: "thread-abc".to_string(),
+                created_at_epoch_ms: 1_739_173_200_000,
+                last_turn_id: None,
+            }),
+        ]);
+        runtime.build_context_results =
+            VecDeque::from(vec![Ok("context".to_string()), Ok("context".to_string())]);
+        let mut executor = build_executor(&workspace, runtime, 8);
+
+        executor
+            .process_gateway_message(gateway_message("m-usage-1"))
+            .expect("first run should succeed")
+            .expect("first run should dispatch");
+        executor
+            .process_gateway_message(gateway_message("m-usage-2"))
+            .expect("second run should succeed")
+            .expect("second run should dispatch");
+
+        let session = executor
+            .composition()
+            .state_stores
+            .session_store
+            .get_session("discord:channel:777")
+            .expect("session lookup should succeed")
+            .expect("session should exist");
+        assert_eq!(session.token_accounting.input_tokens, 10);
+        assert_eq!(session.token_accounting.output_tokens, 9);
+        assert_eq!(session.token_accounting.total_tokens, 21);
+    }
+
+    #[test]
+    fn process_gateway_message_rejects_invalid_usage_totals() {
+        let workspace = TempWorkspace::new("turn-executor", "usage-invalid-total");
+        let runtime = FakeRuntime::with_backend_events(
+            vec![
+                backend_event(
+                    1,
+                    BackendEventKind::RunNote,
+                    &[
+                        ("usage_input_tokens", "7"),
+                        ("usage_output_tokens", "5"),
+                        ("usage_total_tokens", "11"),
+                    ],
+                ),
+                backend_event(
+                    2,
+                    BackendEventKind::TurnCompleted,
+                    &[("stop_reason", "done")],
+                ),
+            ],
+            &[1, 2, 3, 4, 5, 6],
+        );
+        let mut executor = build_executor(&workspace, runtime, 8);
+
+        let error = executor
+            .process_gateway_message(gateway_message("m-usage-invalid-total"))
+            .expect_err("invalid usage totals should fail");
+        assert_eq!(
+            error,
+            CrabError::InvariantViolation {
+                context: "turn_executor_usage_accounting",
+                message: "usage_total_tokens 11 must be greater than or equal to usage_input_tokens + usage_output_tokens 12".to_string(),
+            }
         );
     }
 
@@ -2448,6 +2728,149 @@ mod tests {
                 1,
                 "hello".to_string(),
             )]
+        );
+    }
+
+    #[test]
+    fn usage_accounting_helpers_resolve_latest_supported_payload_variant() {
+        let usage = super::resolve_backend_usage_accounting(&[
+            backend_event(
+                1,
+                BackendEventKind::RunNote,
+                &[
+                    ("usage_input_tokens", "1"),
+                    ("usage_output_tokens", "2"),
+                    ("usage_total_tokens", "3"),
+                ],
+            ),
+            backend_event(
+                2,
+                BackendEventKind::RunNote,
+                &[
+                    ("run_usage_input_tokens", "4"),
+                    ("run_usage_output_tokens", "5"),
+                    ("run_usage_total_tokens", "9"),
+                ],
+            ),
+            backend_event(
+                3,
+                BackendEventKind::TurnCompleted,
+                &[
+                    ("input_tokens", "10"),
+                    ("output_tokens", "6"),
+                    ("total_tokens", "16"),
+                ],
+            ),
+        ])
+        .expect("usage parsing should succeed")
+        .expect("latest usage payload should be selected");
+        assert_eq!(usage.input_tokens, 10);
+        assert_eq!(usage.output_tokens, 6);
+        assert_eq!(usage.total_tokens, 16);
+
+        let none = super::resolve_backend_usage_accounting(&[backend_event(
+            1,
+            BackendEventKind::RunNote,
+            &[("note", "no usage here")],
+        )])
+        .expect("usage parsing should succeed without usage payload");
+        assert!(none.is_none());
+    }
+
+    #[test]
+    fn usage_accounting_helpers_reject_invalid_payloads() {
+        let missing_field = super::resolve_backend_usage_accounting(&[backend_event(
+            1,
+            BackendEventKind::RunNote,
+            &[("usage_total_tokens", "1")],
+        )])
+        .expect_err("missing usage fields should fail");
+        assert_eq!(
+            missing_field,
+            CrabError::InvariantViolation {
+                context: "turn_executor_usage_accounting",
+                message: "usage payload is missing required key usage_input_tokens while parsing usage_input_tokens/usage_output_tokens/usage_total_tokens".to_string(),
+            }
+        );
+
+        let non_numeric = super::resolve_backend_usage_accounting(&[backend_event(
+            1,
+            BackendEventKind::RunNote,
+            &[
+                ("usage_input_tokens", "a"),
+                ("usage_output_tokens", "2"),
+                ("usage_total_tokens", "3"),
+            ],
+        )])
+        .expect_err("non-numeric usage values should fail");
+        assert_eq!(
+            non_numeric,
+            CrabError::InvariantViolation {
+                context: "turn_executor_usage_accounting",
+                message: "usage payload key usage_input_tokens must be an unsigned integer"
+                    .to_string(),
+            }
+        );
+
+        let overflow = super::resolve_backend_usage_accounting(&[backend_event(
+            1,
+            BackendEventKind::RunNote,
+            &[
+                ("usage_input_tokens", "18446744073709551615"),
+                ("usage_output_tokens", "1"),
+                ("usage_total_tokens", "18446744073709551615"),
+            ],
+        )])
+        .expect_err("usage overflow should fail");
+        assert_eq!(
+            overflow,
+            CrabError::InvariantViolation {
+                context: "turn_executor_usage_accounting",
+                message:
+                    "usage payload overflow while adding usage_input_tokens and usage_output_tokens"
+                        .to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn merge_token_accounting_handles_success_and_overflow() {
+        let merged = super::merge_token_accounting(
+            crab_core::TokenAccounting {
+                input_tokens: 1,
+                output_tokens: 2,
+                total_tokens: 3,
+            },
+            crab_core::TokenAccounting {
+                input_tokens: 4,
+                output_tokens: 5,
+                total_tokens: 9,
+            },
+        )
+        .expect("merge should succeed");
+        assert_eq!(merged.input_tokens, 5);
+        assert_eq!(merged.output_tokens, 7);
+        assert_eq!(merged.total_tokens, 12);
+
+        let overflow = super::merge_token_accounting(
+            crab_core::TokenAccounting {
+                input_tokens: u64::MAX,
+                output_tokens: 0,
+                total_tokens: 0,
+            },
+            crab_core::TokenAccounting {
+                input_tokens: 1,
+                output_tokens: 0,
+                total_tokens: 0,
+            },
+        )
+        .expect_err("merge overflow should fail");
+        assert_eq!(
+            overflow,
+            CrabError::InvariantViolation {
+                context: "turn_executor_usage_accounting",
+                message: "input token accounting overflow".to_string(),
+            }
         );
     }
 
