@@ -313,6 +313,9 @@ mod tests {
             reasoning_level_source: ProfileValueSource::SessionProfile,
             fallback_applied: false,
             fallback_notes: Vec::new(),
+            sender_id: "111111111111111111".to_string(),
+            sender_is_owner: false,
+            resolved_owner_profile: None,
         }
     }
 

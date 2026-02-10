@@ -8,7 +8,8 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crab_core::{
-    Checkpoint, CrabError, CrabResult, EventEnvelope, LogicalSession, OutboundRecord, Run,
+    Checkpoint, CrabError, CrabResult, EventEnvelope, LogicalSession, OutboundRecord,
+    OwnerProfileMetadata, Run, RunProfileTelemetry,
 };
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -276,6 +277,9 @@ impl EventStore {
 
     pub fn append_event(&self, event: &EventEnvelope) -> CrabResult<()> {
         self.ensure_layout()?;
+        if let Some(profile) = event.profile.as_ref() {
+            validate_profile_sender_context("event_validate", profile)?;
+        }
 
         let expected_sequence = self
             .replay_run(&event.logical_session_id, &event.run_id)?
@@ -865,6 +869,7 @@ fn validate_run(run: &Run) -> CrabResult<()> {
                 .to_string(),
         });
     }
+    validate_profile_sender_context("run_validate", &run.profile)?;
 
     if let Some(started_at) = run.started_at_epoch_ms {
         if started_at < run.queued_at_epoch_ms {
@@ -896,6 +901,52 @@ fn validate_run(run: &Run) -> CrabResult<()> {
         }
     }
 
+    Ok(())
+}
+
+fn validate_profile_sender_context(
+    context: &'static str,
+    profile: &RunProfileTelemetry,
+) -> CrabResult<()> {
+    ensure_non_empty_field(context, "profile.sender_id", &profile.sender_id)?;
+    if !profile.sender_is_owner && profile.resolved_owner_profile.is_some() {
+        return Err(CrabError::InvariantViolation {
+            context,
+            message: "profile.resolved_owner_profile must be absent when sender_is_owner is false"
+                .to_string(),
+        });
+    }
+    if let Some(owner_profile) = profile.resolved_owner_profile.as_ref() {
+        validate_owner_profile_metadata(context, owner_profile)?;
+    }
+    Ok(())
+}
+
+fn validate_owner_profile_metadata(
+    context: &'static str,
+    owner_profile: &OwnerProfileMetadata,
+) -> CrabResult<()> {
+    if let Some(machine_location) = owner_profile.machine_location.as_ref() {
+        ensure_non_empty_field(
+            context,
+            "profile.resolved_owner_profile.machine_location",
+            machine_location,
+        )?;
+    }
+    if let Some(machine_timezone) = owner_profile.machine_timezone.as_ref() {
+        ensure_non_empty_field(
+            context,
+            "profile.resolved_owner_profile.machine_timezone",
+            machine_timezone,
+        )?;
+    }
+    if let Some(default_model) = owner_profile.default_model.as_ref() {
+        ensure_non_empty_field(
+            context,
+            "profile.resolved_owner_profile.default_model",
+            default_model,
+        )?;
+    }
     Ok(())
 }
 
@@ -965,8 +1016,8 @@ mod tests {
 
     use crab_core::{
         BackendKind, Checkpoint, CrabError, EventEnvelope, EventKind, EventSource,
-        InferenceProfile, LaneState, LogicalSession, OutboundRecord, ProfileValueSource,
-        ReasoningLevel, Run, RunProfileTelemetry, RunStatus, TokenAccounting,
+        InferenceProfile, LaneState, LogicalSession, OutboundRecord, OwnerProfileMetadata,
+        ProfileValueSource, ReasoningLevel, Run, RunProfileTelemetry, RunStatus, TokenAccounting,
     };
 
     use super::{
@@ -1695,6 +1746,94 @@ mod tests {
             }
         );
 
+        let mut missing_sender_id = sample_run("discord:channel:runs", "run-3b");
+        missing_sender_id.profile.sender_id = " ".to_string();
+        let error = store
+            .upsert_run(&missing_sender_id)
+            .expect_err("sender id should not be blank");
+        assert_eq!(
+            error,
+            CrabError::InvariantViolation {
+                context: "run_validate",
+                message: "profile.sender_id must not be empty".to_string(),
+            }
+        );
+
+        let mut non_owner_with_owner_profile = sample_run("discord:channel:runs", "run-3c");
+        non_owner_with_owner_profile.profile.sender_is_owner = false;
+        let error = store
+            .upsert_run(&non_owner_with_owner_profile)
+            .expect_err("non-owner should not carry owner profile");
+        assert_eq!(
+            error,
+            CrabError::InvariantViolation {
+                context: "run_validate",
+                message:
+                    "profile.resolved_owner_profile must be absent when sender_is_owner is false"
+                        .to_string(),
+            }
+        );
+
+        let mut blank_owner_default_model = sample_run("discord:channel:runs", "run-3d");
+        blank_owner_default_model.profile.resolved_owner_profile = blank_owner_default_model
+            .profile
+            .resolved_owner_profile
+            .map(|mut owner_profile| {
+                owner_profile.default_model = Some(" ".to_string());
+                owner_profile
+            });
+        let error = store
+            .upsert_run(&blank_owner_default_model)
+            .expect_err("owner default model should not be blank");
+        assert_eq!(
+            error,
+            CrabError::InvariantViolation {
+                context: "run_validate",
+                message: "profile.resolved_owner_profile.default_model must not be empty"
+                    .to_string(),
+            }
+        );
+
+        let mut blank_owner_machine_location = sample_run("discord:channel:runs", "run-3e");
+        blank_owner_machine_location.profile.resolved_owner_profile = blank_owner_machine_location
+            .profile
+            .resolved_owner_profile
+            .map(|mut owner_profile| {
+                owner_profile.machine_location = Some(" ".to_string());
+                owner_profile
+            });
+        let error = store
+            .upsert_run(&blank_owner_machine_location)
+            .expect_err("owner machine location should not be blank");
+        assert_eq!(
+            error,
+            CrabError::InvariantViolation {
+                context: "run_validate",
+                message: "profile.resolved_owner_profile.machine_location must not be empty"
+                    .to_string(),
+            }
+        );
+
+        let mut blank_owner_machine_timezone = sample_run("discord:channel:runs", "run-3f");
+        blank_owner_machine_timezone.profile.resolved_owner_profile = blank_owner_machine_timezone
+            .profile
+            .resolved_owner_profile
+            .map(|mut owner_profile| {
+                owner_profile.machine_timezone = Some(" ".to_string());
+                owner_profile
+            });
+        let error = store
+            .upsert_run(&blank_owner_machine_timezone)
+            .expect_err("owner machine timezone should not be blank");
+        assert_eq!(
+            error,
+            CrabError::InvariantViolation {
+                context: "run_validate",
+                message: "profile.resolved_owner_profile.machine_timezone must not be empty"
+                    .to_string(),
+            }
+        );
+
         let mut started_before_queued = sample_run("discord:channel:runs", "run-4");
         started_before_queued.started_at_epoch_ms =
             Some(started_before_queued.queued_at_epoch_ms - 1);
@@ -2073,6 +2212,41 @@ mod tests {
     }
 
     #[test]
+    fn run_store_accepts_non_owner_sender_without_owner_profile() {
+        let root = temp_root("run-non-owner-sender-context");
+        let store = RunStore::new(&root);
+
+        let mut run = sample_run("discord:channel:runs", "run-sender-1");
+        run.profile.sender_is_owner = false;
+        run.profile.resolved_owner_profile = None;
+        store
+            .upsert_run(&run)
+            .expect("non-owner sender context without owner profile should be accepted");
+
+        cleanup(&root);
+    }
+
+    #[test]
+    fn run_store_accepts_owner_profile_with_optional_fields_absent() {
+        let root = temp_root("run-owner-profile-optional-fields");
+        let store = RunStore::new(&root);
+
+        let mut run = sample_run("discord:channel:runs", "run-sender-2");
+        run.profile.resolved_owner_profile = Some(OwnerProfileMetadata {
+            machine_location: None,
+            machine_timezone: None,
+            default_backend: None,
+            default_model: None,
+            default_reasoning_level: None,
+        });
+        store
+            .upsert_run(&run)
+            .expect("owner profile should allow optional metadata fields to be absent");
+
+        cleanup(&root);
+    }
+
+    #[test]
     fn event_store_preserves_profile_telemetry_on_replay() {
         let root = temp_root("event-profile-telemetry");
         let store = EventStore::new(&root);
@@ -2085,6 +2259,49 @@ mod tests {
             .replay_run("discord:channel:events", "run-profile")
             .expect("event replay should succeed");
         assert_eq!(replayed, vec![event]);
+
+        cleanup(&root);
+    }
+
+    #[test]
+    fn event_store_append_accepts_events_without_profile_context() {
+        let root = temp_root("event-without-profile");
+        let store = EventStore::new(&root);
+        let mut event = sample_event("discord:channel:events", "run-profile-none", 1);
+        event.profile = None;
+
+        store
+            .append_event(&event)
+            .expect("event append should accept missing profile metadata");
+        let replayed = store
+            .replay_run("discord:channel:events", "run-profile-none")
+            .expect("event replay should succeed");
+        assert_eq!(replayed, vec![event]);
+
+        cleanup(&root);
+    }
+
+    #[test]
+    fn event_store_append_validates_profile_sender_context() {
+        let root = temp_root("event-profile-validate");
+        let store = EventStore::new(&root);
+        let mut event = sample_event("discord:channel:events", "run-profile-invalid", 1);
+        event
+            .profile
+            .as_mut()
+            .expect("sample event should include profile")
+            .sender_id = " ".to_string();
+
+        let error = store
+            .append_event(&event)
+            .expect_err("blank sender id in profile should fail");
+        assert_eq!(
+            error,
+            CrabError::InvariantViolation {
+                context: "event_validate",
+                message: "profile.sender_id must not be empty".to_string(),
+            }
+        );
 
         cleanup(&root);
     }
@@ -3319,6 +3536,15 @@ mod tests {
             reasoning_level_source: ProfileValueSource::TurnOverride,
             fallback_applied: true,
             fallback_notes: vec!["legacy-codex replaced with gpt-5-codex".to_string()],
+            sender_id: "123456789012345678".to_string(),
+            sender_is_owner: true,
+            resolved_owner_profile: Some(OwnerProfileMetadata {
+                machine_location: Some("Paris, France".to_string()),
+                machine_timezone: Some("Europe/Paris".to_string()),
+                default_backend: Some(BackendKind::Codex),
+                default_model: Some("gpt-5-codex".to_string()),
+                default_reasoning_level: Some(ReasoningLevel::High),
+            }),
         }
     }
 

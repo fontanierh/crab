@@ -107,6 +107,18 @@ pub struct RunProfileTelemetry {
     pub reasoning_level_source: ProfileValueSource,
     pub fallback_applied: bool,
     pub fallback_notes: Vec<String>,
+    pub sender_id: String,
+    pub sender_is_owner: bool,
+    pub resolved_owner_profile: Option<OwnerProfileMetadata>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OwnerProfileMetadata {
+    pub machine_location: Option<String>,
+    pub machine_timezone: Option<String>,
+    pub default_backend: Option<BackendKind>,
+    pub default_model: Option<String>,
+    pub default_reasoning_level: Option<ReasoningLevel>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -199,8 +211,8 @@ mod tests {
 
     use super::{
         BackendKind, Checkpoint, EventEnvelope, EventKind, EventSource, InferenceProfile,
-        LaneState, LogicalSession, OutboundRecord, PhysicalSession, ReasoningLevel, Run,
-        RunProfileTelemetry, RunStatus, TokenAccounting,
+        LaneState, LogicalSession, OutboundRecord, OwnerProfileMetadata, PhysicalSession,
+        ReasoningLevel, Run, RunProfileTelemetry, RunStatus, TokenAccounting,
     };
     use crate::ProfileValueSource;
 
@@ -242,6 +254,15 @@ mod tests {
             reasoning_level_source: ProfileValueSource::TurnOverride,
             fallback_applied: true,
             fallback_notes: vec!["fallback profile applied".to_string()],
+            sender_id: "123456789012345678".to_string(),
+            sender_is_owner: true,
+            resolved_owner_profile: Some(OwnerProfileMetadata {
+                machine_location: Some("Paris, France".to_string()),
+                machine_timezone: Some("Europe/Paris".to_string()),
+                default_backend: Some(BackendKind::Codex),
+                default_model: Some("gpt-5-codex".to_string()),
+                default_reasoning_level: Some(ReasoningLevel::High),
+            }),
         }
     }
 

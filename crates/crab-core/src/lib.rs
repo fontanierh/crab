@@ -40,8 +40,8 @@ pub use diagnostics::{
 };
 pub use domain::{
     BackendKind, Checkpoint, EventEnvelope, EventKind, EventSource, InferenceProfile, LaneState,
-    LogicalSession, OutboundRecord, PhysicalSession, ReasoningLevel, Run, RunProfileTelemetry,
-    RunStatus, TokenAccounting,
+    LogicalSession, OutboundRecord, OwnerProfileMetadata, PhysicalSession, ReasoningLevel, Run,
+    RunProfileTelemetry, RunStatus, TokenAccounting,
 };
 pub use error::{CrabError, CrabResult};
 pub use fallback::{apply_fallback_policy, FallbackDecision, FallbackPolicyMode};
