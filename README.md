@@ -15,6 +15,7 @@ Crab is a Rust harness for running coding agents (Claude Code, Codex CLI, OpenCo
 - `WS8` complete: trigger evaluation, hidden memory flush/checkpoint turns, fallback checkpointing, and rotation sequence.
 - `WS9` complete: cancellation semantics, startup reconciliation, heartbeat loops, operator commands, and structured diagnostics.
 - `WS10` complete: workspace bootstrap templates, lifecycle ensure, bootstrap state detection, safe memory scope layout, and app startup integration diagnostics.
+- `WS11` complete: owner trust mapping, sender identity resolution, owner-aware run metadata, owner-only operator gates, and privacy safeguards for per-user memory scope isolation.
 
 ## Docs
 

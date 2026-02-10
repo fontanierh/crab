@@ -230,13 +230,23 @@ pub fn ensure_user_memory_scope(
     validate_workspace_root_path(workspace_root)?;
     validate_discord_user_id(discord_user_id)?;
 
+    ensure_named_memory_scope(workspace_root, discord_user_id)
+}
+
+pub fn ensure_named_memory_scope(
+    workspace_root: &Path,
+    memory_scope_directory: &str,
+) -> CrabResult<PathBuf> {
+    validate_workspace_root_path(workspace_root)?;
+    validate_memory_scope_directory(memory_scope_directory)?;
+
     let mut created_paths = Vec::new();
     ensure_memory_directories(workspace_root, &mut created_paths)?;
 
     let user_memory_path = workspace_root
         .join(MEMORY_DIR_NAME)
         .join(MEMORY_USERS_DIR_NAME)
-        .join(discord_user_id);
+        .join(memory_scope_directory);
     ensure_directory_exists(
         &user_memory_path,
         &mut created_paths,
@@ -282,6 +292,29 @@ fn validate_discord_user_id(discord_user_id: &str) -> CrabResult<()> {
         });
     }
     Ok(())
+}
+
+fn validate_memory_scope_directory(memory_scope_directory: &str) -> CrabResult<()> {
+    validate_non_empty_text(
+        "workspace_memory_scope",
+        "memory_scope_directory",
+        memory_scope_directory,
+    )?;
+
+    if memory_scope_directory
+        .bytes()
+        .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
+    {
+        return Ok(());
+    }
+
+    Err(CrabError::InvariantViolation {
+        context: "workspace_memory_scope",
+        message: format!(
+            "memory_scope_directory must contain only ASCII letters, digits, '-' or '_', got {:?}",
+            memory_scope_directory
+        ),
+    })
 }
 
 fn ensure_memory_directories(
@@ -444,11 +477,11 @@ mod tests {
 
     use super::{
         create_symlink, default_workspace_templates, detect_workspace_bootstrap_state,
-        ensure_claude_link, ensure_directory_exists, ensure_path_is_directory,
-        ensure_path_is_regular_file, ensure_template_file, ensure_user_memory_scope,
-        ensure_workspace_layout, wrap_io, WorkspaceBootstrapState, AGENTS_FILE_NAME,
-        BOOTSTRAP_FILE_NAME, CLAUDE_LINK_NAME, IDENTITY_FILE_NAME, MEMORY_FILE_NAME,
-        SOUL_FILE_NAME, USER_FILE_NAME,
+        ensure_claude_link, ensure_directory_exists, ensure_named_memory_scope,
+        ensure_path_is_directory, ensure_path_is_regular_file, ensure_template_file,
+        ensure_user_memory_scope, ensure_workspace_layout, wrap_io, WorkspaceBootstrapState,
+        AGENTS_FILE_NAME, BOOTSTRAP_FILE_NAME, CLAUDE_LINK_NAME, IDENTITY_FILE_NAME,
+        MEMORY_FILE_NAME, SOUL_FILE_NAME, USER_FILE_NAME,
     };
     use crate::CrabError;
 
@@ -639,6 +672,48 @@ mod tests {
         );
         assert!(user_memory_path.is_dir());
         assert!(workspace.path.join("memory/global").is_dir());
+    }
+
+    #[test]
+    fn ensure_named_memory_scope_supports_owner_directory() {
+        let workspace = TempWorkspace::new("named-memory-owner");
+        let owner_scope_path =
+            ensure_named_memory_scope(&workspace.path, "owner").expect("owner scope should exist");
+
+        assert_eq!(
+            owner_scope_path,
+            workspace.path.join("memory").join("users").join("owner")
+        );
+        assert!(owner_scope_path.is_dir());
+    }
+
+    #[test]
+    fn ensure_named_memory_scope_rejects_invalid_directory_names() {
+        for invalid_scope in ["", "../owner", "owner/name", "owner name", "owner:admin"] {
+            let workspace = TempWorkspace::new("named-memory-invalid");
+            let error = ensure_named_memory_scope(&workspace.path, invalid_scope)
+                .expect_err("invalid scope directory should fail");
+            assert!(matches!(
+                error,
+                CrabError::InvariantViolation {
+                    context: "workspace_memory_scope",
+                    ..
+                }
+            ));
+        }
+    }
+
+    #[test]
+    fn ensure_named_memory_scope_rejects_empty_workspace_path() {
+        let error = ensure_named_memory_scope(Path::new(""), "owner")
+            .expect_err("empty workspace root should fail");
+        assert_eq!(
+            error,
+            CrabError::InvariantViolation {
+                context: "workspace_layout",
+                message: "workspace_root must not be empty".to_string(),
+            }
+        );
     }
 
     #[test]

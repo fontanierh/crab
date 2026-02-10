@@ -16,6 +16,7 @@ pub mod rotation;
 pub mod rotation_sequence;
 pub mod sender_identity;
 pub mod startup_reconciliation;
+pub mod trust;
 mod validation;
 pub mod workspace;
 
@@ -79,11 +80,15 @@ pub use startup_reconciliation::{
     execute_startup_reconciliation, StartupReconciliationOutcome,
     StartupReconciliationRecoveredRun, StartupReconciliationRuntime,
 };
+pub use trust::{
+    resolve_sender_trust_context, MemoryScopeMode, MemoryScopeResolution, SenderTrustContext,
+    TrustSurface, OWNER_MEMORY_SCOPE_DIRECTORY,
+};
 pub use workspace::{
-    default_workspace_templates, detect_workspace_bootstrap_state, ensure_user_memory_scope,
-    ensure_workspace_layout, WorkspaceBootstrapState, WorkspaceEnsureOutcome, WorkspaceTemplate,
-    AGENTS_FILE_NAME, BOOTSTRAP_FILE_NAME, CLAUDE_LINK_NAME, IDENTITY_FILE_NAME, MEMORY_FILE_NAME,
-    SOUL_FILE_NAME, USER_FILE_NAME,
+    default_workspace_templates, detect_workspace_bootstrap_state, ensure_named_memory_scope,
+    ensure_user_memory_scope, ensure_workspace_layout, WorkspaceBootstrapState,
+    WorkspaceEnsureOutcome, WorkspaceTemplate, AGENTS_FILE_NAME, BOOTSTRAP_FILE_NAME,
+    CLAUDE_LINK_NAME, IDENTITY_FILE_NAME, MEMORY_FILE_NAME, SOUL_FILE_NAME, USER_FILE_NAME,
 };
 
 #[cfg(test)]
