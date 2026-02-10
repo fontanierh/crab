@@ -6,6 +6,7 @@ pub mod compatibility;
 pub mod config;
 pub mod context_assembly;
 pub mod context_budget;
+pub mod context_diagnostics;
 pub mod diagnostics;
 pub mod domain;
 pub mod error;
@@ -51,6 +52,11 @@ pub use context_budget::{
     DEFAULT_CONTEXT_MAX_SECTION_CHARS, DEFAULT_CONTEXT_MAX_TOTAL_CHARS,
     DEFAULT_CONTEXT_MAX_TURN_INPUT_CHARS, MEMORY_SNIPPET_DROP_MARKER_PATH,
     TOTAL_CONTEXT_TRUNCATION_MARKER,
+};
+pub use context_diagnostics::{
+    build_context_diagnostics_report, render_context_diagnostics_fixture,
+    ContextDiagnosticsFileEntry, ContextDiagnosticsReport, ContextDiagnosticsSnippetEntry,
+    CONTEXT_DIAGNOSTICS_FIXTURE_HEADER,
 };
 pub use diagnostics::{
     build_diagnostic_record, parse_diagnostic_record_json, parse_diagnostics_fixture,

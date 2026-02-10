@@ -45,6 +45,7 @@ pub struct ContextBudgetReport {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BudgetedContextOutput {
     pub rendered_context: String,
+    pub budgeted_input: ContextAssemblyInput,
     pub report: ContextBudgetReport,
 }
 
@@ -121,6 +122,7 @@ pub fn render_budgeted_turn_context(
 
     Ok(BudgetedContextOutput {
         rendered_context,
+        budgeted_input,
         report: ContextBudgetReport {
             truncated_sections,
             truncated_memory_snippet_paths,
