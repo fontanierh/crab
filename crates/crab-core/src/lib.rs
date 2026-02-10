@@ -4,6 +4,7 @@ pub mod checkpoint_fallback;
 pub mod checkpoint_turn;
 pub mod compatibility;
 pub mod config;
+pub mod context_assembly;
 pub mod diagnostics;
 pub mod domain;
 pub mod error;
@@ -38,6 +39,9 @@ pub use compatibility::{
     CompatibilityIssue, CompatibilityReport, AUTO_MODEL_ALIAS,
 };
 pub use config::{OwnerConfig, OwnerProfileDefaults, RuntimeConfig};
+pub use context_assembly::{
+    assemble_turn_context, ContextAssemblyInput, ContextMemorySnippet, CONTEXT_INJECTION_ORDER,
+};
 pub use diagnostics::{
     build_diagnostic_record, parse_diagnostic_record_json, parse_diagnostics_fixture,
     render_diagnostic_record_json, render_diagnostics_fixture, DiagnosticCategory, DiagnosticEvent,
