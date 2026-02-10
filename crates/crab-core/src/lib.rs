@@ -11,6 +11,7 @@ pub mod memory_flush;
 pub mod profile;
 pub mod rotation;
 pub mod rotation_sequence;
+pub mod startup_reconciliation;
 mod validation;
 
 pub use checkpoint_fallback::{
@@ -49,6 +50,10 @@ pub use rotation::{
 };
 pub use rotation_sequence::{
     execute_rotation_sequence, RotationSequenceOutcome, RotationSequenceRuntime,
+};
+pub use startup_reconciliation::{
+    execute_startup_reconciliation, StartupReconciliationOutcome,
+    StartupReconciliationRecoveredRun, StartupReconciliationRuntime,
 };
 
 #[cfg(test)]

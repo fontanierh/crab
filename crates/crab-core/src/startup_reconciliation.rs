@@ -1,0 +1,839 @@
+use std::collections::BTreeMap;
+
+use crate::{
+    CrabError, CrabResult, EventEnvelope, EventKind, EventSource, LaneState, LogicalSession, Run,
+    RunStatus,
+};
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StartupReconciliationRecoveredRun {
+    pub logical_session_id: String,
+    pub run_id: String,
+    pub previous_status: RunStatus,
+    pub recovered_status: RunStatus,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StartupReconciliationOutcome {
+    pub recovered_runs: Vec<StartupReconciliationRecoveredRun>,
+    pub cleared_session_ids: Vec<String>,
+}
+
+pub trait StartupReconciliationRuntime {
+    fn restart_backend_managers(&mut self) -> CrabResult<()>;
+    fn list_sessions(&self) -> CrabResult<Vec<LogicalSession>>;
+    fn list_runs_for_session(&self, logical_session_id: &str) -> CrabResult<Vec<Run>>;
+    fn persist_run(&mut self, run: &Run) -> CrabResult<()>;
+    fn next_event_sequence(&self, logical_session_id: &str, run_id: &str) -> CrabResult<u64>;
+    fn append_event(&mut self, event: &EventEnvelope) -> CrabResult<()>;
+    fn clear_active_physical_session(&mut self, logical_session_id: &str) -> CrabResult<()>;
+}
+
+pub fn execute_startup_reconciliation<R: StartupReconciliationRuntime>(
+    runtime: &mut R,
+    now_epoch_ms: u64,
+    grace_period_ms: u64,
+) -> CrabResult<StartupReconciliationOutcome> {
+    validate_reconciliation_input(now_epoch_ms, grace_period_ms)?;
+    runtime.restart_backend_managers()?;
+
+    let mut sessions = runtime.list_sessions()?;
+    sessions.sort_by(|left, right| left.id.cmp(&right.id));
+
+    let mut recovered_runs = Vec::new();
+    let mut cleared_session_ids = Vec::new();
+
+    for session in sessions {
+        let mut runs = runtime.list_runs_for_session(&session.id)?;
+        runs.sort_by(|left, right| left.id.cmp(&right.id));
+
+        let mut session_has_recovered_run = false;
+        for run in runs {
+            if run.logical_session_id != session.id {
+                return Err(CrabError::InvariantViolation {
+                    context: "startup_reconciliation",
+                    message: format!(
+                        "run {} belongs to {}, expected {}",
+                        run.id, run.logical_session_id, session.id
+                    ),
+                });
+            }
+
+            if !is_stale_inflight_run(&run, now_epoch_ms, grace_period_ms)? {
+                continue;
+            }
+
+            let mut updated_run = run.clone();
+            let previous_status = updated_run.status;
+            updated_run.status = RunStatus::Cancelled;
+            updated_run.completed_at_epoch_ms = Some(now_epoch_ms);
+            runtime.persist_run(&updated_run)?;
+
+            let next_sequence =
+                runtime.next_event_sequence(&updated_run.logical_session_id, &updated_run.id)?;
+            if next_sequence == 0 {
+                return Err(CrabError::InvariantViolation {
+                    context: "startup_reconciliation",
+                    message: format!(
+                        "next event sequence must be greater than 0 for run {}/{}",
+                        updated_run.logical_session_id, updated_run.id
+                    ),
+                });
+            }
+
+            let event = build_startup_recovery_event(&updated_run, next_sequence, now_epoch_ms);
+            runtime.append_event(&event)?;
+
+            recovered_runs.push(StartupReconciliationRecoveredRun {
+                logical_session_id: updated_run.logical_session_id.clone(),
+                run_id: updated_run.id.clone(),
+                previous_status,
+                recovered_status: RunStatus::Cancelled,
+            });
+            session_has_recovered_run = true;
+        }
+
+        if should_clear_active_physical_handle(&session, session_has_recovered_run) {
+            runtime.clear_active_physical_session(&session.id)?;
+            cleared_session_ids.push(session.id);
+        }
+    }
+
+    Ok(StartupReconciliationOutcome {
+        recovered_runs,
+        cleared_session_ids,
+    })
+}
+
+fn validate_reconciliation_input(now_epoch_ms: u64, grace_period_ms: u64) -> CrabResult<()> {
+    if now_epoch_ms == 0 {
+        return Err(CrabError::InvariantViolation {
+            context: "startup_reconciliation",
+            message: "now_epoch_ms must be greater than 0".to_string(),
+        });
+    }
+    if grace_period_ms == 0 {
+        return Err(CrabError::InvariantViolation {
+            context: "startup_reconciliation",
+            message: "grace_period_ms must be greater than 0".to_string(),
+        });
+    }
+    Ok(())
+}
+
+fn should_clear_active_physical_handle(
+    session: &LogicalSession,
+    session_has_recovered_run: bool,
+) -> bool {
+    session.active_physical_session_id.is_some()
+        && (session_has_recovered_run || session.lane_state != LaneState::Idle)
+}
+
+fn is_stale_inflight_run(run: &Run, now_epoch_ms: u64, grace_period_ms: u64) -> CrabResult<bool> {
+    if run.status != RunStatus::Running || run.completed_at_epoch_ms.is_some() {
+        return Ok(false);
+    }
+
+    let reference_epoch_ms = run.started_at_epoch_ms.unwrap_or(run.queued_at_epoch_ms);
+    let stale_after_epoch_ms =
+        reference_epoch_ms
+            .checked_add(grace_period_ms)
+            .ok_or(CrabError::InvariantViolation {
+                context: "startup_reconciliation",
+                message: format!(
+                    "grace-period overflow while evaluating stale run {}/{}",
+                    run.logical_session_id, run.id
+                ),
+            })?;
+
+    Ok(now_epoch_ms >= stale_after_epoch_ms)
+}
+
+fn build_startup_recovery_event(
+    run: &Run,
+    sequence: u64,
+    emitted_at_epoch_ms: u64,
+) -> EventEnvelope {
+    let payload = BTreeMap::from([
+        (
+            "state".to_string(),
+            format!("{:?}", RunStatus::Cancelled).to_lowercase(),
+        ),
+        (
+            "reason".to_string(),
+            "startup_recovered_as_interrupted".to_string(),
+        ),
+        (
+            "previous_status".to_string(),
+            format!("{:?}", RunStatus::Running).to_lowercase(),
+        ),
+    ]);
+
+    EventEnvelope {
+        event_id: format!(
+            "evt:start-reconcile:{}:{}:{}",
+            run.logical_session_id, run.id, sequence
+        ),
+        run_id: run.id.clone(),
+        logical_session_id: run.logical_session_id.clone(),
+        sequence,
+        emitted_at_epoch_ms,
+        source: EventSource::System,
+        kind: EventKind::RunState,
+        payload,
+        profile: Some(run.profile.clone()),
+        idempotency_key: Some(format!(
+            "startup-reconcile:{}:{}:{}",
+            run.logical_session_id, run.id, sequence
+        )),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use crate::{
+        BackendKind, CrabError, CrabResult, InferenceProfile, ProfileValueSource, ReasoningLevel,
+        RunProfileTelemetry, TokenAccounting,
+    };
+
+    use super::{
+        execute_startup_reconciliation, EventEnvelope, LogicalSession, Run, RunStatus,
+        StartupReconciliationOutcome, StartupReconciliationRecoveredRun,
+        StartupReconciliationRuntime,
+    };
+    use crate::LaneState;
+
+    #[derive(Debug, Clone)]
+    struct FakeRuntime {
+        restart_backend_result: CrabResult<()>,
+        list_sessions_result: CrabResult<()>,
+        list_runs_result: CrabResult<()>,
+        sessions: Vec<LogicalSession>,
+        runs_by_session: BTreeMap<String, Vec<Run>>,
+        next_sequence_result: CrabResult<()>,
+        next_sequence: BTreeMap<(String, String), u64>,
+        persist_run_result: CrabResult<()>,
+        append_event_result: CrabResult<()>,
+        clear_session_result: CrabResult<()>,
+        persisted_runs: Vec<Run>,
+        appended_events: Vec<EventEnvelope>,
+        cleared_sessions: Vec<String>,
+        calls: Vec<String>,
+    }
+
+    impl FakeRuntime {
+        fn new() -> Self {
+            Self {
+                restart_backend_result: Ok(()),
+                list_sessions_result: Ok(()),
+                list_runs_result: Ok(()),
+                sessions: Vec::new(),
+                runs_by_session: BTreeMap::new(),
+                next_sequence_result: Ok(()),
+                next_sequence: BTreeMap::new(),
+                persist_run_result: Ok(()),
+                append_event_result: Ok(()),
+                clear_session_result: Ok(()),
+                persisted_runs: Vec::new(),
+                appended_events: Vec::new(),
+                cleared_sessions: Vec::new(),
+                calls: Vec::new(),
+            }
+        }
+    }
+
+    impl StartupReconciliationRuntime for FakeRuntime {
+        fn restart_backend_managers(&mut self) -> CrabResult<()> {
+            self.calls.push("restart_backends".to_string());
+            self.restart_backend_result.clone()
+        }
+
+        fn list_sessions(&self) -> CrabResult<Vec<LogicalSession>> {
+            self.list_sessions_result.clone()?;
+            Ok(self.sessions.clone())
+        }
+
+        fn list_runs_for_session(&self, logical_session_id: &str) -> CrabResult<Vec<Run>> {
+            self.list_runs_result.clone()?;
+            Ok(self
+                .runs_by_session
+                .get(logical_session_id)
+                .cloned()
+                .unwrap_or_default())
+        }
+
+        fn persist_run(&mut self, run: &Run) -> CrabResult<()> {
+            self.calls
+                .push(format!("persist_run:{}/{}", run.logical_session_id, run.id));
+            self.persisted_runs.push(run.clone());
+            self.persist_run_result.clone()
+        }
+
+        fn next_event_sequence(&self, logical_session_id: &str, run_id: &str) -> CrabResult<u64> {
+            self.next_sequence_result.clone()?;
+            Ok(*self
+                .next_sequence
+                .get(&(logical_session_id.to_string(), run_id.to_string()))
+                .unwrap_or(&1))
+        }
+
+        fn append_event(&mut self, event: &EventEnvelope) -> CrabResult<()> {
+            self.calls.push(format!(
+                "append_event:{}/{}:{}",
+                event.logical_session_id, event.run_id, event.sequence
+            ));
+            self.appended_events.push(event.clone());
+            self.append_event_result.clone()
+        }
+
+        fn clear_active_physical_session(&mut self, logical_session_id: &str) -> CrabResult<()> {
+            self.calls
+                .push(format!("clear_session:{logical_session_id}"));
+            self.cleared_sessions.push(logical_session_id.to_string());
+            self.clear_session_result.clone()
+        }
+    }
+
+    fn sample_profile() -> InferenceProfile {
+        InferenceProfile {
+            backend: BackendKind::Codex,
+            model: "gpt-5-codex".to_string(),
+            reasoning_level: ReasoningLevel::Medium,
+        }
+    }
+
+    fn sample_run_profile_telemetry() -> RunProfileTelemetry {
+        RunProfileTelemetry {
+            requested_profile: Some(sample_profile()),
+            resolved_profile: sample_profile(),
+            backend_source: ProfileValueSource::SessionProfile,
+            model_source: ProfileValueSource::SessionProfile,
+            reasoning_level_source: ProfileValueSource::SessionProfile,
+            fallback_applied: false,
+            fallback_notes: Vec::new(),
+        }
+    }
+
+    fn sample_token_accounting() -> TokenAccounting {
+        TokenAccounting {
+            input_tokens: 10,
+            output_tokens: 3,
+            total_tokens: 13,
+        }
+    }
+
+    fn session(id: &str, lane_state: LaneState, active_physical: Option<&str>) -> LogicalSession {
+        LogicalSession {
+            id: id.to_string(),
+            active_backend: BackendKind::Codex,
+            active_profile: sample_profile(),
+            active_physical_session_id: active_physical.map(str::to_string),
+            last_successful_checkpoint_id: Some("ckpt-1".to_string()),
+            lane_state,
+            queued_run_count: 0,
+            last_activity_epoch_ms: 1_739_173_200_000,
+            token_accounting: sample_token_accounting(),
+        }
+    }
+
+    fn run(
+        logical_session_id: &str,
+        id: &str,
+        status: RunStatus,
+        queued_at_epoch_ms: u64,
+        started_at_epoch_ms: Option<u64>,
+        completed_at_epoch_ms: Option<u64>,
+    ) -> Run {
+        Run {
+            id: id.to_string(),
+            logical_session_id: logical_session_id.to_string(),
+            physical_session_id: Some("phys-1".to_string()),
+            status,
+            user_input: "hello".to_string(),
+            profile: sample_run_profile_telemetry(),
+            queued_at_epoch_ms,
+            started_at_epoch_ms,
+            completed_at_epoch_ms,
+        }
+    }
+
+    fn boom(context: &'static str) -> CrabError {
+        CrabError::InvariantViolation {
+            context,
+            message: "boom".to_string(),
+        }
+    }
+
+    fn insert_running_run(
+        runtime: &mut FakeRuntime,
+        session_id: &str,
+        active_physical_session_id: &str,
+        run_logical_session_id: &str,
+        run_id: &str,
+        queued_at_epoch_ms: u64,
+        started_at_epoch_ms: Option<u64>,
+    ) {
+        runtime.sessions.push(session(
+            session_id,
+            LaneState::Running,
+            Some(active_physical_session_id),
+        ));
+        runtime.runs_by_session.insert(
+            session_id.to_string(),
+            vec![run(
+                run_logical_session_id,
+                run_id,
+                RunStatus::Running,
+                queued_at_epoch_ms,
+                started_at_epoch_ms,
+                None,
+            )],
+        );
+    }
+
+    #[test]
+    fn reconciles_stale_running_runs_and_clears_session_handle() {
+        let mut runtime = FakeRuntime::new();
+        insert_running_run(
+            &mut runtime,
+            "discord:channel:a",
+            "phys-a",
+            "discord:channel:a",
+            "run-1",
+            1_739_173_100_000,
+            Some(1_739_173_100_100),
+        );
+        runtime
+            .next_sequence
+            .insert(("discord:channel:a".to_string(), "run-1".to_string()), 7);
+
+        let outcome = execute_startup_reconciliation(&mut runtime, 1_739_173_300_000, 90_000)
+            .expect("stale run reconciliation should succeed");
+
+        assert_eq!(
+            outcome,
+            StartupReconciliationOutcome {
+                recovered_runs: vec![StartupReconciliationRecoveredRun {
+                    logical_session_id: "discord:channel:a".to_string(),
+                    run_id: "run-1".to_string(),
+                    previous_status: RunStatus::Running,
+                    recovered_status: RunStatus::Cancelled,
+                }],
+                cleared_session_ids: vec!["discord:channel:a".to_string()],
+            }
+        );
+        assert_eq!(runtime.persisted_runs.len(), 1);
+        assert_eq!(runtime.persisted_runs[0].status, RunStatus::Cancelled);
+        assert_eq!(
+            runtime.persisted_runs[0].completed_at_epoch_ms,
+            Some(1_739_173_300_000)
+        );
+        assert_eq!(runtime.appended_events.len(), 1);
+        let event = &runtime.appended_events[0];
+        assert_eq!(event.sequence, 7);
+        assert_eq!(event.kind, crate::EventKind::RunState);
+        assert_eq!(event.source, crate::EventSource::System);
+        assert_eq!(
+            event.payload.get("reason"),
+            Some(&"startup_recovered_as_interrupted".to_string())
+        );
+        assert_eq!(runtime.calls[0], "restart_backends");
+        assert_eq!(
+            runtime.cleared_sessions,
+            vec!["discord:channel:a".to_string()]
+        );
+    }
+
+    #[test]
+    fn uses_queued_timestamp_when_started_timestamp_is_missing() {
+        let mut runtime = FakeRuntime::new();
+        insert_running_run(
+            &mut runtime,
+            "discord:channel:a",
+            "phys-a",
+            "discord:channel:a",
+            "run-queued-only",
+            1_739_173_000_000,
+            None,
+        );
+
+        let outcome = execute_startup_reconciliation(&mut runtime, 1_739_173_300_000, 60_000)
+            .expect("queued timestamp should be used when started is missing");
+        assert_eq!(outcome.recovered_runs.len(), 1);
+        assert_eq!(runtime.persisted_runs[0].status, RunStatus::Cancelled);
+    }
+
+    #[test]
+    fn processes_sessions_and_runs_in_sorted_order() {
+        let mut runtime = FakeRuntime::new();
+        runtime.sessions.push(session(
+            "discord:channel:z",
+            LaneState::Running,
+            Some("phys-z"),
+        ));
+        runtime.sessions.push(session(
+            "discord:channel:a",
+            LaneState::Running,
+            Some("phys-a"),
+        ));
+        runtime.runs_by_session.insert(
+            "discord:channel:a".to_string(),
+            vec![
+                run(
+                    "discord:channel:a",
+                    "run-2",
+                    RunStatus::Running,
+                    1_739_173_000_000,
+                    Some(1_739_173_000_200),
+                    None,
+                ),
+                run(
+                    "discord:channel:a",
+                    "run-1",
+                    RunStatus::Running,
+                    1_739_173_000_000,
+                    Some(1_739_173_000_100),
+                    None,
+                ),
+            ],
+        );
+        runtime.runs_by_session.insert(
+            "discord:channel:z".to_string(),
+            vec![run(
+                "discord:channel:z",
+                "run-3",
+                RunStatus::Running,
+                1_739_173_000_000,
+                Some(1_739_173_000_300),
+                None,
+            )],
+        );
+        runtime
+            .next_sequence
+            .insert(("discord:channel:a".to_string(), "run-1".to_string()), 2);
+        runtime
+            .next_sequence
+            .insert(("discord:channel:a".to_string(), "run-2".to_string()), 3);
+        runtime
+            .next_sequence
+            .insert(("discord:channel:z".to_string(), "run-3".to_string()), 4);
+
+        let outcome = execute_startup_reconciliation(&mut runtime, 1_739_173_300_000, 60_000)
+            .expect("reconciliation should run deterministically");
+
+        let recovered_ids: Vec<(String, String)> = outcome
+            .recovered_runs
+            .iter()
+            .map(|recovered| {
+                (
+                    recovered.logical_session_id.clone(),
+                    recovered.run_id.clone(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            recovered_ids,
+            vec![
+                ("discord:channel:a".to_string(), "run-1".to_string()),
+                ("discord:channel:a".to_string(), "run-2".to_string()),
+                ("discord:channel:z".to_string(), "run-3".to_string()),
+            ]
+        );
+
+        let persisted_ids: Vec<(String, String)> = runtime
+            .persisted_runs
+            .iter()
+            .map(|persisted| (persisted.logical_session_id.clone(), persisted.id.clone()))
+            .collect();
+        assert_eq!(persisted_ids, recovered_ids);
+        assert_eq!(
+            outcome.cleared_session_ids,
+            vec![
+                "discord:channel:a".to_string(),
+                "discord:channel:z".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn leaves_recent_runs_unchanged() {
+        let mut runtime = FakeRuntime::new();
+        runtime.sessions.push(session(
+            "discord:channel:a",
+            LaneState::Idle,
+            Some("phys-a"),
+        ));
+        runtime.runs_by_session.insert(
+            "discord:channel:a".to_string(),
+            vec![run(
+                "discord:channel:a",
+                "run-recent",
+                RunStatus::Running,
+                1_739_173_290_000,
+                Some(1_739_173_295_000),
+                None,
+            )],
+        );
+
+        let outcome = execute_startup_reconciliation(&mut runtime, 1_739_173_300_000, 60_000)
+            .expect("recent run should not reconcile");
+        assert!(outcome.recovered_runs.is_empty());
+        assert!(outcome.cleared_session_ids.is_empty());
+        assert!(runtime.persisted_runs.is_empty());
+        assert!(runtime.appended_events.is_empty());
+        assert!(runtime.cleared_sessions.is_empty());
+    }
+
+    #[test]
+    fn clears_non_idle_session_handles_even_without_stale_run() {
+        let mut runtime = FakeRuntime::new();
+        runtime.sessions.push(session(
+            "discord:channel:cancelling",
+            LaneState::Cancelling,
+            Some("phys-c"),
+        ));
+        runtime.runs_by_session.insert(
+            "discord:channel:cancelling".to_string(),
+            vec![run(
+                "discord:channel:cancelling",
+                "run-complete",
+                RunStatus::Succeeded,
+                1_739_173_000_000,
+                Some(1_739_173_010_000),
+                Some(1_739_173_020_000),
+            )],
+        );
+
+        let outcome = execute_startup_reconciliation(&mut runtime, 1_739_173_300_000, 60_000)
+            .expect("non-idle handles should clear on startup");
+        assert!(outcome.recovered_runs.is_empty());
+        assert_eq!(
+            outcome.cleared_session_ids,
+            vec!["discord:channel:cancelling".to_string()]
+        );
+        assert_eq!(
+            runtime.cleared_sessions,
+            vec!["discord:channel:cancelling".to_string()]
+        );
+    }
+
+    #[test]
+    fn validates_reconciliation_inputs() {
+        let mut runtime = FakeRuntime::new();
+
+        let now_error = execute_startup_reconciliation(&mut runtime, 0, 60_000)
+            .expect_err("now timestamp must be > 0");
+        assert_eq!(
+            now_error,
+            CrabError::InvariantViolation {
+                context: "startup_reconciliation",
+                message: "now_epoch_ms must be greater than 0".to_string(),
+            }
+        );
+
+        let grace_error = execute_startup_reconciliation(&mut runtime, 1_739_173_300_000, 0)
+            .expect_err("grace period must be > 0");
+        assert_eq!(
+            grace_error,
+            CrabError::InvariantViolation {
+                context: "startup_reconciliation",
+                message: "grace_period_ms must be greater than 0".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn restart_failures_propagate_before_other_reconciliation_steps() {
+        let mut runtime = FakeRuntime::new();
+        runtime.restart_backend_result = Err(boom("restart_backends"));
+
+        let error = execute_startup_reconciliation(&mut runtime, 1_739_173_300_000, 60_000)
+            .expect_err("restart failure should fail reconciliation");
+        assert_eq!(error, boom("restart_backends"));
+        assert_eq!(runtime.calls, vec!["restart_backends".to_string()]);
+    }
+
+    #[test]
+    fn rejects_mismatched_run_and_session_identity() {
+        let mut runtime = FakeRuntime::new();
+        insert_running_run(
+            &mut runtime,
+            "discord:channel:a",
+            "phys-a",
+            "discord:channel:b",
+            "run-1",
+            1_739_173_000_000,
+            Some(1_739_173_000_500),
+        );
+
+        let error = execute_startup_reconciliation(&mut runtime, 1_739_173_300_000, 60_000)
+            .expect_err("run/session mismatch should fail");
+        assert_eq!(
+            error,
+            CrabError::InvariantViolation {
+                context: "startup_reconciliation",
+                message: "run run-1 belongs to discord:channel:b, expected discord:channel:a"
+                    .to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn rejects_zero_next_event_sequence() {
+        let mut runtime = FakeRuntime::new();
+        insert_running_run(
+            &mut runtime,
+            "discord:channel:a",
+            "phys-a",
+            "discord:channel:a",
+            "run-1",
+            1_739_173_000_000,
+            Some(1_739_173_000_100),
+        );
+        runtime
+            .next_sequence
+            .insert(("discord:channel:a".to_string(), "run-1".to_string()), 0);
+
+        let error = execute_startup_reconciliation(&mut runtime, 1_739_173_300_000, 60_000)
+            .expect_err("zero event sequence should fail");
+        assert_eq!(
+            error,
+            CrabError::InvariantViolation {
+                context: "startup_reconciliation",
+                message:
+                    "next event sequence must be greater than 0 for run discord:channel:a/run-1"
+                        .to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn propagates_persist_event_and_clear_failures() {
+        let mut persist_runtime = FakeRuntime::new();
+        insert_running_run(
+            &mut persist_runtime,
+            "discord:channel:a",
+            "phys-a",
+            "discord:channel:a",
+            "run-1",
+            1_739_173_000_000,
+            Some(1_739_173_000_100),
+        );
+        persist_runtime.persist_run_result = Err(boom("persist_run"));
+        let persist_error =
+            execute_startup_reconciliation(&mut persist_runtime, 1_739_173_300_000, 60_000)
+                .expect_err("persist failures should propagate");
+        assert_eq!(persist_error, boom("persist_run"));
+
+        let mut append_runtime = FakeRuntime::new();
+        append_runtime.sessions.push(session(
+            "discord:channel:b",
+            LaneState::Running,
+            Some("phys-b"),
+        ));
+        append_runtime.runs_by_session.insert(
+            "discord:channel:b".to_string(),
+            vec![run(
+                "discord:channel:b",
+                "run-2",
+                RunStatus::Running,
+                1_739_173_000_000,
+                Some(1_739_173_000_100),
+                None,
+            )],
+        );
+        append_runtime.append_event_result = Err(boom("append_event"));
+        let append_error =
+            execute_startup_reconciliation(&mut append_runtime, 1_739_173_300_000, 60_000)
+                .expect_err("append failures should propagate");
+        assert_eq!(append_error, boom("append_event"));
+
+        let mut clear_runtime = FakeRuntime::new();
+        clear_runtime.sessions.push(session(
+            "discord:channel:c",
+            LaneState::Cancelling,
+            Some("phys-c"),
+        ));
+        clear_runtime
+            .runs_by_session
+            .insert("discord:channel:c".to_string(), Vec::new());
+        clear_runtime.clear_session_result = Err(boom("clear_session"));
+        let clear_error =
+            execute_startup_reconciliation(&mut clear_runtime, 1_739_173_300_000, 60_000)
+                .expect_err("clear failures should propagate");
+        assert_eq!(clear_error, boom("clear_session"));
+    }
+
+    #[test]
+    fn propagates_list_and_sequence_lookup_failures() {
+        let mut list_sessions_runtime = FakeRuntime::new();
+        list_sessions_runtime.list_sessions_result = Err(boom("list_sessions"));
+        let list_sessions_error =
+            execute_startup_reconciliation(&mut list_sessions_runtime, 1_739_173_300_000, 60_000)
+                .expect_err("list sessions failures should propagate");
+        assert_eq!(list_sessions_error, boom("list_sessions"));
+
+        let mut list_runs_runtime = FakeRuntime::new();
+        list_runs_runtime.sessions.push(session(
+            "discord:channel:a",
+            LaneState::Running,
+            Some("phys-a"),
+        ));
+        list_runs_runtime.list_runs_result = Err(boom("list_runs_for_session"));
+        let list_runs_error =
+            execute_startup_reconciliation(&mut list_runs_runtime, 1_739_173_300_000, 60_000)
+                .expect_err("list runs failures should propagate");
+        assert_eq!(list_runs_error, boom("list_runs_for_session"));
+
+        let mut next_sequence_runtime = FakeRuntime::new();
+        insert_running_run(
+            &mut next_sequence_runtime,
+            "discord:channel:b",
+            "phys-b",
+            "discord:channel:b",
+            "run-1",
+            1_739_173_000_000,
+            Some(1_739_173_000_100),
+        );
+        next_sequence_runtime.next_sequence_result = Err(boom("next_event_sequence"));
+        let next_sequence_error =
+            execute_startup_reconciliation(&mut next_sequence_runtime, 1_739_173_300_000, 60_000)
+                .expect_err("sequence lookup failures should propagate");
+        assert_eq!(next_sequence_error, boom("next_event_sequence"));
+    }
+
+    #[test]
+    fn detects_overflow_when_computing_stale_deadline() {
+        let mut runtime = FakeRuntime::new();
+        runtime.sessions.push(session(
+            "discord:channel:overflow",
+            LaneState::Running,
+            Some("phys-o"),
+        ));
+        runtime.runs_by_session.insert(
+            "discord:channel:overflow".to_string(),
+            vec![run(
+                "discord:channel:overflow",
+                "run-overflow",
+                RunStatus::Running,
+                u64::MAX - 5,
+                Some(u64::MAX - 5),
+                None,
+            )],
+        );
+
+        let error = execute_startup_reconciliation(&mut runtime, u64::MAX, 10)
+            .expect_err("overflow should be surfaced");
+        assert_eq!(
+            error,
+            CrabError::InvariantViolation {
+                context: "startup_reconciliation",
+                message:
+                    "grace-period overflow while evaluating stale run discord:channel:overflow/run-overflow"
+                        .to_string(),
+            }
+        );
+    }
+}
