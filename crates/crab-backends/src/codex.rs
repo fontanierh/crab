@@ -87,13 +87,21 @@ impl<P: CodexAppServerProcess> CodexManager<P> {
 }
 
 fn validate_handle(context: &'static str, handle: &CodexProcessHandle) -> CrabResult<()> {
-    if handle.process_id == 0 {
+    validate_process_identity(context, handle.process_id, handle.started_at_epoch_ms)
+}
+
+pub(crate) fn validate_process_identity(
+    context: &'static str,
+    process_id: u32,
+    started_at_epoch_ms: u64,
+) -> CrabResult<()> {
+    if process_id == 0 {
         return Err(CrabError::InvariantViolation {
             context,
             message: "process_id must be non-zero".to_string(),
         });
     }
-    if handle.started_at_epoch_ms == 0 {
+    if started_at_epoch_ms == 0 {
         return Err(CrabError::InvariantViolation {
             context,
             message: "started_at_epoch_ms must be non-zero".to_string(),
