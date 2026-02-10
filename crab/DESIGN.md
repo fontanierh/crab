@@ -303,6 +303,16 @@ Prompt rules in system instructions:
 - Prefer `crab-memory-search` first, then `crab-memory-get` for exact citations.
 - If needed, run direct `rg`/`grep` and file reads over memory files.
 
+Citation/disclosure policy:
+
+- `citation_mode=auto` (default):
+  - Direct messages: include citations (`path#Lx` or `path#Lx-Ly`) when memory materially influences the answer.
+  - Shared Discord contexts: suppress file/line citations by default.
+  - Shared non-owner runs: add explicit disclosure sentence when memory influenced the answer.
+- `citation_mode=on`: always include citations, including shared contexts.
+- `citation_mode=off`: never include file/line citations and do not add disclosure text.
+- Policy applies equally to `crab-memory-search`, `crab-memory-get`, and native `rg`/`grep`/reads over memory files.
+
 ## 7) Turn Lifecycle
 
 1. Ingress: Discord message arrives.
@@ -628,6 +638,7 @@ reasoning_mode = "best-effort"   # native | best-effort
 [memory]
 access_mode = "cli"             # cli (v1)
 search_mode = "keyword"         # keyword (v1); semantic deferred
+citation_mode = "auto"          # auto | on | off
 inject_days = 2
 per_user_scope = true
 

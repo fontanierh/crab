@@ -1,3 +1,8 @@
+use crate::memory_citation::{
+    evaluate_memory_citation_policy, MemoryCitationMode, MemoryCitationPolicyInput,
+    MemoryRecallSource, SHARED_CONTEXT_DISCLOSURE_TEXT,
+};
+use crate::trust::TrustSurface;
 use crate::validation::validate_non_empty_text;
 use crate::{BackendKind, CrabResult, OwnerProfileMetadata, ReasoningLevel};
 
@@ -12,6 +17,8 @@ pub struct PromptContractInput {
     pub sender_is_owner: bool,
     pub owner_profile: Option<OwnerProfileMetadata>,
     pub memory_tools_enabled: bool,
+    pub memory_citation_mode: MemoryCitationMode,
+    pub memory_recall_surface: TrustSurface,
 }
 
 pub fn compile_prompt_contract(input: &PromptContractInput) -> CrabResult<String> {
@@ -19,7 +26,7 @@ pub fn compile_prompt_contract(input: &PromptContractInput) -> CrabResult<String
 
     let sections = [
         render_runtime_profile_section(input),
-        render_memory_search_first_section(input.memory_tools_enabled),
+        render_memory_search_first_section(input),
         render_owner_context_section(input),
         render_runtime_notes_section(),
         render_messaging_semantics_section(),
@@ -68,14 +75,14 @@ fn render_runtime_profile_section(input: &PromptContractInput) -> String {
     )
 }
 
-fn render_memory_search_first_section(memory_tools_enabled: bool) -> String {
+fn render_memory_search_first_section(input: &PromptContractInput) -> String {
     let mut lines = vec![
         "## MEMORY_RECALL_FIRST".to_string(),
         "- Before claiming information is unknown, search `MEMORY.md` and `memory/` for relevant prior context."
             .to_string(),
     ];
 
-    if memory_tools_enabled {
+    if input.memory_tools_enabled {
         lines.push(
             "- Prefer `crab-memory-search` for ranked recall, then `crab-memory-get` for exact line ranges when citing."
                 .to_string(),
@@ -89,6 +96,36 @@ fn render_memory_search_first_section(memory_tools_enabled: bool) -> String {
             "- Memory recall CLI is disabled for this run; use native file search (`rg`/`grep`/`read`) over memory files and explicitly note lookup limitations when relevant."
                 .to_string(),
         );
+    }
+
+    let citation_policy = evaluate_memory_citation_policy(&MemoryCitationPolicyInput {
+        mode: input.memory_citation_mode,
+        surface: input.memory_recall_surface,
+        sender_is_owner: input.sender_is_owner,
+        source: MemoryRecallSource::CliSearch,
+    });
+    lines.push(format!(
+        "- Citation mode: `{}`.",
+        input.memory_citation_mode.as_token()
+    ));
+    lines.push(
+        "- Citation/disclosure policy applies equally to `crab-memory-search`, `crab-memory-get`, and native `rg`/`grep`/`read` memory lookups."
+            .to_string(),
+    );
+    if citation_policy.include_citation {
+        lines.push(
+            "- When memory snippets materially influence the answer, include citations as `path#Lx` or `path#Lx-Ly`."
+                .to_string(),
+        );
+    } else {
+        lines
+            .push("- Do not expose memory file paths or line numbers in this context.".to_string());
+        if citation_policy.require_disclosure {
+            lines.push(format!(
+                "- If memory materially influenced the answer, append this disclosure sentence: \"{}\"",
+                SHARED_CONTEXT_DISCLOSURE_TEXT
+            ));
+        }
     }
 
     lines.join("\n")
@@ -152,7 +189,10 @@ fn backend_token(backend: BackendKind) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use crate::{BackendKind, CrabError, OwnerProfileMetadata, ReasoningLevel};
+    use crate::{
+        BackendKind, CrabError, MemoryCitationMode, OwnerProfileMetadata, ReasoningLevel,
+        TrustSurface, SHARED_CONTEXT_DISCLOSURE_TEXT,
+    };
 
     use super::{compile_prompt_contract, PromptContractInput};
 
@@ -169,12 +209,14 @@ mod tests {
             sender_is_owner: false,
             owner_profile: None,
             memory_tools_enabled: true,
+            memory_citation_mode: MemoryCitationMode::Auto,
+            memory_recall_surface: TrustSurface::DirectMessage,
         }
     }
 
     fn expected_for(backend: &str, model: &str, reasoning: &str) -> String {
         format!(
-            "## RUNTIME_PROFILE\n- backend: {backend}\n- model: {model}\n- reasoning_level: {reasoning}\n\n## MEMORY_RECALL_FIRST\n- Before claiming information is unknown, search `MEMORY.md` and `memory/` for relevant prior context.\n- Prefer `crab-memory-search` for ranked recall, then `crab-memory-get` for exact line ranges when citing.\n- If needed, run native file search (`rg`/`grep`/`read`) directly over memory files.\n\n## OWNER_CONTEXT\n- sender_id: 1234567890\n- sender_is_owner: false\n- owner.machine_location: (none)\n- owner.machine_timezone: (none)\n- owner.default_backend: (none)\n- owner.default_model: (none)\n- owner.default_reasoning_level: (none)\n\n## RUNTIME_NOTES\n- Crab runs autonomously; approval routing is handled outside this prompt.\n- Keep behavior deterministic and avoid contradictory state updates.\n\n## MESSAGING_SEMANTICS\n- Normal assistant text is streamed by Crab to Discord as the channel reply.\n- Use Discord messaging tools only for explicit Discord actions (send/edit/delete/react/moderation/proactive operations).\n- Do not emit duplicate plain-text confirmations for actions already completed via Discord tools."
+            "## RUNTIME_PROFILE\n- backend: {backend}\n- model: {model}\n- reasoning_level: {reasoning}\n\n## MEMORY_RECALL_FIRST\n- Before claiming information is unknown, search `MEMORY.md` and `memory/` for relevant prior context.\n- Prefer `crab-memory-search` for ranked recall, then `crab-memory-get` for exact line ranges when citing.\n- If needed, run native file search (`rg`/`grep`/`read`) directly over memory files.\n- Citation mode: `auto`.\n- Citation/disclosure policy applies equally to `crab-memory-search`, `crab-memory-get`, and native `rg`/`grep`/`read` memory lookups.\n- When memory snippets materially influence the answer, include citations as `path#Lx` or `path#Lx-Ly`.\n\n## OWNER_CONTEXT\n- sender_id: 1234567890\n- sender_is_owner: false\n- owner.machine_location: (none)\n- owner.machine_timezone: (none)\n- owner.default_backend: (none)\n- owner.default_model: (none)\n- owner.default_reasoning_level: (none)\n\n## RUNTIME_NOTES\n- Crab runs autonomously; approval routing is handled outside this prompt.\n- Keep behavior deterministic and avoid contradictory state updates.\n\n## MESSAGING_SEMANTICS\n- Normal assistant text is streamed by Crab to Discord as the channel reply.\n- Use Discord messaging tools only for explicit Discord actions (send/edit/delete/react/moderation/proactive operations).\n- Do not emit duplicate plain-text confirmations for actions already completed via Discord tools."
         )
     }
 
@@ -244,6 +286,62 @@ mod tests {
         assert!(!rendered.contains(
             "Prefer `crab-memory-search` for ranked recall, then `crab-memory-get` for exact line ranges when citing."
         ));
+        assert!(rendered.contains("- Citation mode: `auto`."));
+        assert!(rendered.contains(
+            "- When memory snippets materially influence the answer, include citations as `path#Lx` or `path#Lx-Ly`."
+        ));
+    }
+
+    #[test]
+    fn citation_mode_off_hides_citations_in_prompt_contract() {
+        let mut input = input_for(BackendKind::Codex, "gpt-5-codex", ReasoningLevel::Medium);
+        input.memory_citation_mode = MemoryCitationMode::Off;
+
+        let rendered = compile_prompt_contract(&input).expect("prompt contract should compile");
+        assert!(rendered.contains("- Citation mode: `off`."));
+        assert!(
+            rendered.contains("- Do not expose memory file paths or line numbers in this context.")
+        );
+        assert!(!rendered.contains(SHARED_CONTEXT_DISCLOSURE_TEXT));
+        assert!(!rendered.contains("include citations as `path#Lx` or `path#Lx-Ly`."));
+    }
+
+    #[test]
+    fn citation_mode_on_for_shared_context_still_requires_citations() {
+        let mut input = input_for(BackendKind::Codex, "gpt-5-codex", ReasoningLevel::Medium);
+        input.memory_citation_mode = MemoryCitationMode::On;
+        input.memory_recall_surface = TrustSurface::SharedDiscord;
+
+        let rendered = compile_prompt_contract(&input).expect("prompt contract should compile");
+        assert!(rendered.contains("- Citation mode: `on`."));
+        assert!(rendered.contains("include citations as `path#Lx` or `path#Lx-Ly`."));
+        assert!(!rendered.contains(SHARED_CONTEXT_DISCLOSURE_TEXT));
+    }
+
+    #[test]
+    fn citation_mode_auto_adds_disclosure_in_shared_non_owner_context() {
+        let mut input = input_for(BackendKind::Claude, "claude-sonnet-4", ReasoningLevel::High);
+        input.memory_recall_surface = TrustSurface::SharedDiscord;
+
+        let rendered = compile_prompt_contract(&input).expect("prompt contract should compile");
+        assert!(rendered.contains("- Citation mode: `auto`."));
+        assert!(
+            rendered.contains("- Do not expose memory file paths or line numbers in this context.")
+        );
+        assert!(rendered.contains(SHARED_CONTEXT_DISCLOSURE_TEXT));
+    }
+
+    #[test]
+    fn citation_mode_auto_shared_owner_suppresses_without_disclosure() {
+        let mut input = input_for(BackendKind::Claude, "claude-sonnet-4", ReasoningLevel::High);
+        input.sender_is_owner = true;
+        input.memory_recall_surface = TrustSurface::SharedDiscord;
+
+        let rendered = compile_prompt_contract(&input).expect("prompt contract should compile");
+        assert!(
+            rendered.contains("- Do not expose memory file paths or line numbers in this context.")
+        );
+        assert!(!rendered.contains(SHARED_CONTEXT_DISCLOSURE_TEXT));
     }
 
     #[test]

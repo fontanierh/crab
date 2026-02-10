@@ -12,6 +12,7 @@ pub mod domain;
 pub mod error;
 pub mod fallback;
 pub mod heartbeat;
+pub mod memory_citation;
 pub mod memory_flush;
 pub mod memory_get;
 pub mod memory_search;
@@ -76,6 +77,11 @@ pub use heartbeat::{
     execute_heartbeat_cycle, ActiveRunHeartbeat, BackendHeartbeat, DispatcherHeartbeat,
     HeartbeatComponent, HeartbeatEvent, HeartbeatOutcome, HeartbeatPolicy, HeartbeatRunAction,
     HeartbeatRuntime,
+};
+pub use memory_citation::{
+    disclosure_text_for_source, evaluate_memory_citation_policy, format_memory_citation,
+    MemoryCitationMode, MemoryCitationPolicyDecision, MemoryCitationPolicyInput,
+    MemoryRecallSource, SHARED_CONTEXT_DISCLOSURE_TEXT,
 };
 pub use memory_flush::{
     build_memory_flush_prompt, finalize_hidden_memory_flush, should_run_memory_flush_cycle,
