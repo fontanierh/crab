@@ -1,6 +1,7 @@
 //! Application entry surfaces for Crab runtime wiring.
 
 mod composition;
+mod maintenance;
 mod memory_cli;
 mod startup;
 #[cfg(test)]
@@ -10,6 +11,10 @@ mod turn_executor;
 pub use composition::{
     compose_runtime_with_processes, compose_runtime_with_processes_and_queue_limit,
     AppBackendManagers, AppComposition, AppStateStores, DEFAULT_LANE_QUEUE_LIMIT,
+};
+pub use maintenance::{
+    boot_runtime_with_processes, boot_runtime_with_processes_and_queue_limit, run_heartbeat_if_due,
+    run_startup_reconciliation_on_boot, BootRuntime, HeartbeatLoopState,
 };
 pub use memory_cli::{run_memory_get_cli, run_memory_search_cli};
 pub use startup::{initialize_runtime_startup, AppStartupOutcome};

@@ -102,7 +102,10 @@ Implemented:
 - replay path in turn executor
 - startup reconciliation primitives
 - heartbeat policy engine
+- app-runtime maintenance integration:
+  - `boot_runtime_with_processes*` runs startup reconciliation before runtime begins dispatching
+  - `run_heartbeat_if_due` executes deterministic heartbeat ticks based on configured interval
 
-Integration expectation:
+Remaining gap:
 
-- production runtime loop should invoke startup reconciliation and heartbeat on schedule.
+- production Discord runtime binary still needs to call maintenance APIs in its long-running event loop (`WS18-T2`)

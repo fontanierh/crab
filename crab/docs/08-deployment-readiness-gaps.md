@@ -18,6 +18,9 @@ Recently closed:
   - `/compact confirm`
   - `/reset confirm`
 - Rotation lifecycle/audit run-note events are persisted for automatic and manual rotation.
+- `crab-app` now wires startup reconciliation and heartbeat scheduling in maintenance runtime:
+  - `boot_runtime_with_processes*` runs reconciliation on boot.
+  - `run_heartbeat_if_due` executes heartbeat ticks on deterministic interval state.
 
 Runtime policy env keys now supported:
 
@@ -43,24 +46,16 @@ Runtime policy env keys now supported:
 - Owner-only `/compact confirm` and `/reset confirm` are now parsed, authorized,
   audited, and wired through rotation execution.
 
-## Gap 1: Startup Reconciliation + Heartbeat Runtime Loop Wiring
+### Closed Gap C: Startup Reconciliation + Heartbeat Runtime Loop Wiring
 
-Current status:
+- Closed on February 10, 2026 on `main`.
+- `crab-app` now exposes boot-time reconciliation and deterministic heartbeat scheduling APIs:
+  - `boot_runtime_with_processes*`
+  - `run_startup_reconciliation_on_boot`
+  - `run_heartbeat_if_due`
+- Escalation behavior remains internal/auditable (event-log side effects), not duplicate user-visible Discord output.
 
-- `execute_startup_reconciliation` and `execute_heartbeat_cycle` primitives exist and are tested.
-- production runtime loop does not yet call them on deterministic schedule.
-
-Impact:
-
-- crash recovery and stall handling contracts are implemented in isolation but not yet
-  executed by a long-running runtime process.
-
-Required work:
-
-- invoke reconciliation on startup and heartbeat cycles on configured interval without
-  duplicate user-visible delivery.
-
-## Gap 2: Full Bot Runtime Entrypoint
+## Gap 1: Full Bot Runtime Entrypoint
 
 Current status:
 
@@ -78,8 +73,7 @@ Required work:
 
 ## Recommended Closure Order
 
-1. startup reconciliation + heartbeat schedule integration
-2. production runtime binary and deployment playbook
+1. production runtime binary and deployment playbook
 
 ## Exit Criteria For "Deployment Ready"
 

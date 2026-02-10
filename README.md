@@ -23,7 +23,8 @@ Crab is a Rust harness for running coding agents (Claude Code, Codex CLI, OpenCo
   - `WS17-T1` complete: runtime config surface for rotation/heartbeat policy.
   - `WS17-T2` complete: token accounting propagation from normalized usage payloads.
   - `WS17-T3` complete: post-run rotation trigger wiring + owner-only `/compact confirm` and `/reset confirm`.
-  - `WS17-T4` and `WS17-T5` pending.
+  - `WS17-T4` complete: startup reconciliation on boot + deterministic heartbeat tick integration in app maintenance runtime.
+  - `WS17-T5` pending.
 
 ## Docs
 

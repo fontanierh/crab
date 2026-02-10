@@ -97,10 +97,14 @@ impl SessionLaneQueues {
 
     pub fn queued_count(&self, logical_session_id: &str) -> CrabResult<usize> {
         validate_session_id(logical_session_id)?;
-        Ok(self
-            .queues
+        Ok(self.queued_count_unchecked(logical_session_id))
+    }
+
+    #[must_use]
+    pub fn queued_count_unchecked(&self, logical_session_id: &str) -> usize {
+        self.queues
             .get(logical_session_id)
-            .map_or(0, std::collections::VecDeque::len))
+            .map_or(0, std::collections::VecDeque::len)
     }
 
     #[must_use]
@@ -296,6 +300,11 @@ impl LaneScheduler {
 
     pub fn queued_count(&self, logical_session_id: &str) -> CrabResult<usize> {
         self.queues.queued_count(logical_session_id)
+    }
+
+    #[must_use]
+    pub fn queued_count_unchecked(&self, logical_session_id: &str) -> usize {
+        self.queues.queued_count_unchecked(logical_session_id)
     }
 
     #[must_use]
@@ -570,6 +579,7 @@ mod tests {
                 ..
             }
         ));
+        assert_eq!(lanes.queued_count_unchecked("\n"), 0);
     }
 
     #[test]
@@ -608,6 +618,7 @@ mod tests {
                 .expect("missing lane count should succeed"),
             0
         );
+        assert_eq!(lanes.queued_count_unchecked("discord:channel:a"), 0);
 
         lanes
             .enqueue("discord:channel:a", run("a-1"))
@@ -623,6 +634,7 @@ mod tests {
                 .expect("lane a count should succeed"),
             1
         );
+        assert_eq!(lanes.queued_count_unchecked("discord:channel:a"), 1);
 
         let _ = lanes
             .dequeue("discord:channel:a")
@@ -750,6 +762,7 @@ mod tests {
                 .expect("missing lane count should succeed"),
             0
         );
+        assert_eq!(scheduler.queued_count_unchecked("discord:channel:a"), 0);
         assert_eq!(scheduler.total_queued_count(), 0);
 
         scheduler
@@ -764,6 +777,7 @@ mod tests {
                 .expect("lane a count should succeed"),
             1
         );
+        assert_eq!(scheduler.queued_count_unchecked("discord:channel:a"), 1);
         assert_eq!(scheduler.total_queued_count(), 2);
 
         let _ = scheduler

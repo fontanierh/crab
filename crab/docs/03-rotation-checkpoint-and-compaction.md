@@ -149,5 +149,4 @@ Implemented:
 
 Still pending:
 
-- production runtime loop integration for startup reconciliation + heartbeat scheduling
-  (tracked in `crab/docs/08-deployment-readiness-gaps.md`)
+- production Discord runtime binary wiring/deployment entrypoint (tracked in `crab/docs/08-deployment-readiness-gaps.md`)

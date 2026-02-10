@@ -2,7 +2,10 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use crab_backends::{CodexAppServerProcess, CodexManager, OpenCodeManager, OpenCodeServerProcess};
-use crab_core::{config::RotationPolicyConfig, CrabError, CrabResult, RuntimeConfig};
+use crab_core::{
+    config::{HeartbeatConfig, RotationPolicyConfig, StartupReconciliationConfig},
+    CrabError, CrabResult, RuntimeConfig,
+};
 use crab_discord::{GatewayIngress, IdempotentDeliveryLedger};
 use crab_scheduler::LaneScheduler;
 use crab_store::{CheckpointStore, EventStore, OutboundRecordStore, RunStore, SessionStore};
@@ -53,6 +56,8 @@ where
 {
     pub startup: AppStartupOutcome,
     pub rotation_policy: RotationPolicyConfig,
+    pub startup_reconciliation_policy: StartupReconciliationConfig,
+    pub heartbeat_policy: HeartbeatConfig,
     pub state_stores: AppStateStores,
     pub scheduler: LaneScheduler,
     pub gateway_ingress: GatewayIngress,
@@ -107,6 +112,8 @@ where
     Ok(AppComposition {
         startup,
         rotation_policy: config.rotation,
+        startup_reconciliation_policy: config.startup_reconciliation,
+        heartbeat_policy: config.heartbeat,
         state_stores,
         scheduler,
         gateway_ingress,
