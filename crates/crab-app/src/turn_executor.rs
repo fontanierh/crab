@@ -5,7 +5,7 @@ use crab_core::{
     CrabError, CrabResult, EventEnvelope, EventKind, EventSource, InferenceProfile, LaneState,
     LogicalSession, PhysicalSession, Run, RunProfileTelemetry, RunStatus, TokenAccounting,
 };
-use crab_discord::{GatewayMessage, RoutingKey};
+use crab_discord::{DeliveryAttempt, GatewayMessage, RoutingKey, ShouldSendDecision};
 use crab_scheduler::QueuedRun;
 
 use crate::AppComposition;
@@ -60,6 +60,15 @@ pub trait TurnExecutorRuntime {
         turn_id: &str,
         turn_context: &str,
     ) -> CrabResult<Vec<BackendEvent>>;
+
+    fn deliver_assistant_output(
+        &mut self,
+        run: &Run,
+        channel_id: &str,
+        message_id: &str,
+        edit_generation: u32,
+        content: &str,
+    ) -> CrabResult<()>;
 }
 
 pub struct TurnExecutor<CP, OP, R>
@@ -179,6 +188,40 @@ where
         ))
     }
 
+    pub fn replay_delivery_for_run(
+        &mut self,
+        logical_session_id: &str,
+        run_id: &str,
+    ) -> CrabResult<usize> {
+        let run = self.load_required_run(logical_session_id, run_id)?;
+        let events = self
+            .composition
+            .state_stores
+            .event_store
+            .replay_run(logical_session_id, run_id)?;
+        let mut rendered_assistant_output = String::new();
+        let mut delivery_edit_generation = 0_u32;
+        let mut delivered_count = 0_usize;
+
+        for event in events {
+            if let Some(delta_text) = extract_event_text_delta(&event) {
+                rendered_assistant_output.push_str(delta_text);
+                let delivered = self.deliver_rendered_assistant_output(
+                    &run,
+                    &rendered_assistant_output,
+                    delivery_edit_generation,
+                    event.emitted_at_epoch_ms,
+                )?;
+                if delivered {
+                    delivered_count += 1;
+                }
+                delivery_edit_generation = delivery_edit_generation.saturating_add(1);
+            }
+        }
+
+        Ok(delivered_count)
+    }
+
     fn persist_enqueued_run(
         &mut self,
         logical_session_id: &str,
@@ -283,8 +326,21 @@ where
             &turn_context,
         )?;
 
+        let mut rendered_assistant_output = String::new();
+        let mut delivery_edit_generation = 0_u32;
         for backend_event in &backend_events {
-            self.append_backend_event(&run, backend_event)?;
+            let emitted_at_epoch_ms = self.runtime.now_epoch_ms()?;
+            self.append_backend_event(&run, backend_event, emitted_at_epoch_ms)?;
+            if let Some(delta_text) = extract_backend_text_delta(backend_event) {
+                rendered_assistant_output.push_str(delta_text);
+                let _ = self.deliver_rendered_assistant_output(
+                    &run,
+                    &rendered_assistant_output,
+                    delivery_edit_generation,
+                    emitted_at_epoch_ms,
+                )?;
+                delivery_edit_generation = delivery_edit_generation.saturating_add(1);
+            }
         }
 
         let final_status = derive_final_status(&backend_events);
@@ -398,7 +454,12 @@ where
         })
     }
 
-    fn append_backend_event(&mut self, run: &Run, backend_event: &BackendEvent) -> CrabResult<()> {
+    fn append_backend_event(
+        &mut self,
+        run: &Run,
+        backend_event: &BackendEvent,
+        emitted_at_epoch_ms: u64,
+    ) -> CrabResult<()> {
         let kind = map_backend_event_kind(backend_event.kind);
         let mut payload = backend_event.payload.clone();
         payload.insert(
@@ -408,8 +469,6 @@ where
         if let Some(state_token) = backend_state_token(backend_event.kind) {
             payload.insert("state".to_string(), state_token.to_string());
         }
-
-        let emitted_at_epoch_ms = self.runtime.now_epoch_ms()?;
         self.append_event(
             run,
             kind,
@@ -417,6 +476,46 @@ where
             payload,
             emitted_at_epoch_ms,
         )
+    }
+
+    fn deliver_rendered_assistant_output(
+        &mut self,
+        run: &Run,
+        rendered_output: &str,
+        edit_generation: u32,
+        delivered_at_epoch_ms: u64,
+    ) -> CrabResult<bool> {
+        if rendered_output.trim().is_empty() {
+            return Ok(false);
+        }
+
+        let channel_id = delivery_channel_id(&run.logical_session_id)?;
+        let message_id = delivery_message_id(&run.id);
+
+        let attempt = DeliveryAttempt {
+            logical_session_id: run.logical_session_id.clone(),
+            run_id: run.id.clone(),
+            channel_id: channel_id.clone(),
+            message_id: message_id.clone(),
+            edit_generation,
+            content: rendered_output.to_string(),
+            delivered_at_epoch_ms,
+        };
+
+        match self.composition.delivery_ledger.should_send(&attempt)? {
+            ShouldSendDecision::SkipDuplicate => return Ok(false),
+            ShouldSendDecision::Send => {}
+        }
+
+        self.runtime.deliver_assistant_output(
+            run,
+            &channel_id,
+            &message_id,
+            edit_generation,
+            rendered_output,
+        )?;
+        let _ = self.composition.delivery_ledger.mark_sent(&attempt)?;
+        Ok(true)
     }
 
     fn append_run_state_event(
@@ -549,9 +648,66 @@ fn backend_state_token(kind: BackendEventKind) -> Option<&'static str> {
     }
 }
 
+fn extract_backend_text_delta(event: &BackendEvent) -> Option<&str> {
+    if event.kind != BackendEventKind::TextDelta {
+        return None;
+    }
+    event
+        .payload
+        .get("text")
+        .or_else(|| event.payload.get("delta"))
+        .map(String::as_str)
+}
+
+fn extract_event_text_delta(event: &EventEnvelope) -> Option<&str> {
+    if event.kind != EventKind::TextDelta {
+        return None;
+    }
+    event
+        .payload
+        .get("text")
+        .or_else(|| event.payload.get("delta"))
+        .map(String::as_str)
+}
+
+fn delivery_channel_id(logical_session_id: &str) -> CrabResult<String> {
+    let mut parts = logical_session_id.split(':');
+    let scheme = parts.next();
+    let conversation_kind = parts.next();
+    let provider_scoped_id = parts.next();
+    let extra = parts.next();
+
+    if scheme != Some("discord")
+        || !matches!(conversation_kind, Some("channel" | "thread" | "dm"))
+        || extra.is_some()
+    {
+        return Err(CrabError::InvariantViolation {
+            context: "turn_executor_delivery_target",
+            message: format!("unsupported logical_session_id shape: {logical_session_id}"),
+        });
+    }
+
+    let provider_scoped_id = provider_scoped_id.ok_or_else(|| CrabError::InvariantViolation {
+        context: "turn_executor_delivery_target",
+        message: format!("unsupported logical_session_id shape: {logical_session_id}"),
+    })?;
+    let trimmed = provider_scoped_id.trim();
+    if trimmed.is_empty() {
+        return Err(CrabError::InvariantViolation {
+            context: "turn_executor_delivery_target",
+            message: format!("unsupported logical_session_id shape: {logical_session_id}"),
+        });
+    }
+    Ok(trimmed.to_string())
+}
+
+fn delivery_message_id(run_id: &str) -> String {
+    format!("delivery:{run_id}:chunk:0")
+}
+
 #[cfg(test)]
 mod tests {
-    use std::collections::VecDeque;
+    use std::collections::{BTreeMap, VecDeque};
     use std::fs;
     use std::path::{Path, PathBuf};
 
@@ -576,9 +732,12 @@ mod tests {
         ensure_session_results: VecDeque<CrabResult<crab_core::PhysicalSession>>,
         build_context_results: VecDeque<CrabResult<String>>,
         execute_turn_results: VecDeque<CrabResult<Vec<crab_backends::BackendEvent>>>,
+        deliver_results: VecDeque<CrabResult<()>>,
         ensure_session_sabotage_path: Option<PathBuf>,
+        deliver_sabotage_path: Option<PathBuf>,
         now_epoch_sabotage: Option<(usize, PathBuf)>,
         now_epoch_call_count: usize,
+        delivered_outputs: Vec<(String, String, String, u32, String)>,
         steps: Vec<String>,
     }
 
@@ -601,9 +760,12 @@ mod tests {
                 ensure_session_results: VecDeque::from(vec![Ok(session)]),
                 build_context_results: VecDeque::from(vec![Ok("context".to_string())]),
                 execute_turn_results: VecDeque::from(vec![Ok(backend_events)]),
+                deliver_results: VecDeque::new(),
                 ensure_session_sabotage_path: None,
+                deliver_sabotage_path: None,
                 now_epoch_sabotage: None,
                 now_epoch_call_count: 0,
+                delivered_outputs: Vec::new(),
                 steps: Vec::new(),
             }
         }
@@ -615,6 +777,16 @@ mod tests {
 
         fn with_now_epoch_sabotage(mut self, call_index: usize, path: PathBuf) -> Self {
             self.now_epoch_sabotage = Some((call_index, path));
+            self
+        }
+
+        fn with_delivery_results(mut self, results: Vec<CrabResult<()>>) -> Self {
+            self.deliver_results = VecDeque::from(results);
+            self
+        }
+
+        fn with_delivery_sabotage_path(mut self, path: PathBuf) -> Self {
+            self.deliver_sabotage_path = Some(path);
             self
         }
 
@@ -704,6 +876,31 @@ mod tests {
                 "turn_executor_test_execute_turn",
             )
         }
+
+        fn deliver_assistant_output(
+            &mut self,
+            run: &crab_core::Run,
+            channel_id: &str,
+            message_id: &str,
+            edit_generation: u32,
+            content: &str,
+        ) -> CrabResult<()> {
+            self.steps.push("deliver_assistant_output".to_string());
+            self.delivered_outputs.push((
+                run.logical_session_id.clone(),
+                channel_id.to_string(),
+                message_id.to_string(),
+                edit_generation,
+                content.to_string(),
+            ));
+            if let Some(path) = self.deliver_sabotage_path.take() {
+                replace_path_with_directory(&path);
+            }
+            match self.deliver_results.pop_front() {
+                Some(result) => result,
+                None => Ok(()),
+            }
+        }
     }
 
     fn sample_profile_telemetry() -> RunProfileTelemetry {
@@ -735,6 +932,20 @@ mod tests {
             thread_id: None,
             content: "ship ws15-t2".to_string(),
             conversation_kind: GatewayConversationKind::GuildChannel,
+        }
+    }
+
+    fn delivery_run(logical_session_id: &str, run_id: &str) -> crab_core::Run {
+        crab_core::Run {
+            id: run_id.to_string(),
+            logical_session_id: logical_session_id.to_string(),
+            physical_session_id: Some("physical-1".to_string()),
+            status: RunStatus::Running,
+            user_input: "ship ws15-t4".to_string(),
+            profile: sample_profile_telemetry(),
+            queued_at_epoch_ms: 1,
+            started_at_epoch_ms: Some(2),
+            completed_at_epoch_ms: None,
         }
     }
 
@@ -811,6 +1022,13 @@ mod tests {
     fn event_log_path(state_root: &Path, logical_session_id: &str, run_id: &str) -> PathBuf {
         state_root
             .join("events")
+            .join(hex_encode(logical_session_id.as_bytes()))
+            .join(format!("{}.jsonl", hex_encode(run_id.as_bytes())))
+    }
+
+    fn outbound_log_path(state_root: &Path, logical_session_id: &str, run_id: &str) -> PathBuf {
+        state_root
+            .join("outbound")
             .join(hex_encode(logical_session_id.as_bytes()))
             .join(format!("{}.jsonl", hex_encode(run_id.as_bytes())))
     }
@@ -928,14 +1146,40 @@ mod tests {
             Some("physical-1".to_string())
         );
 
+        let outbound_records = executor
+            .composition()
+            .state_stores
+            .outbound_record_store
+            .list_run_records("discord:channel:777", "run:discord:channel:777:m-1")
+            .expect("outbound record list should succeed");
+        assert_eq!(outbound_records.len(), 1);
+        assert_eq!(outbound_records[0].channel_id, "777");
         assert_eq!(
-            executor.runtime_mut().steps,
+            outbound_records[0].message_id,
+            "delivery:run:discord:channel:777:m-1:chunk:0"
+        );
+        assert_eq!(outbound_records[0].edit_generation, 0);
+
+        let runtime = executor.runtime_mut();
+        assert_eq!(
+            runtime.steps,
             vec![
                 "resolve_run_profile".to_string(),
                 "ensure_physical_session".to_string(),
                 "build_turn_context".to_string(),
                 "execute_backend_turn".to_string(),
+                "deliver_assistant_output".to_string(),
             ]
+        );
+        assert_eq!(
+            runtime.delivered_outputs,
+            vec![(
+                "discord:channel:777".to_string(),
+                "777".to_string(),
+                "delivery:run:discord:channel:777:m-1:chunk:0".to_string(),
+                0,
+                "hello".to_string(),
+            )]
         );
     }
 
@@ -1692,9 +1936,412 @@ mod tests {
     }
 
     #[test]
+    fn replay_delivery_for_run_reports_missing_run() {
+        let workspace = TempWorkspace::new("turn-executor", "replay-missing-run");
+        let runtime = FakeRuntime::with_backend_events(Vec::new(), &[]);
+        let mut executor = build_executor(&workspace, runtime, 8);
+
+        let error = executor
+            .replay_delivery_for_run("discord:channel:777", "missing")
+            .expect_err("replay should fail for missing runs");
+        assert_eq!(
+            error,
+            CrabError::InvariantViolation {
+                context: "turn_executor_run_lookup",
+                message: "run discord:channel:777/missing not found".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn replay_delivery_for_run_propagates_event_replay_errors() {
+        let workspace = TempWorkspace::new("turn-executor", "replay-event-io");
+        let runtime = FakeRuntime::with_backend_events(Vec::new(), &[1]);
+        let mut executor = build_executor(&workspace, runtime, 8);
+        executor
+            .enqueue_gateway_message(gateway_message("m-replay-event-io"))
+            .expect("enqueue should succeed");
+        let state_root = state_root(&workspace);
+        let log_path = event_log_path(
+            &state_root,
+            "discord:channel:777",
+            "run:discord:channel:777:m-replay-event-io",
+        );
+        replace_path_with_directory(&log_path);
+
+        let error = executor
+            .replay_delivery_for_run(
+                "discord:channel:777",
+                "run:discord:channel:777:m-replay-event-io",
+            )
+            .expect_err("replay should propagate event replay errors");
+        assert!(matches!(
+            error,
+            CrabError::Io {
+                context: "event_replay_read",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn replay_delivery_for_run_delivers_when_no_records_exist() {
+        let workspace = TempWorkspace::new("turn-executor", "replay-deliver-no-records");
+        let runtime = FakeRuntime::with_backend_events(
+            vec![backend_event(
+                1,
+                BackendEventKind::TextDelta,
+                &[("text", "hello")],
+            )],
+            &[1, 2, 3, 4],
+        )
+        .with_delivery_results(vec![Err(CrabError::InvariantViolation {
+            context: "deliver",
+            message: "network down".to_string(),
+        })]);
+        let mut executor = build_executor(&workspace, runtime, 8);
+        let error = executor
+            .process_gateway_message(gateway_message("m-replay-no-records"))
+            .expect_err("initial delivery failure should bubble up");
+        assert_eq!(
+            error,
+            CrabError::InvariantViolation {
+                context: "deliver",
+                message: "network down".to_string(),
+            }
+        );
+
+        let replay_runtime = FakeRuntime::with_backend_events(Vec::new(), &[]);
+        let mut replay_executor = build_executor(&workspace, replay_runtime, 8);
+        let delivered = replay_executor
+            .replay_delivery_for_run(
+                "discord:channel:777",
+                "run:discord:channel:777:m-replay-no-records",
+            )
+            .expect("replay should redeliver the missing output");
+        assert_eq!(delivered, 1);
+        assert_eq!(replay_executor.runtime_mut().delivered_outputs.len(), 1);
+    }
+
+    #[test]
+    fn replay_delivery_for_run_propagates_delivery_errors() {
+        let workspace = TempWorkspace::new("turn-executor", "replay-deliver-error");
+        let runtime = FakeRuntime::with_backend_events(
+            vec![backend_event(
+                1,
+                BackendEventKind::TextDelta,
+                &[("text", "hello")],
+            )],
+            &[1, 2, 3, 4],
+        )
+        .with_delivery_results(vec![Err(CrabError::InvariantViolation {
+            context: "deliver",
+            message: "initial send failed".to_string(),
+        })]);
+        let mut executor = build_executor(&workspace, runtime, 8);
+        let _ = executor
+            .process_gateway_message(gateway_message("m-replay-deliver-error"))
+            .expect_err("initial delivery failure should bubble up");
+
+        let replay_runtime = FakeRuntime::with_backend_events(Vec::new(), &[])
+            .with_delivery_results(vec![Err(CrabError::InvariantViolation {
+                context: "deliver",
+                message: "still down".to_string(),
+            })]);
+        let mut replay_executor = build_executor(&workspace, replay_runtime, 8);
+        let replay_error = replay_executor
+            .replay_delivery_for_run(
+                "discord:channel:777",
+                "run:discord:channel:777:m-replay-deliver-error",
+            )
+            .expect_err("replay should propagate delivery failures");
+        assert_eq!(
+            replay_error,
+            CrabError::InvariantViolation {
+                context: "deliver",
+                message: "still down".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn dispatch_propagates_backend_event_append_errors() {
+        let workspace = TempWorkspace::new("turn-executor", "dispatch-backend-event-append-io");
+        let state_root = state_root(&workspace);
+        let run_id = "run:discord:channel:777:m-backend-append-io";
+        let blocked_log_path = event_log_path(&state_root, "discord:channel:777", run_id);
+        let runtime = FakeRuntime::with_backend_events(
+            vec![backend_event(
+                1,
+                BackendEventKind::TextDelta,
+                &[("text", "hello")],
+            )],
+            &[1, 2, 3, 4],
+        )
+        .with_ensure_session_sabotage_path(blocked_log_path);
+        let mut executor = build_executor(&workspace, runtime, 8);
+
+        let error = executor
+            .process_gateway_message(gateway_message("m-backend-append-io"))
+            .expect_err("backend event append failures should bubble up");
+        assert!(matches!(
+            error,
+            CrabError::Io {
+                context: "event_replay_read",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn deliver_rendered_assistant_output_skips_empty_or_duplicate_attempts() {
+        let workspace = TempWorkspace::new("turn-executor", "delivery-skip-cases");
+        let runtime = FakeRuntime::with_backend_events(Vec::new(), &[]);
+        let mut executor = build_executor(&workspace, runtime, 8);
+        let run = delivery_run("discord:channel:777", "run-delivery-skip");
+
+        let skipped_empty = executor
+            .deliver_rendered_assistant_output(&run, "   ", 0, 1)
+            .expect("empty output should be skipped");
+        assert!(!skipped_empty);
+
+        let first = executor
+            .deliver_rendered_assistant_output(&run, "hello", 0, 2)
+            .expect("first delivery should send");
+        let duplicate = executor
+            .deliver_rendered_assistant_output(&run, "hello", 0, 3)
+            .expect("duplicate should be skipped");
+        assert!(first);
+        assert!(!duplicate);
+        assert_eq!(executor.runtime_mut().delivered_outputs.len(), 1);
+    }
+
+    #[test]
+    fn deliver_rendered_assistant_output_propagates_should_send_errors() {
+        let workspace = TempWorkspace::new("turn-executor", "delivery-should-send-error");
+        let state_root = state_root(&workspace);
+        let run_id = "run-delivery-should-send-error";
+        let should_send_error_path = outbound_log_path(&state_root, "discord:channel:777", run_id);
+        replace_path_with_directory(&should_send_error_path);
+
+        let runtime = FakeRuntime::with_backend_events(Vec::new(), &[]);
+        let mut executor = build_executor(&workspace, runtime, 8);
+        let run = delivery_run("discord:channel:777", run_id);
+        let should_send_error = executor
+            .deliver_rendered_assistant_output(&run, "hello", 0, 1)
+            .expect_err("should_send read failures should propagate");
+        assert!(matches!(
+            should_send_error,
+            CrabError::Io {
+                context: "outbound_record_read",
+                ..
+            }
+        ));
+        assert!(executor.runtime_mut().delivered_outputs.is_empty());
+    }
+
+    #[test]
+    fn deliver_rendered_assistant_output_propagates_target_and_mark_sent_errors() {
+        let workspace = TempWorkspace::new("turn-executor", "delivery-error-paths");
+        let state_root = state_root(&workspace);
+        let mark_sent_error_path = outbound_log_path(
+            &state_root,
+            "discord:channel:777",
+            "run-delivery-mark-sent-error",
+        );
+        let runtime = FakeRuntime::with_backend_events(Vec::new(), &[])
+            .with_delivery_sabotage_path(mark_sent_error_path);
+        let mut executor = build_executor(&workspace, runtime, 8);
+
+        let invalid_target_run = delivery_run("discord:unknown:777", "run-delivery-invalid-target");
+        let target_error = executor
+            .deliver_rendered_assistant_output(&invalid_target_run, "hello", 0, 1)
+            .expect_err("invalid logical session shape should fail delivery");
+        assert!(matches!(
+            target_error,
+            CrabError::InvariantViolation {
+                context: "turn_executor_delivery_target",
+                ..
+            }
+        ));
+
+        let mark_sent_error_run =
+            delivery_run("discord:channel:777", "run-delivery-mark-sent-error");
+        let mark_sent_error = executor
+            .deliver_rendered_assistant_output(&mark_sent_error_run, "hello", 0, 2)
+            .expect_err("mark_sent write failures should propagate");
+        assert!(matches!(
+            mark_sent_error,
+            CrabError::Io {
+                context: "outbound_record_read",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn replay_delivery_for_run_skips_already_recorded_stream_generations() {
+        let workspace = TempWorkspace::new("turn-executor", "replay-delivery-skip-duplicates");
+        let runtime = FakeRuntime::with_backend_events(
+            vec![
+                backend_event(1, BackendEventKind::TextDelta, &[("text", "hel")]),
+                backend_event(2, BackendEventKind::TextDelta, &[("text", "lo")]),
+                backend_event(3, BackendEventKind::TurnCompleted, &[("finish", "done")]),
+            ],
+            &[1, 2, 3, 4, 5, 6],
+        );
+        let mut executor = build_executor(&workspace, runtime, 8);
+        executor
+            .process_gateway_message(gateway_message("m-replay-skip"))
+            .expect("initial dispatch should succeed")
+            .expect("run should dispatch");
+
+        let replay_runtime = FakeRuntime::with_backend_events(Vec::new(), &[]);
+        let mut replay_executor = build_executor(&workspace, replay_runtime, 8);
+        let delivered = replay_executor
+            .replay_delivery_for_run(
+                "discord:channel:777",
+                "run:discord:channel:777:m-replay-skip",
+            )
+            .expect("replay should succeed");
+        assert_eq!(delivered, 0);
+        assert!(replay_executor.runtime_mut().delivered_outputs.is_empty());
+    }
+
+    #[test]
+    fn replay_delivery_for_run_redelivers_missing_generation_after_delivery_failure() {
+        let workspace = TempWorkspace::new("turn-executor", "replay-delivery-redeliver-missing");
+        let mut runtime = FakeRuntime::with_backend_events(
+            vec![
+                backend_event(1, BackendEventKind::TextDelta, &[("text", "hel")]),
+                backend_event(2, BackendEventKind::TextDelta, &[("text", "lo")]),
+            ],
+            &[1, 2, 3, 4, 5],
+        )
+        .with_delivery_results(vec![
+            Ok(()),
+            Err(CrabError::InvariantViolation {
+                context: "deliver",
+                message: "post-edit failed".to_string(),
+            }),
+        ]);
+        let mut executor = build_executor(&workspace, runtime.clone(), 8);
+        let error = executor
+            .process_gateway_message(gateway_message("m-replay-redeliver"))
+            .expect_err("second delivery failure should bubble up");
+        assert_eq!(
+            error,
+            CrabError::InvariantViolation {
+                context: "deliver",
+                message: "post-edit failed".to_string(),
+            }
+        );
+
+        let first_attempt_records = executor
+            .composition()
+            .state_stores
+            .outbound_record_store
+            .list_run_records(
+                "discord:channel:777",
+                "run:discord:channel:777:m-replay-redeliver",
+            )
+            .expect("outbound records should be listable");
+        assert_eq!(first_attempt_records.len(), 1);
+        assert_eq!(first_attempt_records[0].edit_generation, 0);
+
+        runtime.deliver_results = VecDeque::new();
+        runtime.delivered_outputs.clear();
+        let mut replay_executor = build_executor(&workspace, runtime, 8);
+        let delivered = replay_executor
+            .replay_delivery_for_run(
+                "discord:channel:777",
+                "run:discord:channel:777:m-replay-redeliver",
+            )
+            .expect("replay should redeliver missing generation");
+        assert_eq!(delivered, 1);
+        assert_eq!(
+            replay_executor.runtime_mut().delivered_outputs,
+            vec![(
+                "discord:channel:777".to_string(),
+                "777".to_string(),
+                "delivery:run:discord:channel:777:m-replay-redeliver:chunk:0".to_string(),
+                1,
+                "hello".to_string(),
+            )]
+        );
+    }
+
+    #[test]
     fn helper_paths_cover_missing_scripts_and_status_tokens() {
         assert_eq!(super::run_status_token(RunStatus::Queued), "queued");
         assert_eq!(super::run_status_token(RunStatus::Running), "running");
+        assert_eq!(super::run_status_token(RunStatus::Succeeded), "succeeded");
+        assert_eq!(super::run_status_token(RunStatus::Failed), "failed");
+        assert_eq!(super::run_status_token(RunStatus::Cancelled), "cancelled");
+        assert_eq!(
+            super::delivery_message_id("run:discord:channel:777:msg"),
+            "delivery:run:discord:channel:777:msg:chunk:0"
+        );
+        assert_eq!(
+            super::delivery_channel_id("discord:channel:777"),
+            Ok("777".to_string())
+        );
+        assert_eq!(
+            super::delivery_channel_id("discord:thread:888"),
+            Ok("888".to_string())
+        );
+        assert_eq!(
+            super::delivery_channel_id("discord:dm:999"),
+            Ok("999".to_string())
+        );
+        assert!(matches!(
+            super::delivery_channel_id("discord:unknown:777"),
+            Err(CrabError::InvariantViolation {
+                context: "turn_executor_delivery_target",
+                ..
+            })
+        ));
+        assert!(matches!(
+            super::delivery_channel_id("discord:channel:"),
+            Err(CrabError::InvariantViolation {
+                context: "turn_executor_delivery_target",
+                ..
+            })
+        ));
+        assert!(matches!(
+            super::delivery_channel_id("discord:channel"),
+            Err(CrabError::InvariantViolation {
+                context: "turn_executor_delivery_target",
+                ..
+            })
+        ));
+        let delta_backend = backend_event(1, BackendEventKind::TextDelta, &[("delta", "x")]);
+        assert_eq!(super::extract_backend_text_delta(&delta_backend), Some("x"));
+        let non_delta_backend = backend_event(2, BackendEventKind::ToolCall, &[("tool", "sh")]);
+        assert_eq!(super::extract_backend_text_delta(&non_delta_backend), None);
+        let delta_event = crab_core::EventEnvelope {
+            event_id: "evt-1".to_string(),
+            run_id: "run-1".to_string(),
+            turn_id: Some("turn-1".to_string()),
+            lane_id: Some("discord:channel:1".to_string()),
+            logical_session_id: "discord:channel:1".to_string(),
+            physical_session_id: None,
+            backend: Some(BackendKind::Codex),
+            resolved_model: Some("gpt-5-codex".to_string()),
+            resolved_reasoning_level: Some("medium".to_string()),
+            profile_source: Some("global_default".to_string()),
+            sequence: 1,
+            emitted_at_epoch_ms: 1,
+            source: crab_core::EventSource::Backend,
+            kind: EventKind::TextDelta,
+            payload: BTreeMap::from([("delta".to_string(), "y".to_string())]),
+            profile: Some(sample_profile_telemetry()),
+            idempotency_key: Some("event-1".to_string()),
+        };
+        assert_eq!(super::extract_event_text_delta(&delta_event), Some("y"));
+        let mut non_delta_event = delta_event.clone();
+        non_delta_event.kind = EventKind::ToolCall;
+        assert_eq!(super::extract_event_text_delta(&non_delta_event), None);
 
         let workspace_missing_profile =
             TempWorkspace::new("turn-executor", "missing-profile-script");
