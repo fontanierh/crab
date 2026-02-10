@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
@@ -5,8 +6,44 @@ use crab_core::{BackendKind, CrabError, CrabResult, PhysicalSession};
 use futures::stream;
 
 use crate::{
-    ensure_non_empty_field, Backend, BackendEvent, BackendEventStream, SessionContext, TurnInput,
+    ensure_non_empty_field, Backend, BackendEvent, BackendEventKind, BackendEventStream,
+    SessionContext, TurnInput,
 };
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ClaudeRawEvent {
+    TextDelta {
+        text: String,
+    },
+    ToolCall {
+        tool_call_id: String,
+        tool_name: String,
+        input_json: String,
+    },
+    ToolResult {
+        tool_call_id: String,
+        tool_name: String,
+        output: String,
+        is_error: bool,
+    },
+    Usage {
+        input_tokens: u64,
+        output_tokens: u64,
+        total_tokens: u64,
+    },
+    RunNote {
+        note: String,
+    },
+    TurnCompleted {
+        stop_reason: String,
+    },
+    TurnInterrupted {
+        reason: String,
+    },
+    Error {
+        message: String,
+    },
+}
 
 pub trait ClaudeProcess: Send + Sync {
     fn create_session(&self, context: &SessionContext) -> CrabResult<String>;
@@ -15,7 +52,7 @@ pub trait ClaudeProcess: Send + Sync {
         &self,
         backend_session_id: &str,
         input: &TurnInput,
-    ) -> CrabResult<Vec<BackendEvent>>;
+    ) -> CrabResult<Vec<ClaudeRawEvent>>;
 
     fn interrupt_turn(&self, backend_session_id: &str, turn_id: &str) -> CrabResult<()>;
 
@@ -60,9 +97,10 @@ impl<P: ClaudeProcess> Backend for ClaudeBackend<P> {
         input: TurnInput,
     ) -> CrabResult<BackendEventStream> {
         ensure_claude_session("claude_backend_send_turn", session)?;
-        let events = self
+        let raw_events = self
             .process
             .send_turn(&session.backend_session_id, &input)?;
+        let events = normalize_claude_events(raw_events)?;
         session.last_turn_id = Some(input.turn_id);
         Ok(Box::pin(stream::iter(events)))
     }
@@ -77,6 +115,127 @@ impl<P: ClaudeProcess> Backend for ClaudeBackend<P> {
         ensure_claude_session("claude_backend_end_session", session)?;
         self.process.end_session(&session.backend_session_id)
     }
+}
+
+fn normalize_claude_events(raw_events: Vec<ClaudeRawEvent>) -> CrabResult<Vec<BackendEvent>> {
+    let mut normalized = Vec::with_capacity(raw_events.len());
+    for (index, raw_event) in raw_events.into_iter().enumerate() {
+        let sequence = sequence_number(index);
+        normalized.push(normalize_claude_event(sequence, raw_event)?);
+    }
+    Ok(normalized)
+}
+
+fn sequence_number(index: usize) -> u64 {
+    index.saturating_add(1) as u64
+}
+
+fn normalize_claude_event(sequence: u64, raw_event: ClaudeRawEvent) -> CrabResult<BackendEvent> {
+    let (kind, payload) = match raw_event {
+        ClaudeRawEvent::TextDelta { text } => {
+            ensure_non_empty_field("claude_event_text_delta", "text", &text)?;
+            (
+                BackendEventKind::TextDelta,
+                BTreeMap::from([("delta".to_string(), text)]),
+            )
+        }
+        ClaudeRawEvent::ToolCall {
+            tool_call_id,
+            tool_name,
+            input_json,
+        } => {
+            ensure_non_empty_field("claude_event_tool_call", "tool_call_id", &tool_call_id)?;
+            ensure_non_empty_field("claude_event_tool_call", "tool_name", &tool_name)?;
+            (
+                BackendEventKind::ToolCall,
+                BTreeMap::from([
+                    ("tool_call_id".to_string(), tool_call_id),
+                    ("tool_name".to_string(), tool_name),
+                    ("input_json".to_string(), input_json),
+                ]),
+            )
+        }
+        ClaudeRawEvent::ToolResult {
+            tool_call_id,
+            tool_name,
+            output,
+            is_error,
+        } => {
+            ensure_non_empty_field("claude_event_tool_result", "tool_call_id", &tool_call_id)?;
+            ensure_non_empty_field("claude_event_tool_result", "tool_name", &tool_name)?;
+            (
+                BackendEventKind::ToolResult,
+                BTreeMap::from([
+                    ("tool_call_id".to_string(), tool_call_id),
+                    ("tool_name".to_string(), tool_name),
+                    ("output".to_string(), output),
+                    ("is_error".to_string(), is_error.to_string()),
+                ]),
+            )
+        }
+        ClaudeRawEvent::Usage {
+            input_tokens,
+            output_tokens,
+            total_tokens,
+        } => {
+            let minimum_total = input_tokens.checked_add(output_tokens).ok_or_else(|| {
+                CrabError::InvariantViolation {
+                    context: "claude_event_usage",
+                    message: "input/output token addition overflow".to_string(),
+                }
+            })?;
+            if total_tokens < minimum_total {
+                return Err(CrabError::InvariantViolation {
+                    context: "claude_event_usage",
+                    message: format!(
+                        "total_tokens {total_tokens} is lower than input+output {minimum_total}"
+                    ),
+                });
+            }
+            (
+                BackendEventKind::RunNote,
+                BTreeMap::from([
+                    ("usage_input_tokens".to_string(), input_tokens.to_string()),
+                    ("usage_output_tokens".to_string(), output_tokens.to_string()),
+                    ("usage_total_tokens".to_string(), total_tokens.to_string()),
+                ]),
+            )
+        }
+        ClaudeRawEvent::RunNote { note } => {
+            ensure_non_empty_field("claude_event_run_note", "note", &note)?;
+            (
+                BackendEventKind::RunNote,
+                BTreeMap::from([("note".to_string(), note)]),
+            )
+        }
+        ClaudeRawEvent::TurnCompleted { stop_reason } => {
+            ensure_non_empty_field("claude_event_turn_completed", "stop_reason", &stop_reason)?;
+            (
+                BackendEventKind::TurnCompleted,
+                BTreeMap::from([("stop_reason".to_string(), stop_reason)]),
+            )
+        }
+        ClaudeRawEvent::TurnInterrupted { reason } => {
+            ensure_non_empty_field("claude_event_turn_interrupted", "reason", &reason)?;
+            (
+                BackendEventKind::TurnInterrupted,
+                BTreeMap::from([("reason".to_string(), reason)]),
+            )
+        }
+        ClaudeRawEvent::Error { message } => {
+            ensure_non_empty_field("claude_event_error", "message", &message)?;
+            (
+                BackendEventKind::Error,
+                BTreeMap::from([("message".to_string(), message)]),
+            )
+        }
+    };
+
+    Ok(BackendEvent {
+        sequence,
+        kind,
+        payload,
+    })
 }
 
 fn ensure_claude_session(context: &'static str, session: &PhysicalSession) -> CrabResult<()> {
@@ -107,7 +266,7 @@ mod tests {
     use futures::executor::block_on;
     use futures::StreamExt;
 
-    use crate::claude::ClaudeProcess;
+    use crate::claude::{ClaudeProcess, ClaudeRawEvent};
     use crate::{Backend, BackendEvent, BackendEventKind, SessionContext, TurnInput};
 
     use super::ClaudeBackend;
@@ -130,7 +289,7 @@ mod tests {
     #[derive(Debug, Clone)]
     struct FakeProcessState {
         create_session_id: String,
-        send_events: Vec<BackendEvent>,
+        send_events: Vec<ClaudeRawEvent>,
         stats: FakeProcessStats,
         create_error: Option<CrabError>,
         send_error: Option<CrabError>,
@@ -139,7 +298,7 @@ mod tests {
     }
 
     impl FakeProcess {
-        fn new(create_session_id: &str, send_events: Vec<BackendEvent>) -> Self {
+        fn new(create_session_id: &str, send_events: Vec<ClaudeRawEvent>) -> Self {
             Self {
                 state: Arc::new(Mutex::new(FakeProcessState {
                     create_session_id: create_session_id.to_string(),
@@ -192,7 +351,7 @@ mod tests {
             &self,
             backend_session_id: &str,
             _input: &TurnInput,
-        ) -> CrabResult<Vec<BackendEvent>> {
+        ) -> CrabResult<Vec<ClaudeRawEvent>> {
             let mut state = self.state.lock().expect("lock should succeed");
             state.stats.send_calls += 1;
             state.stats.last_send_session_id = Some(backend_session_id.to_string());
@@ -261,21 +420,89 @@ mod tests {
         }
     }
 
-    #[test]
-    fn claude_backend_lifecycle_uses_fixture_streams() {
-        let fixture_events = vec![
+    fn normalized_fixture_events() -> Vec<BackendEvent> {
+        vec![
             BackendEvent {
                 sequence: 1,
                 kind: BackendEventKind::TextDelta,
-                payload: BTreeMap::from([("delta".to_string(), "a".to_string())]),
+                payload: BTreeMap::from([("delta".to_string(), "hello".to_string())]),
             },
             BackendEvent {
                 sequence: 2,
-                kind: BackendEventKind::TextDelta,
-                payload: BTreeMap::from([("delta".to_string(), "b".to_string())]),
+                kind: BackendEventKind::ToolCall,
+                payload: BTreeMap::from([
+                    ("tool_call_id".to_string(), "call-1".to_string()),
+                    ("tool_name".to_string(), "bash".to_string()),
+                    ("input_json".to_string(), "{\"cmd\":\"ls\"}".to_string()),
+                ]),
             },
-        ];
-        let process = FakeProcess::new("resume-1", fixture_events.clone());
+            BackendEvent {
+                sequence: 3,
+                kind: BackendEventKind::ToolResult,
+                payload: BTreeMap::from([
+                    ("tool_call_id".to_string(), "call-1".to_string()),
+                    ("tool_name".to_string(), "bash".to_string()),
+                    ("output".to_string(), "ok".to_string()),
+                    ("is_error".to_string(), "false".to_string()),
+                ]),
+            },
+            BackendEvent {
+                sequence: 4,
+                kind: BackendEventKind::RunNote,
+                payload: BTreeMap::from([
+                    ("usage_input_tokens".to_string(), "7".to_string()),
+                    ("usage_output_tokens".to_string(), "5".to_string()),
+                    ("usage_total_tokens".to_string(), "12".to_string()),
+                ]),
+            },
+            BackendEvent {
+                sequence: 5,
+                kind: BackendEventKind::TurnCompleted,
+                payload: BTreeMap::from([("stop_reason".to_string(), "end_turn".to_string())]),
+            },
+        ]
+    }
+
+    fn fixture_raw_events() -> Vec<ClaudeRawEvent> {
+        vec![
+            ClaudeRawEvent::TextDelta {
+                text: "hello".to_string(),
+            },
+            ClaudeRawEvent::ToolCall {
+                tool_call_id: "call-1".to_string(),
+                tool_name: "bash".to_string(),
+                input_json: "{\"cmd\":\"ls\"}".to_string(),
+            },
+            ClaudeRawEvent::ToolResult {
+                tool_call_id: "call-1".to_string(),
+                tool_name: "bash".to_string(),
+                output: "ok".to_string(),
+                is_error: false,
+            },
+            ClaudeRawEvent::Usage {
+                input_tokens: 7,
+                output_tokens: 5,
+                total_tokens: 12,
+            },
+            ClaudeRawEvent::TurnCompleted {
+                stop_reason: "end_turn".to_string(),
+            },
+        ]
+    }
+
+    fn assert_send_turn_error(raw_event: ClaudeRawEvent, expected_error: CrabError) {
+        let process = FakeProcess::new("resume-1", vec![raw_event]);
+        let backend = ClaudeBackend::new(process);
+        let mut session = claude_session();
+        let err = block_on(backend.send_turn(&mut session, turn_input()))
+            .err()
+            .expect("invalid claude raw event should fail normalization");
+        assert_eq!(err, expected_error);
+    }
+
+    #[test]
+    fn claude_backend_lifecycle_uses_fixture_streams() {
+        let process = FakeProcess::new("resume-1", fixture_raw_events());
         let backend = ClaudeBackend::new(process.clone());
 
         let mut session = block_on(backend.create_session(&session_context()))
@@ -288,7 +515,7 @@ mod tests {
         let stream =
             block_on(backend.send_turn(&mut session, turn_input())).expect("send should succeed");
         let events = block_on(stream.collect::<Vec<_>>());
-        assert_eq!(events, fixture_events);
+        assert_eq!(events, normalized_fixture_events());
         assert_eq!(session.last_turn_id, Some("turn-7".to_string()));
 
         block_on(backend.interrupt_turn(&session, "turn-7")).expect("interrupt should succeed");
@@ -301,6 +528,172 @@ mod tests {
         assert_eq!(stats.end_calls, 1);
         assert_eq!(stats.last_send_session_id, Some("resume-1".to_string()));
         assert_eq!(stats.last_interrupt_turn_id, Some("turn-7".to_string()));
+    }
+
+    #[test]
+    fn claude_event_normalization_snapshot() {
+        let mut fixture_events = fixture_raw_events();
+        fixture_events.insert(
+            4,
+            ClaudeRawEvent::RunNote {
+                note: "checkpoint created".to_string(),
+            },
+        );
+        fixture_events.push(ClaudeRawEvent::TurnInterrupted {
+            reason: "cancelled".to_string(),
+        });
+        fixture_events.push(ClaudeRawEvent::Error {
+            message: "backend failed".to_string(),
+        });
+        let process = FakeProcess::new("resume-1", fixture_events);
+        let backend = ClaudeBackend::new(process);
+        let mut session = claude_session();
+
+        let stream =
+            block_on(backend.send_turn(&mut session, turn_input())).expect("send should succeed");
+        let events = block_on(stream.collect::<Vec<_>>());
+
+        let snapshot = render_snapshot(&events);
+        assert_eq!(
+            snapshot,
+            "1|TextDelta|delta=hello\n\
+2|ToolCall|input_json={\"cmd\":\"ls\"};tool_call_id=call-1;tool_name=bash\n\
+3|ToolResult|is_error=false;output=ok;tool_call_id=call-1;tool_name=bash\n\
+4|RunNote|usage_input_tokens=7;usage_output_tokens=5;usage_total_tokens=12\n\
+5|RunNote|note=checkpoint created\n\
+6|TurnCompleted|stop_reason=end_turn\n\
+7|TurnInterrupted|reason=cancelled\n\
+8|Error|message=backend failed"
+        );
+    }
+
+    fn render_snapshot(events: &[BackendEvent]) -> String {
+        let mut lines = Vec::with_capacity(events.len());
+        for event in events {
+            let payload = event
+                .payload
+                .iter()
+                .map(|(key, value)| format!("{key}={value}"))
+                .collect::<Vec<_>>()
+                .join(";");
+            lines.push(format!("{}|{:?}|{}", event.sequence, event.kind, payload));
+        }
+        lines.join("\n")
+    }
+
+    #[test]
+    fn claude_event_normalization_rejects_invalid_payloads() {
+        let invalid_field_cases = vec![
+            (
+                ClaudeRawEvent::ToolCall {
+                    tool_call_id: " ".to_string(),
+                    tool_name: "bash".to_string(),
+                    input_json: "{}".to_string(),
+                },
+                "claude_event_tool_call",
+                "tool_call_id must not be empty",
+            ),
+            (
+                ClaudeRawEvent::ToolCall {
+                    tool_call_id: "call-1".to_string(),
+                    tool_name: " ".to_string(),
+                    input_json: "{}".to_string(),
+                },
+                "claude_event_tool_call",
+                "tool_name must not be empty",
+            ),
+            (
+                ClaudeRawEvent::ToolResult {
+                    tool_call_id: " ".to_string(),
+                    tool_name: "bash".to_string(),
+                    output: "ok".to_string(),
+                    is_error: false,
+                },
+                "claude_event_tool_result",
+                "tool_call_id must not be empty",
+            ),
+            (
+                ClaudeRawEvent::ToolResult {
+                    tool_call_id: "call-1".to_string(),
+                    tool_name: " ".to_string(),
+                    output: "ok".to_string(),
+                    is_error: false,
+                },
+                "claude_event_tool_result",
+                "tool_name must not be empty",
+            ),
+            (
+                ClaudeRawEvent::RunNote {
+                    note: " ".to_string(),
+                },
+                "claude_event_run_note",
+                "note must not be empty",
+            ),
+            (
+                ClaudeRawEvent::TurnCompleted {
+                    stop_reason: " ".to_string(),
+                },
+                "claude_event_turn_completed",
+                "stop_reason must not be empty",
+            ),
+            (
+                ClaudeRawEvent::TurnInterrupted {
+                    reason: " ".to_string(),
+                },
+                "claude_event_turn_interrupted",
+                "reason must not be empty",
+            ),
+            (
+                ClaudeRawEvent::Error {
+                    message: " ".to_string(),
+                },
+                "claude_event_error",
+                "message must not be empty",
+            ),
+        ];
+        for (event, context, message) in invalid_field_cases {
+            assert_send_turn_error(
+                event,
+                CrabError::InvariantViolation {
+                    context,
+                    message: message.to_string(),
+                },
+            );
+        }
+
+        assert_send_turn_error(
+            ClaudeRawEvent::TextDelta {
+                text: " ".to_string(),
+            },
+            CrabError::InvariantViolation {
+                context: "claude_event_text_delta",
+                message: "text must not be empty".to_string(),
+            },
+        );
+
+        assert_send_turn_error(
+            ClaudeRawEvent::Usage {
+                input_tokens: 10,
+                output_tokens: 5,
+                total_tokens: 12,
+            },
+            CrabError::InvariantViolation {
+                context: "claude_event_usage",
+                message: "total_tokens 12 is lower than input+output 15".to_string(),
+            },
+        );
+
+        assert_send_turn_error(
+            ClaudeRawEvent::Usage {
+                input_tokens: u64::MAX,
+                output_tokens: 1,
+                total_tokens: u64::MAX,
+            },
+            CrabError::InvariantViolation {
+                context: "claude_event_usage",
+                message: "input/output token addition overflow".to_string(),
+            },
+        );
     }
 
     #[test]
