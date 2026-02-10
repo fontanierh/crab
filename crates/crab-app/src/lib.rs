@@ -5,6 +5,7 @@ mod memory_cli;
 mod startup;
 #[cfg(test)]
 mod test_support;
+mod turn_executor;
 
 pub use composition::{
     compose_runtime_with_processes, compose_runtime_with_processes_and_queue_limit,
@@ -12,3 +13,4 @@ pub use composition::{
 };
 pub use memory_cli::{run_memory_get_cli, run_memory_search_cli};
 pub use startup::{initialize_runtime_startup, AppStartupOutcome};
+pub use turn_executor::{DispatchedTurn, QueuedTurn, TurnExecutor, TurnExecutorRuntime};

@@ -127,8 +127,7 @@ fn ensure_state_root(state_root: &Path) -> CrabResult<()> {
 mod tests {
     use std::fs;
 
-    use crab_backends::{CodexAppServerProcess, CodexProcessHandle, OpenCodeServerHandle};
-    use crab_core::{CrabError, CrabResult};
+    use crab_core::CrabError;
     use crab_discord::{
         DeliveryAttempt, GatewayConversationKind, GatewayMessage, MarkSentDecision, RoutingKey,
         ShouldSendDecision,
@@ -139,52 +138,14 @@ mod tests {
         compose_runtime_with_processes, compose_runtime_with_processes_and_queue_limit,
         AppComposition, DEFAULT_LANE_QUEUE_LIMIT,
     };
-    use crate::test_support::{runtime_config_for_workspace_with_lanes, TempWorkspace};
-
-    #[derive(Debug, Clone, Default)]
-    struct FakeCodexProcess;
-
-    impl CodexAppServerProcess for FakeCodexProcess {
-        fn spawn_app_server(&self) -> CrabResult<CodexProcessHandle> {
-            Ok(CodexProcessHandle {
-                process_id: 101,
-                started_at_epoch_ms: 1_739_173_200_000,
-            })
-        }
-
-        fn is_healthy(&self, _handle: &CodexProcessHandle) -> bool {
-            true
-        }
-
-        fn terminate_app_server(&self, _handle: &CodexProcessHandle) -> CrabResult<()> {
-            Ok(())
-        }
-    }
-
-    #[derive(Debug, Clone, Default)]
-    struct FakeOpenCodeProcess;
-
-    impl crab_backends::OpenCodeServerProcess for FakeOpenCodeProcess {
-        fn spawn_server(&self) -> CrabResult<OpenCodeServerHandle> {
-            Ok(OpenCodeServerHandle {
-                process_id: 202,
-                started_at_epoch_ms: 1_739_173_200_001,
-                server_base_url: "http://127.0.0.1:4210".to_string(),
-            })
-        }
-
-        fn is_server_healthy(&self, _handle: &OpenCodeServerHandle) -> bool {
-            true
-        }
-
-        fn terminate_server(&self, _handle: &OpenCodeServerHandle) -> CrabResult<()> {
-            Ok(())
-        }
-    }
+    use crate::test_support::{
+        runtime_config_for_workspace_with_lanes, FakeCodexProcess, FakeOpenCodeProcess,
+        TempWorkspace,
+    };
 
     fn compose_default(
         workspace: &TempWorkspace,
-    ) -> CrabResult<AppComposition<FakeCodexProcess, FakeOpenCodeProcess>> {
+    ) -> crab_core::CrabResult<AppComposition<FakeCodexProcess, FakeOpenCodeProcess>> {
         let config = runtime_config_for_workspace_with_lanes(&workspace.path, 3);
         compose_runtime_with_processes(&config, "999", FakeCodexProcess, FakeOpenCodeProcess)
     }
