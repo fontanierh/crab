@@ -1484,6 +1484,40 @@ mod tests {
                 reason: "must be a positive integer",
             }
         );
+
+        let invalid_retry_backoff = ConnectorConfig::from_map_and_args(
+            &values(&[
+                ("CRAB_DISCORD_TOKEN", "token"),
+                ("CRAB_CONNECTOR_RETRY_BACKOFF_MS", "x"),
+            ]),
+            &[],
+        )
+        .expect_err("invalid retry backoff should fail");
+        assert_eq!(
+            invalid_retry_backoff,
+            CrabError::InvalidConfig {
+                key: "CRAB_CONNECTOR_RETRY_BACKOFF_MS",
+                value: "x".to_string(),
+                reason: "must be a positive integer",
+            }
+        );
+
+        let invalid_max_backoff = ConnectorConfig::from_map_and_args(
+            &values(&[
+                ("CRAB_DISCORD_TOKEN", "token"),
+                ("CRAB_CONNECTOR_RETRY_MAX_BACKOFF_MS", "0"),
+            ]),
+            &[],
+        )
+        .expect_err("zero max backoff should fail");
+        assert_eq!(
+            invalid_max_backoff,
+            CrabError::InvalidConfig {
+                key: "CRAB_CONNECTOR_RETRY_MAX_BACKOFF_MS",
+                value: "0".to_string(),
+                reason: "must be greater than 0",
+            }
+        );
     }
 
     #[test]
@@ -1565,6 +1599,30 @@ mod tests {
                 ..
             }
         ));
+
+        let blank_channel_id = parse_outbound_op_line(
+            r#"{"op":"post","op_id":"op-1","channel_id":"   ","delivery_id":"d1","content":"hello"}"#,
+        )
+        .expect_err("blank channel_id should fail invariant validation");
+        assert_eq!(
+            blank_channel_id,
+            CrabError::InvariantViolation {
+                context: "connector_parse_crabd_outbound_op",
+                message: "channel_id must not be empty".to_string(),
+            }
+        );
+
+        let blank_delivery_id = parse_outbound_op_line(
+            r#"{"op":"post","op_id":"op-1","channel_id":"c1","delivery_id":"  ","content":"hello"}"#,
+        )
+        .expect_err("blank delivery_id should fail invariant validation");
+        assert_eq!(
+            blank_delivery_id,
+            CrabError::InvariantViolation {
+                context: "connector_parse_crabd_outbound_op",
+                message: "delivery_id must not be empty".to_string(),
+            }
+        );
     }
 
     #[test]
@@ -2074,6 +2132,17 @@ mod tests {
         )]))
         .expect("explicit map path should resolve");
         assert_eq!(explicit, PathBuf::from("/tmp/custom-map.json"));
+
+        let explicit_blank =
+            resolve_message_id_map_path(&values(&[("CRAB_CONNECTOR_MESSAGE_ID_MAP_PATH", "   ")]))
+                .expect_err("blank explicit map path should fail");
+        assert_eq!(
+            explicit_blank,
+            CrabError::InvariantViolation {
+                context: "connector_message_id_map_path",
+                message: "CRAB_CONNECTOR_MESSAGE_ID_MAP_PATH must not be empty".to_string(),
+            }
+        );
 
         let empty_err = ensure_non_empty("ctx", "f", "  ").expect_err("blank should fail");
         assert_eq!(
