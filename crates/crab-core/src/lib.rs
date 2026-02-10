@@ -11,6 +11,7 @@ pub mod fallback;
 pub mod heartbeat;
 pub mod memory_flush;
 pub mod onboarding;
+pub mod onboarding_completion;
 pub mod onboarding_profile_files;
 pub mod onboarding_state;
 pub mod operator_commands;
@@ -61,6 +62,11 @@ pub use memory_flush::{
 pub use onboarding::{
     build_onboarding_prompt, default_onboarding_questions, parse_onboarding_capture_document,
     OnboardingCaptureDocument, OnboardingField, OnboardingQuestion, ONBOARDING_SCHEMA_VERSION,
+};
+pub use onboarding_completion::{
+    execute_onboarding_completion_protocol, OnboardingCompletionEventRuntime,
+    OnboardingCompletionInput, OnboardingCompletionOutcome, ONBOARDING_MEMORY_BASELINE_END_MARKER,
+    ONBOARDING_MEMORY_BASELINE_START_MARKER,
 };
 pub use onboarding_profile_files::{
     build_onboarding_profile_documents, persist_onboarding_profile_files,
