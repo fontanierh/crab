@@ -33,6 +33,7 @@ This document breaks the Crab implementation into execution workstreams and issu
 | WS13 | Context and prompt assembly | Ordered context injection and prompt contract |
 | WS14 | Memory recall runtime | Prompt + CLI memory retrieval (`memory_search`/`memory_get` via CLI surface) |
 | WS15 | End-to-end runtime orchestration | `discord -> lane -> backend -> store -> discord` loop |
+| WS16 | Comprehensive architecture documentation | Design decisions, lifecycle docs, deployment runbook/gaps |
 
 ## 3) Detailed Workstreams and Tasks
 
@@ -402,6 +403,32 @@ This document breaks the Crab implementation into execution workstreams and issu
 - Add integration tests for first interaction onboarding, normal owner/non-owner runs, and restart recovery continuity.
 - Done criteria: end-to-end suite green with quality gates.
 
+### WS16 - Comprehensive Documentation
+
+### WS16-T1 - Documentation architecture map
+- Create documentation index and reading order under `crab/docs/`.
+- Define conventions for decisions, sequences, invariants, and status notes.
+- Done criteria: `crab/docs/README.md` covers scope and navigation.
+
+### WS16-T2 - Initial-turn and onboarding spec
+- Document first-run bootstrap flow, onboarding schema, lifecycle state machine, and file mutation semantics.
+- Include sequence diagram and failure/retry behavior.
+- Done criteria: onboarding doc clearly maps startup -> capture -> completion -> ready state.
+
+### WS16-T3 - Session/lane/runtime flow spec
+- Document logical vs physical sessions, lane queue semantics, and turn lifecycle.
+- Clarify run/event identities and ordering guarantees.
+- Done criteria: flow is reconstructible from docs without reading code.
+
+### WS16-T4 - Rotation/memory/reliability deep dives
+- Document compaction trigger model, hidden flush/checkpoint protocol, fallback checkpointing, memory recall/context assembly, and crash recovery/delivery replay semantics.
+- Done criteria: docs define exact contracts and invariants for recovery-critical behavior.
+
+### WS16-T5 - Deployment readiness gap register
+- Maintain a concrete list of unresolved integration gaps and closure order.
+- Keep this register updated as implementation lands.
+- Done criteria: `crab/docs/08-deployment-readiness-gaps.md` is current and actionable.
+
 ## 4) Dependency Order and Critical Path
 
 Execution order:
@@ -416,10 +443,11 @@ Execution order:
 8. WS12 and WS13 after WS10 and WS11
 9. WS14 after WS10 and WS13
 10. WS15 after WS10, WS11, WS12, WS13, and WS14
+11. WS16 runs across all phases; must be current before deployment milestones are declared complete
 
 Critical path to MVP:
 
-- WS0, WS1, WS2, WS3, WS4, WS7, WS8, WS9, WS10, WS11, WS12, WS13, WS14, WS15
+- WS0, WS1, WS2, WS3, WS4, WS7, WS8, WS9, WS10, WS11, WS12, WS13, WS14, WS15, WS16
 
 Codex/OpenCode parity path:
 
@@ -446,6 +474,10 @@ Codex/OpenCode parity path:
 ### Milestone M5 - Memory recall + full runtime loop
 - Scope: WS14, WS15.
 - Exit criteria: prompt + CLI memory recall and end-to-end orchestration are production-ready for deployment on target machine.
+
+### Milestone M6 - Documentation And Deployment Handoff
+- Scope: WS16.
+- Exit criteria: architecture docs comprehensively cover onboarding, sessions, rotation, memory, reliability, and current deployment gaps.
 
 ## 6) Issue Template for Task Tickets
 
