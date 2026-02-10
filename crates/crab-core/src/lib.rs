@@ -5,6 +5,7 @@ pub mod checkpoint_turn;
 pub mod compatibility;
 pub mod config;
 pub mod context_assembly;
+pub mod context_budget;
 pub mod diagnostics;
 pub mod domain;
 pub mod error;
@@ -43,6 +44,13 @@ pub use compatibility::{
 pub use config::{OwnerConfig, OwnerProfileDefaults, RuntimeConfig};
 pub use context_assembly::{
     assemble_turn_context, ContextAssemblyInput, ContextMemorySnippet, CONTEXT_INJECTION_ORDER,
+};
+pub use context_budget::{
+    render_budgeted_turn_context, BudgetedContextOutput, ContextBudgetPolicy, ContextBudgetReport,
+    DEFAULT_CONTEXT_MAX_MEMORY_SNIPPET_CHARS, DEFAULT_CONTEXT_MAX_MEMORY_SNIPPET_COUNT,
+    DEFAULT_CONTEXT_MAX_SECTION_CHARS, DEFAULT_CONTEXT_MAX_TOTAL_CHARS,
+    DEFAULT_CONTEXT_MAX_TURN_INPUT_CHARS, MEMORY_SNIPPET_DROP_MARKER_PATH,
+    TOTAL_CONTEXT_TRUNCATION_MARKER,
 };
 pub use diagnostics::{
     build_diagnostic_record, parse_diagnostic_record_json, parse_diagnostics_fixture,

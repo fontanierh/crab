@@ -79,6 +79,23 @@ pub fn assemble_turn_context(input: &ContextAssemblyInput) -> CrabResult<String>
     Ok(sections.join("\n\n"))
 }
 
+pub fn sort_memory_snippets(snippets: &mut [ContextMemorySnippet]) {
+    snippets.sort_by(|left, right| {
+        (
+            left.path.as_str(),
+            left.start_line,
+            left.end_line,
+            left.content.as_str(),
+        )
+            .cmp(&(
+                right.path.as_str(),
+                right.start_line,
+                right.end_line,
+                right.content.as_str(),
+            ))
+    });
+}
+
 fn validate_memory_snippets(snippets: &[ContextMemorySnippet]) -> CrabResult<()> {
     for snippet in snippets {
         validate_non_empty_text(
@@ -113,20 +130,7 @@ fn render_memory_snippets_section(snippets: &[ContextMemorySnippet]) -> String {
     }
 
     let mut normalized = snippets.to_vec();
-    normalized.sort_by(|left, right| {
-        (
-            left.path.as_str(),
-            left.start_line,
-            left.end_line,
-            left.content.as_str(),
-        )
-            .cmp(&(
-                right.path.as_str(),
-                right.start_line,
-                right.end_line,
-                right.content.as_str(),
-            ))
-    });
+    sort_memory_snippets(&mut normalized);
 
     let mut lines = Vec::with_capacity(normalized.len() * 2);
     for (index, snippet) in normalized.iter().enumerate() {
