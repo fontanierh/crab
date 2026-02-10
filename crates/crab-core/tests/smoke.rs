@@ -1,4 +1,7 @@
-use crab_core::{CrabError, CrabResult, RuntimeConfig};
+use crab_core::{
+    apply_fallback_policy, BackendCompatibilityCatalog, BackendCompatibilityRules, BackendKind,
+    CrabError, CrabResult, FallbackPolicyMode, InferenceProfile, ReasoningLevel, RuntimeConfig,
+};
 use std::collections::HashMap;
 
 #[test]
@@ -14,4 +17,32 @@ fn public_api_is_stable() {
     }
     .to_string();
     assert_eq!(display, "missing required config: CRAB_DISCORD_TOKEN");
+}
+
+#[test]
+fn fallback_policy_api_is_stable() {
+    let profile = InferenceProfile {
+        backend: BackendKind::Codex,
+        model: "legacy-model".to_string(),
+        reasoning_level: ReasoningLevel::XHigh,
+    };
+
+    let catalog = BackendCompatibilityCatalog {
+        claude: BackendCompatibilityRules::default(),
+        codex: BackendCompatibilityRules {
+            supported_models: vec!["gpt-5-codex".to_string()],
+            supported_reasoning_levels: vec![ReasoningLevel::High],
+        },
+        opencode: BackendCompatibilityRules::default(),
+    };
+
+    let decision = apply_fallback_policy(&profile, &catalog, FallbackPolicyMode::Compatible)
+        .expect("fallback policy should produce a decision");
+    assert!(decision.is_accepted());
+    assert!(decision.fallback_applied);
+    assert_eq!(decision.effective_profile.model, "gpt-5-codex");
+    assert_eq!(
+        decision.effective_profile.reasoning_level,
+        ReasoningLevel::High
+    );
 }

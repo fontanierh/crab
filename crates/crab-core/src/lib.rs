@@ -4,6 +4,7 @@ pub mod compatibility;
 pub mod config;
 pub mod domain;
 pub mod error;
+pub mod fallback;
 pub mod profile;
 mod validation;
 
@@ -18,6 +19,7 @@ pub use domain::{
     TokenAccounting,
 };
 pub use error::{CrabError, CrabResult};
+pub use fallback::{apply_fallback_policy, FallbackDecision, FallbackPolicyMode};
 pub use profile::{
     resolve_inference_profile, BackendInferenceDefault, BackendInferenceDefaults,
     InferenceProfileOverride, InferenceProfileResolutionInput, ProfileValueSource,
