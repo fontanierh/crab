@@ -3,6 +3,7 @@
 pub mod config;
 pub mod domain;
 pub mod error;
+pub mod profile;
 
 pub use config::RuntimeConfig;
 pub use domain::{
@@ -11,6 +12,11 @@ pub use domain::{
     TokenAccounting,
 };
 pub use error::{CrabError, CrabResult};
+pub use profile::{
+    resolve_inference_profile, BackendInferenceDefault, BackendInferenceDefaults,
+    InferenceProfileOverride, InferenceProfileResolutionInput, ProfileValueSource,
+    ResolvedInferenceProfile,
+};
 
 #[cfg(test)]
 mod tests {
