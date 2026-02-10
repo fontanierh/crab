@@ -14,6 +14,7 @@ pub mod operator_commands;
 pub mod profile;
 pub mod rotation;
 pub mod rotation_sequence;
+pub mod sender_identity;
 pub mod startup_reconciliation;
 mod validation;
 pub mod workspace;
@@ -68,6 +69,10 @@ pub use rotation::{
 };
 pub use rotation_sequence::{
     execute_rotation_sequence, RotationSequenceOutcome, RotationSequenceRuntime,
+};
+pub use sender_identity::{
+    resolve_sender_identity, ResolvedSenderIdentity, SenderConversationKind, SenderIdentityInput,
+    OWNER_CANONICAL_USER_KEY,
 };
 pub use startup_reconciliation::{
     execute_startup_reconciliation, StartupReconciliationOutcome,
