@@ -175,6 +175,11 @@ pub fn default_workspace_templates() -> &'static [WorkspaceTemplate] {
     &WORKSPACE_TEMPLATES
 }
 
+#[must_use]
+pub(crate) const fn bootstrap_template_contents() -> &'static str {
+    BOOTSTRAP_TEMPLATE
+}
+
 pub fn ensure_workspace_layout(workspace_root: &Path) -> CrabResult<WorkspaceEnsureOutcome> {
     validate_workspace_root_path(workspace_root)?;
 

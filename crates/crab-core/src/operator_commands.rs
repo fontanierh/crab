@@ -1,3 +1,8 @@
+use std::fs;
+use std::path::Path;
+
+use crate::workspace::{bootstrap_template_contents, BOOTSTRAP_FILE_NAME};
+use crate::{apply_onboarding_transition, OnboardingLifecycle, OnboardingTransition};
 use crate::{
     validation::validate_non_empty_text, BackendKind, CrabError, CrabResult, InferenceProfile,
     ProfileValueSource, ReasoningLevel, ResolvedInferenceProfile,
@@ -9,6 +14,8 @@ pub enum OperatorCommand {
     SetModel { model: String },
     SetReasoning { reasoning_level: ReasoningLevel },
     ShowProfile,
+    OnboardingRerun,
+    OnboardingResetBootstrap,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -21,6 +28,14 @@ pub struct OperatorSessionState {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OperatorCommandOutcome {
     pub requires_rotation: bool,
+    pub user_message: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OnboardingOperatorCommandOutcome {
+    pub next_lifecycle: OnboardingLifecycle,
+    pub bootstrap_path: String,
+    pub audit_action: String,
     pub user_message: String,
 }
 
@@ -48,6 +63,7 @@ pub fn parse_operator_command(input: &str) -> CrabResult<Option<OperatorCommand>
         "/model" => parse_model_command(&args).map(Some),
         "/reasoning" => parse_reasoning_command(&args).map(Some),
         "/profile" => parse_profile_command(&args).map(Some),
+        "/onboarding" => parse_onboarding_command(&args).map(Some),
         _ => Ok(None),
     }
 }
@@ -102,7 +118,52 @@ pub fn apply_operator_command(
             requires_rotation: false,
             user_message: render_active_profile_summary(state),
         }),
+        OperatorCommand::OnboardingRerun | OperatorCommand::OnboardingResetBootstrap => {
+            Err(CrabError::InvariantViolation {
+                context: "operator_command_apply",
+                message: "onboarding commands require apply_onboarding_operator_command"
+                    .to_string(),
+            })
+        }
     }
+}
+
+pub fn apply_onboarding_operator_command(
+    current_lifecycle: &OnboardingLifecycle,
+    command: &OperatorCommand,
+    actor: &OperatorActorContext,
+    workspace_root: &Path,
+) -> CrabResult<OnboardingOperatorCommandOutcome> {
+    authorize_operator_command(actor)?;
+    validate_workspace_root(workspace_root)?;
+
+    let (audit_action, user_message) = match command {
+        OperatorCommand::OnboardingRerun => (
+            "onboarding.rerun",
+            "onboarding rerun scheduled; lifecycle reset to pending and BOOTSTRAP.md rewritten",
+        ),
+        OperatorCommand::OnboardingResetBootstrap => (
+            "onboarding.reset_bootstrap",
+            "bootstrap state reset; lifecycle reset to pending and BOOTSTRAP.md rewritten",
+        ),
+        _ => {
+            return Err(CrabError::InvariantViolation {
+                context: "operator_onboarding_command_apply",
+                message: "command is not an onboarding command".to_string(),
+            });
+        }
+    };
+
+    let next_lifecycle =
+        apply_onboarding_transition(current_lifecycle, OnboardingTransition::Reset)?;
+    let bootstrap_path = reset_bootstrap_marker(workspace_root)?;
+
+    Ok(OnboardingOperatorCommandOutcome {
+        next_lifecycle,
+        bootstrap_path: display_path(&bootstrap_path),
+        audit_action: audit_action.to_string(),
+        user_message: user_message.to_string(),
+    })
 }
 
 pub fn authorize_operator_command(actor: &OperatorActorContext) -> CrabResult<()> {
@@ -185,6 +246,28 @@ fn parse_profile_command(args: &[&str]) -> CrabResult<OperatorCommand> {
     })
 }
 
+fn parse_onboarding_command(args: &[&str]) -> CrabResult<OperatorCommand> {
+    let [action, confirmation_token] = args else {
+        return Err(CrabError::InvariantViolation {
+            context: "operator_command_parse",
+            message: "/onboarding requires exactly two arguments: rerun|reset-bootstrap confirm"
+                .to_string(),
+        });
+    };
+
+    validate_confirmation_token(confirmation_token)?;
+    match action.to_ascii_lowercase().as_str() {
+        "rerun" => Ok(OperatorCommand::OnboardingRerun),
+        "reset-bootstrap" | "reset_bootstrap" => Ok(OperatorCommand::OnboardingResetBootstrap),
+        _ => Err(CrabError::InvariantViolation {
+            context: "operator_command_parse",
+            message: format!(
+                "invalid onboarding action {action:?}; expected rerun|reset-bootstrap"
+            ),
+        }),
+    }
+}
+
 fn single_argument<'a>(
     context: &'static str,
     command_name: &'static str,
@@ -201,6 +284,61 @@ fn single_argument<'a>(
             message: format!("{command_name} requires exactly one argument"),
         }),
     }
+}
+
+fn validate_confirmation_token(token: &str) -> CrabResult<()> {
+    if token.eq_ignore_ascii_case("confirm") {
+        return Ok(());
+    }
+    Err(CrabError::InvariantViolation {
+        context: "operator_command_parse",
+        message: "onboarding command requires confirmation token \"confirm\"".to_string(),
+    })
+}
+
+fn validate_workspace_root(workspace_root: &Path) -> CrabResult<()> {
+    if workspace_root.as_os_str().is_empty() {
+        return Err(CrabError::InvariantViolation {
+            context: "operator_onboarding_command_apply",
+            message: "workspace_root must not be empty".to_string(),
+        });
+    }
+
+    let metadata = fs::metadata(workspace_root).map_err(|error| CrabError::Io {
+        context: "operator_onboarding_command_apply",
+        path: Some(display_path(workspace_root)),
+        message: error.to_string(),
+    })?;
+    if !metadata.is_dir() {
+        return Err(CrabError::InvariantViolation {
+            context: "operator_onboarding_command_apply",
+            message: format!("{} must be a directory", display_path(workspace_root)),
+        });
+    }
+
+    Ok(())
+}
+
+fn reset_bootstrap_marker(workspace_root: &Path) -> CrabResult<std::path::PathBuf> {
+    let bootstrap_path = workspace_root.join(BOOTSTRAP_FILE_NAME);
+    if bootstrap_path.exists() && !bootstrap_path.is_file() {
+        return Err(CrabError::InvariantViolation {
+            context: "operator_onboarding_command_apply",
+            message: format!("{} must be a regular file", display_path(&bootstrap_path)),
+        });
+    }
+
+    fs::write(&bootstrap_path, bootstrap_template_contents()).map_err(|error| CrabError::Io {
+        context: "operator_onboarding_command_apply",
+        path: Some(display_path(&bootstrap_path)),
+        message: error.to_string(),
+    })?;
+
+    Ok(bootstrap_path)
+}
+
+fn display_path(path: &Path) -> String {
+    path.to_string_lossy().into_owned()
 }
 
 fn parse_backend(value: &str) -> Option<BackendKind> {
@@ -236,16 +374,26 @@ fn profile_source_label(source: ProfileValueSource) -> &'static str {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+    use std::path::Path;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
+
     use crate::{
-        BackendKind, CrabError, InferenceProfile, ProfileValueSource, ReasoningLevel,
+        apply_onboarding_transition, BackendKind, CrabError, InferenceProfile, OnboardingLifecycle,
+        OnboardingState, OnboardingTransition, ProfileValueSource, ReasoningLevel,
         ResolvedInferenceProfile,
     };
 
     use super::{
-        apply_operator_command, authorize_operator_command, parse_operator_command,
-        render_active_profile_summary, render_resolved_profile_summary, OperatorActorContext,
-        OperatorCommand, OperatorSessionState,
+        apply_onboarding_operator_command, apply_operator_command, authorize_operator_command,
+        parse_operator_command, render_active_profile_summary, render_resolved_profile_summary,
+        OperatorActorContext, OperatorCommand, OperatorSessionState,
     };
+
+    static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
     fn session_state() -> OperatorSessionState {
         OperatorSessionState {
@@ -271,6 +419,41 @@ mod tests {
             sender_id: "0987654321".to_string(),
             sender_is_owner: false,
         }
+    }
+
+    fn pending_onboarding() -> OnboardingLifecycle {
+        OnboardingLifecycle::pending()
+    }
+
+    fn in_progress_onboarding() -> OnboardingLifecycle {
+        apply_onboarding_transition(
+            &OnboardingLifecycle::pending(),
+            OnboardingTransition::Start {
+                onboarding_session_id: "bootstrap-42".to_string(),
+            },
+        )
+        .expect("start transition should succeed")
+    }
+
+    fn with_temp_workspace<T>(label: &str, test_fn: impl FnOnce(&Path) -> T) -> T {
+        let suffix = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let workspace_path = std::env::temp_dir().join(format!(
+            "crab-operator-commands-{label}-{suffix}-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&workspace_path);
+        let result = test_fn(&workspace_path);
+        let _ = fs::remove_dir_all(&workspace_path);
+        result
+    }
+
+    #[cfg(unix)]
+    fn set_mode(path: &Path, mode: u32) {
+        let mut permissions = fs::metadata(path)
+            .expect("metadata should be readable")
+            .permissions();
+        permissions.set_mode(mode);
+        fs::set_permissions(path, permissions).expect("permissions should be writable");
     }
 
     #[test]
@@ -503,6 +686,8 @@ mod tests {
                 reasoning_level: ReasoningLevel::Low,
             },
             OperatorCommand::ShowProfile,
+            OperatorCommand::OnboardingRerun,
+            OperatorCommand::OnboardingResetBootstrap,
         ];
 
         for command in commands {
@@ -595,5 +780,281 @@ mod tests {
             let rendered = render_active_profile_summary(&state);
             assert!(rendered.contains(expected_fragment));
         }
+    }
+
+    #[test]
+    fn parses_onboarding_commands_with_confirmation_token() {
+        let rerun = parse_operator_command("/onboarding rerun confirm")
+            .expect("rerun command should parse")
+            .expect("rerun command should be recognized");
+        assert_eq!(rerun, OperatorCommand::OnboardingRerun);
+
+        let reset_hyphen = parse_operator_command("/onboarding reset-bootstrap confirm")
+            .expect("reset command should parse")
+            .expect("reset command should be recognized");
+        assert_eq!(reset_hyphen, OperatorCommand::OnboardingResetBootstrap);
+
+        let reset_underscore = parse_operator_command("/onboarding reset_bootstrap CONFIRM")
+            .expect("underscore reset command should parse")
+            .expect("underscore reset command should be recognized");
+        assert_eq!(reset_underscore, OperatorCommand::OnboardingResetBootstrap);
+    }
+
+    #[test]
+    fn rejects_invalid_onboarding_command_shapes() {
+        let missing_parts = parse_operator_command("/onboarding")
+            .expect_err("onboarding command without args should fail");
+        assert_eq!(
+            missing_parts.to_string(),
+            "operator_command_parse invariant violation: /onboarding requires exactly two arguments: rerun|reset-bootstrap confirm"
+        );
+
+        let invalid_action = parse_operator_command("/onboarding rotate confirm")
+            .expect_err("invalid onboarding action should fail");
+        assert_eq!(
+            invalid_action.to_string(),
+            "operator_command_parse invariant violation: invalid onboarding action \"rotate\"; expected rerun|reset-bootstrap"
+        );
+
+        let invalid_token = parse_operator_command("/onboarding rerun now")
+            .expect_err("invalid confirmation token should fail");
+        assert_eq!(
+            invalid_token.to_string(),
+            "operator_command_parse invariant violation: onboarding command requires confirmation token \"confirm\""
+        );
+
+        let extra_arg = parse_operator_command("/onboarding rerun confirm extra")
+            .expect_err("onboarding command with extra args should fail");
+        assert_eq!(
+            extra_arg.to_string(),
+            "operator_command_parse invariant violation: /onboarding requires exactly two arguments: rerun|reset-bootstrap confirm"
+        );
+    }
+
+    #[test]
+    fn apply_operator_command_rejects_onboarding_commands_without_context() {
+        let mut state = session_state();
+        let owner = owner_actor();
+        let error = apply_operator_command(&mut state, &OperatorCommand::OnboardingRerun, &owner)
+            .expect_err("onboarding command should require dedicated onboarding apply path");
+        assert_eq!(
+            error.to_string(),
+            "operator_command_apply invariant violation: onboarding commands require apply_onboarding_operator_command"
+        );
+    }
+
+    #[test]
+    fn apply_onboarding_command_resets_lifecycle_and_writes_bootstrap_marker() {
+        with_temp_workspace("onboarding-rerun", |workspace| {
+            fs::create_dir_all(workspace).expect("workspace root should be creatable");
+            let outcome = apply_onboarding_operator_command(
+                &in_progress_onboarding(),
+                &OperatorCommand::OnboardingRerun,
+                &owner_actor(),
+                workspace,
+            )
+            .expect("rerun command should apply");
+
+            assert_eq!(outcome.next_lifecycle.state, OnboardingState::Pending);
+            assert_eq!(outcome.next_lifecycle.onboarding_session_id, None);
+            assert_eq!(outcome.audit_action, "onboarding.rerun");
+            assert_eq!(
+                outcome.user_message,
+                "onboarding rerun scheduled; lifecycle reset to pending and BOOTSTRAP.md rewritten"
+            );
+
+            let bootstrap_path = workspace.join("BOOTSTRAP.md");
+            assert_eq!(outcome.bootstrap_path, bootstrap_path.to_string_lossy());
+            let bootstrap_contents =
+                fs::read_to_string(bootstrap_path).expect("bootstrap marker should be readable");
+            assert!(bootstrap_contents.contains("Bootstrap is pending."));
+        });
+    }
+
+    #[test]
+    fn apply_onboarding_reset_bootstrap_command_is_owner_only() {
+        with_temp_workspace("onboarding-owner-gate", |workspace| {
+            fs::create_dir_all(workspace).expect("workspace root should be creatable");
+            let error = apply_onboarding_operator_command(
+                &pending_onboarding(),
+                &OperatorCommand::OnboardingResetBootstrap,
+                &non_owner_actor(),
+                workspace,
+            )
+            .expect_err("non-owner should be rejected");
+            assert_eq!(
+                error.to_string(),
+                "operator_command_authorize invariant violation: sender 0987654321 is not authorized to run operator commands"
+            );
+        });
+    }
+
+    #[test]
+    fn apply_onboarding_command_rejects_non_onboarding_variants() {
+        with_temp_workspace("onboarding-wrong-command", |workspace| {
+            fs::create_dir_all(workspace).expect("workspace root should be creatable");
+            let error = apply_onboarding_operator_command(
+                &pending_onboarding(),
+                &OperatorCommand::ShowProfile,
+                &owner_actor(),
+                workspace,
+            )
+            .expect_err("non-onboarding command should fail");
+            assert_eq!(
+                error.to_string(),
+                "operator_onboarding_command_apply invariant violation: command is not an onboarding command"
+            );
+        });
+    }
+
+    #[test]
+    fn apply_onboarding_command_validates_workspace_root() {
+        let empty_path_error = apply_onboarding_operator_command(
+            &pending_onboarding(),
+            &OperatorCommand::OnboardingResetBootstrap,
+            &owner_actor(),
+            Path::new(""),
+        )
+        .expect_err("empty workspace path should fail");
+        assert_eq!(
+            empty_path_error.to_string(),
+            "operator_onboarding_command_apply invariant violation: workspace_root must not be empty"
+        );
+
+        with_temp_workspace("onboarding-workspace-invalid", |workspace| {
+            fs::create_dir_all(workspace).expect("workspace root should be creatable");
+            let workspace_file = workspace.join("workspace.txt");
+            fs::write(&workspace_file, "not-a-directory")
+                .expect("workspace file should be writable");
+
+            let not_dir_error = apply_onboarding_operator_command(
+                &pending_onboarding(),
+                &OperatorCommand::OnboardingResetBootstrap,
+                &owner_actor(),
+                &workspace_file,
+            )
+            .expect_err("workspace root file should fail");
+            assert_eq!(
+                not_dir_error.to_string(),
+                format!(
+                    "operator_onboarding_command_apply invariant violation: {} must be a directory",
+                    workspace_file.to_string_lossy()
+                )
+            );
+
+            let missing_workspace = workspace.join("missing");
+            let missing_error = apply_onboarding_operator_command(
+                &pending_onboarding(),
+                &OperatorCommand::OnboardingResetBootstrap,
+                &owner_actor(),
+                &missing_workspace,
+            )
+            .expect_err("missing workspace should fail");
+            assert!(matches!(
+                missing_error,
+                CrabError::Io {
+                    context: "operator_onboarding_command_apply",
+                    path: Some(path),
+                    ..
+                } if path == missing_workspace.to_string_lossy()
+            ));
+        });
+    }
+
+    #[test]
+    fn apply_onboarding_command_rejects_bootstrap_directory_marker() {
+        with_temp_workspace("onboarding-bootstrap-dir", |workspace| {
+            fs::create_dir_all(workspace).expect("workspace root should be creatable");
+            fs::create_dir_all(workspace.join("BOOTSTRAP.md"))
+                .expect("bootstrap marker directory should be creatable");
+
+            let error = apply_onboarding_operator_command(
+                &pending_onboarding(),
+                &OperatorCommand::OnboardingResetBootstrap,
+                &owner_actor(),
+                workspace,
+            )
+            .expect_err("bootstrap directory marker should fail");
+
+            assert_eq!(
+                error.to_string(),
+                format!(
+                    "operator_onboarding_command_apply invariant violation: {} must be a regular file",
+                    workspace.join("BOOTSTRAP.md").to_string_lossy()
+                )
+            );
+        });
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn apply_onboarding_command_surfaces_bootstrap_write_errors() {
+        with_temp_workspace("onboarding-write-error", |workspace| {
+            fs::create_dir_all(workspace).expect("workspace root should be creatable");
+            set_mode(workspace, 0o555);
+
+            let error = apply_onboarding_operator_command(
+                &pending_onboarding(),
+                &OperatorCommand::OnboardingResetBootstrap,
+                &owner_actor(),
+                workspace,
+            )
+            .expect_err("read-only workspace should fail writes");
+
+            assert!(matches!(
+                error,
+                CrabError::Io {
+                    context: "operator_onboarding_command_apply",
+                    path: Some(path),
+                    ..
+                } if path == workspace.join("BOOTSTRAP.md").to_string_lossy()
+            ));
+
+            set_mode(workspace, 0o755);
+        });
+    }
+
+    #[test]
+    fn apply_onboarding_command_propagates_invalid_lifecycle_shape() {
+        with_temp_workspace("onboarding-invalid-lifecycle", |workspace| {
+            fs::create_dir_all(workspace).expect("workspace root should be creatable");
+            let invalid_current = OnboardingLifecycle {
+                state: OnboardingState::InProgress,
+                onboarding_session_id: None,
+            };
+            let error = apply_onboarding_operator_command(
+                &invalid_current,
+                &OperatorCommand::OnboardingResetBootstrap,
+                &owner_actor(),
+                workspace,
+            )
+            .expect_err("invalid onboarding lifecycle should fail");
+
+            assert_eq!(
+                error.to_string(),
+                "onboarding_state_machine invariant violation: state in_progress requires onboarding_session_id"
+            );
+        });
+    }
+
+    #[test]
+    fn apply_onboarding_reset_bootstrap_command_has_expected_audit_output() {
+        with_temp_workspace("onboarding-reset-audit", |workspace| {
+            fs::create_dir_all(workspace).expect("workspace root should be creatable");
+            let outcome = apply_onboarding_operator_command(
+                &pending_onboarding(),
+                &OperatorCommand::OnboardingResetBootstrap,
+                &owner_actor(),
+                workspace,
+            )
+            .expect("reset command should apply");
+
+            assert_eq!(outcome.next_lifecycle, OnboardingLifecycle::pending());
+            assert_eq!(outcome.audit_action, "onboarding.reset_bootstrap");
+            assert_eq!(
+                outcome.user_message,
+                "bootstrap state reset; lifecycle reset to pending and BOOTSTRAP.md rewritten"
+            );
+        });
     }
 }

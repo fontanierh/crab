@@ -77,9 +77,10 @@ pub use onboarding_state::{
     apply_onboarding_transition, OnboardingLifecycle, OnboardingState, OnboardingTransition,
 };
 pub use operator_commands::{
-    apply_operator_command, authorize_operator_command, parse_operator_command,
-    render_active_profile_summary, render_resolved_profile_summary, OperatorActorContext,
-    OperatorCommand, OperatorCommandOutcome, OperatorSessionState,
+    apply_onboarding_operator_command, apply_operator_command, authorize_operator_command,
+    parse_operator_command, render_active_profile_summary, render_resolved_profile_summary,
+    OnboardingOperatorCommandOutcome, OperatorActorContext, OperatorCommand,
+    OperatorCommandOutcome, OperatorSessionState,
 };
 pub use profile::{
     resolve_inference_profile, BackendInferenceDefault, BackendInferenceDefaults,
