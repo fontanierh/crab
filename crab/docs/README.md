@@ -15,6 +15,7 @@ Use `crab/DESIGN.md` as the canonical v1 spec, and use this folder for detailed 
 7. `crab/docs/07-storage-and-state-model.md`
 8. `crab/docs/08-deployment-readiness-gaps.md`
 9. `crab/docs/09-discord-provisioning-and-secrets.md`
+10. `crab/docs/10-target-machine-operations.md`
 
 ## Doc Conventions
 
@@ -35,3 +36,4 @@ These docs focus on:
 - backend adapter contract and profile resolution
 - persistent state model and deployment hardening gaps
 - Discord provisioning and token operations
+- target-machine runtime operations and service lifecycle

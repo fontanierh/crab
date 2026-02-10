@@ -24,7 +24,8 @@ coverage-gate:
 	cargo llvm-cov --workspace --all-features --locked \
 		--fail-under-lines 100 \
 		--fail-under-functions 100 \
-		--fail-under-regions 100
+		--fail-uncovered-lines 0 \
+		--fail-uncovered-functions 0
 
 duplication-check:
 	npx --yes jscpd@4.0.5 --config .jscpd.json

@@ -4,6 +4,7 @@ mod runtime_adapter;
 
 use crab_core::{CrabError, CrabResult, OutboundRecord};
 use crab_store::OutboundRecordStore;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 pub use runtime_adapter::{
@@ -13,14 +14,15 @@ pub use runtime_adapter::{
 
 pub const DISCORD_MESSAGE_CHAR_LIMIT: usize = 2000;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum GatewayConversationKind {
     GuildChannel,
     Thread,
     DirectMessage,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GatewayMessage {
     pub message_id: String,
     pub author_id: String,

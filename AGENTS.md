@@ -35,11 +35,12 @@ Project operating rules for all human and AI contributors.
 
 - Coverage check is required in CI and local pre-merge validation.
 - Preferred Rust tool: `cargo-llvm-cov`.
-- Enforce `100%` minimum via fail-under thresholds (or a small checker script if branch thresholds require custom parsing).
+- Enforce `100%` line/function minimum and `0` uncovered lines/functions in CI.
 - Coverage reports must be reproducible from a single documented command.
 
 Required outcome:
-- Any uncovered line/branch in production code fails validation.
+- Any uncovered production line/function fails validation.
+- Region coverage can be reported for diagnostics, but is not a hard gate due known false negatives around monomorphized generic code.
 
 ## 4. Dead Code and Static Hygiene
 
@@ -120,7 +121,7 @@ The repository now enforces quality with executable gates and CI automation.
   `make deadcode-check`
 - Tests:
   `make test`
-- Coverage gate (100% lines/functions/regions):
+- Coverage gate (100% lines/functions, 0 uncovered lines/functions):
   `make coverage-gate`
 - Duplication gate:
   `make duplication-check`

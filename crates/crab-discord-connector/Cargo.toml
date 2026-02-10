@@ -1,0 +1,24 @@
+[package]
+name = "crab-discord-connector"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[features]
+default = ["live-discord"]
+live-discord = ["dep:reqwest", "dep:serenity", "dep:tokio"]
+
+[dependencies]
+crab-core = { path = "../crab-core" }
+crab-discord = { path = "../crab-discord" }
+ctrlc = "3.4.5"
+serde = { version = "1.0.217", features = ["derive"] }
+serde_json = "1.0.138"
+
+reqwest = { version = "=0.12.9", default-features = false, features = ["blocking", "json", "rustls-tls"], optional = true }
+serenity = { version = "=0.12.4", default-features = false, features = ["client", "gateway", "model", "rustls_backend"], optional = true }
+tokio = { version = "=1.43.0", features = ["rt-multi-thread"], optional = true }
+
+[lints]
+workspace = true

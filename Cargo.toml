@@ -4,6 +4,7 @@ members = [
     "crates/crab-store",
     "crates/crab-scheduler",
     "crates/crab-discord",
+    "crates/crab-discord-connector",
     "crates/crab-backends",
     "crates/crab-app",
 ]
@@ -20,6 +21,7 @@ dead_code = "deny"
 unused_imports = "deny"
 unused_variables = "deny"
 unused_must_use = "deny"
+unexpected_cfgs = { level = "deny", check-cfg = ['cfg(coverage)'] }
 
 [workspace.lints.clippy]
 all = "deny"

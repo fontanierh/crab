@@ -495,6 +495,13 @@ This document breaks the Crab implementation into execution workstreams and issu
 - Update `crab/docs/08-deployment-readiness-gaps.md` with final go/no-go criteria and residual risks.
 - Done criteria: checklist exists, is executable, and can be attached to deployment evidence.
 
+### WS18-T6 - Connector delivery receipt protocol hardening
+- Extend connector <-> `crabd` IPC contract to include operation request ids and delivery receipts.
+- Persist outbound delivery records in `crabd` only after positive connector receipt containing final Discord message id.
+- Add replay/crash tests for delivery failure boundaries (post success + receipt loss, edit retry, connector restart mid-delivery).
+- Update docs: `crab/docs/05-reliability-delivery-and-recovery.md`, `crab/docs/08-deployment-readiness-gaps.md`, and `crab/docs/10-target-machine-operations.md`.
+- Done criteria: replay/idempotency tests prove no duplicate/lost delivery across connector/process crashes.
+
 ## 4) Dependency Order and Critical Path
 
 Execution order:

@@ -22,7 +22,11 @@ Crab is a Rust harness for running coding agents (Claude Code, Codex CLI, OpenCo
 - `WS17` complete: runtime policy config, token-accounting propagation, rotation trigger wiring, owner manual compact/reset commands, startup reconciliation + deterministic heartbeat scheduling integration, and deployment-gap validation/docs sync.
 - `WS18` in progress:
   - `WS18-T1` complete: Discord runtime adapter boundary for ingress + outbound send/edit with deterministic retry/rate-limit handling.
-  - `WS18-T2` to `WS18-T5` pending.
+  - `WS18-T2` complete: `crabd` daemon runtime binary is implemented and tested (startup, daemon loop, heartbeat/reconciliation wiring, graceful shutdown, stdio JSONL transport).
+  - Discord connector runtime is implemented: `crab-discord-connector` bridges Discord Gateway/REST <-> `crabd` JSONL.
+  - `WS18-T3` complete: Discord provisioning + secret operations runbook is documented.
+  - `WS18-T4` complete: target-machine service + operations playbook is documented.
+  - `WS18-T5` pending: close connector delivery-receipt protocol hardening gap, then execute deployment acceptance checklist on target machine and capture evidence/go-no-go decision.
 
 ## Docs
 
@@ -38,6 +42,7 @@ Crab is a Rust harness for running coding agents (Claude Code, Codex CLI, OpenCo
 - Storage/state model: `crab/docs/07-storage-and-state-model.md`
 - Deployment readiness gaps: `crab/docs/08-deployment-readiness-gaps.md`
 - Discord provisioning/secrets: `crab/docs/09-discord-provisioning-and-secrets.md`
+- Target machine operations: `crab/docs/10-target-machine-operations.md`
 - Project rules: `AGENTS.md`
 
 ## Quality Gates
@@ -92,3 +97,17 @@ rustup component add llvm-tools-preview
 ```
 
 - Node runtime (for `npx jscpd`)
+
+## Runtime Launch
+
+Build binaries:
+
+```bash
+cargo build -p crab-app -p crab-discord-connector
+```
+
+Run connector + daemon (requires Discord env vars such as `CRAB_DISCORD_TOKEN` and `CRAB_BOT_USER_ID`):
+
+```bash
+cargo run -p crab-discord-connector -- --crabd ./target/debug/crabd
+```

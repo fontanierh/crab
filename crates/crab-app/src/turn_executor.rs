@@ -136,6 +136,13 @@ where
         let Some(ingress) = self.composition.gateway_ingress.ingest(message)? else {
             return Ok(None);
         };
+        self.enqueue_ingress_message(ingress).map(Some)
+    }
+
+    pub fn enqueue_ingress_message(
+        &mut self,
+        ingress: crab_discord::IngressMessage,
+    ) -> CrabResult<QueuedTurn> {
         let logical_session_id = ingress
             .routing_key
             .logical_session_id()
@@ -159,14 +166,14 @@ where
             .queued_count(&logical_session_id)
             .expect("validated logical session id should always be queue-count addressable");
 
-        Ok(Some(QueuedTurn {
+        Ok(QueuedTurn {
             logical_session_id,
             run_id,
             message_id: ingress.message_id,
             author_id: ingress.author_id,
             routing_key: ingress.routing_key,
             queued_run_count,
-        }))
+        })
     }
 
     pub fn dispatch_next_run(&mut self) -> CrabResult<Option<DispatchedTurn>> {
