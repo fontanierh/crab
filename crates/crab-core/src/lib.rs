@@ -1,5 +1,6 @@
 #![deny(warnings, dead_code, unused_imports, unused_variables)]
 
+pub mod checkpoint_turn;
 pub mod compatibility;
 pub mod config;
 pub mod domain;
@@ -10,6 +11,11 @@ pub mod profile;
 pub mod rotation;
 mod validation;
 
+pub use checkpoint_turn::{
+    build_checkpoint_prompt, parse_checkpoint_turn_document, resolve_checkpoint_turn_output,
+    CheckpointTurnArtifact, CheckpointTurnDocument, CheckpointTurnResolution,
+    DEFAULT_CHECKPOINT_MAX_ATTEMPTS,
+};
 pub use compatibility::{
     evaluate_profile_compatibility, BackendCompatibilityCatalog, BackendCompatibilityRules,
     CompatibilityIssue, CompatibilityReport, AUTO_MODEL_ALIAS,
