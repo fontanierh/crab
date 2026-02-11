@@ -127,19 +127,21 @@ Current status:
 - Codex runs are wired through the `daemon_backend_bridge` Codex transport seam.
 - OpenCode runs are wired through normalized backend events/usage metadata in daemon flow.
 - Claude daemon execution path is still not wired.
-- Hidden checkpoint turn generation in rotation still uses fallback checkpoint construction unless
-  test hook input is used.
+- Hidden checkpoint turns in rotation now execute through the runtime backend path with strict
+  checkpoint schema parsing/validation and retry policy.
+- Deterministic fallback checkpoint construction now applies only when backend checkpoint-turn
+  execution/parsing fails.
 
 Impact:
 
-- Codex and OpenCode backend transport execution are active through daemon bridge paths, but
-  backend coverage is still incomplete (Claude pending) and
-  backend-generated checkpoint-turn output is not yet active.
+- Codex and OpenCode backend transport execution are active through daemon bridge paths.
+- Hidden checkpoint backend-turn output is now active for bridged backends with strict schema
+  validation and deterministic fallback-on-failure behavior.
+- Backend coverage is still incomplete until Claude daemon execution is wired.
 
 Required work:
 
 - Wire the remaining daemon backend turn adapter (Claude) through the backend bridge.
-- Wire hidden checkpoint turn execution through backend path and validate strict schema parsing.
 - Add deployment acceptance evidence for normal turns + rotation under real backend execution.
 
 ## Deployment Acceptance Checklist (WS18-T5)
@@ -169,7 +171,7 @@ Go/no-go rule:
 
 ## Recommended Closure Order
 
-1. Finish remaining backend adapter + hidden checkpoint turn path (Gap 2A).
+1. Finish remaining daemon backend adapter (Claude) in Gap 2A.
 2. Execute acceptance checklist on target machine and capture evidence (Gap 2).
 
 ## Exit Criteria For "Deployment Ready"
