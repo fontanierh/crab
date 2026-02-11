@@ -166,6 +166,15 @@ where
             .queued_count(&logical_session_id)
             .expect("validated logical session id should always be queue-count addressable");
 
+        tracing::debug!(
+            logical_session_id = %logical_session_id,
+            run_id = %run_id,
+            message_id = %ingress.message_id,
+            author_id = %ingress.author_id,
+            queued_run_count,
+            "enqueued ingress message"
+        );
+
         Ok(QueuedTurn {
             logical_session_id,
             run_id,
@@ -185,6 +194,12 @@ where
 
         let execution = self.execute_dispatched_run(&logical_session_id, &run_id);
         if let Err(error) = execution {
+            tracing::error!(
+                logical_session_id = %logical_session_id,
+                run_id = %run_id,
+                error = %error,
+                "dispatch failed"
+            );
             let failure_result = self.mark_run_failed(&logical_session_id, &run_id, &error);
             self.composition
                 .scheduler
@@ -319,6 +334,20 @@ where
         let mut manual_command_resolution =
             self.resolve_manual_rotation_command(&run, &mut session)?;
 
+        // Note: `tracing` macros can create stubborn per-line coverage gaps under `cargo llvm-cov`
+        // (cfg(coverage)). Keep runtime logs, but exclude them from coverage builds.
+        #[cfg(not(coverage))]
+        tracing::info!(
+            logical_session_id = %run.logical_session_id,
+            run_id = %run.id,
+            turn_id = %turn_id,
+            backend = ?run.profile.resolved_profile.backend,
+            model = %run.profile.resolved_profile.model,
+            reasoning_level = %run.profile.resolved_profile.reasoning_level.as_token(),
+            manual_rotation_command = manual_command_resolution.is_some(),
+            "run started"
+        );
+
         if manual_command_resolution.is_none() {
             let mut physical_session = self.runtime.ensure_physical_session(
                 logical_session_id,
@@ -380,6 +409,9 @@ where
             session.token_accounting =
                 merge_token_accounting(session.token_accounting.clone(), run_usage)?;
         }
+        let token_total_before_rotation = session.token_accounting.total_tokens;
+        #[cfg(coverage)]
+        let _ = token_total_before_rotation;
 
         session.lane_state = LaneState::Idle;
         session.queued_run_count = self
@@ -406,6 +438,20 @@ where
             completed_at_epoch_ms,
             manual_rotation_request,
         )?;
+
+        #[cfg(not(coverage))]
+        tracing::info!(
+            logical_session_id = %run.logical_session_id,
+            run_id = %run.id,
+            turn_id = %turn_id,
+            status = %run_status_token(final_status),
+            backend_events = backend_events.len(),
+            rendered_len = rendered_assistant_output.len(),
+            token_total_before_rotation,
+            rotated = rotation_outcome.is_some(),
+            token_total_after_rotation = session.token_accounting.total_tokens,
+            "run completed"
+        );
 
         if let Some(manual_command_resolution) = manual_command_resolution.take() {
             let mut response = manual_command_resolution.user_message;
@@ -539,6 +585,15 @@ where
             now_epoch_ms,
         )?;
 
+        #[cfg(not(coverage))]
+        tracing::info!(
+            logical_session_id = %run.logical_session_id,
+            run_id = %run.id,
+            triggers = %render_rotation_triggers(&decision.triggers),
+            token_usage_total = session.token_accounting.total_tokens,
+            "rotation started"
+        );
+
         session.lane_state = LaneState::Rotating;
         self.composition
             .state_stores
@@ -564,6 +619,32 @@ where
 
         session.last_successful_checkpoint_id = Some(outcome.checkpoint_id.clone());
         session.lane_state = LaneState::Idle;
+
+        let had_rotation_warnings = outcome.used_fallback_checkpoint
+            || outcome.memory_flush_error.is_some()
+            || outcome.checkpoint_turn_error.is_some();
+        if had_rotation_warnings {
+            #[cfg(not(coverage))]
+            tracing::warn!(
+                logical_session_id = %run.logical_session_id,
+                run_id = %run.id,
+                triggers = %render_rotation_triggers(&decision.triggers),
+                checkpoint_id = %outcome.checkpoint_id,
+                used_fallback_checkpoint = outcome.used_fallback_checkpoint,
+                memory_flush_error = ?outcome.memory_flush_error,
+                checkpoint_turn_error = ?outcome.checkpoint_turn_error,
+                "rotation completed with warnings"
+            );
+        } else {
+            #[cfg(not(coverage))]
+            tracing::info!(
+                logical_session_id = %run.logical_session_id,
+                run_id = %run.id,
+                triggers = %render_rotation_triggers(&decision.triggers),
+                checkpoint_id = %outcome.checkpoint_id,
+                "rotation completed"
+            );
+        }
 
         let mut completed_payload = BTreeMap::new();
         completed_payload.insert("rotation_event".to_string(), "completed".to_string());

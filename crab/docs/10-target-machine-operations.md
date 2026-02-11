@@ -111,6 +111,22 @@ CRAB_OWNER_MACHINE_TIMEZONE=America/New_York
 - `crabd` uses stdout for JSONL IPC frames and logs to stderr.
 - `crab-discord-connector` logs to stderr.
 - Configure verbosity with `RUST_LOG` (for example `RUST_LOG=info` or `RUST_LOG=debug`).
+- Practical debugging presets:
+  - `RUST_LOG=info,crab_app=debug,crab_discord_connector=debug` (runtime flow + connector ops)
+  - `RUST_LOG=info,crab_backends=debug` (backend protocol/recovery)
+
+## Remote Debugging (Tailscale)
+
+Typical workflow once you can SSH to the host over Tailscale:
+
+1. Tail logs:
+   - `tail -F /var/log/crab/runtime.log`
+2. Grep by identifiers shown in logs:
+   - `rg \"run:discord:\" /var/log/crab/runtime.log | tail -n 50`
+   - `rg \"rotation (started|completed)\" /var/log/crab/runtime.log | tail -n 50`
+3. Inspect service state:
+   - Linux: `systemctl status crab` and `journalctl -u crab -f`
+   - macOS: `launchctl print system/com.crab.runtime`
 
 ## Service Management
 

@@ -351,6 +351,14 @@ where
         let mut progressed = false;
 
         while let Some(message) = discord.next_gateway_message()? {
+            tracing::debug!(
+                message_id = %message.message_id,
+                channel_id = %message.channel_id,
+                author_id = %message.author_id,
+                author_is_bot = message.author_is_bot,
+                kind = ?message.conversation_kind,
+                "forwarding discord gateway message to crabd"
+            );
             let frame = CrabdInboundFrame::GatewayMessage(message);
             crabd.send_inbound_frame(&frame)?;
             progressed = true;
@@ -358,8 +366,57 @@ where
         }
 
         while let Some(op) = crabd.next_outbound_op()? {
+            match &op {
+                CrabdOutboundOp::Post {
+                    op_id,
+                    channel_id,
+                    delivery_id,
+                    content,
+                } => {
+                    #[cfg(coverage)]
+                    let _ = (op_id, channel_id, delivery_id, content);
+                    #[cfg(not(coverage))]
+                    tracing::debug!(
+                        op = "post",
+                        op_id = %op_id,
+                        channel_id = %channel_id,
+                        delivery_id = %delivery_id,
+                        content_len = content.len(),
+                        "processing crabd outbound op"
+                    );
+                }
+                CrabdOutboundOp::Edit {
+                    op_id,
+                    channel_id,
+                    delivery_id,
+                    content,
+                } => {
+                    #[cfg(coverage)]
+                    let _ = (op_id, channel_id, delivery_id, content);
+                    #[cfg(not(coverage))]
+                    tracing::debug!(
+                        op = "edit",
+                        op_id = %op_id,
+                        channel_id = %channel_id,
+                        delivery_id = %delivery_id,
+                        content_len = content.len(),
+                        "processing crabd outbound op"
+                    );
+                }
+            }
             let receipt =
                 process_outbound_op(discord, delivery_id_map_store, retry_policy, op, &mut stats);
+            if receipt.status != CrabdOutboundReceiptStatus::Ok {
+                #[cfg(not(coverage))]
+                tracing::warn!(
+                    op_id = %receipt.op_id,
+                    channel_id = %receipt.channel_id,
+                    delivery_id = %receipt.delivery_id,
+                    discord_message_id = ?receipt.discord_message_id,
+                    error = %receipt.error_message.clone().unwrap_or_else(|| "unknown error".to_string()),
+                    "outbound discord delivery returned error receipt"
+                );
+            }
             let frame = CrabdInboundFrame::OutboundReceipt(receipt);
             crabd.send_inbound_frame(&frame)?;
             progressed = true;
@@ -392,14 +449,24 @@ where
             delivery_id,
             content,
         } => match delivery_id_map_store.lookup_discord_message_id(&channel_id, &delivery_id) {
-            Some(discord_message_id) => CrabdOutboundReceipt {
-                op_id,
-                status: CrabdOutboundReceiptStatus::Ok,
-                channel_id,
-                delivery_id,
-                discord_message_id: Some(discord_message_id),
-                error_message: None,
-            },
+            Some(discord_message_id) => {
+                tracing::debug!(
+                    op = "post",
+                    op_id = %op_id,
+                    channel_id = %channel_id,
+                    delivery_id = %delivery_id,
+                    discord_message_id = %discord_message_id,
+                    "post is idempotent: delivery_id mapping already exists"
+                );
+                CrabdOutboundReceipt {
+                    op_id,
+                    status: CrabdOutboundReceiptStatus::Ok,
+                    channel_id,
+                    delivery_id,
+                    discord_message_id: Some(discord_message_id),
+                    error_message: None,
+                }
+            }
             None => {
                 let actual_message_id = execute_with_retry(
                     "connector_post_message",
@@ -1187,6 +1254,16 @@ fn run_with_env_and_args() -> CrabResult<ConnectorLoopStats> {
     let values = std::env::vars().collect::<HashMap<_, _>>();
     let args = std::env::args().skip(1).collect::<Vec<_>>();
     let config = ConnectorConfig::from_map_and_args(&values, &args)?;
+
+    tracing::info!(
+        crabd_path = %config.crabd_path,
+        idle_sleep_ms = config.idle_sleep_ms,
+        retry_max_attempts = config.retry_policy.max_attempts,
+        retry_backoff_ms = config.retry_policy.retry_backoff_ms,
+        retry_max_backoff_ms = config.retry_policy.max_retry_backoff_ms,
+        message_id_map_path = %config.message_id_map_path.to_string_lossy(),
+        "crab-discord-connector starting"
+    );
 
     let mut delivery_id_map_store = DeliveryIdMapStore::load(config.message_id_map_path)?;
     let mut discord = live_discord::LiveDiscordIo::connect(config.discord_token)?;

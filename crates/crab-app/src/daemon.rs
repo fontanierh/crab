@@ -421,6 +421,27 @@ where
         opencode_process,
         now_epoch_ms,
     )?;
+    if !boot.startup_reconciliation.recovered_runs.is_empty()
+        || !boot.startup_reconciliation.cleared_session_ids.is_empty()
+    {
+        // `tracing` macros can produce stubborn per-line coverage gaps under `cargo llvm-cov`
+        // (cfg(coverage)), even when the behavior is exercised. Keep runtime logs, but exclude
+        // them from coverage builds where stdout/stderr output is not the product.
+        #[cfg(not(coverage))]
+        tracing::warn!(
+            recovered_runs = boot.startup_reconciliation.recovered_runs.len(),
+            cleared_sessions = boot.startup_reconciliation.cleared_session_ids.len(),
+            "startup reconciliation recovered in-flight work"
+        );
+        #[cfg(not(coverage))]
+        tracing::debug!(
+            recovered = ?boot.startup_reconciliation.recovered_runs,
+            cleared = ?boot.startup_reconciliation.cleared_session_ids,
+            "startup reconciliation details"
+        );
+    } else {
+        tracing::info!("startup reconciliation: no in-flight work recovered");
+    }
     boot.composition.backends.codex.ensure_started()?;
     boot.composition.backends.opencode.ensure_running()?;
 
@@ -451,19 +472,44 @@ where
         }
 
         let now_epoch_ms = control.now_epoch_ms()?;
-        if run_heartbeat_if_due(
+        if let Some(outcome) = run_heartbeat_if_due(
             executor.composition_mut(),
             &mut heartbeat_loop_state,
             now_epoch_ms,
-        )?
-        .is_some()
-        {
+        )? {
             stats.heartbeat_cycles = stats.heartbeat_cycles.saturating_add(1);
+
+            let had_actions = !outcome.cancelled_runs.is_empty()
+                || !outcome.hard_stopped_runs.is_empty()
+                || !outcome.restarted_backends.is_empty()
+                || outcome.dispatcher_nudged;
+            if had_actions {
+                #[cfg(not(coverage))]
+                tracing::warn!(
+                    cancelled_runs = outcome.cancelled_runs.len(),
+                    hard_stopped_runs = outcome.hard_stopped_runs.len(),
+                    restarted_backends = outcome.restarted_backends.len(),
+                    dispatcher_nudged = outcome.dispatcher_nudged,
+                    events = outcome.events.len(),
+                    "heartbeat took corrective action"
+                );
+                #[cfg(not(coverage))]
+                tracing::debug!(?outcome, "heartbeat outcome details");
+            } else {
+                tracing::debug!(events = outcome.events.len(), "heartbeat cycle complete");
+            }
         }
 
         control.sleep_tick(daemon_config.tick_interval_ms)?;
     }
 
+    tracing::info!(
+        iterations = stats.iterations,
+        ingested = stats.ingested_messages,
+        dispatched = stats.dispatched_runs,
+        heartbeats = stats.heartbeat_cycles,
+        "daemon loop exiting: shutting down backends"
+    );
     executor.composition_mut().backends.codex.stop()?;
     executor.composition_mut().backends.opencode.stop()?;
     Ok(stats)
@@ -504,10 +550,12 @@ mod tests {
         CodexAppServerProcess, CodexProcessHandle, OpenCodeServerHandle, OpenCodeServerProcess,
     };
     use crab_core::{
-        BackendKind, CrabError, CrabResult, InferenceProfile, OwnerConfig, ProfileValueSource,
-        ReasoningLevel, Run, RunProfileTelemetry, RunStatus,
+        BackendKind, CrabError, CrabResult, InferenceProfile, LaneState, LogicalSession,
+        OwnerConfig, ProfileValueSource, ReasoningLevel, Run, RunProfileTelemetry, RunStatus,
+        TokenAccounting,
     };
     use crab_discord::{GatewayConversationKind, GatewayMessage};
+    use crab_store::{RunStore, SessionStore};
     use std::collections::VecDeque;
     #[cfg(unix)]
     use std::process::Command;
@@ -874,6 +922,31 @@ mod tests {
         }
     }
 
+    fn sample_session(
+        lane_state: LaneState,
+        active_physical_session_id: Option<String>,
+    ) -> LogicalSession {
+        LogicalSession {
+            id: "discord:channel:777".to_string(),
+            active_backend: BackendKind::Codex,
+            active_profile: InferenceProfile {
+                backend: BackendKind::Codex,
+                model: "auto".to_string(),
+                reasoning_level: ReasoningLevel::Medium,
+            },
+            active_physical_session_id,
+            last_successful_checkpoint_id: None,
+            lane_state,
+            queued_run_count: 0,
+            last_activity_epoch_ms: 1,
+            token_accounting: TokenAccounting {
+                input_tokens: 0,
+                output_tokens: 0,
+                total_tokens: 0,
+            },
+        }
+    }
+
     #[test]
     fn daemon_config_validation_rejects_invalid_values() {
         let blank_bot = DaemonConfig {
@@ -1010,6 +1083,105 @@ mod tests {
         .expect("daemon loop should succeed");
 
         assert_eq!(stats.heartbeat_cycles, 2);
+    }
+
+    #[test]
+    fn daemon_loop_reports_startup_reconciliation_when_session_handle_is_non_idle() {
+        let workspace = TempWorkspace::new("daemon", "startup-reconcile-session");
+        let config = runtime_config_for_workspace_with_lanes(&workspace.path, 1);
+
+        // Seed a session that is non-idle and still has a physical handle; startup reconciliation
+        // should clear it, which exercises the "recovered in-flight work" reporting branch.
+        let state_root = workspace.path.join("state");
+        let session_store = SessionStore::new(state_root);
+        let seeded = sample_session(LaneState::Running, Some("phys-1".to_string()));
+        session_store
+            .upsert_session(&seeded)
+            .expect("seed session should persist");
+
+        let daemon_config = DaemonConfig {
+            bot_user_id: "999".to_string(),
+            tick_interval_ms: 1,
+            max_iterations: Some(1),
+        };
+        let discord = ScriptedDiscordIo::with_state(DiscordIoState {
+            inbound: VecDeque::from([Ok(None)]),
+            ..DiscordIoState::default()
+        });
+        let codex = TrackingCodexProcess::new();
+        let opencode = TrackingOpenCodeProcess::new();
+        let mut control = ScriptedControl::with_now(vec![1_000, 1_001]);
+
+        run_daemon_loop_with_transport(
+            &config,
+            &daemon_config,
+            codex,
+            opencode,
+            discord,
+            &mut control,
+        )
+        .expect("daemon loop should succeed");
+
+        let updated = session_store
+            .get_session(&seeded.id)
+            .expect("session read should succeed")
+            .expect("session should exist");
+        assert_eq!(updated.active_physical_session_id, None);
+        assert_eq!(updated.lane_state, LaneState::Idle);
+    }
+
+    #[test]
+    fn daemon_loop_reports_heartbeat_actions_when_run_is_stalled() {
+        let workspace = TempWorkspace::new("daemon", "heartbeat-actions");
+        let config = runtime_config_for_workspace_with_lanes(&workspace.path, 1);
+
+        let state_root = workspace.path.join("state");
+        let session_store = SessionStore::new(state_root.clone());
+        let run_store = RunStore::new(state_root);
+
+        // Avoid startup reconciliation clearing the session: it only clears when a physical handle
+        // exists. We still want the lane to be considered active for heartbeat.
+        let session = sample_session(LaneState::Running, None);
+        session_store
+            .upsert_session(&session)
+            .expect("seed session should persist");
+
+        let mut run = sample_run("111");
+        run.id = "run-stalled-1".to_string();
+        run.status = RunStatus::Running;
+        run.started_at_epoch_ms = Some(1_000);
+        run_store.upsert_run(&run).expect("seed run should persist");
+
+        let daemon_config = DaemonConfig {
+            bot_user_id: "999".to_string(),
+            tick_interval_ms: 1,
+            max_iterations: Some(1),
+        };
+        let discord = ScriptedDiscordIo::with_state(DiscordIoState {
+            inbound: VecDeque::from([Ok(None)]),
+            ..DiscordIoState::default()
+        });
+        let codex = TrackingCodexProcess::new();
+        let opencode = TrackingOpenCodeProcess::new();
+
+        // Boot at 1s, then jump far enough ahead to exceed CRAB_RUN_STALL_TIMEOUT_SECS (default 90s).
+        let mut control = ScriptedControl::with_now(vec![1_000, 101_000]);
+
+        run_daemon_loop_with_transport(
+            &config,
+            &daemon_config,
+            codex,
+            opencode,
+            discord,
+            &mut control,
+        )
+        .expect("daemon loop should succeed");
+
+        let updated = session_store
+            .get_session(&session.id)
+            .expect("session read should succeed")
+            .expect("session should exist");
+        assert_eq!(updated.lane_state, LaneState::Cancelling);
     }
 
     #[test]
