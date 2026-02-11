@@ -599,7 +599,7 @@ Delivered:
 
 ### WS21 - Workspace Private Git Persistence
 
-Status (as of 2026-02-11): WS21-T1 completed. WS21-T2 through WS21-T6 pending.
+Status (as of 2026-02-11): WS21-T1 and WS21-T2 completed. WS21-T3 through WS21-T6 pending.
 
 ### WS21-T1 - Git persistence config model
 - Add explicit runtime config for workspace git persistence (`enabled`, `remote`, `branch`, commit identity, push policy).

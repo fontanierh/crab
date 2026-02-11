@@ -11,6 +11,11 @@ Implemented and validated in repository code/tests:
 
 - Runtime policy config surface in `RuntimeConfig` (rotation, reconciliation, heartbeat, owner profile defaults).
 - Workspace git persistence config model in `RuntimeConfig` (`enabled`, `remote`, `branch`, commit identity, push policy) with eager validation.
+- Workspace git bootstrap/binding on startup when enabled:
+  - initializes workspace-local repository only at `CRAB_WORKSPACE_ROOT`
+  - rejects nested/external repository mutation
+  - enforces deterministic branch bootstrap on empty repositories
+  - validates/binds `origin` against configured private remote
 - Session token accounting aggregation from normalized backend usage payloads at turn finalization.
 - Rotation trigger execution in finalization (`evaluate_rotation_triggers` -> `execute_rotation_sequence`).
 - Token-threshold compaction is evaluated against session token usage since the last successful

@@ -117,6 +117,13 @@ CRAB_OWNER_DISCORD_USER_IDS=123456789012345678
 CRAB_OWNER_MACHINE_TIMEZONE=America/New_York
 ```
 
+Workspace git bootstrap behavior when `CRAB_WORKSPACE_GIT_PERSISTENCE_ENABLED=true`:
+
+- Startup validates that git persistence is scoped to `CRAB_WORKSPACE_ROOT` only (no parent/external repo mutation).
+- If no local repo exists, Crab bootstraps one and sets HEAD to `CRAB_WORKSPACE_GIT_BRANCH` when needed.
+- If `CRAB_WORKSPACE_GIT_REMOTE` is set, Crab validates or binds `origin` deterministically.
+- Existing non-empty repositories with branch mismatch are rejected (operator action required).
+
 ## Logging (Structured, `tracing`)
 
 - `crabd` uses stdout for JSONL IPC frames and logs to stderr.

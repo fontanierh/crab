@@ -1,9 +1,9 @@
 use std::path::{Path, PathBuf};
 
 use crab_core::{
-    ensure_workspace_layout, CrabError, CrabResult, RuntimeConfig, WorkspaceBootstrapState,
-    AGENTS_SKILLS_ROOT_RELATIVE_PATH, CLAUDE_SKILLS_LINK_RELATIVE_PATH,
-    SKILL_AUTHORING_POLICY_FILE_RELATIVE_PATH,
+    ensure_workspace_git_repository, ensure_workspace_layout, CrabError, CrabResult, RuntimeConfig,
+    WorkspaceBootstrapState, WorkspaceGitEnsureOutcome, AGENTS_SKILLS_ROOT_RELATIVE_PATH,
+    CLAUDE_SKILLS_LINK_RELATIVE_PATH, SKILL_AUTHORING_POLICY_FILE_RELATIVE_PATH,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -12,16 +12,19 @@ pub struct AppStartupOutcome {
     pub bootstrap_state: WorkspaceBootstrapState,
     pub created_paths: Vec<String>,
     pub repaired_paths: Vec<String>,
+    pub workspace_git: WorkspaceGitEnsureOutcome,
     pub diagnostics: Vec<String>,
 }
 
 pub fn initialize_runtime_startup(config: &RuntimeConfig) -> CrabResult<AppStartupOutcome> {
     let workspace_root = resolve_workspace_root(&config.workspace_root)?;
     let ensure_outcome = ensure_workspace_layout(&workspace_root)?;
+    let workspace_git = ensure_workspace_git_repository(&workspace_root, &config.workspace_git)?;
     let diagnostics = render_startup_diagnostics(
         ensure_outcome.bootstrap_state,
         &ensure_outcome.created_paths,
         &ensure_outcome.repaired_paths,
+        &workspace_git,
     );
 
     Ok(AppStartupOutcome {
@@ -29,6 +32,7 @@ pub fn initialize_runtime_startup(config: &RuntimeConfig) -> CrabResult<AppStart
         bootstrap_state: ensure_outcome.bootstrap_state,
         created_paths: ensure_outcome.created_paths,
         repaired_paths: ensure_outcome.repaired_paths,
+        workspace_git,
         diagnostics,
     })
 }
@@ -37,6 +41,7 @@ fn render_startup_diagnostics(
     bootstrap_state: WorkspaceBootstrapState,
     created_paths: &[String],
     repaired_paths: &[String],
+    workspace_git: &WorkspaceGitEnsureOutcome,
 ) -> Vec<String> {
     let mut diagnostics = Vec::new();
     diagnostics.push(format!(
@@ -55,6 +60,30 @@ fn render_startup_diagnostics(
         "workspace.skills.policy:{}",
         SKILL_AUTHORING_POLICY_FILE_RELATIVE_PATH
     ));
+    diagnostics.push(format!("workspace.git.enabled:{}", workspace_git.enabled));
+
+    if !workspace_git.enabled {
+        diagnostics.push("workspace.git.ensure:disabled".to_string());
+    } else {
+        if let Some(repository_root) = workspace_git.repository_root.as_deref() {
+            diagnostics.push(format!("workspace.git.repository_root:{repository_root}"));
+        }
+        if workspace_git.repository_initialized {
+            diagnostics.push("workspace.git.initialized:true".to_string());
+        }
+        if workspace_git.branch_bootstrapped {
+            diagnostics.push("workspace.git.branch_bootstrapped:true".to_string());
+        }
+        if workspace_git.remote_bound {
+            diagnostics.push("workspace.git.remote_bound:true".to_string());
+        }
+        if !workspace_git.repository_initialized
+            && !workspace_git.branch_bootstrapped
+            && !workspace_git.remote_bound
+        {
+            diagnostics.push("workspace.git.ensure:validated".to_string());
+        }
+    }
 
     if created_paths.is_empty() && repaired_paths.is_empty() {
         diagnostics.push("workspace.ensure:noop".to_string());
@@ -125,7 +154,7 @@ mod tests {
 
     use super::{
         initialize_runtime_startup, render_startup_diagnostics, resolve_workspace_root_with_home,
-        AppStartupOutcome,
+        AppStartupOutcome, WorkspaceGitEnsureOutcome,
     };
     use crate::test_support::{
         runtime_config_for_workspace, runtime_config_for_workspace_root, TempWorkspace,
@@ -189,6 +218,20 @@ mod tests {
         }
     }
 
+    fn enabled_workspace_git_outcome(
+        repository_initialized: bool,
+        branch_bootstrapped: bool,
+        remote_bound: bool,
+    ) -> WorkspaceGitEnsureOutcome {
+        WorkspaceGitEnsureOutcome {
+            enabled: true,
+            repository_initialized,
+            branch_bootstrapped,
+            remote_bound,
+            repository_root: Some("/tmp/workspace".to_string()),
+        }
+    }
+
     #[test]
     fn fake_onboarding_completion_runtime_reports_missing_sequence() {
         let runtime = FakeOnboardingCompletionRuntime {
@@ -217,6 +260,7 @@ mod tests {
         assert_eq!(outcome.workspace_root, workspace.path);
         assert!(!outcome.created_paths.is_empty());
         assert!(outcome.repaired_paths.is_empty());
+        assert_eq!(outcome.workspace_git, WorkspaceGitEnsureOutcome::disabled());
         assert!(workspace.path.join("AGENTS.md").is_file());
         assert!(workspace.path.join("memory/global").is_dir());
     }
@@ -379,6 +423,7 @@ mod tests {
             WorkspaceBootstrapState::PendingBootstrap,
             &["/tmp/workspace/AGENTS.md".to_string()],
             &["/tmp/workspace/CLAUDE.md".to_string()],
+            &WorkspaceGitEnsureOutcome::disabled(),
         );
         assert_eq!(
             diagnostics,
@@ -388,13 +433,19 @@ mod tests {
                 "workspace.skills.compatibility:.claude/skills->.agents/skills".to_string(),
                 "workspace.skills.policy:.agents/skills/skill-authoring-policy/SKILL.md"
                     .to_string(),
+                "workspace.git.enabled:false".to_string(),
+                "workspace.git.ensure:disabled".to_string(),
                 "workspace.created:/tmp/workspace/AGENTS.md".to_string(),
                 "workspace.repaired:/tmp/workspace/CLAUDE.md".to_string(),
             ]
         );
 
-        let noop =
-            render_startup_diagnostics(WorkspaceBootstrapState::Ready, &Vec::new(), &Vec::new());
+        let noop = render_startup_diagnostics(
+            WorkspaceBootstrapState::Ready,
+            &Vec::new(),
+            &Vec::new(),
+            &WorkspaceGitEnsureOutcome::disabled(),
+        );
         assert_eq!(
             noop,
             vec![
@@ -403,6 +454,58 @@ mod tests {
                 "workspace.skills.compatibility:.claude/skills->.agents/skills".to_string(),
                 "workspace.skills.policy:.agents/skills/skill-authoring-policy/SKILL.md"
                     .to_string(),
+                "workspace.git.enabled:false".to_string(),
+                "workspace.git.ensure:disabled".to_string(),
+                "workspace.ensure:noop".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn startup_diagnostics_include_workspace_git_events_when_enabled() {
+        let diagnostics = render_startup_diagnostics(
+            WorkspaceBootstrapState::Ready,
+            &Vec::new(),
+            &Vec::new(),
+            &enabled_workspace_git_outcome(true, true, true),
+        );
+        assert_eq!(
+            diagnostics,
+            vec![
+                "workspace.bootstrap_state:ready".to_string(),
+                "workspace.skills.canonical:.agents/skills".to_string(),
+                "workspace.skills.compatibility:.claude/skills->.agents/skills".to_string(),
+                "workspace.skills.policy:.agents/skills/skill-authoring-policy/SKILL.md"
+                    .to_string(),
+                "workspace.git.enabled:true".to_string(),
+                "workspace.git.repository_root:/tmp/workspace".to_string(),
+                "workspace.git.initialized:true".to_string(),
+                "workspace.git.branch_bootstrapped:true".to_string(),
+                "workspace.git.remote_bound:true".to_string(),
+                "workspace.ensure:noop".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn startup_diagnostics_mark_workspace_git_as_validated_when_enabled_and_stable() {
+        let diagnostics = render_startup_diagnostics(
+            WorkspaceBootstrapState::Ready,
+            &Vec::new(),
+            &Vec::new(),
+            &enabled_workspace_git_outcome(false, false, false),
+        );
+        assert_eq!(
+            diagnostics,
+            vec![
+                "workspace.bootstrap_state:ready".to_string(),
+                "workspace.skills.canonical:.agents/skills".to_string(),
+                "workspace.skills.compatibility:.claude/skills->.agents/skills".to_string(),
+                "workspace.skills.policy:.agents/skills/skill-authoring-policy/SKILL.md"
+                    .to_string(),
+                "workspace.git.enabled:true".to_string(),
+                "workspace.git.repository_root:/tmp/workspace".to_string(),
+                "workspace.git.ensure:validated".to_string(),
                 "workspace.ensure:noop".to_string(),
             ]
         );

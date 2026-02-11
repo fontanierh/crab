@@ -31,6 +31,7 @@ Crab is a Rust harness for running coding agents (Claude Code, Codex CLI, OpenCo
 - `WS20` complete: canonical skills root bootstrap (`.agents/skills`), Claude compatibility symlink enforcement (`.claude/skills -> ../.agents/skills`), built-in skill-authoring policy file, prompt-contract governance section, and startup diagnostics coverage.
 - `WS21` in progress:
   - `WS21-T1` complete: workspace git persistence config model (`enabled`, `remote`, `branch`, commit identity, push policy) with eager validation for malformed/unsafe values.
+  - `WS21-T2` complete: startup-time workspace git repository bootstrap/binding is implemented (`crab-core::ensure_workspace_git_repository` + `crab-app::initialize_runtime_startup`) with safe external-repo guardrails, deterministic branch bootstrap on empty repos, and remote-origin binding validation.
 
 ## Docs
 

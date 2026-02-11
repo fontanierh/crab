@@ -31,6 +31,7 @@ pub mod startup_reconciliation;
 pub mod trust;
 mod validation;
 pub mod workspace;
+pub mod workspace_git;
 
 pub use checkpoint_fallback::{
     build_fallback_checkpoint_document, TranscriptEntry, TranscriptEntryRole,
@@ -158,6 +159,7 @@ pub use workspace::{
     MEMORY_FILE_NAME, SKILL_AUTHORING_POLICY_FILE_RELATIVE_PATH, SKILL_AUTHORING_POLICY_SKILL_NAME,
     SOUL_FILE_NAME, USER_FILE_NAME,
 };
+pub use workspace_git::{ensure_workspace_git_repository, WorkspaceGitEnsureOutcome};
 
 #[cfg(test)]
 mod tests {

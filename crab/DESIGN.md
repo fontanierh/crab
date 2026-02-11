@@ -687,6 +687,13 @@ reasoning_level = "high"
 inactivity_timeout_secs = 3600
 ```
 
+Workspace git bootstrap policy (implemented in WS21-T2):
+
+- When enabled, startup may initialize a repository only at the workspace root.
+- If workspace is nested inside a different repository, startup fails fast to avoid mutating external paths.
+- Branch bootstrap is deterministic for empty repos (`HEAD` is set to configured `branch`).
+- `origin` remote is validated/bound against configured remote when provided.
+
 ## 18) Deferred Items
 
 - Branch protection and required CI checks.
