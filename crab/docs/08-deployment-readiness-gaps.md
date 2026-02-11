@@ -5,13 +5,15 @@
 This document tracks unresolved runtime and deployment gaps before Crab is deployed on
 the target machine.
 
-## Status Snapshot (February 10, 2026)
+## Status Snapshot (February 11, 2026)
 
 Implemented and validated in repository code/tests:
 
 - Runtime policy config surface in `RuntimeConfig` (rotation, reconciliation, heartbeat, owner profile defaults).
 - Session token accounting aggregation from normalized backend usage payloads at turn finalization.
 - Rotation trigger execution in finalization (`evaluate_rotation_triggers` -> `execute_rotation_sequence`).
+- Token-threshold compaction is evaluated against session token usage since the last successful
+  rotation (token accounting is reset on rotation). Default threshold is `120000`.
 - Owner-only manual rotation commands:
   - `/compact confirm`
   - `/reset confirm`

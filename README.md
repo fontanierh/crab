@@ -2,7 +2,7 @@
 
 Crab is a Rust harness for running coding agents (Claude Code, Codex CLI, OpenCode) behind a Discord bot.
 
-## Current Status (as of February 10, 2026)
+## Current Status (as of February 11, 2026)
 
 - `WS0` complete: workspace/bootstrap + enforced quality gates.
 - `WS1` complete: domain model plus session/event/checkpoint/outbound persistence stores.
@@ -20,6 +20,7 @@ Crab is a Rust harness for running coding agents (Claude Code, Codex CLI, OpenCo
 - `WS15` complete: composition-root wiring, turn executor pipeline, event envelope parity, delivery/replay integration, and deployment readiness integration tests are complete.
 - `WS16` complete: comprehensive architecture handbook covering onboarding, sessions, rotation/checkpointing, memory/context, reliability/recovery, backend contracts, state model, and deployment-gap tracking.
 - `WS17` complete: runtime policy config, token-accounting propagation, rotation trigger wiring, owner manual compact/reset commands, startup reconciliation + deterministic heartbeat scheduling integration, and deployment-gap validation/docs sync.
+  - Note: token-threshold compaction is evaluated against session token usage since the last successful rotation (token accounting is reset on rotation). Default compaction threshold is `120000`.
 - `WS18` in progress:
   - `WS18-T1` complete: Discord runtime adapter boundary for ingress + outbound send/edit with deterministic retry/rate-limit handling.
   - `WS18-T2` complete: `crabd` daemon runtime binary is implemented and tested (startup, daemon loop, heartbeat/reconciliation wiring, graceful shutdown, stdio JSONL transport).
