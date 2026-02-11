@@ -35,8 +35,8 @@ core modules are actually exercised in production flow.
 
 - Daemon backend execution bridge:
   - `crates/crab-app/src/daemon.rs` now delegates turn execution via a backend bridge.
-  - OpenCode path is wired through normalized backend events (including usage metadata from
-    backend envelopes).
+  - OpenCode path now uses transport-backed runtime execution and maps OpenCode API responses into
+    normalized backend events (including usage metadata from backend envelopes).
   - Codex/Claude daemon execution paths still use the fallback stub path.
 - Hidden checkpoint backend turn:
   - Core primitives exist (`build_checkpoint_prompt`, parse/resolve helpers).

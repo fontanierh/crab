@@ -34,6 +34,7 @@ pub const DEFAULT_DAEMON_TICK_INTERVAL_MS: u64 = 250;
 const DAEMON_TURN_CONTEXT_READ: &str = "daemon_turn_context_read";
 const DAEMON_BACKEND_BRIDGE_EXECUTE: &str = "daemon_backend_bridge_execute";
 const DAEMON_BACKEND_BRIDGE_CONTEXT: &str = "daemon_backend_bridge";
+const DAEMON_OPENCODE_TRANSPORT_CONTEXT: &str = "daemon_opencode_transport";
 const MILLIS_PER_DAY: u64 = 86_400_000;
 const OPENCODE_SESSION_PLACEHOLDER_PREFIX: &str = "backend-session:";
 
@@ -129,47 +130,350 @@ trait OpenCodeBridgeRuntime: Send + Sync + std::fmt::Debug {
 }
 
 #[derive(Debug, Default)]
-struct DeterministicOpenCodeBridgeRuntime;
+struct HttpOpenCodeBridgeRuntime;
 
-impl OpenCodeBridgeRuntime for DeterministicOpenCodeBridgeRuntime {
+impl HttpOpenCodeBridgeRuntime {
+    fn endpoint(server_base_url: &str, route: &str) -> String {
+        let base = server_base_url.trim_end_matches('/');
+        let route = route.trim_start_matches('/');
+        format!("{base}/{route}")
+    }
+
+    fn post_json(
+        &self,
+        server_base_url: &str,
+        route: &str,
+        payload: &serde_json::Value,
+    ) -> CrabResult<serde_json::Value> {
+        let endpoint = Self::endpoint(server_base_url, route);
+        let response = reqwest::blocking::Client::new()
+            .post(&endpoint)
+            .json(payload)
+            .send()
+            .map_err(|error| CrabError::Io {
+                context: DAEMON_OPENCODE_TRANSPORT_CONTEXT,
+                path: None,
+                message: format!("POST {endpoint} failed: {error}"),
+            })?;
+        let status = response.status();
+        let response_body = response.text().map_err(|error| CrabError::Io {
+            context: DAEMON_OPENCODE_TRANSPORT_CONTEXT,
+            path: None,
+            message: format!("failed reading response body from {endpoint}: {error}"),
+        })?;
+        if !status.is_success() {
+            return Err(CrabError::InvariantViolation {
+                context: DAEMON_OPENCODE_TRANSPORT_CONTEXT,
+                message: format!(
+                    "POST {endpoint} returned HTTP {} with body {}",
+                    status.as_u16(),
+                    response_body.trim()
+                ),
+            });
+        }
+        if response_body.trim().is_empty() {
+            return Ok(serde_json::Value::Object(serde_json::Map::new()));
+        }
+        serde_json::from_str(&response_body).map_err(|error| CrabError::Serialization {
+            context: DAEMON_OPENCODE_TRANSPORT_CONTEXT,
+            path: None,
+            message: format!("invalid JSON response from {endpoint}: {error}"),
+        })
+    }
+
+    fn value_at_path<'a>(
+        value: &'a serde_json::Value,
+        path: &[&str],
+    ) -> Option<&'a serde_json::Value> {
+        let mut cursor = value;
+        for segment in path {
+            cursor = cursor.get(*segment)?;
+        }
+        Some(cursor)
+    }
+
+    fn value_as_non_empty_string(value: &serde_json::Value) -> Option<String> {
+        value
+            .as_str()
+            .map(str::trim)
+            .filter(|text| !text.is_empty())
+            .map(ToOwned::to_owned)
+    }
+
+    fn value_as_u64(value: &serde_json::Value) -> Option<u64> {
+        if let Some(number) = value.as_u64() {
+            return Some(number);
+        }
+        value.as_str()?.parse::<u64>().ok()
+    }
+
+    fn extract_required_response_string(
+        value: &serde_json::Value,
+        context: &'static str,
+        field_name: &'static str,
+        paths: &[&[&str]],
+    ) -> CrabResult<String> {
+        for path in paths {
+            if let Some(parsed) =
+                Self::value_at_path(value, path).and_then(Self::value_as_non_empty_string)
+            {
+                return Ok(parsed);
+            }
+        }
+        Err(CrabError::InvariantViolation {
+            context,
+            message: format!("response is missing required field {field_name}"),
+        })
+    }
+
+    fn extract_first_u64(value: &serde_json::Value, paths: &[&[&str]]) -> Option<u64> {
+        for path in paths {
+            if let Some(parsed) = Self::value_at_path(value, path).and_then(Self::value_as_u64) {
+                return Some(parsed);
+            }
+        }
+        None
+    }
+
+    fn extract_usage(value: &serde_json::Value) -> Option<OpenCodeTokenUsage> {
+        let input_tokens = Self::extract_first_u64(
+            value,
+            &[
+                &["usage", "input_tokens"],
+                &["usage", "inputTokens"],
+                &["input_tokens"],
+                &["inputTokens"],
+                &["info", "tokens", "input"],
+                &["info", "usage", "input_tokens"],
+                &["info", "usage", "inputTokens"],
+            ],
+        )?;
+        let output_tokens = Self::extract_first_u64(
+            value,
+            &[
+                &["usage", "output_tokens"],
+                &["usage", "outputTokens"],
+                &["output_tokens"],
+                &["outputTokens"],
+                &["info", "tokens", "output"],
+                &["info", "usage", "output_tokens"],
+                &["info", "usage", "outputTokens"],
+            ],
+        )?;
+        let total_tokens = Self::extract_first_u64(
+            value,
+            &[
+                &["usage", "total_tokens"],
+                &["usage", "totalTokens"],
+                &["total_tokens"],
+                &["totalTokens"],
+                &["info", "tokens", "total"],
+                &["info", "usage", "total_tokens"],
+                &["info", "usage", "totalTokens"],
+            ],
+        )
+        .or_else(|| input_tokens.checked_add(output_tokens))?;
+        Some(OpenCodeTokenUsage {
+            input_tokens,
+            output_tokens,
+            total_tokens,
+        })
+    }
+
+    fn collect_delta_from_parts(parts: &[serde_json::Value]) -> String {
+        let mut collected = String::new();
+        for part in parts {
+            if let Some(text) = part
+                .get("text")
+                .and_then(serde_json::Value::as_str)
+                .or_else(|| part.get("delta").and_then(serde_json::Value::as_str))
+                .or_else(|| part.get("content").and_then(serde_json::Value::as_str))
+            {
+                collected.push_str(text);
+            } else if let Some(text) = part
+                .get("text")
+                .and_then(|inner| inner.get("value"))
+                .and_then(serde_json::Value::as_str)
+            {
+                collected.push_str(text);
+            }
+        }
+        collected
+    }
+
+    fn extract_text_delta(value: &serde_json::Value) -> Option<String> {
+        for path in &[&["output_text"][..], &["text"], &["message", "text"]] {
+            if let Some(text) = Self::value_at_path(value, path)
+                .and_then(serde_json::Value::as_str)
+                .map(str::trim)
+                .filter(|text| !text.is_empty())
+            {
+                return Some(text.to_string());
+            }
+        }
+
+        for path in &[
+            &["parts"][..],
+            &["message", "parts"],
+            &["assistant", "parts"],
+        ] {
+            if let Some(parts) =
+                Self::value_at_path(value, path).and_then(serde_json::Value::as_array)
+            {
+                let collected = Self::collect_delta_from_parts(parts);
+                if !collected.trim().is_empty() {
+                    return Some(collected);
+                }
+            }
+        }
+
+        None
+    }
+
+    fn extract_turn_state(value: &serde_json::Value) -> OpenCodeTurnState {
+        let state = Self::extract_required_response_string(
+            value,
+            "opencode_send_prompt_response",
+            "state",
+            &[
+                &["state"],
+                &["status"],
+                &["info", "state"],
+                &["info", "status"],
+            ],
+        )
+        .unwrap_or_else(|_| "completed".to_string());
+        match state.to_ascii_lowercase().as_str() {
+            "interrupted" | "cancelled" | "canceled" => OpenCodeTurnState::Interrupted,
+            "failed" | "error" | "errored" => OpenCodeTurnState::Failed,
+            _ => OpenCodeTurnState::Completed,
+        }
+    }
+
+    fn extract_turn_message(value: &serde_json::Value) -> Option<String> {
+        for path in &[&["message"][..], &["error"], &["info", "message"]] {
+            if let Some(text) =
+                Self::value_at_path(value, path).and_then(Self::value_as_non_empty_string)
+            {
+                return Some(text);
+            }
+        }
+        None
+    }
+}
+
+impl OpenCodeBridgeRuntime for HttpOpenCodeBridgeRuntime {
     fn create_session(
         &self,
         server_base_url: &str,
-        _config: OpenCodeSessionConfig,
+        config: OpenCodeSessionConfig,
     ) -> CrabResult<String> {
-        let fingerprint = server_base_url.bytes().fold(0_u64, |acc, byte| {
-            acc.wrapping_mul(131).wrapping_add(u64::from(byte))
-        });
-        Ok(format!("opencode-session-{fingerprint}"))
+        let mut payload = serde_json::Map::new();
+        if let Some(model) = config.model.filter(|value| !value.trim().is_empty()) {
+            payload.insert("model".to_string(), serde_json::Value::String(model));
+        }
+        if let Some(reasoning_level) = config
+            .reasoning_level
+            .filter(|value| !value.trim().is_empty())
+        {
+            payload.insert(
+                "reasoning_level".to_string(),
+                serde_json::Value::String(reasoning_level.clone()),
+            );
+            payload.insert(
+                "reasoningLevel".to_string(),
+                serde_json::Value::String(reasoning_level),
+            );
+        }
+        let response = self.post_json(
+            server_base_url,
+            "session",
+            &serde_json::Value::Object(payload),
+        );
+        let response = response?;
+        Self::extract_required_response_string(
+            &response,
+            "opencode_create_session_response",
+            "session_id",
+            &[&["session_id"], &["sessionId"], &["id"], &["session", "id"]],
+        )
     }
 
     fn execute_turn(
         &self,
-        _server_base_url: &str,
+        server_base_url: &str,
         session_id: &str,
-        _prompt: &str,
-        _config: OpenCodeTurnConfig,
+        prompt: &str,
+        config: OpenCodeTurnConfig,
     ) -> CrabResult<OpenCodeBridgeTurnResult> {
-        let turn_id = format!("opencode-turn-{session_id}");
-        Ok(OpenCodeBridgeTurnResult {
-            turn_id: turn_id.clone(),
-            raw_events: vec![
-                OpenCodeRawEvent::AssistantDelta {
-                    sequence: 1,
-                    text: "OpenCode backend response".to_string(),
-                },
-                OpenCodeRawEvent::TurnFinished {
-                    sequence: 2,
-                    turn_id,
-                    state: OpenCodeTurnState::Completed,
-                    message: Some("completed".to_string()),
-                    usage: Some(OpenCodeTokenUsage {
-                        input_tokens: 3,
-                        output_tokens: 4,
-                        total_tokens: 7,
-                    }),
-                },
+        let mut payload = serde_json::Map::new();
+        payload.insert(
+            "prompt".to_string(),
+            serde_json::Value::String(prompt.to_string()),
+        );
+        payload.insert(
+            "parts".to_string(),
+            serde_json::json!([{"type":"text","text":prompt}]),
+        );
+        if let Some(model) = config.model.filter(|value| !value.trim().is_empty()) {
+            payload.insert(
+                "model".to_string(),
+                serde_json::Value::String(model.clone()),
+            );
+            payload.insert("modelID".to_string(), serde_json::Value::String(model));
+        }
+        if let Some(reasoning_level) = config
+            .reasoning_level
+            .filter(|value| !value.trim().is_empty())
+        {
+            payload.insert(
+                "reasoning_level".to_string(),
+                serde_json::Value::String(reasoning_level.clone()),
+            );
+            payload.insert(
+                "reasoningLevel".to_string(),
+                serde_json::Value::String(reasoning_level),
+            );
+        }
+        let route = format!("session/{session_id}/message");
+        let response = self.post_json(server_base_url, &route, &serde_json::Value::Object(payload));
+        let response = response?;
+        let turn_id = Self::extract_required_response_string(
+            &response,
+            "opencode_send_prompt_response",
+            "turn_id",
+            &[
+                &["turn_id"],
+                &["turnId"],
+                &["id"],
+                &["message", "id"],
+                &["info", "id"],
             ],
+        );
+        let turn_id = turn_id?;
+
+        let mut raw_events = Vec::new();
+        let mut sequence = 1;
+        if let Some(delta) = Self::extract_text_delta(&response) {
+            raw_events.push(OpenCodeRawEvent::AssistantDelta {
+                sequence,
+                text: delta,
+            });
+            sequence = sequence.saturating_add(1);
+        }
+        let state = Self::extract_turn_state(&response);
+        let message = Self::extract_turn_message(&response)
+            .or_else(|| (state == OpenCodeTurnState::Completed).then(|| "completed".to_string()));
+        raw_events.push(OpenCodeRawEvent::TurnFinished {
+            sequence,
+            turn_id: turn_id.clone(),
+            state,
+            message,
+            usage: Self::extract_usage(&response),
+        });
+        Ok(OpenCodeBridgeTurnResult {
+            turn_id,
+            raw_events,
         })
     }
 }
@@ -757,7 +1061,9 @@ impl<D: DaemonDiscordIo> TurnExecutorRuntime for DaemonTurnRuntime<D> {
                     run.id, turn_id, run.profile.resolved_profile.backend, error
                 ),
             })?;
-        physical_session.last_turn_id = Some(turn_id.to_string());
+        if physical_session.last_turn_id.is_none() {
+            physical_session.last_turn_id = Some(turn_id.to_string());
+        }
         self.physical_sessions
             .insert(cache_key, physical_session.clone());
         Ok(backend_events)
@@ -879,7 +1185,7 @@ where
     );
     if !runtime.has_opencode_backend_bridge() {
         let bridge_url = opencode_handle.server_base_url.clone();
-        let bridge_runtime = Box::new(DeterministicOpenCodeBridgeRuntime);
+        let bridge_runtime = Box::new(HttpOpenCodeBridgeRuntime);
         runtime.configure_opencode_backend_bridge_trusted(bridge_url, bridge_runtime);
     }
     let mut executor = TurnExecutor::new(boot.composition, runtime);
@@ -1128,10 +1434,13 @@ mod tests {
     use crab_discord::{GatewayConversationKind, GatewayMessage};
     use crab_store::{CheckpointStore, EventStore, RunStore, SessionStore};
     use std::collections::VecDeque;
+    use std::io::{BufRead, BufReader, Read, Write};
+    use std::net::{TcpListener, TcpStream};
     #[cfg(unix)]
     use std::process::Command;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, Mutex};
+    use std::thread::JoinHandle;
     use std::time::{Duration, UNIX_EPOCH};
 
     #[derive(Debug, Clone, Default)]
@@ -1198,6 +1507,15 @@ mod tests {
                 spawn_error: None,
                 terminate_error: None,
                 server_base_url: "http://127.0.0.1:4210".to_string(),
+            }
+        }
+
+        fn with_server_base_url(server_base_url: String) -> Self {
+            Self {
+                state: Arc::new(Mutex::new(TrackingOpenCodeState::default())),
+                spawn_error: None,
+                terminate_error: None,
+                server_base_url,
             }
         }
 
@@ -1447,6 +1765,37 @@ mod tests {
         }
     }
 
+    #[derive(Debug, Default)]
+    struct TurnIdMutatingBackendBridge;
+
+    impl DaemonBackendExecutionBridge for TurnIdMutatingBackendBridge {
+        fn execute_turn(
+            &mut self,
+            physical_session: &mut crab_core::PhysicalSession,
+            _run: &Run,
+            _turn_id: &str,
+            _turn_context: &str,
+        ) -> CrabResult<Vec<BackendEvent>> {
+            physical_session.last_turn_id = Some("backend-turn-id-9".to_string());
+            Ok(vec![BackendEvent {
+                sequence: 1,
+                kind: BackendEventKind::TurnCompleted,
+                payload: std::collections::BTreeMap::from([(
+                    "finish".to_string(),
+                    "done".to_string(),
+                )]),
+            }])
+        }
+
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+
+        fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+            self
+        }
+    }
+
     #[derive(Debug, Clone)]
     struct ScriptedControl {
         now_values: VecDeque<u64>,
@@ -1636,6 +1985,131 @@ mod tests {
                     message: "missing scripted execute_turn result".to_string(),
                 }))
         }
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    struct CapturedHttpRequest {
+        method: String,
+        path: String,
+        body: String,
+    }
+
+    #[derive(Debug, Clone)]
+    struct ScriptedHttpResponse {
+        status_code: u16,
+        body: String,
+    }
+
+    #[derive(Debug)]
+    struct ScriptedHttpServer {
+        base_url: String,
+        requests: Arc<Mutex<Vec<CapturedHttpRequest>>>,
+        handle: Option<JoinHandle<()>>,
+    }
+
+    impl ScriptedHttpServer {
+        fn start(scripted_responses: Vec<ScriptedHttpResponse>) -> Self {
+            let listener = TcpListener::bind("127.0.0.1:0").expect("listener bind should succeed");
+            listener
+                .set_nonblocking(false)
+                .expect("listener should remain blocking");
+            let local_addr = listener.local_addr().expect("local address should resolve");
+            let requests = Arc::new(Mutex::new(Vec::new()));
+            let requests_state = Arc::clone(&requests);
+            let handle = std::thread::spawn(move || {
+                for scripted in scripted_responses {
+                    let (mut stream, _) = listener.accept().expect("accept should succeed");
+                    stream
+                        .set_read_timeout(Some(Duration::from_secs(2)))
+                        .expect("read timeout should set");
+                    let request = read_http_request(&mut stream);
+                    requests_state
+                        .lock()
+                        .expect("lock should succeed")
+                        .push(request);
+                    write_http_response(&mut stream, scripted);
+                }
+            });
+
+            Self {
+                base_url: format!("http://{local_addr}"),
+                requests,
+                handle: Some(handle),
+            }
+        }
+
+        fn base_url(&self) -> String {
+            self.base_url.clone()
+        }
+
+        fn requests(&self) -> Vec<CapturedHttpRequest> {
+            self.requests.lock().expect("lock should succeed").clone()
+        }
+
+        fn join(&mut self) {
+            if let Some(handle) = self.handle.take() {
+                handle.join().expect("http server thread should join");
+            }
+        }
+    }
+
+    impl Drop for ScriptedHttpServer {
+        fn drop(&mut self) {
+            self.join();
+        }
+    }
+
+    fn read_http_request(stream: &mut TcpStream) -> CapturedHttpRequest {
+        let mut reader = BufReader::new(stream);
+        let mut request_line = String::new();
+        reader
+            .read_line(&mut request_line)
+            .expect("request line should parse");
+        let request_line = request_line.trim_end();
+        let mut request_parts = request_line.split_whitespace();
+        let method = request_parts.next().unwrap_or_default().to_string();
+        let path = request_parts.next().unwrap_or_default().to_string();
+        let mut content_length = 0usize;
+        loop {
+            let mut line = String::new();
+            reader
+                .read_line(&mut line)
+                .expect("request header line should parse");
+            if line == "\r\n" {
+                break;
+            }
+            let mut header_parts = line.splitn(2, ':');
+            let key = header_parts.next().unwrap_or_default().trim();
+            let value = header_parts.next().unwrap_or_default().trim();
+            if key.eq_ignore_ascii_case("content-length") {
+                content_length = value.parse::<usize>().expect("content-length should parse");
+            }
+        }
+        let mut body = vec![0u8; content_length];
+        reader
+            .read_exact(&mut body)
+            .expect("request body should parse");
+        CapturedHttpRequest {
+            method,
+            path,
+            body: String::from_utf8(body).expect("request body should be utf-8"),
+        }
+    }
+
+    fn write_http_response(stream: &mut TcpStream, response: ScriptedHttpResponse) {
+        let body_bytes = response.body.into_bytes();
+        let headers = format!(
+            "HTTP/1.1 {} OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            response.status_code,
+            body_bytes.len()
+        );
+        stream
+            .write_all(headers.as_bytes())
+            .expect("response headers should write");
+        stream
+            .write_all(&body_bytes)
+            .expect("response body should write");
+        stream.flush().expect("response should flush");
     }
 
     fn sample_run(sender_id: &str) -> Run {
@@ -1927,6 +2401,281 @@ mod tests {
     }
 
     #[test]
+    fn http_opencode_bridge_runtime_parses_session_turn_events_and_usage() {
+        let mut http_server = ScriptedHttpServer::start(vec![
+            ScriptedHttpResponse {
+                status_code: 201,
+                body: serde_json::json!({
+                    "id": "session-transport-1"
+                })
+                .to_string(),
+            },
+            ScriptedHttpResponse {
+                status_code: 200,
+                body: serde_json::json!({
+                    "id": "turn-transport-1",
+                    "status": "completed",
+                    "usage": {
+                        "input_tokens": 9,
+                        "output_tokens": 5,
+                        "total_tokens": 14
+                    },
+                    "parts": [
+                        {"type": "text", "text": "real transport output"}
+                    ]
+                })
+                .to_string(),
+            },
+        ]);
+
+        let runtime = super::HttpOpenCodeBridgeRuntime;
+        let server_base_url = http_server.base_url();
+        let session_id = runtime
+            .create_session(
+                &server_base_url,
+                OpenCodeSessionConfig {
+                    model: Some("open-model".to_string()),
+                    reasoning_level: Some("medium".to_string()),
+                },
+            )
+            .expect("transport create_session should succeed");
+        assert_eq!(session_id, "session-transport-1".to_string());
+
+        let turn_result = runtime
+            .execute_turn(
+                &server_base_url,
+                &session_id,
+                "bridge prompt",
+                OpenCodeTurnConfig {
+                    model: Some("open-model".to_string()),
+                    reasoning_level: Some("high".to_string()),
+                },
+            )
+            .expect("transport execute_turn should succeed");
+        assert_eq!(turn_result.turn_id, "turn-transport-1".to_string());
+        assert_eq!(
+            turn_result.raw_events,
+            vec![
+                OpenCodeRawEvent::AssistantDelta {
+                    sequence: 1,
+                    text: "real transport output".to_string(),
+                },
+                OpenCodeRawEvent::TurnFinished {
+                    sequence: 2,
+                    turn_id: "turn-transport-1".to_string(),
+                    state: OpenCodeTurnState::Completed,
+                    message: Some("completed".to_string()),
+                    usage: Some(OpenCodeTokenUsage {
+                        input_tokens: 9,
+                        output_tokens: 5,
+                        total_tokens: 14,
+                    }),
+                },
+            ]
+        );
+
+        http_server.join();
+        let requests = http_server.requests();
+        assert_eq!(requests.len(), 2);
+        assert_eq!(requests[0].path, "/session".to_string());
+        assert_eq!(
+            requests[1].path,
+            "/session/session-transport-1/message".to_string()
+        );
+        assert!(requests[0].body.contains("\"model\":\"open-model\""));
+        assert!(requests[1].body.contains("\"prompt\":\"bridge prompt\""));
+        assert!(requests[1].body.contains("\"parts\""));
+    }
+
+    #[test]
+    fn http_opencode_bridge_runtime_maps_non_success_http_status_to_transport_error() {
+        let mut http_server = ScriptedHttpServer::start(vec![ScriptedHttpResponse {
+            status_code: 500,
+            body: serde_json::json!({
+                "error": "forced failure"
+            })
+            .to_string(),
+        }]);
+        let runtime = super::HttpOpenCodeBridgeRuntime;
+        let error = runtime
+            .create_session(&http_server.base_url(), OpenCodeSessionConfig::default())
+            .expect_err("500 response should fail");
+        http_server.join();
+        assert!(matches!(
+            error,
+            CrabError::InvariantViolation {
+                context: super::DAEMON_OPENCODE_TRANSPORT_CONTEXT,
+                message,
+            } if message.contains("HTTP 500") && message.contains("forced failure")
+        ));
+    }
+
+    #[test]
+    fn http_opencode_bridge_runtime_maps_connection_failures_to_io_error() {
+        let runtime = super::HttpOpenCodeBridgeRuntime;
+        let error = runtime
+            .create_session("http://127.0.0.1:1", OpenCodeSessionConfig::default())
+            .expect_err("connection failures should map to io");
+        assert!(matches!(
+            error,
+            CrabError::Io {
+                context: super::DAEMON_OPENCODE_TRANSPORT_CONTEXT,
+                path: None,
+                message,
+            } if message.contains("POST http://127.0.0.1:1/session failed")
+        ));
+    }
+
+    #[test]
+    fn http_opencode_bridge_runtime_maps_truncated_response_body_to_io_error() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("listener bind should succeed");
+        let addr = listener.local_addr().expect("local address should resolve");
+        let handle = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept should succeed");
+            let mut inbound = [0_u8; 1024];
+            let _ = stream.read(&mut inbound);
+            stream
+                .write_all(
+                    b"HTTP/1.1 201 OK\r\nContent-Type: application/json\r\nContent-Length: 8\r\nConnection: close\r\n\r\n{\"id\"",
+                )
+                .expect("response write should succeed");
+            stream.flush().expect("response flush should succeed");
+        });
+
+        let runtime = super::HttpOpenCodeBridgeRuntime;
+        let error = runtime
+            .create_session(&format!("http://{addr}"), OpenCodeSessionConfig::default())
+            .expect_err("truncated responses should fail while reading body");
+        handle.join().expect("server thread should join");
+        assert!(matches!(
+            error,
+            CrabError::Io {
+                context: super::DAEMON_OPENCODE_TRANSPORT_CONTEXT,
+                path: None,
+                message,
+            } if message.contains("failed reading response body")
+        ));
+    }
+
+    #[test]
+    fn http_opencode_bridge_runtime_maps_invalid_json_and_empty_body_shapes() {
+        let mut invalid_json_server = ScriptedHttpServer::start(vec![ScriptedHttpResponse {
+            status_code: 201,
+            body: "{invalid".to_string(),
+        }]);
+        let runtime = super::HttpOpenCodeBridgeRuntime;
+        let invalid_json_error = runtime
+            .create_session(
+                &invalid_json_server.base_url(),
+                OpenCodeSessionConfig::default(),
+            )
+            .expect_err("invalid json should fail");
+        invalid_json_server.join();
+        assert!(matches!(
+            invalid_json_error,
+            CrabError::Serialization {
+                context: super::DAEMON_OPENCODE_TRANSPORT_CONTEXT,
+                path: None,
+                ..
+            }
+        ));
+
+        let mut empty_body_server = ScriptedHttpServer::start(vec![ScriptedHttpResponse {
+            status_code: 201,
+            body: String::new(),
+        }]);
+        let missing_field_error = runtime
+            .create_session(
+                &empty_body_server.base_url(),
+                OpenCodeSessionConfig::default(),
+            )
+            .expect_err("empty response body should fail required field extraction");
+        empty_body_server.join();
+        assert_eq!(
+            missing_field_error,
+            CrabError::InvariantViolation {
+                context: "opencode_create_session_response",
+                message: "response is missing required field session_id".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn http_opencode_bridge_runtime_helper_extractors_cover_fallback_paths() {
+        let usage_from_strings =
+            super::HttpOpenCodeBridgeRuntime::extract_usage(&serde_json::json!({
+                "usage": {
+                    "input_tokens": "2",
+                    "output_tokens": "3",
+                    "total_tokens": "5"
+                }
+            }))
+            .expect("string encoded token usage should parse");
+        assert_eq!(
+            usage_from_strings,
+            OpenCodeTokenUsage {
+                input_tokens: 2,
+                output_tokens: 3,
+                total_tokens: 5,
+            }
+        );
+        assert_eq!(
+            super::HttpOpenCodeBridgeRuntime::extract_usage(&serde_json::json!({
+                "usage": {
+                    "output_tokens": 3,
+                    "total_tokens": 3
+                }
+            })),
+            None
+        );
+        assert_eq!(
+            super::HttpOpenCodeBridgeRuntime::extract_usage(&serde_json::json!({
+                "usage": {
+                    "input_tokens": 3,
+                    "total_tokens": 3
+                }
+            })),
+            None
+        );
+        assert_eq!(
+            super::HttpOpenCodeBridgeRuntime::extract_usage(&serde_json::json!({
+                "usage": {
+                    "input_tokens": 4,
+                    "output_tokens": 6
+                }
+            })),
+            Some(OpenCodeTokenUsage {
+                input_tokens: 4,
+                output_tokens: 6,
+                total_tokens: 10,
+            })
+        );
+
+        assert_eq!(
+            super::HttpOpenCodeBridgeRuntime::extract_text_delta(&serde_json::json!({
+                "output_text": "  text from output  "
+            })),
+            Some("text from output".to_string())
+        );
+        assert_eq!(
+            super::HttpOpenCodeBridgeRuntime::extract_text_delta(&serde_json::json!({
+                "parts": [{"text": {"value": "nested text"}}]
+            })),
+            Some("nested text".to_string())
+        );
+        assert_eq!(
+            super::HttpOpenCodeBridgeRuntime::extract_text_delta(&serde_json::json!({
+                "parts": [{"tool": "shell"}]
+            })),
+            None
+        );
+        assert_eq!(
+            super::HttpOpenCodeBridgeRuntime::extract_turn_state(&serde_json::json!({})),
+            OpenCodeTurnState::Completed
+        );
+    }
+
+    #[test]
     fn daemon_config_validation_rejects_invalid_values() {
         let blank_bot = DaemonConfig {
             bot_user_id: " ".to_string(),
@@ -2040,6 +2789,32 @@ mod tests {
 
     #[test]
     fn daemon_loop_opencode_default_bridge_uses_backend_events_for_output_and_usage() {
+        let mut http_server = ScriptedHttpServer::start(vec![
+            ScriptedHttpResponse {
+                status_code: 201,
+                body: serde_json::json!({
+                    "id": "session-op-real"
+                })
+                .to_string(),
+            },
+            ScriptedHttpResponse {
+                status_code: 200,
+                body: serde_json::json!({
+                    "id": "turn-op-real",
+                    "state": "completed",
+                    "message": "completed",
+                    "usage": {
+                        "input_tokens": 11,
+                        "output_tokens": 6,
+                        "total_tokens": 17
+                    },
+                    "parts": [
+                        {"type": "text", "text": "OpenCode real backend response"}
+                    ]
+                })
+                .to_string(),
+            },
+        ]);
         let workspace = TempWorkspace::new("daemon", "opencode-default-bridge");
         let mut config = runtime_config_for_workspace_with_lanes(&workspace.path, 2);
         config.owner.discord_user_ids = vec!["111".to_string()];
@@ -2058,7 +2833,7 @@ mod tests {
         });
         let discord_state = discord.clone();
         let codex = TrackingCodexProcess::new();
-        let opencode = TrackingOpenCodeProcess::new();
+        let opencode = TrackingOpenCodeProcess::with_server_base_url(http_server.base_url());
         let mut control = ScriptedControl::with_now(vec![10_000, 10_001, 10_002]);
 
         let stats = run_daemon_loop_with_transport(
@@ -2074,7 +2849,10 @@ mod tests {
 
         let discord = discord_state.state();
         assert_eq!(discord.posted.len(), 1);
-        assert_eq!(discord.posted[0].2, "OpenCode backend response".to_string());
+        assert_eq!(
+            discord.posted[0].2,
+            "OpenCode real backend response".to_string()
+        );
         assert!(!discord.posted[0].2.contains("Crab stub response"));
 
         let state_root = workspace.path.join("state");
@@ -2082,9 +2860,9 @@ mod tests {
             .get_session("discord:channel:777")
             .expect("session lookup should succeed")
             .expect("session should exist");
-        assert_eq!(session.token_accounting.input_tokens, 3);
-        assert_eq!(session.token_accounting.output_tokens, 4);
-        assert_eq!(session.token_accounting.total_tokens, 7);
+        assert_eq!(session.token_accounting.input_tokens, 11);
+        assert_eq!(session.token_accounting.output_tokens, 6);
+        assert_eq!(session.token_accounting.total_tokens, 17);
 
         let run_ids = RunStore::new(&state_root)
             .list_run_ids("discord:channel:777")
@@ -2100,10 +2878,21 @@ mod tests {
                     != Some(&"daemon_stub".to_string()))
         );
         assert!(events.iter().any(|event| {
-            event.payload.get("input_tokens") == Some(&"3".to_string())
-                && event.payload.get("output_tokens") == Some(&"4".to_string())
-                && event.payload.get("total_tokens") == Some(&"7".to_string())
+            event.payload.get("input_tokens") == Some(&"11".to_string())
+                && event.payload.get("output_tokens") == Some(&"6".to_string())
+                && event.payload.get("total_tokens") == Some(&"17".to_string())
         }));
+
+        http_server.join();
+        let requests = http_server.requests();
+        assert_eq!(requests.len(), 2);
+        assert_eq!(requests[0].method, "POST".to_string());
+        assert_eq!(requests[0].path, "/session".to_string());
+        assert_eq!(requests[1].method, "POST".to_string());
+        assert_eq!(
+            requests[1].path,
+            "/session/session-op-real/message".to_string()
+        );
     }
 
     #[test]
@@ -3186,6 +3975,51 @@ mod tests {
             .expect("cached physical session should resolve");
         assert_eq!(cached.backend_session_id, physical.backend_session_id);
         assert_eq!(cached.last_turn_id, physical.last_turn_id);
+    }
+
+    #[test]
+    fn daemon_runtime_execute_backend_turn_preserves_backend_native_turn_id() {
+        let workspace = TempWorkspace::new("daemon", "backend-bridge-turn-id-preserve");
+        let config = runtime_config_for_workspace_with_lanes(&workspace.path, 1);
+        let run = sample_run("non-owner");
+        let discord = ScriptedDiscordIo::with_state(DiscordIoState::default());
+        let mut runtime = DaemonTurnRuntime::new_with_backend_bridge(
+            config.owner.clone(),
+            discord,
+            Box::<TurnIdMutatingBackendBridge>::default(),
+        )
+        .expect("runtime builds");
+        assert!(!runtime.has_opencode_backend_bridge());
+        runtime.configure_opencode_backend_bridge_trusted(
+            "http://127.0.0.1:9999".to_string(),
+            Box::new(ScriptedOpenCodeBridgeRuntime::with_results(
+                vec![Ok("ignored".to_string())],
+                vec![Ok(scripted_opencode_turn_result(
+                    "ignored-turn",
+                    "ignored",
+                    (1, 1, 2),
+                    OpenCodeTurnState::Completed,
+                ))],
+            )),
+        );
+        let mut physical = runtime
+            .ensure_physical_session(&run.logical_session_id, &run.profile.resolved_profile, None)
+            .expect("physical session should resolve");
+        let active_id = physical.id.clone();
+
+        runtime
+            .execute_backend_turn(&mut physical, &run, "turn-daemon", "turn context")
+            .expect("turn execution should succeed");
+        assert_eq!(physical.last_turn_id, Some("backend-turn-id-9".to_string()));
+
+        let cached = runtime
+            .ensure_physical_session(
+                &run.logical_session_id,
+                &run.profile.resolved_profile,
+                Some(&active_id),
+            )
+            .expect("cached physical session should resolve");
+        assert_eq!(cached.last_turn_id, Some("backend-turn-id-9".to_string()));
     }
 
     #[test]

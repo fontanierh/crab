@@ -126,9 +126,9 @@ Current status:
 
 Impact:
 
-- OpenCode backend streaming semantics are active through the daemon bridge, but backend
-  coverage is still incomplete (Codex/Claude pending) and backend-generated checkpoint-turn output
-  is not yet active.
+- OpenCode backend transport execution is active through the daemon bridge (with response-to-event
+  normalization), but backend coverage is still incomplete (Codex/Claude pending) and
+  backend-generated checkpoint-turn output is not yet active.
 
 Required work:
 
