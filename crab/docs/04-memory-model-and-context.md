@@ -137,6 +137,12 @@ Implemented:
 - scoped snippet resolution
 - deterministic context assembly and budgeting
 - citation/disclosure prompt policy
+- runtime context wiring in `DaemonTurnRuntime::build_turn_context`:
+  - compiles prompt contract per run profile/surface
+  - injects `SOUL.md`/`IDENTITY.md`/`AGENTS.md`/`USER.md`/`MEMORY.md`
+  - resolves scoped memory snippets (`memory/users/<scope>` + recent global)
+  - injects latest checkpoint summary from persistent checkpoint store
+  - emits deterministic context diagnostics fixture to tracing
 
 Deferred:
 

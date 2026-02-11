@@ -1,4 +1,6 @@
 use std::collections::BTreeMap;
+use std::fs;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread;
@@ -7,16 +9,26 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use std::{cell::RefCell, thread_local};
 
 use crab_backends::{BackendEvent, BackendEventKind, CodexAppServerProcess, OpenCodeServerProcess};
+#[cfg(not(coverage))]
+use crab_core::{build_context_diagnostics_report, render_context_diagnostics_fixture};
 use crab_core::{
-    process_workspace_git_push_queue, BackendKind, CrabError, CrabResult, InferenceProfile,
-    OwnerConfig, OwnerProfileMetadata, ProfileValueSource, ReasoningLevel, Run,
-    RunProfileTelemetry, RuntimeConfig,
+    compile_prompt_contract, process_workspace_git_push_queue, render_budgeted_turn_context,
+    resolve_inference_profile, resolve_scoped_memory_snippets, resolve_sender_identity,
+    resolve_sender_trust_context, BackendKind, ContextAssemblyInput, ContextBudgetPolicy,
+    CrabError, CrabResult, InferenceProfile, InferenceProfileResolutionInput, MemoryCitationMode,
+    OwnerConfig, PromptContractInput, ReasoningLevel, Run, RunProfileTelemetry, RuntimeConfig,
+    ScopedMemorySnippetResolverInput, SenderConversationKind, SenderIdentityInput, TrustSurface,
+    AGENTS_FILE_NAME, IDENTITY_FILE_NAME, MEMORY_FILE_NAME, OWNER_MEMORY_SCOPE_DIRECTORY,
+    SOUL_FILE_NAME, USER_FILE_NAME,
 };
 use crab_discord::GatewayMessage;
+use crab_store::CheckpointStore;
 
 use crate::{boot_runtime_with_processes, run_heartbeat_if_due, TurnExecutor, TurnExecutorRuntime};
 
 pub const DEFAULT_DAEMON_TICK_INTERVAL_MS: u64 = 250;
+const DAEMON_TURN_CONTEXT_READ: &str = "daemon_turn_context_read";
+const MILLIS_PER_DAY: u64 = 86_400_000;
 
 pub trait DaemonDiscordIo {
     fn next_gateway_message(&mut self) -> CrabResult<Option<GatewayMessage>>;
@@ -138,6 +150,14 @@ pub struct DaemonTurnRuntime<D: DaemonDiscordIo> {
     owner: OwnerConfig,
     next_session_sequence: u64,
     physical_sessions: BTreeMap<String, crab_core::PhysicalSession>,
+    turn_context_runtime: Option<TurnContextRuntimeState>,
+}
+
+#[derive(Debug, Clone)]
+struct TurnContextRuntimeState {
+    workspace_root: PathBuf,
+    checkpoint_store: CheckpointStore,
+    context_budget_policy: ContextBudgetPolicy,
 }
 
 #[cfg(test)]
@@ -155,7 +175,20 @@ impl<D: DaemonDiscordIo> DaemonTurnRuntime<D> {
             owner,
             next_session_sequence: 0,
             physical_sessions: BTreeMap::new(),
+            turn_context_runtime: None,
         })
+    }
+
+    pub fn configure_turn_context_runtime(
+        &mut self,
+        workspace_root: PathBuf,
+        checkpoint_store: CheckpointStore,
+    ) {
+        self.turn_context_runtime = Some(TurnContextRuntimeState {
+            workspace_root,
+            checkpoint_store,
+            context_budget_policy: ContextBudgetPolicy::default(),
+        });
     }
 
     fn session_now_epoch_ms() -> CrabResult<u64> {
@@ -185,29 +218,70 @@ impl<D: DaemonDiscordIo> DaemonTurnRuntime<D> {
         )
     }
 
-    fn owner_profile_for_sender(&self, sender_is_owner: bool) -> Option<OwnerProfileMetadata> {
-        if !sender_is_owner {
-            return None;
-        }
-
-        let metadata = OwnerProfileMetadata {
-            machine_location: self.owner.machine_location.clone(),
-            machine_timezone: self.owner.machine_timezone.clone(),
-            default_backend: self.owner.profile_defaults.backend,
-            default_model: self.owner.profile_defaults.model.clone(),
-            default_reasoning_level: self.owner.profile_defaults.reasoning_level,
+    fn build_runtime_turn_context(
+        &mut self,
+        run: &Run,
+        logical_session: &crab_core::LogicalSession,
+    ) -> CrabResult<String> {
+        let Some(runtime) = self.turn_context_runtime.clone() else {
+            return Ok(run.user_input.clone());
         };
 
-        if metadata.machine_location.is_none()
-            && metadata.machine_timezone.is_none()
-            && metadata.default_backend.is_none()
-            && metadata.default_model.is_none()
-            && metadata.default_reasoning_level.is_none()
+        let reference_date = epoch_ms_to_yyyy_mm_dd(self.now_epoch_ms()?)?;
+        let memory_scope_directory = memory_scope_directory_for_run(run);
+        let memory_snippets =
+            resolve_scoped_memory_snippets(&ScopedMemorySnippetResolverInput::with_defaults(
+                &runtime.workspace_root,
+                &memory_scope_directory,
+                true,
+                &reference_date,
+            ))?;
+
+        let memory_recall_surface = trust_surface_for_logical_session_id(&run.logical_session_id);
+        let prompt_contract = compile_prompt_contract(&PromptContractInput {
+            backend: run.profile.resolved_profile.backend,
+            model: run.profile.resolved_profile.model.clone(),
+            reasoning_level: run.profile.resolved_profile.reasoning_level,
+            sender_id: run.profile.sender_id.clone(),
+            sender_is_owner: run.profile.sender_is_owner,
+            owner_profile: run.profile.resolved_owner_profile.clone(),
+            memory_tools_enabled: true,
+            memory_citation_mode: MemoryCitationMode::Auto,
+            memory_recall_surface,
+        })?;
+
+        let agents_document = read_workspace_markdown(&runtime.workspace_root, AGENTS_FILE_NAME)?;
+        let checkpoint_summary =
+            load_latest_checkpoint_summary(logical_session, &runtime.checkpoint_store)?;
+        let context_input = ContextAssemblyInput {
+            soul_document: read_workspace_markdown(&runtime.workspace_root, SOUL_FILE_NAME)?,
+            identity_document: read_workspace_markdown(
+                &runtime.workspace_root,
+                IDENTITY_FILE_NAME,
+            )?,
+            agents_document: render_agents_with_prompt_contract(&agents_document, &prompt_contract),
+            user_document: read_workspace_markdown(&runtime.workspace_root, USER_FILE_NAME)?,
+            memory_document: read_workspace_markdown(&runtime.workspace_root, MEMORY_FILE_NAME)?,
+            memory_snippets,
+            latest_checkpoint_summary: checkpoint_summary,
+            turn_input: run.user_input.clone(),
+        };
+        let budgeted =
+            render_budgeted_turn_context(&context_input, &runtime.context_budget_policy)?;
+
+        #[cfg(not(coverage))]
         {
-            return None;
+            let report = build_context_diagnostics_report(&budgeted);
+            let fixture = render_context_diagnostics_fixture(&report);
+            tracing::debug!(
+                logical_session_id = %run.logical_session_id,
+                run_id = %run.id,
+                context_diagnostics = %fixture,
+                "rendered turn context"
+            );
         }
 
-        Some(metadata)
+        Ok(budgeted.rendered_context)
     }
 }
 
@@ -218,57 +292,65 @@ impl<D: DaemonDiscordIo> TurnExecutorRuntime for DaemonTurnRuntime<D> {
 
     fn resolve_run_profile(
         &mut self,
-        _logical_session_id: &str,
+        logical_session_id: &str,
         author_id: &str,
         _user_input: &str,
     ) -> CrabResult<RunProfileTelemetry> {
-        let sender_is_owner = self
-            .owner
-            .discord_user_ids
-            .iter()
-            .any(|owner_id| owner_id == author_id);
-
-        let backend = if sender_is_owner {
-            self.owner
-                .profile_defaults
-                .backend
-                .unwrap_or(BackendKind::Codex)
-        } else {
-            BackendKind::Codex
+        let sender = resolve_sender_identity(
+            &SenderIdentityInput {
+                conversation_kind: conversation_kind_for_logical_session_id(logical_session_id),
+                discord_user_id: author_id.to_string(),
+                username: None,
+            },
+            &self.owner,
+        )?;
+        let trust_context = resolve_sender_trust_context(&sender, &self.owner)?;
+        let global_default = InferenceProfile {
+            backend: if trust_context.sender_is_owner {
+                self.owner
+                    .profile_defaults
+                    .backend
+                    .unwrap_or(BackendKind::Codex)
+            } else {
+                BackendKind::Codex
+            },
+            model: if trust_context.sender_is_owner {
+                self.owner
+                    .profile_defaults
+                    .model
+                    .clone()
+                    .unwrap_or_else(|| "auto".to_string())
+            } else {
+                "auto".to_string()
+            },
+            reasoning_level: if trust_context.sender_is_owner {
+                self.owner
+                    .profile_defaults
+                    .reasoning_level
+                    .unwrap_or(ReasoningLevel::Medium)
+            } else {
+                ReasoningLevel::Medium
+            },
         };
-        let model = if sender_is_owner {
-            self.owner
-                .profile_defaults
-                .model
-                .clone()
-                .unwrap_or_else(|| "auto".to_string())
-        } else {
-            "auto".to_string()
-        };
-        let reasoning_level = if sender_is_owner {
-            self.owner
-                .profile_defaults
-                .reasoning_level
-                .unwrap_or(ReasoningLevel::Medium)
-        } else {
-            ReasoningLevel::Medium
-        };
+        let resolved = resolve_inference_profile(&InferenceProfileResolutionInput {
+            turn_override: None,
+            session_profile: None,
+            channel_override: None,
+            backend_defaults: Default::default(),
+            global_default,
+        })?;
 
         Ok(RunProfileTelemetry {
             requested_profile: None,
-            resolved_profile: InferenceProfile {
-                backend,
-                model,
-                reasoning_level,
-            },
-            backend_source: ProfileValueSource::GlobalDefault,
-            model_source: ProfileValueSource::GlobalDefault,
-            reasoning_level_source: ProfileValueSource::GlobalDefault,
+            resolved_profile: resolved.profile,
+            backend_source: resolved.backend_source,
+            model_source: resolved.model_source,
+            reasoning_level_source: resolved.reasoning_level_source,
             fallback_applied: false,
             fallback_notes: Vec::new(),
-            sender_id: author_id.to_string(),
-            sender_is_owner,
-            resolved_owner_profile: self.owner_profile_for_sender(sender_is_owner),
+            sender_id: trust_context.sender_id,
+            sender_is_owner: trust_context.sender_is_owner,
+            resolved_owner_profile: trust_context.owner_profile,
         })
     }
 
@@ -302,10 +384,10 @@ impl<D: DaemonDiscordIo> TurnExecutorRuntime for DaemonTurnRuntime<D> {
     fn build_turn_context(
         &mut self,
         run: &Run,
-        _logical_session: &crab_core::LogicalSession,
+        logical_session: &crab_core::LogicalSession,
         _physical_session: &crab_core::PhysicalSession,
     ) -> CrabResult<String> {
-        Ok(run.user_input.clone())
+        self.build_runtime_turn_context(run, logical_session)
     }
 
     fn execute_backend_turn(
@@ -466,7 +548,11 @@ where
     boot.composition.backends.opencode.ensure_running()?;
 
     let mut heartbeat_loop_state = boot.heartbeat_loop_state;
-    let runtime = runtime_builder(runtime_config.owner.clone(), discord)?;
+    let mut runtime = runtime_builder(runtime_config.owner.clone(), discord)?;
+    runtime.configure_turn_context_runtime(
+        boot.composition.startup.workspace_root.clone(),
+        boot.composition.state_stores.checkpoint_store.clone(),
+    );
     let mut executor = TurnExecutor::new(boot.composition, runtime);
     let mut stats = DaemonLoopStats::default();
 
@@ -592,12 +678,110 @@ fn epoch_ms_from_duration(duration: Duration) -> CrabResult<u64> {
     })
 }
 
+fn render_agents_with_prompt_contract(agents_document: &str, prompt_contract: &str) -> String {
+    let normalized_agents = agents_document.trim();
+    if normalized_agents.is_empty() {
+        return prompt_contract.to_string();
+    }
+
+    format!("{normalized_agents}\n\n{prompt_contract}")
+}
+
+fn read_workspace_markdown(workspace_root: &Path, file_name: &str) -> CrabResult<String> {
+    let path = workspace_root.join(file_name);
+    match fs::read_to_string(&path) {
+        Ok(contents) => Ok(contents),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
+        Err(error) => Err(CrabError::Io {
+            context: DAEMON_TURN_CONTEXT_READ,
+            path: Some(path.to_string_lossy().into_owned()),
+            message: error.to_string(),
+        }),
+    }
+}
+
+fn load_latest_checkpoint_summary(
+    logical_session: &crab_core::LogicalSession,
+    checkpoint_store: &CheckpointStore,
+) -> CrabResult<Option<String>> {
+    if let Some(checkpoint_id) = logical_session.last_successful_checkpoint_id.as_deref() {
+        if let Some(checkpoint) =
+            checkpoint_store.get_checkpoint(&logical_session.id, checkpoint_id)?
+        {
+            return Ok(Some(render_checkpoint_summary(&checkpoint)));
+        }
+    }
+
+    Ok(checkpoint_store
+        .latest_checkpoint(&logical_session.id)?
+        .map(|checkpoint| render_checkpoint_summary(&checkpoint)))
+}
+
+fn render_checkpoint_summary(checkpoint: &crab_core::Checkpoint) -> String {
+    format!(
+        "checkpoint_id: {}\nrun_id: {}\ncreated_at_epoch_ms: {}\nsummary:\n{}",
+        checkpoint.id, checkpoint.run_id, checkpoint.created_at_epoch_ms, checkpoint.summary
+    )
+}
+
+fn memory_scope_directory_for_run(run: &Run) -> String {
+    if run.profile.sender_is_owner {
+        return OWNER_MEMORY_SCOPE_DIRECTORY.to_string();
+    }
+
+    run.profile.sender_id.clone()
+}
+
+fn conversation_kind_for_logical_session_id(logical_session_id: &str) -> SenderConversationKind {
+    if logical_session_id.starts_with("discord:dm:") {
+        return SenderConversationKind::DirectMessage;
+    }
+    if logical_session_id.starts_with("discord:thread:") {
+        return SenderConversationKind::Thread;
+    }
+    SenderConversationKind::GuildChannel
+}
+
+fn trust_surface_for_logical_session_id(logical_session_id: &str) -> TrustSurface {
+    if logical_session_id.starts_with("discord:dm:") {
+        return TrustSurface::DirectMessage;
+    }
+    TrustSurface::SharedDiscord
+}
+
+fn epoch_ms_to_yyyy_mm_dd(epoch_ms: u64) -> CrabResult<String> {
+    let days_i64 = (epoch_ms / MILLIS_PER_DAY) as i64;
+    let (year, month, day) = civil_from_days(days_i64);
+    Ok(format!("{year:04}-{month:02}-{day:02}"))
+}
+
+fn civil_from_days(days_since_unix_epoch: i64) -> (i64, u64, u64) {
+    let z = days_since_unix_epoch + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let day_of_era = z - era * 146_097;
+    let year_of_era =
+        (day_of_era - (day_of_era / 1_460) + (day_of_era / 36_524) - (day_of_era / 146_096)) / 365;
+    let mut year = year_of_era + era * 400;
+    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    let month_prime = (5 * day_of_year + 2) / 153;
+    let day = day_of_year - (153 * month_prime + 2) / 5 + 1;
+    let month = month_prime + if month_prime < 10 { 3 } else { -9 };
+    if month <= 2 {
+        year += 1;
+    }
+    (year, month as u64, day as u64)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        epoch_ms_from_duration, epoch_ms_from_system_time, run_daemon_loop_with_transport,
-        run_daemon_loop_with_transport_and_runtime_builder, DaemonConfig, DaemonDiscordIo,
-        DaemonLoopControl, DaemonLoopStats, DaemonTurnRuntime, SystemDaemonLoopControl,
+        conversation_kind_for_logical_session_id, epoch_ms_from_duration,
+        epoch_ms_from_system_time, epoch_ms_to_yyyy_mm_dd, load_latest_checkpoint_summary,
+        memory_scope_directory_for_run, read_workspace_markdown,
+        render_agents_with_prompt_contract, run_daemon_loop_with_transport,
+        run_daemon_loop_with_transport_and_runtime_builder, trust_surface_for_logical_session_id,
+        DaemonConfig, DaemonDiscordIo, DaemonLoopControl, DaemonLoopStats, DaemonTurnRuntime,
+        SystemDaemonLoopControl,
     };
     use crate::test_support::{runtime_config_for_workspace_with_lanes, TempWorkspace};
     use crate::TurnExecutorRuntime;
@@ -605,12 +789,12 @@ mod tests {
         CodexAppServerProcess, CodexProcessHandle, OpenCodeServerHandle, OpenCodeServerProcess,
     };
     use crab_core::{
-        BackendKind, CrabError, CrabResult, InferenceProfile, LaneState, LogicalSession,
-        OwnerConfig, ProfileValueSource, ReasoningLevel, Run, RunProfileTelemetry, RunStatus,
-        TokenAccounting,
+        BackendKind, Checkpoint, CrabError, CrabResult, InferenceProfile, LaneState,
+        LogicalSession, OwnerConfig, ProfileValueSource, ReasoningLevel, Run, RunProfileTelemetry,
+        RunStatus, SenderConversationKind, TokenAccounting, TrustSurface,
     };
     use crab_discord::{GatewayConversationKind, GatewayMessage};
-    use crab_store::{RunStore, SessionStore};
+    use crab_store::{CheckpointStore, RunStore, SessionStore};
     use std::collections::VecDeque;
     #[cfg(unix)]
     use std::process::Command;
@@ -1985,6 +2169,261 @@ mod tests {
             ReasoningLevel::Medium
         );
         assert!(telemetry.resolved_owner_profile.is_none());
+    }
+
+    #[test]
+    fn daemon_runtime_resolve_run_profile_rejects_non_numeric_author_id() {
+        let workspace = TempWorkspace::new("daemon", "owner-bad-author");
+        let config = runtime_config_for_workspace_with_lanes(&workspace.path, 1);
+        let discord = ScriptedDiscordIo::with_state(DiscordIoState::default());
+        let mut runtime =
+            DaemonTurnRuntime::new(config.owner.clone(), discord).expect("runtime builds");
+
+        let error = runtime
+            .resolve_run_profile("discord:channel:777", "author-x", "hello")
+            .expect_err("non-numeric author ids should fail sender identity validation");
+        assert_eq!(
+            error,
+            CrabError::InvariantViolation {
+                context: "sender_identity_resolve",
+                message: "discord_user_id must contain only digits".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn daemon_runtime_build_turn_context_falls_back_when_not_configured() {
+        let workspace = TempWorkspace::new("daemon", "context-fallback");
+        let config = runtime_config_for_workspace_with_lanes(&workspace.path, 1);
+        let discord = ScriptedDiscordIo::with_state(DiscordIoState::default());
+        let mut runtime =
+            DaemonTurnRuntime::new(config.owner.clone(), discord).expect("runtime builds");
+
+        let run = sample_run("123");
+        let session = sample_session(LaneState::Idle, None);
+        let physical = runtime
+            .ensure_physical_session(
+                &run.logical_session_id,
+                &run.profile.resolved_profile,
+                session.active_physical_session_id.as_deref(),
+            )
+            .expect("physical session should resolve");
+        let context = runtime
+            .build_turn_context(&run, &session, &physical)
+            .expect("context build should succeed");
+        assert_eq!(context, run.user_input);
+    }
+
+    #[test]
+    fn daemon_runtime_build_turn_context_includes_workspace_memory_and_checkpoint() {
+        let workspace = TempWorkspace::new("daemon", "context-wiring");
+        let config = runtime_config_for_workspace_with_lanes(&workspace.path, 1);
+        std::fs::create_dir_all(&workspace.path).expect("workspace root should be creatable");
+        std::fs::create_dir_all(workspace.path.join("memory/users/123"))
+            .expect("memory user scope should be creatable");
+        std::fs::write(workspace.path.join("SOUL.md"), "Soul profile")
+            .expect("SOUL.md should be writable");
+        std::fs::write(workspace.path.join("IDENTITY.md"), "Identity profile")
+            .expect("IDENTITY.md should be writable");
+        std::fs::write(workspace.path.join("AGENTS.md"), "Agent operating rules")
+            .expect("AGENTS.md should be writable");
+        std::fs::write(workspace.path.join("USER.md"), "Owner profile")
+            .expect("USER.md should be writable");
+        std::fs::write(workspace.path.join("MEMORY.md"), "Curated memory")
+            .expect("MEMORY.md should be writable");
+        std::fs::write(
+            workspace.path.join("memory/users/123/2026-02-10.md"),
+            "User memory entry",
+        )
+        .expect("user memory file should be writable");
+
+        let state_root = workspace.path.join("state");
+        std::fs::create_dir_all(&state_root).expect("state root should be creatable");
+        let checkpoint_store = CheckpointStore::new(&state_root);
+
+        let run = sample_run("123");
+        checkpoint_store
+            .put_checkpoint(&Checkpoint {
+                id: "ckpt-1".to_string(),
+                logical_session_id: run.logical_session_id.clone(),
+                run_id: run.id.clone(),
+                created_at_epoch_ms: 1_739_173_200_000,
+                summary: "Checkpoint summary".to_string(),
+                memory_digest: "digest".to_string(),
+                state: std::collections::BTreeMap::new(),
+            })
+            .expect("checkpoint should persist");
+
+        let discord = ScriptedDiscordIo::with_state(DiscordIoState::default());
+        let mut runtime =
+            DaemonTurnRuntime::new(config.owner.clone(), discord).expect("runtime builds");
+        runtime.configure_turn_context_runtime(workspace.path.clone(), checkpoint_store);
+
+        let mut session = sample_session(LaneState::Idle, None);
+        session.last_successful_checkpoint_id = Some("ckpt-1".to_string());
+        let physical = runtime
+            .ensure_physical_session(
+                &run.logical_session_id,
+                &run.profile.resolved_profile,
+                session.active_physical_session_id.as_deref(),
+            )
+            .expect("physical session should resolve");
+        let context = runtime
+            .build_turn_context(&run, &session, &physical)
+            .expect("context should render");
+
+        assert!(context.contains("## SOUL.md"));
+        assert!(context.contains("Soul profile"));
+        assert!(context.contains("## AGENTS.md"));
+        assert!(context.contains("## RUNTIME_PROFILE"));
+        assert!(context.contains("memory/users/123/2026-02-10.md"));
+        assert!(context.contains("checkpoint_id: ckpt-1"));
+        assert!(context.contains("## TURN_INPUT"));
+        assert!(context.contains("hello world"));
+    }
+
+    #[test]
+    fn daemon_runtime_build_turn_context_propagates_identity_read_errors() {
+        let workspace = TempWorkspace::new("daemon", "context-wiring-identity-error");
+        let config = runtime_config_for_workspace_with_lanes(&workspace.path, 1);
+        std::fs::create_dir_all(&workspace.path).expect("workspace root should be creatable");
+        std::fs::create_dir_all(workspace.path.join("memory/users/123"))
+            .expect("memory user scope should be creatable");
+        std::fs::write(workspace.path.join("SOUL.md"), "Soul profile")
+            .expect("SOUL.md should be writable");
+        std::fs::create_dir_all(workspace.path.join("IDENTITY.md"))
+            .expect("IDENTITY.md directory should be creatable");
+        std::fs::write(workspace.path.join("AGENTS.md"), "Agent operating rules")
+            .expect("AGENTS.md should be writable");
+        std::fs::write(workspace.path.join("USER.md"), "Owner profile")
+            .expect("USER.md should be writable");
+        std::fs::write(workspace.path.join("MEMORY.md"), "Curated memory")
+            .expect("MEMORY.md should be writable");
+        std::fs::write(
+            workspace.path.join("memory/users/123/2026-02-10.md"),
+            "User memory entry",
+        )
+        .expect("user memory file should be writable");
+
+        let state_root = workspace.path.join("state");
+        std::fs::create_dir_all(&state_root).expect("state root should be creatable");
+        let checkpoint_store = CheckpointStore::new(&state_root);
+
+        let run = sample_run("123");
+        let discord = ScriptedDiscordIo::with_state(DiscordIoState::default());
+        let mut runtime =
+            DaemonTurnRuntime::new(config.owner.clone(), discord).expect("runtime builds");
+        runtime.configure_turn_context_runtime(workspace.path.clone(), checkpoint_store);
+
+        let session = sample_session(LaneState::Idle, None);
+        let physical = runtime
+            .ensure_physical_session(
+                &run.logical_session_id,
+                &run.profile.resolved_profile,
+                session.active_physical_session_id.as_deref(),
+            )
+            .expect("physical session should resolve");
+        let error = runtime
+            .build_turn_context(&run, &session, &physical)
+            .expect_err("IDENTITY.md read failures should propagate");
+        assert!(matches!(
+            error,
+            CrabError::Io {
+                context: "daemon_turn_context_read",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn helper_render_agents_with_prompt_contract_covers_empty_and_non_empty_inputs() {
+        assert_eq!(
+            render_agents_with_prompt_contract("   ", "prompt contract"),
+            "prompt contract".to_string()
+        );
+        assert_eq!(
+            render_agents_with_prompt_contract("agents", "prompt contract"),
+            "agents\n\nprompt contract".to_string()
+        );
+    }
+
+    #[test]
+    fn helper_read_workspace_markdown_covers_missing_and_io_error_paths() {
+        let workspace = TempWorkspace::new("daemon", "read-workspace-markdown");
+        std::fs::create_dir_all(&workspace.path).expect("workspace root should be creatable");
+
+        let missing = read_workspace_markdown(&workspace.path, "MISSING.md")
+            .expect("missing files should be treated as empty");
+        assert!(missing.is_empty());
+
+        std::fs::create_dir_all(workspace.path.join("BROKEN.md"))
+            .expect("directory should be creatable");
+        let error = read_workspace_markdown(&workspace.path, "BROKEN.md")
+            .expect_err("directory path should surface io error");
+        assert!(matches!(
+            error,
+            CrabError::Io {
+                context: "daemon_turn_context_read",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn helper_load_latest_checkpoint_summary_falls_back_when_last_id_is_missing() {
+        let workspace = TempWorkspace::new("daemon", "checkpoint-fallback-summary");
+        let state_root = workspace.path.join("state");
+        std::fs::create_dir_all(&state_root).expect("state root should be creatable");
+        let checkpoint_store = CheckpointStore::new(&state_root);
+
+        checkpoint_store
+            .put_checkpoint(&Checkpoint {
+                id: "ckpt-latest".to_string(),
+                logical_session_id: "discord:channel:777".to_string(),
+                run_id: "run-1".to_string(),
+                created_at_epoch_ms: 1_739_173_200_000,
+                summary: "Latest checkpoint".to_string(),
+                memory_digest: "digest".to_string(),
+                state: std::collections::BTreeMap::new(),
+            })
+            .expect("checkpoint should persist");
+
+        let mut session = sample_session(LaneState::Idle, None);
+        session.last_successful_checkpoint_id = Some("ckpt-missing".to_string());
+        let summary = load_latest_checkpoint_summary(&session, &checkpoint_store)
+            .expect("summary lookup should succeed")
+            .expect("latest summary should be available");
+        assert!(summary.contains("checkpoint_id: ckpt-latest"));
+    }
+
+    #[test]
+    fn helper_scope_and_surface_resolution_cover_owner_dm_and_thread_paths() {
+        let mut owner_run = sample_run("123");
+        owner_run.profile.sender_is_owner = true;
+        assert_eq!(
+            memory_scope_directory_for_run(&owner_run),
+            "owner".to_string()
+        );
+
+        assert_eq!(
+            conversation_kind_for_logical_session_id("discord:dm:123"),
+            SenderConversationKind::DirectMessage
+        );
+        assert_eq!(
+            conversation_kind_for_logical_session_id("discord:thread:999"),
+            SenderConversationKind::Thread
+        );
+        assert_eq!(
+            trust_surface_for_logical_session_id("discord:dm:123"),
+            TrustSurface::DirectMessage
+        );
+    }
+
+    #[test]
+    fn helper_epoch_date_conversion_supports_large_inputs_deterministically() {
+        let max_date = epoch_ms_to_yyyy_mm_dd(u64::MAX)
+            .expect("maximum epoch milliseconds should still map to a calendar day");
+        assert_eq!(max_date, "584556019-04-03".to_string());
     }
 
     #[test]

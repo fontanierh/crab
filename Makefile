@@ -1,6 +1,6 @@
 SHELL := /bin/bash
 
-.PHONY: fmt fmt-check clippy test deadcode-check coverage coverage-gate duplication-check quality
+.PHONY: fmt fmt-check clippy test deadcode-check public-api-check coverage coverage-gate duplication-check quality
 
 fmt:
 	cargo fmt --all
@@ -17,6 +17,9 @@ test:
 deadcode-check:
 	cargo check --workspace --all-targets --all-features --locked
 
+public-api-check:
+	bash scripts/public_api_usage_check.sh
+
 coverage:
 	cargo llvm-cov --workspace --all-features --locked --lcov --output-path coverage/lcov.info
 
@@ -31,4 +34,4 @@ coverage-gate:
 duplication-check:
 	npx --yes jscpd@4.0.5 --config .jscpd.json
 
-quality: fmt-check clippy deadcode-check test coverage-gate duplication-check
+quality: fmt-check clippy deadcode-check public-api-check test coverage-gate duplication-check

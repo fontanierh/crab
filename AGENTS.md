@@ -56,6 +56,8 @@ Required outcome:
 
 - Treat warnings as errors in CI.
 - Deny unused/dead items (e.g. `dead_code`, `unused_imports`, `unused_variables`) at crate lint level.
+- Enforce public API wiring: every `pub fn` must have at least one cross-file usage, or visibility must
+  be reduced (`pub(crate)`/private).
 - Run `cargo clippy --all-targets --all-features -- -D warnings`.
 - Run `cargo fmt --all -- --check`.
 
@@ -137,6 +139,8 @@ The repository now enforces quality with executable gates and CI automation.
   `make clippy`
 - Dead code/static check:
   `make deadcode-check`
+- Public API wiring check:
+  `make public-api-check`
 - Tests:
   `make test`
 - Coverage gate (100% lines/functions, 0 uncovered lines/functions):

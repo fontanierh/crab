@@ -38,6 +38,11 @@ Implemented and validated in repository code/tests:
   - `boot_runtime_with_processes*`
   - `run_startup_reconciliation_on_boot`
   - `run_heartbeat_if_due`
+- Runtime turn-context assembly is wired end-to-end in daemon execution:
+  - prompt contract compilation per run profile/surface
+  - workspace document injection (`SOUL.md`, `IDENTITY.md`, `AGENTS.md`, `USER.md`, `MEMORY.md`)
+  - scoped memory snippet injection + budgeting + diagnostics
+  - latest checkpoint summary injection from persistent store
 - Production daemon binary exists: `crabd` (`crates/crab-app/src/bin/crabd.rs`) with:
   - startup boot + reconciliation
   - backend lifecycle ensure (Codex/OpenCode managers)
@@ -109,6 +114,25 @@ Required work:
 - Execute checklist on target machine.
 - Record evidence links (logs/screenshots/notes) and final go/no-go decision.
 
+### Gap 2A: Real Backend Turn Execution + Hidden Checkpoint Backend Turn Wiring
+
+Current status:
+
+- `DaemonTurnRuntime::execute_backend_turn` still uses the stubbed backend response path.
+- Hidden checkpoint turn generation in rotation still uses fallback checkpoint construction unless
+  test hook input is used.
+
+Impact:
+
+- Scheduler/storage/replay/rotation infrastructure is validated, but production backend streaming
+  semantics and backend-generated checkpoint-turn output are not yet active in `crabd`.
+
+Required work:
+
+- Wire `crabd` runtime backend turn execution to real backend adapters.
+- Wire hidden checkpoint turn execution through backend path and validate strict schema parsing.
+- Add deployment acceptance evidence for normal turns + rotation under real backend execution.
+
 ## Deployment Acceptance Checklist (WS18-T5)
 
 Run all checks on the target machine using production-like config:
@@ -136,7 +160,8 @@ Go/no-go rule:
 
 ## Recommended Closure Order
 
-1. Execute acceptance checklist on target machine and capture evidence (Gap 2).
+1. Wire real backend execution + hidden checkpoint turn path (Gap 2A).
+2. Execute acceptance checklist on target machine and capture evidence (Gap 2).
 
 ## Exit Criteria For "Deployment Ready"
 

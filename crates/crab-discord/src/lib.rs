@@ -339,7 +339,7 @@ impl GatewayIngress {
     }
 }
 
-pub fn extract_routing_key(message: &GatewayMessage) -> CrabResult<RoutingKey> {
+pub(crate) fn extract_routing_key(message: &GatewayMessage) -> CrabResult<RoutingKey> {
     validate_gateway_message(message)?;
     match message.conversation_kind {
         GatewayConversationKind::GuildChannel => Ok(RoutingKey::Channel {
@@ -542,7 +542,7 @@ fn hex_encode(bytes: &[u8]) -> String {
 }
 
 #[must_use]
-pub fn split_discord_message(content: &str) -> Vec<DiscordMessageChunk> {
+pub(crate) fn split_discord_message(content: &str) -> Vec<DiscordMessageChunk> {
     if content.is_empty() {
         return Vec::new();
     }
