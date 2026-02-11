@@ -28,6 +28,7 @@ use crate::{boot_runtime_with_processes, run_heartbeat_if_due, TurnExecutor, Tur
 
 pub const DEFAULT_DAEMON_TICK_INTERVAL_MS: u64 = 250;
 const DAEMON_TURN_CONTEXT_READ: &str = "daemon_turn_context_read";
+const DAEMON_BACKEND_BRIDGE_EXECUTE: &str = "daemon_backend_bridge_execute";
 const MILLIS_PER_DAY: u64 = 86_400_000;
 
 pub trait DaemonDiscordIo {
@@ -148,6 +149,7 @@ impl DaemonLoopControl for SystemDaemonLoopControl {
 pub struct DaemonTurnRuntime<D: DaemonDiscordIo> {
     discord: D,
     owner: OwnerConfig,
+    backend_bridge: Box<dyn DaemonBackendExecutionBridge>,
     next_session_sequence: u64,
     physical_sessions: BTreeMap<String, crab_core::PhysicalSession>,
     turn_context_runtime: Option<TurnContextRuntimeState>,
@@ -160,6 +162,73 @@ struct TurnContextRuntimeState {
     context_budget_policy: ContextBudgetPolicy,
 }
 
+trait DaemonBackendExecutionBridge: std::fmt::Debug {
+    fn execute_turn(
+        &mut self,
+        physical_session: &mut crab_core::PhysicalSession,
+        run: &Run,
+        turn_id: &str,
+        turn_context: &str,
+    ) -> CrabResult<Vec<BackendEvent>>;
+}
+
+#[derive(Debug, Default)]
+struct DefaultDaemonBackendExecutionBridge;
+
+impl DaemonBackendExecutionBridge for DefaultDaemonBackendExecutionBridge {
+    fn execute_turn(
+        &mut self,
+        _physical_session: &mut crab_core::PhysicalSession,
+        run: &Run,
+        _turn_id: &str,
+        _turn_context: &str,
+    ) -> CrabResult<Vec<BackendEvent>> {
+        let response = run.user_input.trim().to_string();
+        let input_tokens = u64::try_from(run.user_input.split_whitespace().count())
+            .unwrap_or(1)
+            .max(1);
+        let output_tokens = u64::try_from(response.split_whitespace().count())
+            .unwrap_or(1)
+            .max(1);
+        let total_tokens = input_tokens.saturating_add(output_tokens);
+
+        Ok(vec![
+            BackendEvent {
+                sequence: 1,
+                kind: BackendEventKind::TextDelta,
+                payload: BTreeMap::from([("text".to_string(), response)]),
+            },
+            BackendEvent {
+                sequence: 2,
+                kind: BackendEventKind::RunNote,
+                payload: BTreeMap::from([
+                    (
+                        "run_usage_input_tokens".to_string(),
+                        input_tokens.to_string(),
+                    ),
+                    (
+                        "run_usage_output_tokens".to_string(),
+                        output_tokens.to_string(),
+                    ),
+                    (
+                        "run_usage_total_tokens".to_string(),
+                        total_tokens.to_string(),
+                    ),
+                    (
+                        "run_usage_source".to_string(),
+                        "daemon_backend_bridge".to_string(),
+                    ),
+                ]),
+            },
+            BackendEvent {
+                sequence: 3,
+                kind: BackendEventKind::TurnCompleted,
+                payload: BTreeMap::from([("finish".to_string(), "completed".to_string())]),
+            },
+        ])
+    }
+}
+
 #[cfg(test)]
 type SessionNowEpochMsOverride = fn() -> CrabResult<u64>;
 
@@ -170,9 +239,22 @@ thread_local! {
 
 impl<D: DaemonDiscordIo> DaemonTurnRuntime<D> {
     pub fn new(owner: OwnerConfig, discord: D) -> CrabResult<Self> {
+        Self::new_with_backend_bridge(
+            owner,
+            discord,
+            Box::<DefaultDaemonBackendExecutionBridge>::default(),
+        )
+    }
+
+    fn new_with_backend_bridge(
+        owner: OwnerConfig,
+        discord: D,
+        backend_bridge: Box<dyn DaemonBackendExecutionBridge>,
+    ) -> CrabResult<Self> {
         Ok(Self {
             discord,
             owner,
+            backend_bridge,
             next_session_sequence: 0,
             physical_sessions: BTreeMap::new(),
             turn_context_runtime: None,
@@ -395,49 +477,23 @@ impl<D: DaemonDiscordIo> TurnExecutorRuntime for DaemonTurnRuntime<D> {
         physical_session: &mut crab_core::PhysicalSession,
         run: &Run,
         turn_id: &str,
-        _turn_context: &str,
+        turn_context: &str,
     ) -> CrabResult<Vec<BackendEvent>> {
+        let cache_key = physical_session.id.clone();
+        let backend_events = self
+            .backend_bridge
+            .execute_turn(physical_session, run, turn_id, turn_context)
+            .map_err(|error| CrabError::InvariantViolation {
+                context: DAEMON_BACKEND_BRIDGE_EXECUTE,
+                message: format!(
+                    "run {} turn {} backend {:?} bridge execution failed: {}",
+                    run.id, turn_id, run.profile.resolved_profile.backend, error
+                ),
+            })?;
         physical_session.last_turn_id = Some(turn_id.to_string());
-        let response = format!("Crab stub response: {}", run.user_input.trim());
-        let input_tokens = u64::try_from(run.user_input.split_whitespace().count())
-            .unwrap_or(1)
-            .max(1);
-        let output_tokens = u64::try_from(response.split_whitespace().count())
-            .unwrap_or(1)
-            .max(1);
-        let total_tokens = input_tokens.saturating_add(output_tokens);
-
-        Ok(vec![
-            BackendEvent {
-                sequence: 1,
-                kind: BackendEventKind::TextDelta,
-                payload: BTreeMap::from([("delta".to_string(), response)]),
-            },
-            BackendEvent {
-                sequence: 2,
-                kind: BackendEventKind::RunNote,
-                payload: BTreeMap::from([
-                    (
-                        "run_usage_input_tokens".to_string(),
-                        input_tokens.to_string(),
-                    ),
-                    (
-                        "run_usage_output_tokens".to_string(),
-                        output_tokens.to_string(),
-                    ),
-                    (
-                        "run_usage_total_tokens".to_string(),
-                        total_tokens.to_string(),
-                    ),
-                    ("run_usage_source".to_string(), "daemon_stub".to_string()),
-                ]),
-            },
-            BackendEvent {
-                sequence: 3,
-                kind: BackendEventKind::TurnCompleted,
-                payload: BTreeMap::from([("finish".to_string(), "stub".to_string())]),
-            },
-        ])
+        self.physical_sessions
+            .insert(cache_key, physical_session.clone());
+        Ok(backend_events)
     }
 
     fn deliver_assistant_output(
@@ -780,13 +836,14 @@ mod tests {
         memory_scope_directory_for_run, read_workspace_markdown,
         render_agents_with_prompt_contract, run_daemon_loop_with_transport,
         run_daemon_loop_with_transport_and_runtime_builder, trust_surface_for_logical_session_id,
-        DaemonConfig, DaemonDiscordIo, DaemonLoopControl, DaemonLoopStats, DaemonTurnRuntime,
-        SystemDaemonLoopControl,
+        DaemonBackendExecutionBridge, DaemonConfig, DaemonDiscordIo, DaemonLoopControl,
+        DaemonLoopStats, DaemonTurnRuntime, SystemDaemonLoopControl,
     };
     use crate::test_support::{runtime_config_for_workspace_with_lanes, TempWorkspace};
     use crate::TurnExecutorRuntime;
     use crab_backends::{
-        CodexAppServerProcess, CodexProcessHandle, OpenCodeServerHandle, OpenCodeServerProcess,
+        BackendEvent, BackendEventKind, CodexAppServerProcess, CodexProcessHandle,
+        OpenCodeServerHandle, OpenCodeServerProcess,
     };
     use crab_core::{
         BackendKind, Checkpoint, CrabError, CrabResult, InferenceProfile, LaneState,
@@ -1019,6 +1076,79 @@ mod tests {
                 content.to_string(),
             ));
             state.edit_results.pop_front().unwrap_or(Ok(()))
+        }
+    }
+
+    #[derive(Debug, Clone, Default)]
+    struct ScriptedBackendBridgeState {
+        execute_calls: Vec<(String, String, String, String)>,
+        execute_turn_results: VecDeque<CrabResult<Vec<BackendEvent>>>,
+    }
+
+    #[derive(Debug, Clone)]
+    struct ScriptedBackendBridge {
+        state: Arc<Mutex<ScriptedBackendBridgeState>>,
+    }
+
+    impl ScriptedBackendBridge {
+        fn with_results(results: Vec<CrabResult<Vec<BackendEvent>>>) -> Self {
+            Self {
+                state: Arc::new(Mutex::new(ScriptedBackendBridgeState {
+                    execute_turn_results: VecDeque::from(results),
+                    ..ScriptedBackendBridgeState::default()
+                })),
+            }
+        }
+
+        fn state(&self) -> ScriptedBackendBridgeState {
+            self.state.lock().expect("lock should succeed").clone()
+        }
+    }
+
+    impl DaemonBackendExecutionBridge for ScriptedBackendBridge {
+        fn execute_turn(
+            &mut self,
+            physical_session: &mut crab_core::PhysicalSession,
+            run: &Run,
+            turn_id: &str,
+            turn_context: &str,
+        ) -> CrabResult<Vec<BackendEvent>> {
+            let mut state = self.state.lock().expect("lock should succeed");
+            state.execute_calls.push((
+                physical_session.id.clone(),
+                run.id.clone(),
+                turn_id.to_string(),
+                turn_context.to_string(),
+            ));
+            state.execute_turn_results.pop_front().unwrap_or_else(|| {
+                Err(CrabError::InvariantViolation {
+                    context: "daemon_test_backend_bridge",
+                    message: "missing scripted execute result".to_string(),
+                })
+            })
+        }
+    }
+
+    #[derive(Debug, Default)]
+    struct MutatingBackendBridge;
+
+    impl DaemonBackendExecutionBridge for MutatingBackendBridge {
+        fn execute_turn(
+            &mut self,
+            physical_session: &mut crab_core::PhysicalSession,
+            _run: &Run,
+            turn_id: &str,
+            _turn_context: &str,
+        ) -> CrabResult<Vec<BackendEvent>> {
+            physical_session.backend_session_id = format!("backend-session:mutated:{turn_id}");
+            Ok(vec![BackendEvent {
+                sequence: 1,
+                kind: BackendEventKind::TurnCompleted,
+                payload: std::collections::BTreeMap::from([(
+                    "finish".to_string(),
+                    "done".to_string(),
+                )]),
+            }])
         }
     }
 
@@ -1286,7 +1416,7 @@ mod tests {
 
         let discord = discord_state.state();
         assert_eq!(discord.posted.len(), 1);
-        assert!(discord.posted[0].2.contains("Crab stub response"));
+        assert_eq!(discord.posted[0].2, "hello world".to_string());
 
         let codex_stats = codex_state.stats();
         assert_eq!(codex_stats.spawn_calls, 1);
@@ -2061,6 +2191,180 @@ mod tests {
                 message: "forced session timestamp failure".to_string(),
             }
         );
+    }
+
+    #[test]
+    fn daemon_runtime_execute_backend_turn_delegates_success_path() {
+        let workspace = TempWorkspace::new("daemon", "backend-bridge-success");
+        let config = runtime_config_for_workspace_with_lanes(&workspace.path, 1);
+        let run = sample_run("non-owner");
+        let expected_events = vec![
+            BackendEvent {
+                sequence: 1,
+                kind: BackendEventKind::TextDelta,
+                payload: std::collections::BTreeMap::from([(
+                    "text".to_string(),
+                    "delegated output".to_string(),
+                )]),
+            },
+            BackendEvent {
+                sequence: 2,
+                kind: BackendEventKind::TurnCompleted,
+                payload: std::collections::BTreeMap::from([(
+                    "finish".to_string(),
+                    "done".to_string(),
+                )]),
+            },
+        ];
+
+        let discord = ScriptedDiscordIo::with_state(DiscordIoState::default());
+        let bridge = ScriptedBackendBridge::with_results(vec![Ok(expected_events.clone())]);
+        let bridge_state = bridge.clone();
+        let mut runtime = DaemonTurnRuntime::new_with_backend_bridge(
+            config.owner.clone(),
+            discord,
+            Box::new(bridge),
+        )
+        .expect("runtime builds");
+
+        let active_id = "physical:discord:channel:777:1".to_string();
+        let mut physical = runtime
+            .ensure_physical_session(&run.logical_session_id, &run.profile.resolved_profile, None)
+            .expect("physical session should resolve");
+        assert_eq!(physical.id, active_id);
+
+        let events = runtime
+            .execute_backend_turn(&mut physical, &run, "turn-1", "turn context")
+            .expect("delegated backend turn should succeed");
+        assert_eq!(events, expected_events);
+        assert_eq!(physical.last_turn_id, Some("turn-1".to_string()));
+        let cached = runtime
+            .ensure_physical_session(
+                &run.logical_session_id,
+                &run.profile.resolved_profile,
+                Some(&active_id),
+            )
+            .expect("cached physical session should resolve");
+        assert_eq!(cached.last_turn_id, Some("turn-1".to_string()));
+
+        let bridge_state = bridge_state.state();
+        assert_eq!(
+            bridge_state.execute_calls,
+            vec![(
+                physical.id,
+                run.id,
+                "turn-1".to_string(),
+                "turn context".to_string(),
+            )]
+        );
+    }
+
+    #[test]
+    fn daemon_runtime_execute_backend_turn_maps_bridge_failures() {
+        let workspace = TempWorkspace::new("daemon", "backend-bridge-failure");
+        let config = runtime_config_for_workspace_with_lanes(&workspace.path, 1);
+        let run = sample_run("non-owner");
+        let discord = ScriptedDiscordIo::with_state(DiscordIoState::default());
+        let bridge =
+            ScriptedBackendBridge::with_results(vec![Err(CrabError::InvariantViolation {
+                context: "daemon_test_backend_bridge",
+                message: "forced backend bridge failure".to_string(),
+            })]);
+        let bridge_state = bridge.clone();
+        let mut runtime = DaemonTurnRuntime::new_with_backend_bridge(
+            config.owner.clone(),
+            discord,
+            Box::new(bridge),
+        )
+        .expect("runtime builds");
+        let mut physical = runtime
+            .ensure_physical_session(&run.logical_session_id, &run.profile.resolved_profile, None)
+            .expect("physical session should resolve");
+
+        let error = runtime
+            .execute_backend_turn(&mut physical, &run, "turn-2", "turn context")
+            .expect_err("delegated backend failures should be mapped");
+        assert!(matches!(
+            error,
+            CrabError::InvariantViolation {
+                context: "daemon_backend_bridge_execute",
+                message,
+            } if message
+                .contains("run run-1 turn turn-2 backend Codex bridge execution failed")
+                && message.contains(
+                    "daemon_test_backend_bridge invariant violation: forced backend bridge failure"
+            )
+        ));
+
+        let bridge_state = bridge_state.state();
+        assert_eq!(bridge_state.execute_calls.len(), 1);
+        assert_eq!(physical.last_turn_id, None);
+    }
+
+    #[test]
+    fn daemon_runtime_execute_backend_turn_surfaces_scripted_bridge_depletion() {
+        let workspace = TempWorkspace::new("daemon", "backend-bridge-depletion");
+        let config = runtime_config_for_workspace_with_lanes(&workspace.path, 1);
+        let run = sample_run("non-owner");
+        let discord = ScriptedDiscordIo::with_state(DiscordIoState::default());
+        let mut runtime = DaemonTurnRuntime::new_with_backend_bridge(
+            config.owner.clone(),
+            discord,
+            Box::new(ScriptedBackendBridge::with_results(Vec::new())),
+        )
+        .expect("runtime builds");
+        let mut physical = runtime
+            .ensure_physical_session(&run.logical_session_id, &run.profile.resolved_profile, None)
+            .expect("physical session should resolve");
+
+        let error = runtime
+            .execute_backend_turn(&mut physical, &run, "turn-3", "turn context")
+            .expect_err("depleted scripted bridge results should fail");
+        assert!(matches!(
+            error,
+            CrabError::InvariantViolation {
+                context: "daemon_backend_bridge_execute",
+                message,
+            } if message.contains(
+                "daemon_test_backend_bridge invariant violation: missing scripted execute result"
+            )
+        ));
+        assert_eq!(physical.last_turn_id, None);
+    }
+
+    #[test]
+    fn daemon_runtime_execute_backend_turn_persists_bridge_mutations_in_cache() {
+        let workspace = TempWorkspace::new("daemon", "backend-bridge-cache-persist");
+        let config = runtime_config_for_workspace_with_lanes(&workspace.path, 1);
+        let run = sample_run("non-owner");
+        let discord = ScriptedDiscordIo::with_state(DiscordIoState::default());
+        let mut runtime = DaemonTurnRuntime::new_with_backend_bridge(
+            config.owner.clone(),
+            discord,
+            Box::<MutatingBackendBridge>::default(),
+        )
+        .expect("runtime builds");
+        let mut physical = runtime
+            .ensure_physical_session(&run.logical_session_id, &run.profile.resolved_profile, None)
+            .expect("physical session should resolve");
+        let active_id = physical.id.clone();
+        let initial_backend_session_id = physical.backend_session_id.clone();
+
+        runtime
+            .execute_backend_turn(&mut physical, &run, "turn-4", "turn context")
+            .expect("mutating bridge turn should succeed");
+        assert_ne!(physical.backend_session_id, initial_backend_session_id);
+        assert_eq!(physical.last_turn_id, Some("turn-4".to_string()));
+
+        let cached = runtime
+            .ensure_physical_session(
+                &run.logical_session_id,
+                &run.profile.resolved_profile,
+                Some(&active_id),
+            )
+            .expect("cached physical session should resolve");
+        assert_eq!(cached.backend_session_id, physical.backend_session_id);
+        assert_eq!(cached.last_turn_id, physical.last_turn_id);
     }
 
     #[test]
