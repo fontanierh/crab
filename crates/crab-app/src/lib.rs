@@ -2,6 +2,7 @@
 
 mod composition;
 mod daemon;
+mod daemon_backend_bridge;
 mod installer;
 mod maintenance;
 mod memory_cli;

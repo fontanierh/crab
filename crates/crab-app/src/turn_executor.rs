@@ -1,7 +1,10 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use crab_backends::{BackendEvent, BackendEventKind, CodexAppServerProcess, OpenCodeServerProcess};
+use crab_backends::{
+    BackendEvent, BackendEventKind, CodexAppServerProcess, CodexLifecycleManager,
+    OpenCodeServerProcess,
+};
 use crab_core::{
     apply_operator_command, build_fallback_checkpoint_document, build_memory_flush_prompt,
     enqueue_workspace_git_push_request, evaluate_rotation_triggers, execute_rotation_sequence,
@@ -64,6 +67,7 @@ pub trait TurnExecutorRuntime {
 
     fn execute_backend_turn(
         &mut self,
+        codex_lifecycle: &mut dyn CodexLifecycleManager,
         physical_session: &mut PhysicalSession,
         run: &Run,
         turn_id: &str,
@@ -372,6 +376,7 @@ where
                 self.runtime
                     .build_turn_context(&run, &session, &physical_session)?;
             backend_events = self.runtime.execute_backend_turn(
+                &mut self.composition.backends.codex,
                 &mut physical_session,
                 &run,
                 &turn_id,
@@ -1735,6 +1740,7 @@ mod tests {
 
         fn execute_backend_turn(
             &mut self,
+            _codex_lifecycle: &mut dyn crab_backends::CodexLifecycleManager,
             _physical_session: &mut crab_core::PhysicalSession,
             _run: &crab_core::Run,
             _turn_id: &str,

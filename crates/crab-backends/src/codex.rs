@@ -12,6 +12,11 @@ pub trait CodexAppServerProcess: Send + Sync {
     fn terminate_app_server(&self, handle: &CodexProcessHandle) -> CrabResult<()>;
 }
 
+pub trait CodexLifecycleManager {
+    fn ensure_started(&mut self) -> CrabResult<CodexProcessHandle>;
+    fn restart(&mut self) -> CrabResult<CodexProcessHandle>;
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CodexManagerState {
     pub generation: u64,
@@ -86,6 +91,16 @@ impl<P: CodexAppServerProcess> CodexManager<P> {
     }
 }
 
+impl<P: CodexAppServerProcess> CodexLifecycleManager for CodexManager<P> {
+    fn ensure_started(&mut self) -> CrabResult<CodexProcessHandle> {
+        CodexManager::ensure_started(self)
+    }
+
+    fn restart(&mut self) -> CrabResult<CodexProcessHandle> {
+        CodexManager::restart(self)
+    }
+}
+
 fn validate_handle(context: &'static str, handle: &CodexProcessHandle) -> CrabResult<()> {
     validate_process_identity(context, handle.process_id, handle.started_at_epoch_ms)
 }
@@ -117,7 +132,10 @@ mod tests {
 
     use crab_core::{CrabError, CrabResult};
 
-    use super::{CodexAppServerProcess, CodexManager, CodexManagerState, CodexProcessHandle};
+    use super::{
+        validate_process_identity, CodexAppServerProcess, CodexLifecycleManager, CodexManager,
+        CodexManagerState, CodexProcessHandle,
+    };
 
     #[derive(Debug, Clone, Default, PartialEq, Eq)]
     struct FakeProcessStats {
@@ -439,5 +457,55 @@ mod tests {
     fn fake_process_marks_unknown_handle_unhealthy() {
         let process = FakeCodexProcess::with_scripted_spawns(vec![]);
         assert!(!process.is_healthy(&handle(999, 1)));
+    }
+
+    #[test]
+    fn lifecycle_trait_delegates_to_manager_paths() {
+        let process = FakeCodexProcess::with_scripted_spawns(vec![
+            Ok(handle(101, 10)),
+            Ok(handle(202, 20)),
+            Ok(handle(303, 30)),
+        ]);
+        process.set_health(101, false);
+        let mut manager = CodexManager::new(process.clone());
+        let lifecycle: &mut dyn CodexLifecycleManager = &mut manager;
+
+        let first = lifecycle
+            .ensure_started()
+            .expect("trait ensure_started should start manager");
+        assert_eq!(first.process_id, 101);
+
+        let restarted_via_ensure = lifecycle
+            .ensure_started()
+            .expect("unhealthy handle should restart via trait");
+        assert_eq!(restarted_via_ensure.process_id, 202);
+
+        let restarted = lifecycle
+            .restart()
+            .expect("trait restart should delegate to manager restart");
+        assert_eq!(restarted.process_id, 303);
+    }
+
+    #[test]
+    fn validate_process_identity_rejects_zero_fields() {
+        let zero_pid =
+            validate_process_identity("codex_validate_identity", 0, 1).expect_err("pid=0 fails");
+        assert_eq!(
+            zero_pid,
+            CrabError::InvariantViolation {
+                context: "codex_validate_identity",
+                message: "process_id must be non-zero".to_string(),
+            }
+        );
+
+        let zero_started = validate_process_identity("codex_validate_identity", 1, 0)
+            .expect_err("started_at_epoch_ms=0 fails");
+        assert_eq!(
+            zero_started,
+            CrabError::InvariantViolation {
+                context: "codex_validate_identity",
+                message: "started_at_epoch_ms must be non-zero".to_string(),
+            }
+        );
     }
 }

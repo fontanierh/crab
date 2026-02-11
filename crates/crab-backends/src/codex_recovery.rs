@@ -1,8 +1,6 @@
 use crab_core::{CrabError, CrabResult};
 
-use crate::{
-    ensure_non_empty_field, CodexAppServerProcess, CodexManager, CodexProtocol, CodexRpcTransport,
-};
+use crate::{ensure_non_empty_field, CodexLifecycleManager, CodexProtocol, CodexRpcTransport};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CodexRotationReason {
@@ -21,8 +19,8 @@ pub enum CodexRecoveryOutcome {
     },
 }
 
-pub fn recover_codex_session<P: CodexAppServerProcess, T: CodexRpcTransport>(
-    manager: &mut CodexManager<P>,
+pub fn recover_codex_session<M: CodexLifecycleManager + ?Sized, T: CodexRpcTransport>(
+    manager: &mut M,
     protocol: &CodexProtocol<T>,
     previous_thread_id: Option<&str>,
 ) -> CrabResult<CodexRecoveryOutcome> {

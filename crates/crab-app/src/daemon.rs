@@ -8,7 +8,9 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 #[cfg(test)]
 use std::{cell::RefCell, thread_local};
 
-use crab_backends::{BackendEvent, BackendEventKind, CodexAppServerProcess, OpenCodeServerProcess};
+use crab_backends::{
+    BackendEvent, CodexAppServerProcess, CodexLifecycleManager, OpenCodeServerProcess,
+};
 #[cfg(not(coverage))]
 use crab_core::{build_context_diagnostics_report, render_context_diagnostics_fixture};
 use crab_core::{
@@ -24,12 +26,20 @@ use crab_core::{
 use crab_discord::GatewayMessage;
 use crab_store::CheckpointStore;
 
+#[cfg(not(any(test, coverage)))]
+use crate::daemon_backend_bridge::CodexAppServerTransport;
+#[cfg(any(test, coverage, debug_assertions))]
+use crate::daemon_backend_bridge::DeterministicCodexTransport;
+use crate::daemon_backend_bridge::{CodexDaemonBackendBridge, DaemonBackendBridge};
 use crate::{boot_runtime_with_processes, run_heartbeat_if_due, TurnExecutor, TurnExecutorRuntime};
 
 pub const DEFAULT_DAEMON_TICK_INTERVAL_MS: u64 = 250;
 const DAEMON_TURN_CONTEXT_READ: &str = "daemon_turn_context_read";
 const DAEMON_BACKEND_BRIDGE_EXECUTE: &str = "daemon_backend_bridge_execute";
 const MILLIS_PER_DAY: u64 = 86_400_000;
+#[cfg(all(not(any(test, coverage)), debug_assertions))]
+const DAEMON_DETERMINISTIC_CODEX_TRANSPORT_ENV: &str =
+    "CRAB_DAEMON_FORCE_DETERMINISTIC_CODEX_TRANSPORT";
 
 pub trait DaemonDiscordIo {
     fn next_gateway_message(&mut self) -> CrabResult<Option<GatewayMessage>>;
@@ -145,13 +155,12 @@ impl DaemonLoopControl for SystemDaemonLoopControl {
     }
 }
 
-#[derive(Debug)]
 pub struct DaemonTurnRuntime<D: DaemonDiscordIo> {
     discord: D,
     owner: OwnerConfig,
-    backend_bridge: Box<dyn DaemonBackendExecutionBridge>,
     next_session_sequence: u64,
     physical_sessions: BTreeMap<String, crab_core::PhysicalSession>,
+    backend_bridge: Box<dyn DaemonBackendBridge>,
     turn_context_runtime: Option<TurnContextRuntimeState>,
 }
 
@@ -162,73 +171,6 @@ struct TurnContextRuntimeState {
     context_budget_policy: ContextBudgetPolicy,
 }
 
-trait DaemonBackendExecutionBridge: std::fmt::Debug {
-    fn execute_turn(
-        &mut self,
-        physical_session: &mut crab_core::PhysicalSession,
-        run: &Run,
-        turn_id: &str,
-        turn_context: &str,
-    ) -> CrabResult<Vec<BackendEvent>>;
-}
-
-#[derive(Debug, Default)]
-struct DefaultDaemonBackendExecutionBridge;
-
-impl DaemonBackendExecutionBridge for DefaultDaemonBackendExecutionBridge {
-    fn execute_turn(
-        &mut self,
-        _physical_session: &mut crab_core::PhysicalSession,
-        run: &Run,
-        _turn_id: &str,
-        _turn_context: &str,
-    ) -> CrabResult<Vec<BackendEvent>> {
-        let response = run.user_input.trim().to_string();
-        let input_tokens = u64::try_from(run.user_input.split_whitespace().count())
-            .unwrap_or(1)
-            .max(1);
-        let output_tokens = u64::try_from(response.split_whitespace().count())
-            .unwrap_or(1)
-            .max(1);
-        let total_tokens = input_tokens.saturating_add(output_tokens);
-
-        Ok(vec![
-            BackendEvent {
-                sequence: 1,
-                kind: BackendEventKind::TextDelta,
-                payload: BTreeMap::from([("text".to_string(), response)]),
-            },
-            BackendEvent {
-                sequence: 2,
-                kind: BackendEventKind::RunNote,
-                payload: BTreeMap::from([
-                    (
-                        "run_usage_input_tokens".to_string(),
-                        input_tokens.to_string(),
-                    ),
-                    (
-                        "run_usage_output_tokens".to_string(),
-                        output_tokens.to_string(),
-                    ),
-                    (
-                        "run_usage_total_tokens".to_string(),
-                        total_tokens.to_string(),
-                    ),
-                    (
-                        "run_usage_source".to_string(),
-                        "daemon_backend_bridge".to_string(),
-                    ),
-                ]),
-            },
-            BackendEvent {
-                sequence: 3,
-                kind: BackendEventKind::TurnCompleted,
-                payload: BTreeMap::from([("finish".to_string(), "completed".to_string())]),
-            },
-        ])
-    }
-}
-
 #[cfg(test)]
 type SessionNowEpochMsOverride = fn() -> CrabResult<u64>;
 
@@ -237,26 +179,50 @@ thread_local! {
     static SESSION_NOW_EPOCH_MS_OVERRIDE: RefCell<Option<SessionNowEpochMsOverride>> = RefCell::new(None);
 }
 
+#[cfg(all(not(any(test, coverage)), debug_assertions))]
+fn use_deterministic_codex_transport_override() -> bool {
+    std::env::var(DAEMON_DETERMINISTIC_CODEX_TRANSPORT_ENV)
+        .ok()
+        .is_some_and(|raw| {
+            matches!(
+                raw.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
+}
+
 impl<D: DaemonDiscordIo> DaemonTurnRuntime<D> {
     pub fn new(owner: OwnerConfig, discord: D) -> CrabResult<Self> {
-        Self::new_with_backend_bridge(
-            owner,
-            discord,
-            Box::<DefaultDaemonBackendExecutionBridge>::default(),
-        )
+        #[cfg(all(not(any(test, coverage)), debug_assertions))]
+        if use_deterministic_codex_transport_override() {
+            let backend_bridge = Box::new(CodexDaemonBackendBridge::new(
+                DeterministicCodexTransport::default(),
+            ));
+            return Self::new_with_backend_bridge(owner, discord, backend_bridge);
+        }
+
+        #[cfg(not(any(test, coverage)))]
+        let backend_bridge = Box::new(CodexDaemonBackendBridge::new(
+            CodexAppServerTransport::new()?
+        ));
+        #[cfg(any(test, coverage))]
+        let backend_bridge = Box::new(CodexDaemonBackendBridge::new(
+            DeterministicCodexTransport::default(),
+        ));
+        Self::new_with_backend_bridge(owner, discord, backend_bridge)
     }
 
     fn new_with_backend_bridge(
         owner: OwnerConfig,
         discord: D,
-        backend_bridge: Box<dyn DaemonBackendExecutionBridge>,
+        backend_bridge: Box<dyn DaemonBackendBridge>,
     ) -> CrabResult<Self> {
         Ok(Self {
             discord,
             owner,
-            backend_bridge,
             next_session_sequence: 0,
             physical_sessions: BTreeMap::new(),
+            backend_bridge,
             turn_context_runtime: None,
         })
     }
@@ -422,14 +388,26 @@ impl<D: DaemonDiscordIo> TurnExecutorRuntime for DaemonTurnRuntime<D> {
             global_default,
         })?;
 
+        let mut resolved_profile = resolved.profile;
+        let mut fallback_applied = false;
+        let mut fallback_notes = Vec::new();
+        if resolved_profile.backend != BackendKind::Codex {
+            let requested_backend = resolved_profile.backend;
+            resolved_profile.backend = BackendKind::Codex;
+            fallback_applied = true;
+            fallback_notes.push(format!(
+                "daemon runtime currently supports codex only; coerced backend {requested_backend:?} to Codex"
+            ));
+        }
+
         Ok(RunProfileTelemetry {
             requested_profile: None,
-            resolved_profile: resolved.profile,
+            resolved_profile,
             backend_source: resolved.backend_source,
             model_source: resolved.model_source,
             reasoning_level_source: resolved.reasoning_level_source,
-            fallback_applied: false,
-            fallback_notes: Vec::new(),
+            fallback_applied,
+            fallback_notes,
             sender_id: trust_context.sender_id,
             sender_is_owner: trust_context.sender_is_owner,
             resolved_owner_profile: trust_context.owner_profile,
@@ -474,6 +452,7 @@ impl<D: DaemonDiscordIo> TurnExecutorRuntime for DaemonTurnRuntime<D> {
 
     fn execute_backend_turn(
         &mut self,
+        codex_lifecycle: &mut dyn CodexLifecycleManager,
         physical_session: &mut crab_core::PhysicalSession,
         run: &Run,
         turn_id: &str,
@@ -482,7 +461,13 @@ impl<D: DaemonDiscordIo> TurnExecutorRuntime for DaemonTurnRuntime<D> {
         let cache_key = physical_session.id.clone();
         let backend_events = self
             .backend_bridge
-            .execute_turn(physical_session, run, turn_id, turn_context)
+            .execute_backend_turn(
+                codex_lifecycle,
+                physical_session,
+                run,
+                turn_id,
+                turn_context,
+            )
             .map_err(|error| CrabError::InvariantViolation {
                 context: DAEMON_BACKEND_BRIDGE_EXECUTE,
                 message: format!(
@@ -490,7 +475,9 @@ impl<D: DaemonDiscordIo> TurnExecutorRuntime for DaemonTurnRuntime<D> {
                     run.id, turn_id, run.profile.resolved_profile.backend, error
                 ),
             })?;
-        physical_session.last_turn_id = Some(turn_id.to_string());
+        if physical_session.last_turn_id.is_none() {
+            physical_session.last_turn_id = Some(turn_id.to_string());
+        }
         self.physical_sessions
             .insert(cache_key, physical_session.clone());
         Ok(backend_events)
@@ -536,20 +523,21 @@ where
     )
 }
 
-fn run_daemon_loop_with_transport_and_runtime_builder<CP, OP, D, C>(
+fn run_daemon_loop_with_transport_and_runtime_builder<CP, OP, D, C, RB>(
     runtime_config: &RuntimeConfig,
     daemon_config: &DaemonConfig,
     codex_process: CP,
     opencode_process: OP,
     discord: D,
     control: &mut C,
-    runtime_builder: fn(OwnerConfig, D) -> CrabResult<DaemonTurnRuntime<D>>,
+    mut runtime_builder: RB,
 ) -> CrabResult<DaemonLoopStats>
 where
     CP: CodexAppServerProcess,
     OP: OpenCodeServerProcess,
     D: DaemonDiscordIo,
     C: DaemonLoopControl + ?Sized,
+    RB: FnMut(OwnerConfig, D) -> CrabResult<DaemonTurnRuntime<D>>,
 {
     daemon_config.validate()?;
     let now_epoch_ms = control.now_epoch_ms()?;
@@ -836,14 +824,15 @@ mod tests {
         memory_scope_directory_for_run, read_workspace_markdown,
         render_agents_with_prompt_contract, run_daemon_loop_with_transport,
         run_daemon_loop_with_transport_and_runtime_builder, trust_surface_for_logical_session_id,
-        DaemonBackendExecutionBridge, DaemonConfig, DaemonDiscordIo, DaemonLoopControl,
-        DaemonLoopStats, DaemonTurnRuntime, SystemDaemonLoopControl,
+        DaemonConfig, DaemonDiscordIo, DaemonLoopControl, DaemonLoopStats, DaemonTurnRuntime,
+        SystemDaemonLoopControl,
     };
+    use crate::daemon_backend_bridge::DaemonBackendBridge;
     use crate::test_support::{runtime_config_for_workspace_with_lanes, TempWorkspace};
     use crate::TurnExecutorRuntime;
     use crab_backends::{
-        BackendEvent, BackendEventKind, CodexAppServerProcess, CodexProcessHandle,
-        OpenCodeServerHandle, OpenCodeServerProcess,
+        BackendEvent, BackendEventKind, CodexAppServerProcess, CodexLifecycleManager,
+        CodexProcessHandle, OpenCodeServerHandle, OpenCodeServerProcess,
     };
     use crab_core::{
         BackendKind, Checkpoint, CrabError, CrabResult, InferenceProfile, LaneState,
@@ -852,7 +841,7 @@ mod tests {
     };
     use crab_discord::{GatewayConversationKind, GatewayMessage};
     use crab_store::{CheckpointStore, RunStore, SessionStore};
-    use std::collections::VecDeque;
+    use std::collections::{BTreeMap, VecDeque};
     #[cfg(unix)]
     use std::process::Command;
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -1105,9 +1094,10 @@ mod tests {
         }
     }
 
-    impl DaemonBackendExecutionBridge for ScriptedBackendBridge {
-        fn execute_turn(
+    impl DaemonBackendBridge for ScriptedBackendBridge {
+        fn execute_backend_turn(
             &mut self,
+            _codex_lifecycle: &mut dyn CodexLifecycleManager,
             physical_session: &mut crab_core::PhysicalSession,
             run: &Run,
             turn_id: &str,
@@ -1132,9 +1122,10 @@ mod tests {
     #[derive(Debug, Default)]
     struct MutatingBackendBridge;
 
-    impl DaemonBackendExecutionBridge for MutatingBackendBridge {
-        fn execute_turn(
+    impl DaemonBackendBridge for MutatingBackendBridge {
+        fn execute_backend_turn(
             &mut self,
+            _codex_lifecycle: &mut dyn CodexLifecycleManager,
             physical_session: &mut crab_core::PhysicalSession,
             _run: &Run,
             turn_id: &str,
@@ -1259,6 +1250,83 @@ mod tests {
                 context: "daemon_test_sleep",
                 message: "forced sleep failure".to_string(),
             })
+        }
+    }
+
+    #[derive(Debug, Clone, Default)]
+    struct ScriptedCodexBridgeState {
+        observed_backend_session_ids: Vec<String>,
+    }
+
+    #[derive(Debug, Clone)]
+    struct ScriptedCodexBridge {
+        state: Arc<Mutex<ScriptedCodexBridgeState>>,
+        scripted_results: Arc<Mutex<VecDeque<CrabResult<Vec<BackendEvent>>>>>,
+        recovered_backend_session_id: Option<String>,
+    }
+
+    impl ScriptedCodexBridge {
+        fn with_results(results: Vec<CrabResult<Vec<BackendEvent>>>) -> Self {
+            Self {
+                state: Arc::new(Mutex::new(ScriptedCodexBridgeState::default())),
+                scripted_results: Arc::new(Mutex::new(VecDeque::from(results))),
+                recovered_backend_session_id: None,
+            }
+        }
+
+        fn with_recovered_backend_session_id(mut self, backend_session_id: &str) -> Self {
+            self.recovered_backend_session_id = Some(backend_session_id.to_string());
+            self
+        }
+
+        fn state(&self) -> ScriptedCodexBridgeState {
+            self.state.lock().expect("lock should succeed").clone()
+        }
+    }
+
+    impl DaemonBackendBridge for ScriptedCodexBridge {
+        fn execute_backend_turn(
+            &mut self,
+            _codex_lifecycle: &mut dyn CodexLifecycleManager,
+            physical_session: &mut crab_core::PhysicalSession,
+            _run: &Run,
+            turn_id: &str,
+            _turn_context: &str,
+        ) -> CrabResult<Vec<BackendEvent>> {
+            self.state
+                .lock()
+                .expect("lock should succeed")
+                .observed_backend_session_ids
+                .push(physical_session.backend_session_id.clone());
+            if let Some(recovered_backend_session_id) = self.recovered_backend_session_id.as_ref() {
+                physical_session.backend_session_id = recovered_backend_session_id.clone();
+            }
+            physical_session.last_turn_id = Some(turn_id.to_string());
+            self.scripted_results
+                .lock()
+                .expect("lock should succeed")
+                .pop_front()
+                .unwrap_or_else(|| {
+                    Err(CrabError::InvariantViolation {
+                        context: "daemon_test_scripted_codex_bridge",
+                        message: "missing scripted backend result".to_string(),
+                    })
+                })
+        }
+    }
+
+    fn backend_event(
+        sequence: u64,
+        kind: BackendEventKind,
+        payload: &[(&str, &str)],
+    ) -> BackendEvent {
+        BackendEvent {
+            sequence,
+            kind,
+            payload: payload
+                .iter()
+                .map(|(key, value)| (key.to_string(), value.to_string()))
+                .collect::<BTreeMap<_, _>>(),
         }
     }
 
@@ -1416,16 +1484,256 @@ mod tests {
 
         let discord = discord_state.state();
         assert_eq!(discord.posted.len(), 1);
-        assert_eq!(discord.posted[0].2, "hello world".to_string());
+        assert!(discord.posted[0].2.contains("Codex bridge response"));
+
+        let session = SessionStore::new(workspace.path.join("state"))
+            .get_session("discord:channel:777")
+            .expect("session read should succeed")
+            .expect("session should exist");
+        assert!(session.token_accounting.input_tokens > 0);
+        assert_eq!(session.token_accounting.output_tokens, 3);
+        assert_eq!(
+            session.token_accounting.total_tokens,
+            session.token_accounting.input_tokens + session.token_accounting.output_tokens
+        );
 
         let codex_stats = codex_state.stats();
-        assert_eq!(codex_stats.spawn_calls, 1);
-        assert_eq!(codex_stats.terminate_calls, 1);
+        assert_eq!(codex_stats.spawn_calls, 2);
+        assert_eq!(codex_stats.terminate_calls, 2);
 
         let opencode_stats = opencode_state.stats();
         assert_eq!(opencode_stats.spawn_calls, 1);
         assert_eq!(opencode_stats.terminate_calls, 1);
         assert_eq!(control.slept, vec![5, 5]);
+    }
+
+    #[test]
+    fn daemon_loop_coerces_owner_non_codex_backend_and_keeps_dispatching() {
+        let workspace = TempWorkspace::new("daemon", "owner-non-codex-fallback");
+        let mut config = runtime_config_for_workspace_with_lanes(&workspace.path, 2);
+        config.owner.discord_user_ids = vec!["111".to_string()];
+        config.owner.profile_defaults.backend = Some(BackendKind::OpenCode);
+        config.owner.profile_defaults.model = Some("owner-model".to_string());
+
+        let daemon_config = DaemonConfig {
+            bot_user_id: "999".to_string(),
+            tick_interval_ms: 5,
+            max_iterations: Some(2),
+        };
+        let discord = ScriptedDiscordIo::with_state(DiscordIoState {
+            inbound: VecDeque::from([
+                Ok(Some(gateway_message("m-owner", "111", "hello world"))),
+                Ok(None),
+            ]),
+            ..DiscordIoState::default()
+        });
+        let discord_state = discord.clone();
+        let codex = TrackingCodexProcess::new();
+        let opencode = TrackingOpenCodeProcess::new();
+        let mut control = ScriptedControl::with_now(vec![
+            2_000_000_000_000,
+            2_000_000_000_001,
+            2_000_000_000_002,
+        ]);
+
+        let stats = run_daemon_loop_with_transport(
+            &config,
+            &daemon_config,
+            codex,
+            opencode,
+            discord,
+            &mut control,
+        )
+        .expect("daemon loop should coerce owner backend and continue");
+
+        assert_eq!(stats.dispatched_runs, 1);
+        let discord = discord_state.state();
+        assert_eq!(discord.posted.len(), 1);
+        assert!(discord.posted[0].2.contains("Codex bridge response"));
+
+        let run_store = RunStore::new(workspace.path.join("state"));
+        let run = run_store
+            .get_run("discord:channel:777", "run:discord:channel:777:m-owner")
+            .expect("run read should succeed")
+            .expect("run should be persisted");
+        assert_eq!(run.profile.resolved_profile.backend, BackendKind::Codex);
+        assert!(run.profile.fallback_applied);
+        assert!(run.profile.fallback_notes[0].contains("OpenCode"));
+    }
+
+    #[test]
+    fn daemon_loop_propagates_codex_bridge_execution_errors() {
+        let workspace = TempWorkspace::new("daemon", "codex-bridge-error");
+        let config = runtime_config_for_workspace_with_lanes(&workspace.path, 1);
+        let daemon_config = DaemonConfig {
+            bot_user_id: "999".to_string(),
+            tick_interval_ms: 5,
+            max_iterations: Some(1),
+        };
+        let discord = ScriptedDiscordIo::with_state(DiscordIoState {
+            inbound: VecDeque::from([Ok(Some(gateway_message("m-err", "111", "hello world")))]),
+            ..DiscordIoState::default()
+        });
+        let codex = TrackingCodexProcess::new();
+        let opencode = TrackingOpenCodeProcess::new();
+        let mut control = ScriptedControl::with_now(vec![2_000_000_000_000, 2_000_000_000_001]);
+
+        let bridge = ScriptedCodexBridge::with_results(vec![Err(CrabError::InvariantViolation {
+            context: "daemon_test_codex_bridge",
+            message: "backend refused turn".to_string(),
+        })]);
+
+        let error = run_daemon_loop_with_transport_and_runtime_builder(
+            &config,
+            &daemon_config,
+            codex,
+            opencode,
+            discord,
+            &mut control,
+            move |owner, discord| {
+                DaemonTurnRuntime::new_with_backend_bridge(owner, discord, Box::new(bridge.clone()))
+            },
+        )
+        .expect_err("codex bridge execution failures should propagate");
+
+        assert!(matches!(
+            error,
+            CrabError::InvariantViolation {
+                context: "daemon_backend_bridge_execute",
+                message,
+            } if message
+                .contains("backend Codex bridge execution failed")
+                && message.contains(
+                    "daemon_test_codex_bridge invariant violation: backend refused turn"
+                )
+        ));
+    }
+
+    #[test]
+    fn daemon_loop_reports_missing_scripted_codex_bridge_results() {
+        let workspace = TempWorkspace::new("daemon", "codex-bridge-missing-script");
+        let config = runtime_config_for_workspace_with_lanes(&workspace.path, 1);
+        let daemon_config = DaemonConfig {
+            bot_user_id: "999".to_string(),
+            tick_interval_ms: 5,
+            max_iterations: Some(1),
+        };
+        let discord = ScriptedDiscordIo::with_state(DiscordIoState {
+            inbound: VecDeque::from([Ok(Some(gateway_message("m-err", "111", "hello world")))]),
+            ..DiscordIoState::default()
+        });
+        let codex = TrackingCodexProcess::new();
+        let opencode = TrackingOpenCodeProcess::new();
+        let mut control = ScriptedControl::with_now(vec![2_000_000_000_000, 2_000_000_000_001]);
+
+        let bridge = ScriptedCodexBridge::with_results(Vec::new());
+
+        let error = run_daemon_loop_with_transport_and_runtime_builder(
+            &config,
+            &daemon_config,
+            codex,
+            opencode,
+            discord,
+            &mut control,
+            move |owner, discord| {
+                DaemonTurnRuntime::new_with_backend_bridge(owner, discord, Box::new(bridge.clone()))
+            },
+        )
+        .expect_err("missing scripted bridge output should surface");
+
+        assert!(matches!(
+            error,
+            CrabError::InvariantViolation {
+                context: "daemon_backend_bridge_execute",
+                message,
+            } if message
+                .contains("backend Codex bridge execution failed")
+                && message.contains(
+                    "daemon_test_scripted_codex_bridge invariant violation: missing scripted backend result"
+                )
+        ));
+    }
+
+    #[test]
+    fn daemon_loop_supports_codex_bridge_recovery_updates_and_event_usage() {
+        let workspace = TempWorkspace::new("daemon", "codex-bridge-recovery");
+        let config = runtime_config_for_workspace_with_lanes(&workspace.path, 1);
+        let daemon_config = DaemonConfig {
+            bot_user_id: "999".to_string(),
+            tick_interval_ms: 5,
+            max_iterations: Some(2),
+        };
+        let discord = ScriptedDiscordIo::with_state(DiscordIoState {
+            inbound: VecDeque::from([
+                Ok(Some(gateway_message("m-rec", "111", "hello world"))),
+                Ok(None),
+            ]),
+            ..DiscordIoState::default()
+        });
+        let discord_state = discord.clone();
+        let codex = TrackingCodexProcess::new();
+        let opencode = TrackingOpenCodeProcess::new();
+        let mut control = ScriptedControl::with_now(vec![
+            2_000_000_000_000,
+            2_000_000_000_001,
+            2_000_000_000_002,
+        ]);
+
+        let bridge = ScriptedCodexBridge::with_results(vec![Ok(vec![
+            backend_event(
+                1,
+                BackendEventKind::TextDelta,
+                &[("delta", "recovered reply")],
+            ),
+            backend_event(
+                2,
+                BackendEventKind::RunNote,
+                &[
+                    ("usage_input_tokens", "4"),
+                    ("usage_output_tokens", "2"),
+                    ("usage_total_tokens", "6"),
+                    ("usage_source", "codex"),
+                ],
+            ),
+            backend_event(
+                3,
+                BackendEventKind::TurnCompleted,
+                &[("stop_reason", "completed")],
+            ),
+        ])])
+        .with_recovered_backend_session_id("thread-recovered");
+        let observed_bridge = bridge.clone();
+
+        let stats = run_daemon_loop_with_transport_and_runtime_builder(
+            &config,
+            &daemon_config,
+            codex,
+            opencode,
+            discord,
+            &mut control,
+            move |owner, discord| {
+                DaemonTurnRuntime::new_with_backend_bridge(owner, discord, Box::new(bridge.clone()))
+            },
+        )
+        .expect("daemon loop should succeed with recovered backend session id");
+
+        assert_eq!(stats.dispatched_runs, 1);
+        let observed = observed_bridge.state();
+        assert_eq!(observed.observed_backend_session_ids.len(), 1);
+        assert!(observed.observed_backend_session_ids[0]
+            .starts_with("backend-session:physical:discord:channel:777:"));
+
+        let discord = discord_state.state();
+        assert_eq!(discord.posted.len(), 1);
+        assert_eq!(discord.posted[0].2, "recovered reply".to_string());
+
+        let session = SessionStore::new(workspace.path.join("state"))
+            .get_session("discord:channel:777")
+            .expect("session read should succeed")
+            .expect("session should exist");
+        assert_eq!(session.token_accounting.input_tokens, 4);
+        assert_eq!(session.token_accounting.output_tokens, 2);
+        assert_eq!(session.token_accounting.total_tokens, 6);
     }
 
     #[test]
@@ -2232,9 +2540,16 @@ mod tests {
             .ensure_physical_session(&run.logical_session_id, &run.profile.resolved_profile, None)
             .expect("physical session should resolve");
         assert_eq!(physical.id, active_id);
+        let mut codex_lifecycle = crab_backends::CodexManager::new(TrackingCodexProcess::new());
 
         let events = runtime
-            .execute_backend_turn(&mut physical, &run, "turn-1", "turn context")
+            .execute_backend_turn(
+                &mut codex_lifecycle,
+                &mut physical,
+                &run,
+                "turn-1",
+                "turn context",
+            )
             .expect("delegated backend turn should succeed");
         assert_eq!(events, expected_events);
         assert_eq!(physical.last_turn_id, Some("turn-1".to_string()));
@@ -2280,9 +2595,16 @@ mod tests {
         let mut physical = runtime
             .ensure_physical_session(&run.logical_session_id, &run.profile.resolved_profile, None)
             .expect("physical session should resolve");
+        let mut codex_lifecycle = crab_backends::CodexManager::new(TrackingCodexProcess::new());
 
         let error = runtime
-            .execute_backend_turn(&mut physical, &run, "turn-2", "turn context")
+            .execute_backend_turn(
+                &mut codex_lifecycle,
+                &mut physical,
+                &run,
+                "turn-2",
+                "turn context",
+            )
             .expect_err("delegated backend failures should be mapped");
         assert!(matches!(
             error,
@@ -2316,9 +2638,16 @@ mod tests {
         let mut physical = runtime
             .ensure_physical_session(&run.logical_session_id, &run.profile.resolved_profile, None)
             .expect("physical session should resolve");
+        let mut codex_lifecycle = crab_backends::CodexManager::new(TrackingCodexProcess::new());
 
         let error = runtime
-            .execute_backend_turn(&mut physical, &run, "turn-3", "turn context")
+            .execute_backend_turn(
+                &mut codex_lifecycle,
+                &mut physical,
+                &run,
+                "turn-3",
+                "turn context",
+            )
             .expect_err("depleted scripted bridge results should fail");
         assert!(matches!(
             error,
@@ -2349,9 +2678,16 @@ mod tests {
             .expect("physical session should resolve");
         let active_id = physical.id.clone();
         let initial_backend_session_id = physical.backend_session_id.clone();
+        let mut codex_lifecycle = crab_backends::CodexManager::new(TrackingCodexProcess::new());
 
         runtime
-            .execute_backend_turn(&mut physical, &run, "turn-4", "turn context")
+            .execute_backend_turn(
+                &mut codex_lifecycle,
+                &mut physical,
+                &run,
+                "turn-4",
+                "turn context",
+            )
             .expect("mutating bridge turn should succeed");
         assert_ne!(physical.backend_session_id, initial_backend_session_id);
         assert_eq!(physical.last_turn_id, Some("turn-4".to_string()));
@@ -2438,13 +2774,16 @@ mod tests {
         assert!(telemetry.sender_is_owner);
         assert_eq!(
             telemetry.resolved_profile.backend,
-            crab_core::BackendKind::OpenCode
+            crab_core::BackendKind::Codex
         );
         assert_eq!(telemetry.resolved_profile.model, "owner-model");
         assert_eq!(
             telemetry.resolved_profile.reasoning_level,
             crab_core::ReasoningLevel::High
         );
+        assert!(telemetry.fallback_applied);
+        assert_eq!(telemetry.fallback_notes.len(), 1);
+        assert!(telemetry.fallback_notes[0].contains("coerced backend OpenCode to Codex"));
         assert!(telemetry.resolved_owner_profile.is_some());
     }
 
