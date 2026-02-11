@@ -20,7 +20,10 @@ pub mod opencode_recovery;
 pub mod profile_mapping;
 
 pub use claude::{ClaudeBackend, ClaudeProcess};
-pub use codex::{CodexAppServerProcess, CodexManager, CodexManagerState, CodexProcessHandle};
+pub use codex::{
+    CodexAppServerProcess, CodexLifecycleManager, CodexManager, CodexManagerState,
+    CodexProcessHandle,
+};
 pub use codex_events::{
     normalize_codex_events, CodexCompletedItem, CodexNotification, CodexRawEvent, CodexRequest,
     CodexTurnStatus,
