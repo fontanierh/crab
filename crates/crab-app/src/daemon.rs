@@ -26,15 +26,20 @@ use crab_core::{
 use crab_discord::GatewayMessage;
 use crab_store::CheckpointStore;
 
-use crate::daemon_backend_bridge::{
-    CodexDaemonBackendBridge, DaemonBackendBridge, DeterministicCodexTransport,
-};
+#[cfg(not(any(test, coverage)))]
+use crate::daemon_backend_bridge::CodexAppServerTransport;
+#[cfg(any(test, coverage, debug_assertions))]
+use crate::daemon_backend_bridge::DeterministicCodexTransport;
+use crate::daemon_backend_bridge::{CodexDaemonBackendBridge, DaemonBackendBridge};
 use crate::{boot_runtime_with_processes, run_heartbeat_if_due, TurnExecutor, TurnExecutorRuntime};
 
 pub const DEFAULT_DAEMON_TICK_INTERVAL_MS: u64 = 250;
 const DAEMON_TURN_CONTEXT_READ: &str = "daemon_turn_context_read";
 const DAEMON_BACKEND_BRIDGE_EXECUTE: &str = "daemon_backend_bridge_execute";
 const MILLIS_PER_DAY: u64 = 86_400_000;
+#[cfg(all(not(any(test, coverage)), debug_assertions))]
+const DAEMON_DETERMINISTIC_CODEX_TRANSPORT_ENV: &str =
+    "CRAB_DAEMON_FORCE_DETERMINISTIC_CODEX_TRANSPORT";
 
 pub trait DaemonDiscordIo {
     fn next_gateway_message(&mut self) -> CrabResult<Option<GatewayMessage>>;
@@ -174,15 +179,37 @@ thread_local! {
     static SESSION_NOW_EPOCH_MS_OVERRIDE: RefCell<Option<SessionNowEpochMsOverride>> = RefCell::new(None);
 }
 
+#[cfg(all(not(any(test, coverage)), debug_assertions))]
+fn use_deterministic_codex_transport_override() -> bool {
+    std::env::var(DAEMON_DETERMINISTIC_CODEX_TRANSPORT_ENV)
+        .ok()
+        .is_some_and(|raw| {
+            matches!(
+                raw.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
+}
+
 impl<D: DaemonDiscordIo> DaemonTurnRuntime<D> {
     pub fn new(owner: OwnerConfig, discord: D) -> CrabResult<Self> {
-        Self::new_with_backend_bridge(
-            owner,
-            discord,
-            Box::new(CodexDaemonBackendBridge::new(
+        #[cfg(all(not(any(test, coverage)), debug_assertions))]
+        if use_deterministic_codex_transport_override() {
+            let backend_bridge = Box::new(CodexDaemonBackendBridge::new(
                 DeterministicCodexTransport::default(),
-            )),
-        )
+            ));
+            return Self::new_with_backend_bridge(owner, discord, backend_bridge);
+        }
+
+        #[cfg(not(any(test, coverage)))]
+        let backend_bridge = Box::new(CodexDaemonBackendBridge::new(
+            CodexAppServerTransport::new()?
+        ));
+        #[cfg(any(test, coverage))]
+        let backend_bridge = Box::new(CodexDaemonBackendBridge::new(
+            DeterministicCodexTransport::default(),
+        ));
+        Self::new_with_backend_bridge(owner, discord, backend_bridge)
     }
 
     fn new_with_backend_bridge(
@@ -361,14 +388,26 @@ impl<D: DaemonDiscordIo> TurnExecutorRuntime for DaemonTurnRuntime<D> {
             global_default,
         })?;
 
+        let mut resolved_profile = resolved.profile;
+        let mut fallback_applied = false;
+        let mut fallback_notes = Vec::new();
+        if resolved_profile.backend != BackendKind::Codex {
+            let requested_backend = resolved_profile.backend;
+            resolved_profile.backend = BackendKind::Codex;
+            fallback_applied = true;
+            fallback_notes.push(format!(
+                "daemon runtime currently supports codex only; coerced backend {requested_backend:?} to Codex"
+            ));
+        }
+
         Ok(RunProfileTelemetry {
             requested_profile: None,
-            resolved_profile: resolved.profile,
+            resolved_profile,
             backend_source: resolved.backend_source,
             model_source: resolved.model_source,
             reasoning_level_source: resolved.reasoning_level_source,
-            fallback_applied: false,
-            fallback_notes: Vec::new(),
+            fallback_applied,
+            fallback_notes,
             sender_id: trust_context.sender_id,
             sender_is_owner: trust_context.sender_is_owner,
             resolved_owner_profile: trust_context.owner_profile,
@@ -1466,6 +1505,60 @@ mod tests {
         assert_eq!(opencode_stats.spawn_calls, 1);
         assert_eq!(opencode_stats.terminate_calls, 1);
         assert_eq!(control.slept, vec![5, 5]);
+    }
+
+    #[test]
+    fn daemon_loop_coerces_owner_non_codex_backend_and_keeps_dispatching() {
+        let workspace = TempWorkspace::new("daemon", "owner-non-codex-fallback");
+        let mut config = runtime_config_for_workspace_with_lanes(&workspace.path, 2);
+        config.owner.discord_user_ids = vec!["111".to_string()];
+        config.owner.profile_defaults.backend = Some(BackendKind::OpenCode);
+        config.owner.profile_defaults.model = Some("owner-model".to_string());
+
+        let daemon_config = DaemonConfig {
+            bot_user_id: "999".to_string(),
+            tick_interval_ms: 5,
+            max_iterations: Some(2),
+        };
+        let discord = ScriptedDiscordIo::with_state(DiscordIoState {
+            inbound: VecDeque::from([
+                Ok(Some(gateway_message("m-owner", "111", "hello world"))),
+                Ok(None),
+            ]),
+            ..DiscordIoState::default()
+        });
+        let discord_state = discord.clone();
+        let codex = TrackingCodexProcess::new();
+        let opencode = TrackingOpenCodeProcess::new();
+        let mut control = ScriptedControl::with_now(vec![
+            2_000_000_000_000,
+            2_000_000_000_001,
+            2_000_000_000_002,
+        ]);
+
+        let stats = run_daemon_loop_with_transport(
+            &config,
+            &daemon_config,
+            codex,
+            opencode,
+            discord,
+            &mut control,
+        )
+        .expect("daemon loop should coerce owner backend and continue");
+
+        assert_eq!(stats.dispatched_runs, 1);
+        let discord = discord_state.state();
+        assert_eq!(discord.posted.len(), 1);
+        assert!(discord.posted[0].2.contains("Codex bridge response"));
+
+        let run_store = RunStore::new(workspace.path.join("state"));
+        let run = run_store
+            .get_run("discord:channel:777", "run:discord:channel:777:m-owner")
+            .expect("run read should succeed")
+            .expect("run should be persisted");
+        assert_eq!(run.profile.resolved_profile.backend, BackendKind::Codex);
+        assert!(run.profile.fallback_applied);
+        assert!(run.profile.fallback_notes[0].contains("OpenCode"));
     }
 
     #[test]
@@ -2681,13 +2774,16 @@ mod tests {
         assert!(telemetry.sender_is_owner);
         assert_eq!(
             telemetry.resolved_profile.backend,
-            crab_core::BackendKind::OpenCode
+            crab_core::BackendKind::Codex
         );
         assert_eq!(telemetry.resolved_profile.model, "owner-model");
         assert_eq!(
             telemetry.resolved_profile.reasoning_level,
             crab_core::ReasoningLevel::High
         );
+        assert!(telemetry.fallback_applied);
+        assert_eq!(telemetry.fallback_notes.len(), 1);
+        assert!(telemetry.fallback_notes[0].contains("coerced backend OpenCode to Codex"));
         assert!(telemetry.resolved_owner_profile.is_some());
     }
 

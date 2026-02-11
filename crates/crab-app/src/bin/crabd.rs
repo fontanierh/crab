@@ -541,9 +541,25 @@ fn run_with_reader_and_control(
     reader: &mut dyn BufRead,
     control: &mut dyn DaemonLoopControl,
 ) -> CrabResult<DaemonLoopStats> {
-    let receipt_timeout_ms = parse_receipt_timeout_ms(values)?;
-    let discord = StdioDiscordIo::from_bufread(reader, receipt_timeout_ms)?;
-    run_with_values_and_discord_and_control(values, discord, control)
+    const TEST_DETERMINISTIC_TRANSPORT_ENV: &str =
+        "CRAB_DAEMON_FORCE_DETERMINISTIC_CODEX_TRANSPORT";
+    static TEST_ENV_LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+
+    let _guard = TEST_ENV_LOCK
+        .get_or_init(|| std::sync::Mutex::new(()))
+        .lock()
+        .expect("test env lock should succeed");
+
+    std::env::set_var(TEST_DETERMINISTIC_TRANSPORT_ENV, "1");
+
+    let result = (|| {
+        let receipt_timeout_ms = parse_receipt_timeout_ms(values)?;
+        let discord = StdioDiscordIo::from_bufread(reader, receipt_timeout_ms)?;
+        run_with_values_and_discord_and_control(values, discord, control)
+    })();
+
+    std::env::remove_var(TEST_DETERMINISTIC_TRANSPORT_ENV);
+    result
 }
 
 fn run_main_with_runner(runner: fn() -> CrabResult<DaemonLoopStats>) -> ExitCode {
