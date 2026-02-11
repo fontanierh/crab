@@ -10,6 +10,7 @@ the target machine.
 Implemented and validated in repository code/tests:
 
 - Runtime policy config surface in `RuntimeConfig` (rotation, reconciliation, heartbeat, owner profile defaults).
+- Workspace git persistence config model in `RuntimeConfig` (`enabled`, `remote`, `branch`, commit identity, push policy) with eager validation.
 - Session token accounting aggregation from normalized backend usage payloads at turn finalization.
 - Rotation trigger execution in finalization (`evaluate_rotation_triggers` -> `execute_rotation_sequence`).
 - Token-threshold compaction is evaluated against session token usage since the last successful

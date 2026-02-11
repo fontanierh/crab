@@ -45,7 +45,9 @@ pub use compatibility::{
     evaluate_profile_compatibility, BackendCompatibilityCatalog, BackendCompatibilityRules,
     CompatibilityIssue, CompatibilityReport, AUTO_MODEL_ALIAS,
 };
-pub use config::{OwnerConfig, OwnerProfileDefaults, RuntimeConfig};
+pub use config::{
+    OwnerConfig, OwnerProfileDefaults, RuntimeConfig, WorkspaceGitConfig, WorkspaceGitPushPolicy,
+};
 pub use context_assembly::{
     assemble_turn_context, ContextAssemblyInput, ContextMemorySnippet, CONTEXT_INJECTION_ORDER,
 };

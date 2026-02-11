@@ -29,6 +29,8 @@ Crab is a Rust harness for running coding agents (Claude Code, Codex CLI, OpenCo
   - `WS18-T4` complete: target-machine service + operations playbook is documented.
   - `WS18-T5` pending: close connector delivery-receipt protocol hardening gap, then execute deployment acceptance checklist on target machine and capture evidence/go-no-go decision.
 - `WS20` complete: canonical skills root bootstrap (`.agents/skills`), Claude compatibility symlink enforcement (`.claude/skills -> ../.agents/skills`), built-in skill-authoring policy file, prompt-contract governance section, and startup diagnostics coverage.
+- `WS21` in progress:
+  - `WS21-T1` complete: workspace git persistence config model (`enabled`, `remote`, `branch`, commit identity, push policy) with eager validation for malformed/unsafe values.
 
 ## Docs
 

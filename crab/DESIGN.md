@@ -672,6 +672,14 @@ citation_mode = "auto"          # auto | on | off
 inject_days = 2
 per_user_scope = true
 
+[workspace.git_persistence]
+enabled = false
+remote = "git@github.com:owner/private-crab-workspace.git"   # required for on-commit push policy
+branch = "main"
+commit_name = "Crab Workspace Bot"
+commit_email = "crab@localhost"
+push_policy = "on-commit"        # on-commit | manual
+
 [channels."discord:channel:1234567890"]
 backend = "claude"
 model = "auto"
