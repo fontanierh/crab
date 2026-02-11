@@ -41,3 +41,6 @@ report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
 openclaw-analysis/
 sandbox-agent/
 untracked_references/
+
+# mutation testing output (cargo-mutants)
+mutants.out*/

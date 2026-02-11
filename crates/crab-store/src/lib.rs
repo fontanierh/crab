@@ -480,11 +480,7 @@ impl CheckpointStore {
 
             let should_replace = match latest.as_ref() {
                 None => true,
-                Some(current) => {
-                    checkpoint.created_at_epoch_ms > current.created_at_epoch_ms
-                        || (checkpoint.created_at_epoch_ms == current.created_at_epoch_ms
-                            && checkpoint.id > current.id)
-                }
+                Some(current) => checkpoint_is_newer_than(&checkpoint, current),
             };
             if should_replace {
                 latest = Some(checkpoint);
@@ -522,6 +518,12 @@ impl CheckpointStore {
         self.session_checkpoint_dir(logical_session_id)
             .join(checkpoint_file_name(checkpoint_id))
     }
+}
+
+fn checkpoint_is_newer_than(candidate: &Checkpoint, current: &Checkpoint) -> bool {
+    candidate.created_at_epoch_ms > current.created_at_epoch_ms
+        || (candidate.created_at_epoch_ms == current.created_at_epoch_ms
+            && candidate.id > current.id)
 }
 
 #[derive(Debug, Clone)]
@@ -1885,6 +1887,28 @@ mod tests {
     }
 
     #[test]
+    fn run_store_upsert_allows_timestamp_equality_boundaries() {
+        let root = temp_root("run-equality-boundaries");
+        let store = RunStore::new(&root);
+
+        let mut run = sample_run("discord:channel:runs", "run-eq");
+        run.started_at_epoch_ms = Some(run.queued_at_epoch_ms);
+        run.completed_at_epoch_ms = Some(run.queued_at_epoch_ms);
+
+        store
+            .upsert_run(&run)
+            .expect("timestamp equality boundaries should be valid");
+
+        let loaded = store
+            .get_run(&run.logical_session_id, &run.id)
+            .expect("run read should succeed")
+            .expect("run should exist");
+        assert_eq!(loaded, run);
+
+        cleanup(&root);
+    }
+
+    #[test]
     fn run_store_get_validates_required_inputs() {
         let root = temp_root("run-get-validate");
         let store = RunStore::new(&root);
@@ -1959,6 +1983,65 @@ mod tests {
             CrabError::InvariantViolation {
                 context: "run_get_identity_mismatch",
                 message: "run discord:channel:other/run-unexpected found at requested discord:channel:runs/run-1".to_string(),
+            }
+        );
+
+        cleanup(&root);
+    }
+
+    #[test]
+    fn run_store_get_rejects_session_mismatch_even_when_run_id_matches() {
+        let root = temp_root("run-session-mismatch-only");
+        let store = RunStore::new(&root);
+        let tampered = sample_run("discord:channel:other", "run-1");
+        let path = run_path(&root, "discord:channel:runs", "run-1");
+        fs::create_dir_all(path.parent().expect("run path should have parent"))
+            .expect("test should create run parent directory");
+        fs::write(
+            &path,
+            serde_json::to_vec_pretty(&tampered).expect("run should serialize"),
+        )
+        .expect("test should write tampered run file");
+
+        let error = store
+            .get_run("discord:channel:runs", "run-1")
+            .expect_err("mismatched run session should fail");
+        assert_eq!(
+            error,
+            CrabError::InvariantViolation {
+                context: "run_get_identity_mismatch",
+                message:
+                    "run discord:channel:other/run-1 found at requested discord:channel:runs/run-1"
+                        .to_string(),
+            }
+        );
+
+        cleanup(&root);
+    }
+
+    #[test]
+    fn run_store_get_rejects_run_id_mismatch_even_when_session_matches() {
+        let root = temp_root("run-id-mismatch-only");
+        let store = RunStore::new(&root);
+        let mut tampered = sample_run("discord:channel:runs", "run-expected");
+        tampered.id = "run-unexpected".to_string();
+        let path = run_path(&root, "discord:channel:runs", "run-1");
+        fs::create_dir_all(path.parent().expect("run path should have parent"))
+            .expect("test should create run parent directory");
+        fs::write(
+            &path,
+            serde_json::to_vec_pretty(&tampered).expect("run should serialize"),
+        )
+        .expect("test should write tampered run file");
+
+        let error = store
+            .get_run("discord:channel:runs", "run-1")
+            .expect_err("mismatched run id should fail");
+        assert_eq!(
+            error,
+            CrabError::InvariantViolation {
+                context: "run_get_identity_mismatch",
+                message: "run discord:channel:runs/run-unexpected found at requested discord:channel:runs/run-1".to_string(),
             }
         );
 
@@ -2685,6 +2768,29 @@ mod tests {
         assert_eq!(latest.id, "ckpt-z");
 
         cleanup(&root);
+    }
+
+    #[test]
+    fn checkpoint_is_newer_than_respects_timestamp_and_id_tiebreakers() {
+        let current = sample_checkpoint("discord:channel:checkpoints", "run-1", "ckpt-a", 200);
+
+        let newer_timestamp =
+            sample_checkpoint("discord:channel:checkpoints", "run-2", "ckpt-a", 201);
+        assert!(super::checkpoint_is_newer_than(&newer_timestamp, &current));
+
+        let equal_timestamp_lower_id =
+            sample_checkpoint("discord:channel:checkpoints", "run-3", "ckpt-0", 200);
+        assert!(!super::checkpoint_is_newer_than(
+            &equal_timestamp_lower_id,
+            &current
+        ));
+
+        let older_timestamp_higher_id =
+            sample_checkpoint("discord:channel:checkpoints", "run-4", "ckpt-z", 199);
+        assert!(!super::checkpoint_is_newer_than(
+            &older_timestamp_higher_id,
+            &current
+        ));
     }
 
     #[test]

@@ -111,6 +111,14 @@ The repository now enforces quality with executable gates and CI automation.
 - Run all required checks with:
   `make quality`
 
+### Code Quality Report (Generated)
+
+- Generate/update `CODE_QUALITY_REPORT.md` with:
+  `./scripts/gen_code_quality_report.sh`
+- Policy:
+  - `CODE_QUALITY_REPORT.md` must be derived from the generator script; do not hand-edit it.
+  - Do not commit tool output directories (for example `mutants.out*/` from `cargo mutants`).
+
 ### Gate commands (local + CI)
 
 - Format check:

@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "crates/crab-core",
+    "crates/crab-telemetry",
     "crates/crab-store",
     "crates/crab-scheduler",
     "crates/crab-discord",

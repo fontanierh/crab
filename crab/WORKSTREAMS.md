@@ -502,6 +502,28 @@ This document breaks the Crab implementation into execution workstreams and issu
 - Update docs: `crab/docs/05-reliability-delivery-and-recovery.md`, `crab/docs/08-deployment-readiness-gaps.md`, and `crab/docs/10-target-machine-operations.md`.
 - Done criteria: replay/idempotency tests prove no duplicate/lost delivery across connector/process crashes.
 
+### WS18-T7 - Reproducible Code Quality Report + artifact policy
+- Provide a generator for `CODE_QUALITY_REPORT.md` and document how to run it.
+- Ensure mutation-testing outputs and other analysis artifacts are ignored and do not pollute `git status`.
+- Update docs: `AGENTS.md`.
+- Done criteria: report is reproducible from script, and repo stays clean after running quality tooling.
+
+### WS18-T8 - Dependency audit hygiene (time crate vulnerability)
+- Keep `Cargo.lock` updated and resolve high/medium RustSec advisories promptly.
+- Update docs: `CODE_QUALITY_REPORT.md` and/or `crab/docs/08-deployment-readiness-gaps.md` when it impacts deploy readiness.
+- Done criteria: `cargo audit` reports no known vulnerabilities in the dependency graph.
+
+### WS18-T9 - Structured logging for runtime binaries
+- Add structured logging for `crabd` and `crab-discord-connector`.
+- Ensure logging never corrupts JSONL transport (stdout reserved for IPC frames).
+- Update docs: `crab/docs/10-target-machine-operations.md`.
+- Done criteria: operators can control verbosity via `RUST_LOG` and logs are present in service output.
+
+### WS18-T10 - Mutation testing boundary coverage improvements
+- Add targeted boundary-value tests based on mutation testing results.
+- Prefer small refactors that improve testability and reduce reliance on IO ordering.
+- Done criteria: previously missed mutants are caught by tests, without weakening existing quality gates.
+
 ## 4) Dependency Order and Critical Path
 
 Execution order:

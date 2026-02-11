@@ -20,6 +20,8 @@ use crab_discord::{
     CrabdInboundFrame, CrabdOutboundOp, CrabdOutboundReceipt, CrabdOutboundReceiptStatus,
     GatewayMessage,
 };
+#[cfg(not(test))]
+use crab_telemetry::init_tracing_stderr;
 
 #[derive(Debug, Clone, Default)]
 struct LocalCodexProcess;
@@ -534,17 +536,17 @@ fn run_with_reader_and_control(
 fn run_main_with_runner(runner: fn() -> CrabResult<DaemonLoopStats>) -> ExitCode {
     match runner() {
         Ok(stats) => {
-            eprintln!(
-                "crabd finished: iterations={}, ingested={}, dispatched={}, heartbeats={}",
-                stats.iterations,
-                stats.ingested_messages,
-                stats.dispatched_runs,
-                stats.heartbeat_cycles
+            tracing::info!(
+                iterations = stats.iterations,
+                ingested = stats.ingested_messages,
+                dispatched = stats.dispatched_runs,
+                heartbeats = stats.heartbeat_cycles,
+                "crabd finished"
             );
             ExitCode::SUCCESS
         }
         Err(error) => {
-            eprintln!("crabd failed: {error}");
+            tracing::error!(error = %error, "crabd failed");
             ExitCode::FAILURE
         }
     }
@@ -583,6 +585,8 @@ fn run_with_env_and_stdio() -> CrabResult<DaemonLoopStats> {
 }
 
 fn main() -> ExitCode {
+    #[cfg(not(test))]
+    init_tracing_stderr("info");
     run_main_with_runner(run_with_env_and_stdio)
 }
 

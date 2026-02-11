@@ -1027,6 +1027,28 @@ mod tests {
     }
 
     #[test]
+    fn cancel_queued_run_by_id_rejects_duplicate_ids_within_one_lane() {
+        let mut scheduler = LaneScheduler::new(2, 4).expect("scheduler init should succeed");
+        scheduler
+            .enqueue("discord:channel:a", run("run-dup"))
+            .expect("enqueue should succeed");
+        scheduler
+            .enqueue("discord:channel:a", run("run-dup"))
+            .expect("enqueue should succeed");
+
+        let error = scheduler
+            .cancel_queued_run_by_id("run-dup")
+            .expect_err("duplicate run ids in one lane should be rejected");
+        assert!(matches!(
+            error,
+            CrabError::InvariantViolation {
+                context: "lane_queue_cancel_queued",
+                ..
+            }
+        ));
+    }
+
+    #[test]
     fn session_lane_cancel_queued_validates_run_id() {
         let mut lanes = SessionLaneQueues::new(2).expect("queue init should succeed");
         let error = lanes

@@ -869,7 +869,7 @@ mod live_discord {
     #[async_trait]
     impl EventHandler for DiscordHandler {
         async fn ready(&self, _ctx: Context, ready: Ready) {
-            eprintln!("crab-discord-connector connected as {}", ready.user.id);
+            tracing::info!(user_id = %ready.user.id, "crab-discord-connector connected");
         }
 
         async fn message(&self, ctx: Context, message: SerenityMessage) {
@@ -958,8 +958,9 @@ mod live_discord {
                         let mut client = match client_result {
                             Ok(client) => client,
                             Err(error) => {
-                                eprintln!(
-                                    "crab-discord-connector failed to create discord client: {error}"
+                                tracing::error!(
+                                    error = %error,
+                                    "crab-discord-connector failed to create discord client"
                                 );
                                 tokio::time::sleep(Duration::from_secs(2)).await;
                                 continue;
@@ -967,7 +968,10 @@ mod live_discord {
                         };
 
                         if let Err(error) = client.start().await {
-                            eprintln!("crab-discord-connector discord gateway error: {error}");
+                            tracing::error!(
+                                error = %error,
+                                "crab-discord-connector discord gateway error"
+                            );
                             tokio::time::sleep(Duration::from_secs(2)).await;
                         }
                     }
@@ -1201,18 +1205,19 @@ fn run_with_env_and_args() -> CrabResult<ConnectorLoopStats> {
 
 #[cfg(all(not(test), not(coverage)))]
 fn main() -> std::process::ExitCode {
+    crab_telemetry::init_tracing_stderr("info");
     match run_with_env_and_args() {
         Ok(stats) => {
-            eprintln!(
-                "crab-discord-connector finished: inbound={}, outbound={}, retries={}",
-                stats.gateway_messages_forwarded,
-                stats.outbound_operations_processed,
-                stats.retry_waits
+            tracing::info!(
+                inbound = stats.gateway_messages_forwarded,
+                outbound = stats.outbound_operations_processed,
+                retries = stats.retry_waits,
+                "crab-discord-connector finished"
             );
             std::process::ExitCode::SUCCESS
         }
         Err(error) => {
-            eprintln!("crab-discord-connector failed: {error}");
+            tracing::error!(error = %error, "crab-discord-connector failed");
             std::process::ExitCode::FAILURE
         }
     }

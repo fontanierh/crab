@@ -106,6 +106,12 @@ CRAB_OWNER_DISCORD_USER_IDS=123456789012345678
 CRAB_OWNER_MACHINE_TIMEZONE=America/New_York
 ```
 
+## Logging (Structured, `tracing`)
+
+- `crabd` uses stdout for JSONL IPC frames and logs to stderr.
+- `crab-discord-connector` logs to stderr.
+- Configure verbosity with `RUST_LOG` (for example `RUST_LOG=info` or `RUST_LOG=debug`).
+
 ## Service Management
 
 ### Linux (systemd)
