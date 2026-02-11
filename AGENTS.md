@@ -37,6 +37,12 @@ Project operating rules for all human and AI contributors.
 - Preferred Rust tool: `cargo-llvm-cov`.
 - Enforce `100%` line/function minimum and `0` uncovered lines/functions in CI.
 - Coverage reports must be reproducible from a single documented command.
+- Note: `cargo-llvm-cov` enables `cfg(coverage)`. Be careful when adding logging with `tracing::*`
+  macros: they can introduce coverage gaps (especially multi-line invocations or rarely-hit branches).
+  If coverage fails after adding logs, fix it by:
+  - adding tests that exercise the relevant branches, and/or
+  - scoping purely-observability statements behind `#[cfg(not(coverage))]` when the tool's mapping
+    produces false negatives (do not hide business logic from coverage).
 
 Required outcome:
 - Any uncovered production line/function fails validation.

@@ -823,11 +823,10 @@ mod tests {
         LOCK.get_or_init(|| Mutex::new(()))
     }
 
-    fn with_test_env<F>(values: &HashMap<String, String>, f: F)
+    fn with_test_env_locked<F>(values: &HashMap<String, String>, f: F)
     where
         F: FnOnce(),
     {
-        let _guard = env_lock().lock().expect("env lock should succeed");
         let keys = [
             "CRAB_DISCORD_TOKEN",
             "CRAB_WORKSPACE_ROOT",
@@ -857,6 +856,14 @@ mod tests {
                 std::env::remove_var(key);
             }
         }
+    }
+
+    fn with_test_env<F>(values: &HashMap<String, String>, f: F)
+    where
+        F: FnOnce(),
+    {
+        let _guard = env_lock().lock().expect("env lock should succeed");
+        with_test_env_locked(values, f);
     }
 
     #[test]
@@ -1565,15 +1572,18 @@ mod tests {
 
     #[test]
     fn env_helper_restores_previous_values() {
+        let _guard = env_lock().lock().expect("env lock should succeed");
         std::env::set_var("CRAB_BOT_USER_ID", "old-value");
+
         let workspace_root = temp_workspace_root("env");
         let values = runtime_values(&workspace_root);
-        with_test_env(&values, || {
+        with_test_env_locked(&values, || {
             assert_eq!(
                 std::env::var("CRAB_BOT_USER_ID").expect("env var should be set"),
                 "999"
             );
         });
+
         assert_eq!(
             std::env::var("CRAB_BOT_USER_ID").expect("previous env var should be restored"),
             "old-value"
