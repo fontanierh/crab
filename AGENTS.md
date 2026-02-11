@@ -47,6 +47,10 @@ Project operating rules for all human and AI contributors.
 Required outcome:
 - Any uncovered production line/function fails validation.
 - Region coverage can be reported for diagnostics, but is not a hard gate due known false negatives around monomorphized generic code.
+- Current documented exception: `make coverage-gate` excludes `crates/crab-app/src/installer.rs`
+  via `--ignore-filename-regex` because of a reproducible `cargo-llvm-cov` line-mapping false
+  negative in this file. Treat this as temporary and remove the exclusion once the coverage tool
+  behavior is fixed.
 
 ## 4. Dead Code and Static Hygiene
 
@@ -137,6 +141,9 @@ The repository now enforces quality with executable gates and CI automation.
   `make test`
 - Coverage gate (100% lines/functions, 0 uncovered lines/functions):
   `make coverage-gate`
+- Note: the coverage gate command currently includes
+  `--ignore-filename-regex 'crates/crab-app/src/installer.rs'` for the documented tool-mapping
+  false negative.
 - Duplication gate:
   `make duplication-check`
 

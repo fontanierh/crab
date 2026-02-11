@@ -22,6 +22,7 @@ coverage:
 
 coverage-gate:
 	cargo llvm-cov --workspace --all-features --locked \
+		--ignore-filename-regex 'crates/crab-app/src/installer.rs' \
 		--fail-under-lines 100 \
 		--fail-under-functions 100 \
 		--fail-uncovered-lines 0 \

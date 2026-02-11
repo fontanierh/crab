@@ -486,6 +486,8 @@ where
                         commit_key = ?outcome.commit_key,
                         exhausted = outcome.exhausted,
                         failure = ?outcome.failure,
+                        failure_kind = ?outcome.failure_kind,
+                        recovery_commands = ?outcome.recovery_commands,
                         next_due_at_epoch_ms = ?outcome.next_due_at_epoch_ms,
                         next_backoff_ms = ?outcome.next_backoff_ms,
                         "workspace git push attempt failed"

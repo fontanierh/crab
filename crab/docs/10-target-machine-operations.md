@@ -29,6 +29,50 @@ Implications:
   with this `crabd` JSONL contract.
 - Connector receipts are required for `crabd` to consider outbound Discord delivery complete.
 
+## Installer-Driven Provisioning (`crabctl`)
+
+Crab now includes an installer CLI in `crab-app`:
+
+- `crabctl install`
+- `crabctl upgrade`
+- `crabctl rollback`
+- `crabctl doctor`
+
+Build:
+
+```bash
+cargo build -p crab-app --bin crabctl
+```
+
+Preview (no host mutations):
+
+```bash
+./target/debug/crabctl install --target macos --dry-run
+./target/debug/crabctl install --target linux --dry-run
+```
+
+Apply:
+
+```bash
+sudo ./target/debug/crabctl install --target macos
+# or
+sudo ./target/debug/crabctl install --target linux
+```
+
+Upgrade / rollback / health checks:
+
+```bash
+sudo ./target/debug/crabctl upgrade --target macos --release-id <release-id>
+sudo ./target/debug/crabctl rollback --target macos
+./target/debug/crabctl doctor --target macos
+```
+
+Notes:
+
+- Use `--root-prefix <path>` to stage deterministic integration tests in temporary roots.
+- `doctor` exits `0` when healthy and non-zero when unhealthy.
+- Installer operations are idempotent; rerunning converges rather than requiring destructive cleanup.
+
 ## Recommended Host Layout
 
 Use explicit directories with ownership isolation:
@@ -117,6 +161,23 @@ CRAB_OWNER_DISCORD_USER_IDS=123456789012345678
 CRAB_OWNER_MACHINE_TIMEZONE=America/New_York
 ```
 
+Timeout and heartbeat semantics:
+
+- `CRAB_INACTIVITY_TIMEOUT_SECS`:
+  per-logical-session idle duration before Crab triggers an inactivity rotation
+  (`flush -> checkpoint -> end physical session -> clear handle`). Default `1800` (30 minutes).
+- `CRAB_STARTUP_RECONCILIATION_GRACE_PERIOD_SECS`:
+  startup grace window used to decide whether in-flight runs from before restart are stale and
+  should be reconciled/cancelled. Default `90`.
+- `CRAB_HEARTBEAT_INTERVAL_SECS`:
+  cadence for periodic health loop execution (run/backend/dispatcher heartbeat checks). Default `10`.
+- `CRAB_RUN_STALL_TIMEOUT_SECS`:
+  age threshold to classify an active run as stalled during heartbeat. Default `90`.
+- `CRAB_BACKEND_STALL_TIMEOUT_SECS`:
+  backend-manager heartbeat stall threshold before restart/escalation. Default `30`.
+- `CRAB_DISPATCHER_STALL_TIMEOUT_SECS`:
+  dispatcher heartbeat threshold for queued-work stall detection/nudge. Default `20`.
+
 Workspace git bootstrap behavior when `CRAB_WORKSPACE_GIT_PERSISTENCE_ENABLED=true`:
 
 - Startup validates that git persistence is scoped to `CRAB_WORKSPACE_ROOT` only (no parent/external repo mutation).
@@ -136,9 +197,26 @@ Workspace git commit behavior when persistence is enabled:
   - `Crab-Checkpoint-Id`
   - `Crab-Run-Status`
   - `Crab-Commit-Key`
+  - `Crab-Staging-Policy-Version`
+  - `Crab-Staging-Skipped-Count`
+  - `Crab-Staging-Skipped-Rules`
+- Secret/transient guardrails:
+  - automated staging excludes sensitive/transient paths (dotenv/secret directories/credential dirs/private keys/transient build artifacts)
+  - safe dotenv templates (`.env.example`, `.env.sample`, `.env.template`) remain eligible
 - Replay safety:
   - if HEAD already carries the same `Crab-Commit-Key` and no further changes exist,
     Crab skips writing a duplicate commit.
+
+Workspace git push divergence handling:
+
+- Push failures are classified by `failure_kind` in daemon diagnostics.
+- `non_fast_forward` and `diverged_history` are marked `manual_recovery_required`
+  and exhausted immediately (no endless retry loop).
+- Deterministic operator recovery commands:
+  - `git fetch --prune origin`
+  - `git log --oneline --graph --decorate --left-right HEAD...origin/<branch>`
+  - `git rebase origin/<branch>`
+  - `git push --porcelain origin HEAD:refs/heads/<branch>`
 
 ## Logging (Structured, `tracing`)
 

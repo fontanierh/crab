@@ -11,6 +11,7 @@ const WORKSPACE_GIT_CONTEXT: &str = "workspace_git_bootstrap";
 const WORKSPACE_GIT_COMMIT_CONTEXT: &str = "workspace_git_commit";
 const WORKSPACE_GIT_PUSH_QUEUE_CONTEXT: &str = "workspace_git_push_queue";
 const WORKSPACE_GIT_COMMIT_VERSION: &str = "1";
+const WORKSPACE_GIT_STAGING_POLICY_VERSION: &str = "1";
 const WORKSPACE_GIT_COMMIT_KEY_TRAILER: &str = "Crab-Commit-Key";
 const WORKSPACE_GIT_PUSH_QUEUE_FILE_NAME: &str = "workspace_git_push_queue.json";
 const WORKSPACE_GIT_PUSH_QUEUE_VERSION: u8 = 1;
@@ -75,6 +76,7 @@ pub struct WorkspaceGitCommitOutcome {
     pub commit_key: Option<String>,
     pub commit_id: Option<String>,
     pub skipped_reason: Option<String>,
+    pub staging_skipped_paths: Vec<String>,
 }
 
 impl WorkspaceGitCommitOutcome {
@@ -87,6 +89,7 @@ impl WorkspaceGitCommitOutcome {
             commit_key: None,
             commit_id: None,
             skipped_reason: None,
+            staging_skipped_paths: Vec::new(),
         }
     }
 
@@ -95,6 +98,7 @@ impl WorkspaceGitCommitOutcome {
         commit_key: String,
         skipped_reason: &'static str,
         commit_id: Option<String>,
+        staging_skipped_paths: Vec<String>,
     ) -> Self {
         Self {
             enabled: true,
@@ -103,6 +107,7 @@ impl WorkspaceGitCommitOutcome {
             commit_key: Some(commit_key),
             commit_id,
             skipped_reason: Some(skipped_reason.to_string()),
+            staging_skipped_paths,
         }
     }
 
@@ -110,6 +115,7 @@ impl WorkspaceGitCommitOutcome {
         trigger: WorkspaceGitCommitTrigger,
         commit_key: String,
         commit_id: String,
+        staging_skipped_paths: Vec<String>,
     ) -> Self {
         Self {
             enabled: true,
@@ -118,8 +124,15 @@ impl WorkspaceGitCommitOutcome {
             commit_key: Some(commit_key),
             commit_id: Some(commit_id),
             skipped_reason: None,
+            staging_skipped_paths,
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+struct StagingPolicyAudit {
+    skipped_paths: Vec<String>,
+    skipped_rules: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -160,6 +173,8 @@ pub struct WorkspaceGitPushTickOutcome {
     pub next_due_at_epoch_ms: Option<u64>,
     pub next_backoff_ms: Option<u64>,
     pub failure: Option<String>,
+    pub failure_kind: Option<String>,
+    pub recovery_commands: Vec<String>,
     pub skipped_reason: Option<String>,
 }
 
@@ -176,6 +191,8 @@ impl WorkspaceGitPushTickOutcome {
             next_due_at_epoch_ms: None,
             next_backoff_ms: None,
             failure: None,
+            failure_kind: None,
+            recovery_commands: Vec::new(),
             skipped_reason: None,
         }
     }
@@ -195,6 +212,8 @@ impl WorkspaceGitPushTickOutcome {
             next_due_at_epoch_ms,
             next_backoff_ms: None,
             failure: None,
+            failure_kind: None,
+            recovery_commands: Vec::new(),
             skipped_reason: Some(skipped_reason.to_string()),
         }
     }
@@ -320,7 +339,7 @@ pub fn maybe_commit_workspace_snapshot(
     let commit_key = workspace_commit_key(request);
     let head_has_commit_key = head_commit_contains_key(workspace_root, &commit_key)?;
 
-    stage_workspace_changes(workspace_root)?;
+    let staging_audit = stage_workspace_changes(workspace_root)?;
     let has_changes = workspace_has_changes(workspace_root)?;
     if !has_changes {
         if head_has_commit_key {
@@ -329,6 +348,7 @@ pub fn maybe_commit_workspace_snapshot(
                 commit_key,
                 "already_committed",
                 Some(current_head_commit_id(workspace_root)?),
+                staging_audit.skipped_paths,
             ));
         }
 
@@ -337,6 +357,7 @@ pub fn maybe_commit_workspace_snapshot(
             commit_key,
             "no_changes",
             None,
+            staging_audit.skipped_paths,
         ));
     }
 
@@ -349,13 +370,14 @@ pub fn maybe_commit_workspace_snapshot(
         });
     }
 
-    commit_workspace_changes(workspace_root, config, request, &commit_key)?;
+    commit_workspace_changes(workspace_root, config, request, &commit_key, &staging_audit)?;
     let commit_id = current_head_commit_id(workspace_root)?;
 
     Ok(WorkspaceGitCommitOutcome::committed(
         request.trigger,
         commit_key,
         commit_id,
+        staging_audit.skipped_paths,
     ))
 }
 
@@ -482,6 +504,14 @@ pub fn process_workspace_git_push_queue(
         entry.attempt_count = attempts;
         entry.last_error = Some(error.clone());
         let commit_key = entry.commit_key.clone();
+        let failure_class = classify_push_failure(&error);
+        let requires_manual_recovery = failure_class.requires_manual_recovery();
+        let failure_kind = failure_class.as_token().to_string();
+        let recovery_commands = if requires_manual_recovery {
+            workspace_git_recovery_commands(config)
+        } else {
+            Vec::new()
+        };
 
         let mut outcome = WorkspaceGitPushTickOutcome {
             enabled: true,
@@ -493,10 +523,19 @@ pub fn process_workspace_git_push_queue(
             next_due_at_epoch_ms: None,
             next_backoff_ms: None,
             failure: Some(error),
+            failure_kind: Some(failure_kind),
+            recovery_commands,
             skipped_reason: None,
         };
 
-        if attempts >= WORKSPACE_GIT_PUSH_MAX_ATTEMPTS {
+        if requires_manual_recovery {
+            entry.exhausted = true;
+            entry.next_attempt_at_epoch_ms = u64::MAX;
+            let _ = entry;
+            outcome.exhausted = true;
+            outcome.next_due_at_epoch_ms = next_non_exhausted_due_at(&queue.entries);
+            outcome.skipped_reason = Some("manual_recovery_required".to_string());
+        } else if attempts >= WORKSPACE_GIT_PUSH_MAX_ATTEMPTS {
             entry.exhausted = true;
             entry.next_attempt_at_epoch_ms = u64::MAX;
             let _ = entry;
@@ -537,6 +576,8 @@ pub fn process_workspace_git_push_queue(
         next_due_at_epoch_ms: next_due,
         next_backoff_ms: None,
         failure: None,
+        failure_kind: None,
+        recovery_commands: Vec::new(),
         skipped_reason: None,
     })
 }
@@ -740,6 +781,57 @@ fn push_workspace_commit(
     ))
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PushFailureClass {
+    Retryable,
+    NonFastForward,
+    DivergedHistory,
+}
+
+impl PushFailureClass {
+    const fn requires_manual_recovery(self) -> bool {
+        !matches!(self, Self::Retryable)
+    }
+
+    const fn as_token(self) -> &'static str {
+        match self {
+            Self::Retryable => "retryable",
+            Self::NonFastForward => "non_fast_forward",
+            Self::DivergedHistory => "diverged_history",
+        }
+    }
+}
+
+fn classify_push_failure(failure: &str) -> PushFailureClass {
+    let lower = failure.to_ascii_lowercase();
+    if lower.contains("non-fast-forward")
+        || lower.contains("[rejected]")
+        || lower.contains("fetch first")
+        || lower.contains("failed to push some refs")
+    {
+        return PushFailureClass::NonFastForward;
+    }
+    if lower.contains("would clobber existing tag")
+        || lower.contains("stale info")
+        || lower.contains("remote rejected")
+    {
+        return PushFailureClass::DivergedHistory;
+    }
+    PushFailureClass::Retryable
+}
+
+#[must_use]
+pub fn workspace_git_recovery_commands(config: &WorkspaceGitConfig) -> Vec<String> {
+    let remote = config.remote.as_deref().unwrap_or("origin");
+    let branch = config.branch.as_str();
+    vec![
+        format!("git fetch --prune {remote}"),
+        format!("git log --oneline --graph --decorate --left-right HEAD...{remote}/{branch}"),
+        format!("git rebase {remote}/{branch}"),
+        format!("git push --porcelain {remote} HEAD:refs/heads/{branch}"),
+    ]
+}
+
 fn compute_push_backoff_ms(attempt_count: u32) -> u64 {
     let shift = attempt_count.saturating_sub(1).min(16);
     let factor = 1_u64 << shift;
@@ -843,16 +935,142 @@ fn head_commit_contains_key(workspace_root: &Path, commit_key: &str) -> CrabResu
     Ok(body.lines().map(str::trim).any(|line| line == expected))
 }
 
-fn stage_workspace_changes(workspace_root: &Path) -> CrabResult<()> {
-    let args = ["add", "-A", "."];
-    run_git_checked_in_context(WORKSPACE_GIT_COMMIT_CONTEXT, workspace_root, &args)?;
-    Ok(())
+fn stage_workspace_changes(workspace_root: &Path) -> CrabResult<StagingPolicyAudit> {
+    let mut audit = StagingPolicyAudit::default();
+    let changed_paths = changed_workspace_paths(workspace_root)?;
+    for path in changed_paths {
+        match evaluate_staging_policy(&path) {
+            Some(rule_id) => {
+                audit.skipped_paths.push(path.clone());
+                audit.skipped_rules.push(rule_id.to_string());
+            }
+            None => {
+                let args = ["add", "-A", "--", path.as_str()];
+                run_git_checked_in_context(WORKSPACE_GIT_COMMIT_CONTEXT, workspace_root, &args)?;
+            }
+        }
+    }
+    audit.skipped_paths.sort();
+    audit.skipped_paths.dedup();
+    audit.skipped_rules.sort();
+    audit.skipped_rules.dedup();
+    Ok(audit)
+}
+
+fn changed_workspace_paths(workspace_root: &Path) -> CrabResult<Vec<String>> {
+    let args = ["status", "--porcelain", "-z", "--untracked-files=all"];
+    let status = run_git_checked_in_context(WORKSPACE_GIT_COMMIT_CONTEXT, workspace_root, &args)?;
+    parse_porcelain_paths(&status)
+}
+
+fn parse_porcelain_paths(status: &str) -> CrabResult<Vec<String>> {
+    let mut paths = Vec::new();
+    let mut records = status.split_terminator('\0');
+    while let Some(record) = records.next() {
+        if record.is_empty() {
+            continue;
+        }
+        let mut chars = record.chars();
+        let index_status = chars.next().expect("record is non-empty by guard");
+        let Some(_worktree_status) = chars.next() else {
+            return Err(CrabError::InvariantViolation {
+                context: WORKSPACE_GIT_COMMIT_CONTEXT,
+                message: format!("invalid porcelain status entry {record:?}"),
+            });
+        };
+        if chars.next() != Some(' ') {
+            return Err(CrabError::InvariantViolation {
+                context: WORKSPACE_GIT_COMMIT_CONTEXT,
+                message: format!("invalid porcelain status entry {record:?}"),
+            });
+        }
+        let first_path = normalize_workspace_relative_path(chars.as_str());
+        if first_path.is_empty() {
+            return Err(CrabError::InvariantViolation {
+                context: WORKSPACE_GIT_COMMIT_CONTEXT,
+                message: "porcelain status entry path must not be empty".to_string(),
+            });
+        }
+        paths.push(first_path);
+        if index_status == 'R' || index_status == 'C' {
+            let Some(second_path_raw) = records.next() else {
+                return Err(CrabError::InvariantViolation {
+                    context: WORKSPACE_GIT_COMMIT_CONTEXT,
+                    message: format!("missing rename/copy destination for {record:?}"),
+                });
+            };
+            let second_path = normalize_workspace_relative_path(second_path_raw);
+            if second_path.is_empty() {
+                return Err(CrabError::InvariantViolation {
+                    context: WORKSPACE_GIT_COMMIT_CONTEXT,
+                    message: "rename/copy destination path must not be empty".to_string(),
+                });
+            }
+            paths.push(second_path);
+        }
+    }
+    paths.sort();
+    paths.dedup();
+    Ok(paths)
+}
+
+fn normalize_workspace_relative_path(path: &str) -> String {
+    path.trim_start_matches("./").replace('\\', "/")
+}
+
+fn evaluate_staging_policy(path: &str) -> Option<&'static str> {
+    let file_name = path.rsplit('/').next().unwrap_or(path);
+
+    if matches!(file_name, ".env.example" | ".env.sample" | ".env.template") {
+        return None;
+    }
+
+    if file_name == ".env"
+        || matches!(
+            file_name,
+            ".env.local" | ".env.production" | ".env.development" | ".env.test"
+        )
+        || file_name.starts_with(".env.")
+    {
+        return Some("deny_dotenv");
+    }
+    if has_path_segment(path, "secrets") || has_path_segment(path, "secret") {
+        return Some("deny_secret_directory");
+    }
+    if has_path_segment(path, ".aws") || has_path_segment(path, ".ssh") {
+        return Some("deny_credentials_directory");
+    }
+    if matches!(file_name, "id_rsa" | "id_ed25519") {
+        return Some("deny_private_key_name");
+    }
+    if path.ends_with(".pem")
+        || path.ends_with(".key")
+        || path.ends_with(".p12")
+        || path.ends_with(".pfx")
+    {
+        return Some("deny_private_key_extension");
+    }
+    if has_path_segment(path, "node_modules") {
+        return Some("deny_transient_node_modules");
+    }
+    if has_path_segment(path, "target") {
+        return Some("deny_transient_target");
+    }
+    if path.ends_with(".log") || file_name == ".DS_Store" {
+        return Some("deny_transient_misc");
+    }
+
+    None
+}
+
+fn has_path_segment(path: &str, segment: &str) -> bool {
+    path.split('/').any(|part| part == segment)
 }
 
 fn workspace_has_changes(workspace_root: &Path) -> CrabResult<bool> {
-    let args = ["status", "--porcelain"];
-    let status = run_git_checked_in_context(WORKSPACE_GIT_COMMIT_CONTEXT, workspace_root, &args)?;
-    Ok(status.lines().any(|line| !line.trim().is_empty()))
+    let args = ["diff", "--cached", "--name-only"];
+    let staged = run_git_checked_in_context(WORKSPACE_GIT_COMMIT_CONTEXT, workspace_root, &args)?;
+    Ok(staged.lines().any(|line| !line.trim().is_empty()))
 }
 
 fn commit_workspace_changes(
@@ -860,6 +1078,7 @@ fn commit_workspace_changes(
     config: &WorkspaceGitConfig,
     request: &WorkspaceGitCommitRequest,
     commit_key: &str,
+    staging_audit: &StagingPolicyAudit,
 ) -> CrabResult<()> {
     let subject = format!(
         "crab(workspace): {} {}",
@@ -868,8 +1087,19 @@ fn commit_workspace_changes(
     );
     let checkpoint_id = request.checkpoint_id.as_deref().unwrap_or("none");
     let run_status = request.run_status.as_deref().unwrap_or("none");
+    let skipped_rule_tokens = if staging_audit.skipped_rules.is_empty() {
+        "none".to_string()
+    } else {
+        staging_audit.skipped_rules.join(",")
+    };
     let body = [
         format!("Crab-Commit-Version: {WORKSPACE_GIT_COMMIT_VERSION}"),
+        format!("Crab-Staging-Policy-Version: {WORKSPACE_GIT_STAGING_POLICY_VERSION}"),
+        format!(
+            "Crab-Staging-Skipped-Count: {}",
+            staging_audit.skipped_paths.len()
+        ),
+        format!("Crab-Staging-Skipped-Rules: {skipped_rule_tokens}"),
         format!("Crab-Trigger: {}", request.trigger.as_token()),
         format!("Crab-Logical-Session-Id: {}", request.logical_session_id),
         format!("Crab-Run-Id: {}", request.run_id),
@@ -998,17 +1228,19 @@ mod tests {
     use crate::{RuntimeConfig, WorkspaceGitPushPolicy};
 
     use super::{
-        canonicalize_path, command_spawn_failure_output, detect_git_repository_root,
-        enqueue_workspace_git_push_request, ensure_push_queue_layout,
-        ensure_workspace_git_repository, has_commits, maybe_commit_workspace_snapshot,
-        persist_workspace_git_push_queue, process_workspace_git_push_queue, read_origin_remote,
+        canonicalize_path, classify_push_failure, command_spawn_failure_output,
+        detect_git_repository_root, enqueue_workspace_git_push_request, ensure_push_queue_layout,
+        ensure_workspace_git_repository, evaluate_staging_policy, has_commits,
+        maybe_commit_workspace_snapshot, parse_porcelain_paths, persist_workspace_git_push_queue,
+        process_workspace_git_push_queue, push_workspace_commit, read_origin_remote,
         resolve_head_branch, run_command, run_git_checked, validate_workspace_root,
-        workspace_git_push_queue_path, WorkspaceGitCommitOutcome, WorkspaceGitCommitRequest,
-        WorkspaceGitCommitTrigger, WorkspaceGitEnsureOutcome, WorkspaceGitPushEnqueueOutcome,
-        WorkspaceGitPushQueueEntry, WorkspaceGitPushQueueState, WorkspaceGitPushRequest,
-        WorkspaceGitPushTickOutcome, WORKSPACE_GIT_COMMIT_CONTEXT,
-        WORKSPACE_GIT_COMMIT_KEY_TRAILER, WORKSPACE_GIT_CONTEXT, WORKSPACE_GIT_PUSH_MAX_ATTEMPTS,
-        WORKSPACE_GIT_PUSH_QUEUE_CONTEXT, WORKSPACE_GIT_PUSH_QUEUE_VERSION,
+        workspace_git_push_queue_path, workspace_git_recovery_commands, PushFailureClass,
+        WorkspaceGitCommitOutcome, WorkspaceGitCommitRequest, WorkspaceGitCommitTrigger,
+        WorkspaceGitEnsureOutcome, WorkspaceGitPushEnqueueOutcome, WorkspaceGitPushQueueEntry,
+        WorkspaceGitPushQueueState, WorkspaceGitPushRequest, WorkspaceGitPushTickOutcome,
+        WORKSPACE_GIT_COMMIT_CONTEXT, WORKSPACE_GIT_COMMIT_KEY_TRAILER, WORKSPACE_GIT_CONTEXT,
+        WORKSPACE_GIT_PUSH_MAX_ATTEMPTS, WORKSPACE_GIT_PUSH_QUEUE_CONTEXT,
+        WORKSPACE_GIT_PUSH_QUEUE_VERSION,
     };
     use crate::CrabError;
 
@@ -1435,6 +1667,172 @@ mod tests {
     }
 
     #[test]
+    fn push_failure_classification_and_recovery_commands_cover_manual_paths() {
+        let non_fast_forward = classify_push_failure(
+            "git push failed: stderr=\"[rejected] non-fast-forward\"; stdout=\"\"",
+        );
+        assert_eq!(non_fast_forward, PushFailureClass::NonFastForward);
+        assert_eq!(non_fast_forward.as_token(), "non_fast_forward");
+        assert!(non_fast_forward.requires_manual_recovery());
+
+        let diverged = classify_push_failure(
+            "git push failed: stderr=\"remote rejected, stale info\"; stdout=\"\"",
+        );
+        assert_eq!(diverged, PushFailureClass::DivergedHistory);
+        assert_eq!(diverged.as_token(), "diverged_history");
+        assert!(diverged.requires_manual_recovery());
+
+        let retryable = classify_push_failure("git push failed: stderr=\"timeout\"; stdout=\"\"");
+        assert_eq!(retryable, PushFailureClass::Retryable);
+        assert_eq!(retryable.as_token(), "retryable");
+        assert!(!retryable.requires_manual_recovery());
+
+        let config = crate::WorkspaceGitConfig {
+            enabled: true,
+            remote: None,
+            branch: "main".to_string(),
+            commit_name: "Crab Runtime".to_string(),
+            commit_email: "crab-runtime@example.com".to_string(),
+            push_policy: WorkspaceGitPushPolicy::Manual,
+        };
+        let commands = workspace_git_recovery_commands(&config);
+        assert_eq!(
+            commands,
+            vec![
+                "git fetch --prune origin".to_string(),
+                "git log --oneline --graph --decorate --left-right HEAD...origin/main".to_string(),
+                "git rebase origin/main".to_string(),
+                "git push --porcelain origin HEAD:refs/heads/main".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn push_workspace_commit_failure_message_includes_trimmed_streams() {
+        let workspace = TempDir::new("push-command-failure-message");
+        workspace.create();
+        initialize_repo(&workspace.path, "main");
+        let config = parse_workspace_git(&[
+            ("CRAB_WORKSPACE_GIT_PERSISTENCE_ENABLED", "true"),
+            ("CRAB_WORKSPACE_GIT_PUSH_POLICY", "on-commit"),
+            ("CRAB_WORKSPACE_GIT_BRANCH", "main"),
+            (
+                "CRAB_WORKSPACE_GIT_REMOTE",
+                "/tmp/crab-workspace-git-remote-missing",
+            ),
+        ]);
+
+        let error = push_workspace_commit(&workspace.path, &config, "deadbeef")
+            .expect_err("invalid push target should fail");
+        assert!(error.contains("git push failed: stderr="));
+        assert!(error.contains("stdout="));
+    }
+
+    #[test]
+    fn parse_porcelain_paths_validation_is_strict() {
+        let empty_ok = parse_porcelain_paths("\0").expect("empty records should be ignored");
+        assert!(empty_ok.is_empty());
+
+        let missing_worktree_status =
+            parse_porcelain_paths("A\0").expect_err("single-char status must fail");
+        assert!(matches!(
+            missing_worktree_status,
+            CrabError::InvariantViolation {
+                context: WORKSPACE_GIT_COMMIT_CONTEXT,
+                ..
+            }
+        ));
+
+        let missing_separator =
+            parse_porcelain_paths("A?\0").expect_err("missing separator must fail");
+        assert!(matches!(
+            missing_separator,
+            CrabError::InvariantViolation {
+                context: WORKSPACE_GIT_COMMIT_CONTEXT,
+                ..
+            }
+        ));
+
+        let empty_path = parse_porcelain_paths("A  \0").expect_err("empty path entry must fail");
+        assert_eq!(
+            empty_path,
+            CrabError::InvariantViolation {
+                context: WORKSPACE_GIT_COMMIT_CONTEXT,
+                message: "porcelain status entry path must not be empty".to_string(),
+            }
+        );
+
+        let missing_rename_destination =
+            parse_porcelain_paths("R  old.txt\0").expect_err("rename entries require destination");
+        assert!(matches!(
+            missing_rename_destination,
+            CrabError::InvariantViolation {
+                context: WORKSPACE_GIT_COMMIT_CONTEXT,
+                ..
+            }
+        ));
+
+        let empty_rename_destination = parse_porcelain_paths("R  old.txt\0\0")
+            .expect_err("rename destination must not be empty");
+        assert_eq!(
+            empty_rename_destination,
+            CrabError::InvariantViolation {
+                context: WORKSPACE_GIT_COMMIT_CONTEXT,
+                message: "rename/copy destination path must not be empty".to_string(),
+            }
+        );
+
+        let renamed = parse_porcelain_paths("R  old name.txt\0new-name.txt\0")
+            .expect("valid rename entries should parse");
+        assert_eq!(
+            renamed,
+            vec!["new-name.txt".to_string(), "old name.txt".to_string()]
+        );
+    }
+
+    #[test]
+    fn evaluate_staging_policy_covers_sensitive_and_transient_rules() {
+        assert_eq!(evaluate_staging_policy(".env.local"), Some("deny_dotenv"));
+        assert_eq!(
+            evaluate_staging_policy("nested/.env.custom"),
+            Some("deny_dotenv")
+        );
+        assert_eq!(
+            evaluate_staging_policy("memory/users/secrets/2026-02-11.md"),
+            Some("deny_secret_directory")
+        );
+        assert_eq!(
+            evaluate_staging_policy(".aws/credentials"),
+            Some("deny_credentials_directory")
+        );
+        assert_eq!(
+            evaluate_staging_policy("ops/.ssh/config"),
+            Some("deny_credentials_directory")
+        );
+        assert_eq!(
+            evaluate_staging_policy("keys/id_rsa"),
+            Some("deny_private_key_name")
+        );
+        assert_eq!(
+            evaluate_staging_policy("certs/service.pem"),
+            Some("deny_private_key_extension")
+        );
+        assert_eq!(
+            evaluate_staging_policy("logs/runtime.log"),
+            Some("deny_transient_misc")
+        );
+        assert_eq!(
+            evaluate_staging_policy("node_modules/pkg/index.js"),
+            Some("deny_transient_node_modules")
+        );
+        assert_eq!(
+            evaluate_staging_policy("target/debug/crabd"),
+            Some("deny_transient_target")
+        );
+        assert_eq!(evaluate_staging_policy(".env.example"), None);
+    }
+
+    #[test]
     fn detects_bare_repository_as_non_work_tree_for_nested_guard() {
         let workspace = TempDir::new("detect-bare");
         workspace.create();
@@ -1546,6 +1944,9 @@ mod tests {
 
         let message = run_git_in(&workspace.path, &["log", "-1", "--pretty=%B"]);
         assert!(message.contains("Crab-Commit-Version: 1"));
+        assert!(message.contains("Crab-Staging-Policy-Version: 1"));
+        assert!(message.contains("Crab-Staging-Skipped-Count: 0"));
+        assert!(message.contains("Crab-Staging-Skipped-Rules: none"));
         assert!(message.contains("Crab-Trigger: rotation_checkpoint"));
         assert!(message.contains("Crab-Logical-Session-Id: discord:channel:777"));
         assert!(message.contains("Crab-Run-Id: run:discord:channel:777:message-1"));
@@ -1559,6 +1960,74 @@ mod tests {
         assert!(message.contains(&format!(
             "{WORKSPACE_GIT_COMMIT_KEY_TRAILER}: {expected_key}"
         )));
+    }
+
+    #[test]
+    fn workspace_commit_staging_policy_excludes_sensitive_paths_and_audits_skips() {
+        let workspace = TempDir::new("commit-staging-policy");
+        workspace.create();
+        let config = parse_workspace_git(&[
+            ("CRAB_WORKSPACE_GIT_PERSISTENCE_ENABLED", "true"),
+            ("CRAB_WORKSPACE_GIT_BRANCH", "main"),
+            ("CRAB_WORKSPACE_GIT_PUSH_POLICY", "manual"),
+        ]);
+        ensure_workspace_git_repository(&workspace.path, &config)
+            .expect("repository bootstrap should succeed");
+        write_fixture(&workspace.path, ".env", "SUPER_SECRET=1\n");
+        write_fixture(&workspace.path, ".env.example", "EXAMPLE=1\n");
+        write_fixture(&workspace.path, "secrets/api-token.txt", "token\n");
+        write_fixture(&workspace.path, "notes/plan.md", "plan\n");
+
+        let outcome = maybe_commit_workspace_snapshot(
+            &workspace.path,
+            &config,
+            &sample_commit_request(WorkspaceGitCommitTrigger::RunFinalized),
+        )
+        .expect("commit should succeed");
+        assert!(outcome.committed);
+        assert_eq!(
+            outcome.staging_skipped_paths,
+            vec![".env".to_string(), "secrets/api-token.txt".to_string()]
+        );
+
+        let committed_files =
+            run_git_in(&workspace.path, &["ls-tree", "-r", "--name-only", "HEAD"]);
+        assert!(committed_files.lines().any(|line| line == ".env.example"));
+        assert!(committed_files.lines().any(|line| line == "notes/plan.md"));
+        assert!(!committed_files.lines().any(|line| line == ".env"));
+        assert!(!committed_files
+            .lines()
+            .any(|line| line == "secrets/api-token.txt"));
+
+        let message = run_git_in(&workspace.path, &["log", "-1", "--pretty=%B"]);
+        assert!(message.contains("Crab-Staging-Policy-Version: 1"));
+        assert!(message.contains("Crab-Staging-Skipped-Count: 2"));
+        assert!(message.contains("Crab-Staging-Skipped-Rules: deny_dotenv,deny_secret_directory"));
+    }
+
+    #[test]
+    fn workspace_commit_reports_no_changes_when_only_denied_paths_are_dirty() {
+        let workspace = TempDir::new("commit-staging-only-denied");
+        workspace.create();
+        let config = parse_workspace_git(&[
+            ("CRAB_WORKSPACE_GIT_PERSISTENCE_ENABLED", "true"),
+            ("CRAB_WORKSPACE_GIT_BRANCH", "main"),
+            ("CRAB_WORKSPACE_GIT_PUSH_POLICY", "manual"),
+        ]);
+        ensure_workspace_git_repository(&workspace.path, &config)
+            .expect("repository bootstrap should succeed");
+        write_fixture(&workspace.path, ".env", "SUPER_SECRET=1\n");
+
+        let outcome = maybe_commit_workspace_snapshot(
+            &workspace.path,
+            &config,
+            &sample_commit_request(WorkspaceGitCommitTrigger::RunFinalized),
+        )
+        .expect("commit should return no_changes");
+        assert!(!outcome.committed);
+        assert_eq!(outcome.skipped_reason, Some("no_changes".to_string()));
+        assert_eq!(outcome.commit_id, None);
+        assert_eq!(outcome.staging_skipped_paths, vec![".env".to_string()]);
     }
 
     #[test]
@@ -1766,6 +2235,112 @@ mod tests {
 
         let remote_head = run_git_in(&remote.path, &["rev-parse", "refs/heads/main"]);
         assert_eq!(remote_head.trim(), commit_id);
+    }
+
+    #[test]
+    fn process_workspace_git_push_queue_requires_manual_recovery_on_non_fast_forward() {
+        let workspace = TempDir::new("push-non-fast-forward-workspace");
+        workspace.create();
+        let remote = TempDir::new("push-non-fast-forward-remote");
+        let state_root = state_root(&workspace);
+        let remote_url = remote.path.to_string_lossy().to_string();
+        let config = parse_workspace_git(&[
+            ("CRAB_WORKSPACE_GIT_PERSISTENCE_ENABLED", "true"),
+            ("CRAB_WORKSPACE_GIT_PUSH_POLICY", "on-commit"),
+            ("CRAB_WORKSPACE_GIT_REMOTE", &remote_url),
+            ("CRAB_WORKSPACE_GIT_BRANCH", "main"),
+        ]);
+        ensure_workspace_git_repository(&workspace.path, &config)
+            .expect("workspace git bootstrap should succeed");
+        initialize_bare_remote(&remote.path);
+
+        write_fixture(&workspace.path, "state/one.txt", "one\n");
+        let first_commit = maybe_commit_workspace_snapshot(
+            &workspace.path,
+            &config,
+            &sample_commit_request(WorkspaceGitCommitTrigger::RunFinalized),
+        )
+        .expect("first commit should succeed");
+        enqueue_workspace_git_push_request(
+            &state_root,
+            &config,
+            &WorkspaceGitPushRequest {
+                commit_key: first_commit
+                    .commit_key
+                    .clone()
+                    .expect("first commit key should exist"),
+                commit_id: first_commit
+                    .commit_id
+                    .clone()
+                    .expect("first commit id should exist"),
+                enqueued_at_epoch_ms: 1_000,
+            },
+        )
+        .expect("first enqueue should succeed");
+        let first_push =
+            process_workspace_git_push_queue(&workspace.path, &state_root, &config, 1_000)
+                .expect("first push should succeed");
+        assert!(first_push.pushed);
+
+        let other = TempDir::new("push-non-fast-forward-other");
+        other.create();
+        run_git_in(&other.path, &["init"]);
+        run_git_in(&other.path, &["remote", "add", "origin", &remote_url]);
+        run_git_in(&other.path, &["fetch", "origin", "main"]);
+        run_git_in(&other.path, &["checkout", "-B", "main", "FETCH_HEAD"]);
+        commit_file(&other.path, "state/from-other.txt");
+        run_git_in(&other.path, &["push", "origin", "HEAD:refs/heads/main"]);
+
+        write_fixture(&workspace.path, "state/two.txt", "two\n");
+        let second_commit = maybe_commit_workspace_snapshot(
+            &workspace.path,
+            &config,
+            &WorkspaceGitCommitRequest {
+                run_id: "run:discord:channel:777:message-2".to_string(),
+                ..sample_commit_request(WorkspaceGitCommitTrigger::RunFinalized)
+            },
+        )
+        .expect("second commit should succeed");
+        enqueue_workspace_git_push_request(
+            &state_root,
+            &config,
+            &WorkspaceGitPushRequest {
+                commit_key: second_commit
+                    .commit_key
+                    .clone()
+                    .expect("second commit key should exist"),
+                commit_id: second_commit
+                    .commit_id
+                    .clone()
+                    .expect("second commit id should exist"),
+                enqueued_at_epoch_ms: 2_000,
+            },
+        )
+        .expect("second enqueue should succeed");
+        let second_push =
+            process_workspace_git_push_queue(&workspace.path, &state_root, &config, 2_000)
+                .expect("non-fast-forward should still return outcome");
+        assert!(second_push.attempted);
+        assert!(!second_push.pushed);
+        assert!(second_push.exhausted);
+        assert_eq!(
+            second_push.skipped_reason,
+            Some("manual_recovery_required".to_string())
+        );
+        assert_eq!(
+            second_push.failure_kind,
+            Some("non_fast_forward".to_string())
+        );
+        assert_eq!(
+            second_push.recovery_commands,
+            workspace_git_recovery_commands(&config)
+        );
+
+        let entries = read_push_queue_entries(&state_root);
+        assert_eq!(entries.len(), 1);
+        assert!(entries[0].exhausted);
+        assert_eq!(entries[0].attempt_count, 1);
+        assert_eq!(entries[0].next_attempt_at_epoch_ms, u64::MAX);
     }
 
     #[test]

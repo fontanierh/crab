@@ -161,9 +161,10 @@ pub use workspace::{
 };
 pub use workspace_git::{
     enqueue_workspace_git_push_request, ensure_workspace_git_repository,
-    maybe_commit_workspace_snapshot, process_workspace_git_push_queue, WorkspaceGitCommitOutcome,
-    WorkspaceGitCommitRequest, WorkspaceGitCommitTrigger, WorkspaceGitEnsureOutcome,
-    WorkspaceGitPushEnqueueOutcome, WorkspaceGitPushRequest, WorkspaceGitPushTickOutcome,
+    maybe_commit_workspace_snapshot, process_workspace_git_push_queue,
+    workspace_git_recovery_commands, WorkspaceGitCommitOutcome, WorkspaceGitCommitRequest,
+    WorkspaceGitCommitTrigger, WorkspaceGitEnsureOutcome, WorkspaceGitPushEnqueueOutcome,
+    WorkspaceGitPushRequest, WorkspaceGitPushTickOutcome,
 };
 
 #[cfg(test)]

@@ -130,6 +130,9 @@ Lane/state invariants prevent ambiguous cancellation transitions.
 - Process restart during running turn: startup reconciliation settles stale run.
 - Persistent backend unhealthy: heartbeat restarts manager.
 - Cancel path broken: heartbeat escalates to hard-stop-and-rotate.
+- Workspace git push non-fast-forward/diverged history: push queue marks the entry
+  `manual_recovery_required`, records `failure_kind`, and emits deterministic recovery commands
+  instead of retrying forever.
 
 ## Current Status
 

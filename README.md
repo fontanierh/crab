@@ -27,13 +27,16 @@ Crab is a Rust harness for running coding agents (Claude Code, Codex CLI, OpenCo
   - Discord connector runtime is implemented: `crab-discord-connector` bridges Discord Gateway/REST <-> `crabd` JSONL.
   - `WS18-T3` complete: Discord provisioning + secret operations runbook is documented.
   - `WS18-T4` complete: target-machine service + operations playbook is documented.
-  - `WS18-T5` pending: close connector delivery-receipt protocol hardening gap, then execute deployment acceptance checklist on target machine and capture evidence/go-no-go decision.
+  - `WS18-T5` pending: execute deployment acceptance checklist on target machine and capture evidence/go-no-go decision.
+- `WS19` complete: cross-platform installer (`crabctl`) supports `install`, `upgrade`, `rollback`, and `doctor` for macOS/Linux, including prerequisite bootstrap, runtime layout/service provisioning, and idempotent rerun safety.
 - `WS20` complete: canonical skills root bootstrap (`.agents/skills`), Claude compatibility symlink enforcement (`.claude/skills -> ../.agents/skills`), built-in skill-authoring policy file, prompt-contract governance section, and startup diagnostics coverage.
-- `WS21` in progress:
+- `WS21` complete:
   - `WS21-T1` complete: workspace git persistence config model (`enabled`, `remote`, `branch`, commit identity, push policy) with eager validation for malformed/unsafe values.
   - `WS21-T2` complete: startup-time workspace git repository bootstrap/binding is implemented (`crab-core::ensure_workspace_git_repository` + `crab-app::initialize_runtime_startup`) with safe external-repo guardrails, deterministic branch bootstrap on empty repos, and remote-origin binding validation.
   - `WS21-T3` complete: deterministic workspace commit triggers are implemented via `crab-core::maybe_commit_workspace_snapshot` with standardized commit trailers (`Crab-Trigger`, `Crab-Logical-Session-Id`, `Crab-Run-Id`, `Crab-Checkpoint-Id`, `Crab-Run-Status`, `Crab-Commit-Key`) and replay-safe duplicate-key handling for restart scenarios.
   - `WS21-T4` complete: async push queue is implemented with durable retry state (`state/workspace_git_push_queue.json`), bounded exponential backoff, idempotent enqueue by commit key, daemon-loop non-blocking processing, and restart-safe recovery semantics.
+  - `WS21-T5` complete: secret-safe staging guardrails are enforced before automated commits (denylist + allowlist override policy), with commit-time staging audit metadata and runtime skipped-path diagnostics.
+  - `WS21-T6` complete: divergence/conflict push failures are classified deterministically (`non_fast_forward`/`diverged_history`), escalated to `manual_recovery_required`, and exposed with operator recovery commands.
 
 ## Docs
 
@@ -68,6 +71,10 @@ Individual checks:
 - `make test`
 - `make coverage-gate`
 - `make duplication-check`
+
+Coverage note:
+- `make coverage-gate` currently applies `--ignore-filename-regex 'crates/crab-app/src/installer.rs'`
+  due to a reproducible `cargo-llvm-cov` line-mapping false negative in that file.
 
 ## Memory CLI Commands
 
@@ -104,6 +111,33 @@ rustup component add llvm-tools-preview
 ```
 
 - Node runtime (for `npx jscpd`)
+
+## Installer Commands (`crabctl`)
+
+Build installer binary:
+
+```bash
+cargo build -p crab-app --bin crabctl
+```
+
+Dry-run install plan:
+
+```bash
+./target/debug/crabctl install --target macos --dry-run
+```
+
+Upgrade:
+
+```bash
+./target/debug/crabctl upgrade --target macos --release-id <release-id>
+```
+
+Rollback and diagnostics:
+
+```bash
+./target/debug/crabctl rollback --target macos
+./target/debug/crabctl doctor --target macos
+```
 
 ## Runtime Launch
 

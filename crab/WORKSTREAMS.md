@@ -529,17 +529,33 @@ This document breaks the Crab implementation into execution workstreams and issu
 
 ### WS19 - Cross-Platform Installer and Host Provisioning
 
+Status (as of 2026-02-11): WS19-T1 through WS19-T5 completed.
+Delivered:
+- `crabctl` installer binary and command surface (`install`, `upgrade`, `rollback`, `doctor`)
+- macOS/Linux target planning and deterministic dry-run execution model
+- prerequisite/tool bootstrap with version verification output
+- runtime filesystem layout + service-definition provisioning (`launchd`/`systemd`)
+- idempotent rerun semantics, conflict/failure detection, and rollback state handling
+
 ### WS19-T1 - Installer CLI and execution model
 - Define installer entrypoint (for example `crabctl install`) with explicit target OS selection and dry-run mode.
 - Support both macOS and Linux host profiles with deterministic command plans.
 - Update docs: `README.md` and `crab/docs/10-target-machine-operations.md`.
 - Done criteria: installer command renders reproducible plan for both platforms and executes on target host.
+ - Implemented:
+   - `crates/crab-app/src/bin/crabctl.rs` entrypoint with `crab_app::run_installer_cli`.
+   - strict arg parser/validator in `crates/crab-app/src/installer.rs` for `--target`, `--dry-run`, and host layout flags.
+   - deterministic action log output for plan/apply paths.
 
 ### WS19-T2 - Host prerequisites and toolchain bootstrap (macOS + Linux)
 - Install/validate required host tools (`tmux`, `git`, `gh`, `jq`, `rg`, Rust toolchain, `cargo-llvm-cov`, Node runtime).
 - Ensure shell profile wiring is correct for non-interactive service shells.
 - Update docs: `crab/docs/10-target-machine-operations.md`.
 - Done criteria: one installer run brings a clean host to required baseline with version verification output.
+ - Implemented:
+   - prerequisite specs and version checks for required tools in `PREREQUISITES`.
+   - platform-specific install commands for macOS (`brew`) and Linux (`apt-get`) with dry-run support.
+   - actionable logging for install attempts, version capture, and failure paths.
 
 ### WS19-T3 - Runtime filesystem and service provisioning (launchd + systemd)
 - Provision `/opt/crab`, `/etc/crab`, `/var/lib/crab`, `/var/log/crab` layout with least-privilege ownership policy.
@@ -547,17 +563,29 @@ This document breaks the Crab implementation into execution workstreams and issu
   - macOS `launchd` (`com.crab.runtime`)
   - Linux `systemd` (`crab.service`)
 - Done criteria: service boots on restart/reboot and runs with documented env file policy on both platforms.
+ - Implemented:
+   - idempotent runtime layout provisioning (`ensure_runtime_layout`) for `/opt/crab`, `/etc/crab`, `/var/lib/crab`, `/var/log/crab`.
+   - deterministic env template provisioning (`/etc/crab/crab.env`) with unix mode hardening to `0600`.
+   - service file rendering + install for both targets (`render_systemd_service`, `render_launchd_service`).
 
 ### WS19-T4 - Upgrade, rollback, and diagnostics commands
 - Add `upgrade`, `rollback`, and `doctor` installer commands.
 - `doctor` must validate runtime binary presence, env config sanity, service status, and log path accessibility.
 - Update docs: `crab/docs/10-target-machine-operations.md` and `crab/docs/08-deployment-readiness-gaps.md`.
 - Done criteria: operator can execute full upgrade and rollback path with deterministic diagnostics output.
+ - Implemented:
+   - `upgrade` preserves previous release pointer before switching `current`.
+   - `rollback` restores previous release and updates shim symlinks deterministically.
+   - `doctor` emits pass/fail checks and exits non-zero when unhealthy.
 
 ### WS19-T5 - Installer safety and idempotency hardening
 - Make install/provision actions idempotent and safe on partial failure.
 - Add failure-injection tests for interrupted install, existing conflicting files, and missing privileges.
 - Done criteria: rerunning installer after partial failure converges to healthy desired state without destructive resets.
+ - Implemented:
+   - reusable idempotent ensure helpers for directories/files/symlinks/binary copies with explicit conflict errors.
+   - stateful rollback metadata file (`/var/lib/crab/install-state/previous_release.txt`) for reversible release changes.
+   - failure-injection and idempotency coverage in installer tests (`install_is_idempotent_on_second_run`, conflict/failure/rollback/doctor branches).
 
 ### WS20 - Skills Compatibility and Governance
 
@@ -599,7 +627,7 @@ Delivered:
 
 ### WS21 - Workspace Private Git Persistence
 
-Status (as of 2026-02-11): WS21-T1 through WS21-T4 completed. WS21-T5 and WS21-T6 pending.
+Status (as of 2026-02-11): WS21-T1 through WS21-T6 completed.
 
 ### WS21-T1 - Git persistence config model
 - Add explicit runtime config for workspace git persistence (`enabled`, `remote`, `branch`, commit identity, push policy).
@@ -635,12 +663,20 @@ Status (as of 2026-02-11): WS21-T1 through WS21-T4 completed. WS21-T5 and WS21-T
 - Enforce exclusion policy (`.env`, secrets files, token dumps, generated transient artifacts) before commit.
 - Add allowlist/denylist guardrails with explicit audit notes when files are skipped.
 - Done criteria: sensitive files cannot be committed by automated persistence path.
+ - Implemented:
+   - Deterministic staging policy in `crab-core::stage_workspace_changes` with deny rules for dotenv/secret/credential/key/transient paths and explicit allow overrides for `.env.example`/`.env.sample`/`.env.template`.
+   - Commit trailers include staging policy metadata (`Crab-Staging-Policy-Version`, `Crab-Staging-Skipped-Count`, `Crab-Staging-Skipped-Rules`).
+   - `WorkspaceGitCommitOutcome.staging_skipped_paths` is emitted and `TurnExecutor` logs skipped paths for operator audit visibility.
 
 ### WS21-T6 - Divergence and conflict recovery policy
 - Handle non-fast-forward, force-pushed remote, and local divergence cases with deterministic fallback behavior.
 - Provide operator-visible recovery commands and clear diagnostics.
 - Update docs: `crab/docs/05-reliability-delivery-and-recovery.md` and `crab/docs/10-target-machine-operations.md`.
 - Done criteria: divergence scenarios are tested and recoverable without workspace corruption.
+ - Implemented:
+   - Push failure classifier in `crab-core` marks non-fast-forward/diverged-history failures as `manual_recovery_required` (no wasteful retry loop).
+   - `WorkspaceGitPushTickOutcome` now carries `failure_kind` and deterministic `recovery_commands`.
+   - Queue entries are exhausted immediately for manual-recovery classes, preserving runtime liveness and preventing endless retry churn.
 
 ## 4) Dependency Order and Critical Path
 

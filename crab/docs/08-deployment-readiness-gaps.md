@@ -20,6 +20,13 @@ Implemented and validated in repository code/tests:
   - successful run finalization attempts deterministic workspace commits
   - rotation checkpoints are committed with a dedicated trigger metadata path
   - commit trailers carry run/session/checkpoint correlation fields and replay-safe `Crab-Commit-Key`
+  - commit staging policy enforces secret/transient guardrails before automated commits and records
+    `Crab-Staging-Policy-Version`, `Crab-Staging-Skipped-Count`, and `Crab-Staging-Skipped-Rules`
+  - skipped staging paths are emitted to runtime diagnostics for operator audit visibility
+- Workspace git divergence/conflict recovery policy:
+  - non-fast-forward/diverged push failures are classified as manual-recovery-required
+  - queue entries are exhausted immediately for manual-recovery classes (no endless retries)
+  - outcomes include `failure_kind` and deterministic recovery command guidance
 - Session token accounting aggregation from normalized backend usage payloads at turn finalization.
 - Rotation trigger execution in finalization (`evaluate_rotation_triggers` -> `execute_rotation_sequence`).
 - Token-threshold compaction is evaluated against session token usage since the last successful
@@ -46,6 +53,10 @@ Implemented and validated in repository code/tests:
   - persisted deterministic `delivery_id` -> actual Discord message id mapping for edit continuity
 - Discord provisioning/secrets runbook exists: `crab/docs/09-discord-provisioning-and-secrets.md`.
 - Target-machine operations runbook exists: `crab/docs/10-target-machine-operations.md`.
+- Cross-platform installer baseline is implemented (`crabctl`):
+  - `install`/`upgrade`/`rollback`/`doctor` command surface for `macos` and `linux`
+  - prerequisite bootstrap + version verification path
+  - idempotent runtime layout/service provisioning with deterministic dry-run plans
 
 Important runtime shape today:
 

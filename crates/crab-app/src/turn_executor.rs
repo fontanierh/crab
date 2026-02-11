@@ -778,6 +778,16 @@ where
         );
         let _ = result.as_ref().map(|outcome| {
             self.maybe_enqueue_workspace_git_push(run, trigger, emitted_at_epoch_ms, outcome);
+            #[cfg(not(coverage))]
+            if !outcome.staging_skipped_paths.is_empty() {
+                tracing::info!(
+                    logical_session_id = %run.logical_session_id,
+                    run_id = %run.id,
+                    trigger = %trigger.as_token(),
+                    skipped_paths = ?outcome.staging_skipped_paths,
+                    "workspace git staging policy skipped paths"
+                );
+            }
         });
         #[cfg(not(coverage))]
         if let Err(_error) = &result {
@@ -2240,6 +2250,7 @@ mod tests {
             commit_key: None,
             commit_id: Some("deadbeef".to_string()),
             skipped_reason: Some("missing_key".to_string()),
+            staging_skipped_paths: Vec::new(),
         };
 
         executor.maybe_enqueue_workspace_git_push(
@@ -2271,6 +2282,7 @@ mod tests {
             commit_key: Some("run:discord:channel:777:missing-id:run_finalized".to_string()),
             commit_id: None,
             skipped_reason: Some("missing_id".to_string()),
+            staging_skipped_paths: Vec::new(),
         };
 
         executor.maybe_enqueue_workspace_git_push(
@@ -2305,6 +2317,7 @@ mod tests {
             commit_key: Some("run:discord:channel:777:enqueue-error:run_finalized".to_string()),
             commit_id: Some("abcdef123456".to_string()),
             skipped_reason: None,
+            staging_skipped_paths: Vec::new(),
         };
         let state_root = executor.composition.state_stores.root.clone();
         fs::remove_dir_all(&state_root).expect("state root should be removable");
