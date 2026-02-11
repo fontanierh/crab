@@ -51,6 +51,22 @@ All backend outputs must normalize into `BackendEvent` stream (`TextDelta`, `Too
 - protocol primitives include create/send/interrupt/end
 - event normalizer maps OpenCode stream events into shared backend events
 
+## Skills Discovery Contract
+
+Crab keeps a single canonical skills source of truth in the workspace:
+
+- Canonical path: `.agents/skills`
+- Claude compatibility path: `.claude/skills -> ../.agents/skills`
+
+Backend expectations:
+
+- Codex: reads `.agents/skills`
+- OpenCode: reads `.agents/skills`
+- Claude Code: reads `.claude/skills` (symlinked to canonical path by workspace bootstrap)
+
+Skill authoring policy is reinforced at prompt-contract level and by a built-in required skill:
+`.agents/skills/skill-authoring-policy/SKILL.md`.
+
 ## Inference Profile Resolution
 
 Effective profile components:

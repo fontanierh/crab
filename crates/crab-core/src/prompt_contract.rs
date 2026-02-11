@@ -4,6 +4,10 @@ use crate::memory_citation::{
 };
 use crate::trust::TrustSurface;
 use crate::validation::validate_non_empty_text;
+use crate::workspace::{
+    AGENTS_SKILLS_ROOT_RELATIVE_PATH, CLAUDE_SKILLS_LINK_RELATIVE_PATH,
+    SKILL_AUTHORING_POLICY_FILE_RELATIVE_PATH,
+};
 use crate::{BackendKind, CrabResult, OwnerProfileMetadata, ReasoningLevel};
 
 const PROMPT_CONTRACT_CONTEXT: &str = "prompt_contract_compile";
@@ -27,6 +31,7 @@ pub fn compile_prompt_contract(input: &PromptContractInput) -> CrabResult<String
     let sections = [
         render_runtime_profile_section(input),
         render_memory_search_first_section(input),
+        render_skills_governance_section(),
         render_owner_context_section(input),
         render_runtime_notes_section(),
         render_messaging_semantics_section(),
@@ -169,6 +174,17 @@ fn render_owner_context_section(input: &PromptContractInput) -> String {
     )
 }
 
+fn render_skills_governance_section() -> String {
+    format!(
+        "## SKILLS_GOVERNANCE\n- Canonical skills root: `{}`.\n- For skill authoring tasks, read `{}` first and follow it.\n- Do not create or edit skills outside `{}`.\n- Treat `{}` as compatibility-only and keep it symlinked to `{}`.",
+        AGENTS_SKILLS_ROOT_RELATIVE_PATH,
+        SKILL_AUTHORING_POLICY_FILE_RELATIVE_PATH,
+        AGENTS_SKILLS_ROOT_RELATIVE_PATH,
+        CLAUDE_SKILLS_LINK_RELATIVE_PATH,
+        AGENTS_SKILLS_ROOT_RELATIVE_PATH,
+    )
+}
+
 fn render_runtime_notes_section() -> String {
     "## RUNTIME_NOTES\n- Crab runs autonomously; approval routing is handled outside this prompt.\n- Keep behavior deterministic and avoid contradictory state updates."
         .to_string()
@@ -216,7 +232,7 @@ mod tests {
 
     fn expected_for(backend: &str, model: &str, reasoning: &str) -> String {
         format!(
-            "## RUNTIME_PROFILE\n- backend: {backend}\n- model: {model}\n- reasoning_level: {reasoning}\n\n## MEMORY_RECALL_FIRST\n- Before claiming information is unknown, search `MEMORY.md` and `memory/` for relevant prior context.\n- Prefer `crab-memory-search` for ranked recall, then `crab-memory-get` for exact line ranges when citing.\n- If needed, run native file search (`rg`/`grep`/`read`) directly over memory files.\n- Citation mode: `auto`.\n- Citation/disclosure policy applies equally to `crab-memory-search`, `crab-memory-get`, and native `rg`/`grep`/`read` memory lookups.\n- When memory snippets materially influence the answer, include citations as `path#Lx` or `path#Lx-Ly`.\n\n## OWNER_CONTEXT\n- sender_id: 1234567890\n- sender_is_owner: false\n- owner.machine_location: (none)\n- owner.machine_timezone: (none)\n- owner.default_backend: (none)\n- owner.default_model: (none)\n- owner.default_reasoning_level: (none)\n\n## RUNTIME_NOTES\n- Crab runs autonomously; approval routing is handled outside this prompt.\n- Keep behavior deterministic and avoid contradictory state updates.\n\n## MESSAGING_SEMANTICS\n- Normal assistant text is streamed by Crab to Discord as the channel reply.\n- Use Discord messaging tools only for explicit Discord actions (send/edit/delete/react/moderation/proactive operations).\n- Do not emit duplicate plain-text confirmations for actions already completed via Discord tools."
+            "## RUNTIME_PROFILE\n- backend: {backend}\n- model: {model}\n- reasoning_level: {reasoning}\n\n## MEMORY_RECALL_FIRST\n- Before claiming information is unknown, search `MEMORY.md` and `memory/` for relevant prior context.\n- Prefer `crab-memory-search` for ranked recall, then `crab-memory-get` for exact line ranges when citing.\n- If needed, run native file search (`rg`/`grep`/`read`) directly over memory files.\n- Citation mode: `auto`.\n- Citation/disclosure policy applies equally to `crab-memory-search`, `crab-memory-get`, and native `rg`/`grep`/`read` memory lookups.\n- When memory snippets materially influence the answer, include citations as `path#Lx` or `path#Lx-Ly`.\n\n## SKILLS_GOVERNANCE\n- Canonical skills root: `.agents/skills`.\n- For skill authoring tasks, read `.agents/skills/skill-authoring-policy/SKILL.md` first and follow it.\n- Do not create or edit skills outside `.agents/skills`.\n- Treat `.claude/skills` as compatibility-only and keep it symlinked to `.agents/skills`.\n\n## OWNER_CONTEXT\n- sender_id: 1234567890\n- sender_is_owner: false\n- owner.machine_location: (none)\n- owner.machine_timezone: (none)\n- owner.default_backend: (none)\n- owner.default_model: (none)\n- owner.default_reasoning_level: (none)\n\n## RUNTIME_NOTES\n- Crab runs autonomously; approval routing is handled outside this prompt.\n- Keep behavior deterministic and avoid contradictory state updates.\n\n## MESSAGING_SEMANTICS\n- Normal assistant text is streamed by Crab to Discord as the channel reply.\n- Use Discord messaging tools only for explicit Discord actions (send/edit/delete/react/moderation/proactive operations).\n- Do not emit duplicate plain-text confirmations for actions already completed via Discord tools."
         )
     }
 
@@ -268,6 +284,19 @@ mod tests {
         assert!(rendered.contains("- owner.default_backend: codex"));
         assert!(rendered.contains("- owner.default_model: gpt-5-codex"));
         assert!(rendered.contains("- owner.default_reasoning_level: high"));
+    }
+
+    #[test]
+    fn skills_governance_section_is_present_before_owner_context() {
+        let input = input_for(BackendKind::Claude, "claude-sonnet-4", ReasoningLevel::High);
+        let rendered = compile_prompt_contract(&input).expect("prompt contract should compile");
+        let skills_index = rendered
+            .find("## SKILLS_GOVERNANCE")
+            .expect("skills governance section should exist");
+        let owner_index = rendered
+            .find("## OWNER_CONTEXT")
+            .expect("owner section should exist");
+        assert!(skills_index < owner_index);
     }
 
     #[test]

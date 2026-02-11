@@ -2,6 +2,8 @@ use std::path::{Path, PathBuf};
 
 use crab_core::{
     ensure_workspace_layout, CrabError, CrabResult, RuntimeConfig, WorkspaceBootstrapState,
+    AGENTS_SKILLS_ROOT_RELATIVE_PATH, CLAUDE_SKILLS_LINK_RELATIVE_PATH,
+    SKILL_AUTHORING_POLICY_FILE_RELATIVE_PATH,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -40,6 +42,18 @@ fn render_startup_diagnostics(
     diagnostics.push(format!(
         "workspace.bootstrap_state:{}",
         bootstrap_state.as_token()
+    ));
+    diagnostics.push(format!(
+        "workspace.skills.canonical:{}",
+        AGENTS_SKILLS_ROOT_RELATIVE_PATH
+    ));
+    diagnostics.push(format!(
+        "workspace.skills.compatibility:{}->{}",
+        CLAUDE_SKILLS_LINK_RELATIVE_PATH, AGENTS_SKILLS_ROOT_RELATIVE_PATH
+    ));
+    diagnostics.push(format!(
+        "workspace.skills.policy:{}",
+        SKILL_AUTHORING_POLICY_FILE_RELATIVE_PATH
     ));
 
     if created_paths.is_empty() && repaired_paths.is_empty() {
@@ -370,6 +384,10 @@ mod tests {
             diagnostics,
             vec![
                 "workspace.bootstrap_state:pending_bootstrap".to_string(),
+                "workspace.skills.canonical:.agents/skills".to_string(),
+                "workspace.skills.compatibility:.claude/skills->.agents/skills".to_string(),
+                "workspace.skills.policy:.agents/skills/skill-authoring-policy/SKILL.md"
+                    .to_string(),
                 "workspace.created:/tmp/workspace/AGENTS.md".to_string(),
                 "workspace.repaired:/tmp/workspace/CLAUDE.md".to_string(),
             ]
@@ -381,6 +399,10 @@ mod tests {
             noop,
             vec![
                 "workspace.bootstrap_state:ready".to_string(),
+                "workspace.skills.canonical:.agents/skills".to_string(),
+                "workspace.skills.compatibility:.claude/skills->.agents/skills".to_string(),
+                "workspace.skills.policy:.agents/skills/skill-authoring-policy/SKILL.md"
+                    .to_string(),
                 "workspace.ensure:noop".to_string(),
             ]
         );

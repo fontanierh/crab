@@ -151,8 +151,10 @@ pub use trust::{
 pub use workspace::{
     default_workspace_templates, detect_workspace_bootstrap_state, ensure_named_memory_scope,
     ensure_user_memory_scope, ensure_workspace_layout, WorkspaceBootstrapState,
-    WorkspaceEnsureOutcome, WorkspaceTemplate, AGENTS_FILE_NAME, BOOTSTRAP_FILE_NAME,
-    CLAUDE_LINK_NAME, IDENTITY_FILE_NAME, MEMORY_FILE_NAME, SOUL_FILE_NAME, USER_FILE_NAME,
+    WorkspaceEnsureOutcome, WorkspaceTemplate, AGENTS_FILE_NAME, AGENTS_SKILLS_ROOT_RELATIVE_PATH,
+    BOOTSTRAP_FILE_NAME, CLAUDE_LINK_NAME, CLAUDE_SKILLS_LINK_RELATIVE_PATH, IDENTITY_FILE_NAME,
+    MEMORY_FILE_NAME, SKILL_AUTHORING_POLICY_FILE_RELATIVE_PATH, SKILL_AUTHORING_POLICY_SKILL_NAME,
+    SOUL_FILE_NAME, USER_FILE_NAME,
 };
 
 #[cfg(test)]

@@ -266,6 +266,12 @@ Single shared workspace:
   CLAUDE.md -> AGENTS.md
   USER.md
   MEMORY.md
+  .agents/
+    skills/
+      skill-authoring-policy/
+        SKILL.md
+  .claude/
+    skills -> ../.agents/skills
   memory/
     global/YYYY-MM-DD.md
     users/<discord_user_id>/YYYY-MM-DD.md
@@ -313,6 +319,19 @@ Citation/disclosure policy:
 - `citation_mode=on`: always include citations, including shared contexts.
 - `citation_mode=off`: never include file/line citations and do not add disclosure text.
 - Policy applies equally to `crab-memory-search`, `crab-memory-get`, and native `rg`/`grep`/reads over memory files.
+
+### 6.5 Skills Governance
+
+Crab enforces one canonical skills root across backends:
+
+- Canonical root: `.agents/skills`.
+- Claude compatibility path: `.claude/skills -> ../.agents/skills`.
+- Built-in required policy skill:
+  - `.agents/skills/skill-authoring-policy/SKILL.md`
+  - enforces that new/updated skills must live under `.agents/skills`.
+
+Prompt contract includes a dedicated `SKILLS_GOVERNANCE` section before owner/runtime notes so
+skill-authoring tasks consistently follow this policy.
 
 ## 7) Turn Lifecycle
 
@@ -571,6 +590,12 @@ This is intentional for autonomous server configuration and operations.
     CLAUDE.md -> AGENTS.md
     USER.md
     MEMORY.md
+    .agents/
+      skills/
+        skill-authoring-policy/
+          SKILL.md
+    .claude/
+      skills -> ../.agents/skills
     memory/
       global/
         YYYY-MM-DD.md

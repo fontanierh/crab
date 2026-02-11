@@ -220,9 +220,13 @@ For every deploy/restart:
 
 1. Confirm service is running and restart policy is active.
 2. Confirm log stream shows successful startup reconciliation and heartbeat ticks.
-3. Send a controlled Discord message in a test channel and verify one reply.
-4. Restart service once and confirm replay behavior does not duplicate reply/edit.
-5. Record result in deployment notes linked to `crab/docs/08-deployment-readiness-gaps.md` checklist.
+3. Confirm workspace bootstrap assets are healthy:
+   - `.agents/skills` exists under `CRAB_WORKSPACE_ROOT`
+   - `.claude/skills` is a symlink to `../.agents/skills`
+   - `.agents/skills/skill-authoring-policy/SKILL.md` exists
+4. Send a controlled Discord message in a test channel and verify one reply.
+5. Restart service once and confirm replay behavior does not duplicate reply/edit.
+6. Record result in deployment notes linked to `crab/docs/08-deployment-readiness-gaps.md` checklist.
 
 ## Upgrade Procedure
 

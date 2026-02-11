@@ -11,10 +11,20 @@ pub const USER_FILE_NAME: &str = "USER.md";
 pub const MEMORY_FILE_NAME: &str = "MEMORY.md";
 pub const BOOTSTRAP_FILE_NAME: &str = "BOOTSTRAP.md";
 pub const CLAUDE_LINK_NAME: &str = "CLAUDE.md";
+pub const AGENTS_SKILLS_ROOT_RELATIVE_PATH: &str = ".agents/skills";
+pub const CLAUDE_SKILLS_LINK_RELATIVE_PATH: &str = ".claude/skills";
+pub const SKILL_AUTHORING_POLICY_FILE_RELATIVE_PATH: &str =
+    ".agents/skills/skill-authoring-policy/SKILL.md";
+pub const SKILL_AUTHORING_POLICY_SKILL_NAME: &str = "skill-authoring-policy";
 
 const MEMORY_DIR_NAME: &str = "memory";
 const MEMORY_GLOBAL_DIR_NAME: &str = "global";
 const MEMORY_USERS_DIR_NAME: &str = "users";
+const AGENTS_DIR_NAME: &str = ".agents";
+const SKILLS_DIR_NAME: &str = "skills";
+const CLAUDE_DIR_NAME: &str = ".claude";
+const SKILL_FILE_NAME: &str = "SKILL.md";
+const CLAUDE_SKILLS_LINK_TARGET: &str = "../.agents/skills";
 
 const AGENTS_TEMPLATE: &str = "\
 # AGENTS.md
@@ -80,6 +90,41 @@ On first interaction, capture:
 4. Machine location and timezone
 \n\
 After capture, update SOUL.md, IDENTITY.md, USER.md, MEMORY.md, then remove this file.
+\n";
+
+const SKILL_AUTHORING_POLICY_TEMPLATE: &str = "\
+# SKILL.md
+\n\
+## Purpose
+\n\
+Guardrail for skill authoring in Crab workspaces.
+\n\
+## Mandatory Rules
+\n\
+- Canonical skills root is `.agents/skills`.
+\n\
+- Never create or edit skills outside `.agents/skills`.
+\n\
+- Treat `.claude/skills` as compatibility-only and keep it as a symlink to `.agents/skills`.
+\n\
+- When adding a skill, use `kebab-case` directory naming and include a `SKILL.md`.
+\n\
+## Required Structure
+\n\
+```
+.agents/
+  skills/
+    <skill-name>/
+      SKILL.md
+```
+\n\
+## Frontmatter Convention
+\n\
+- Start each skill file with a concise title and purpose section.
+\n\
+- Include explicit trigger guidance so agents can discover when to apply the skill.
+\n\
+- Keep instructions deterministic and implementation-focused.
 \n";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -202,6 +247,7 @@ pub fn ensure_workspace_layout(workspace_root: &Path) -> CrabResult<WorkspaceEns
 
     ensure_memory_directories(workspace_root, &mut created_paths)?;
     ensure_claude_link(workspace_root, &mut created_paths, &mut repaired_paths)?;
+    ensure_skills_layout(workspace_root, &mut created_paths, &mut repaired_paths)?;
 
     let bootstrap_state = resolve_bootstrap_state(workspace_existed_before, workspace_root);
     Ok(WorkspaceEnsureOutcome {
@@ -340,6 +386,31 @@ fn ensure_memory_directories(
     ensure_directory_exists(&users_memory_root, created_paths, "workspace_memory_layout")
 }
 
+fn ensure_skills_layout(
+    workspace_root: &Path,
+    created_paths: &mut Vec<String>,
+    repaired_paths: &mut Vec<String>,
+) -> CrabResult<()> {
+    let skills_context = "workspace_skills_layout";
+
+    let agents_root = workspace_root.join(AGENTS_DIR_NAME);
+    ensure_directory_exists(&agents_root, created_paths, skills_context)?;
+
+    let agents_skills_root = agents_root.join(SKILLS_DIR_NAME);
+    ensure_directory_exists(&agents_skills_root, created_paths, skills_context)?;
+
+    let policy_skill_root = agents_skills_root.join(SKILL_AUTHORING_POLICY_SKILL_NAME);
+    ensure_directory_exists(&policy_skill_root, created_paths, skills_context)?;
+
+    let policy_skill_file = policy_skill_root.join(SKILL_FILE_NAME);
+    let policy_template = SKILL_AUTHORING_POLICY_TEMPLATE;
+    ensure_template_file(&policy_skill_file, policy_template, created_paths)?;
+
+    let claude_root = workspace_root.join(CLAUDE_DIR_NAME);
+    ensure_directory_exists(&claude_root, created_paths, skills_context)?;
+    ensure_claude_skills_link(&claude_root, created_paths, repaired_paths)
+}
+
 fn ensure_directory_exists(
     path: &Path,
     created_paths: &mut Vec<String>,
@@ -380,54 +451,89 @@ fn ensure_claude_link(
     repaired_paths: &mut Vec<String>,
 ) -> CrabResult<()> {
     let link_path = workspace_root.join(CLAUDE_LINK_NAME);
-    let target = Path::new(AGENTS_FILE_NAME);
+    ensure_relative_symlink(
+        &link_path,
+        Path::new(AGENTS_FILE_NAME),
+        SymlinkKind::File,
+        created_paths,
+        repaired_paths,
+    )
+}
 
-    match fs::symlink_metadata(&link_path) {
+fn ensure_claude_skills_link(
+    claude_root: &Path,
+    created_paths: &mut Vec<String>,
+    repaired_paths: &mut Vec<String>,
+) -> CrabResult<()> {
+    let link_path = claude_root.join(SKILLS_DIR_NAME);
+    ensure_relative_symlink(
+        &link_path,
+        Path::new(CLAUDE_SKILLS_LINK_TARGET),
+        SymlinkKind::Directory,
+        created_paths,
+        repaired_paths,
+    )
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SymlinkKind {
+    File,
+    Directory,
+}
+
+fn ensure_relative_symlink(
+    link_path: &Path,
+    target: &Path,
+    kind: SymlinkKind,
+    created_paths: &mut Vec<String>,
+    repaired_paths: &mut Vec<String>,
+) -> CrabResult<()> {
+    match fs::symlink_metadata(link_path) {
         Ok(metadata) if metadata.file_type().is_symlink() || metadata.is_file() => {
             let is_valid_symlink = metadata.file_type().is_symlink()
-                && fs::read_link(&link_path)
+                && fs::read_link(link_path)
                     .ok()
                     .as_deref()
                     .is_some_and(|existing_target| existing_target == target);
             if is_valid_symlink {
                 return Ok(());
             }
-            replace_symlink(&link_path, target)?;
-            repaired_paths.push(display_path(&link_path));
+            replace_symlink(link_path, target, kind)?;
+            repaired_paths.push(display_path(link_path));
             Ok(())
         }
         Ok(_) => Err(CrabError::InvariantViolation {
             context: "workspace_symlink_layout",
-            message: format!("{} must be a file or symlink", display_path(&link_path)),
+            message: format!("{} must be a file or symlink", display_path(link_path)),
         }),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            write_symlink(&link_path, target)?;
-            created_paths.push(display_path(&link_path));
+            write_symlink(link_path, target, kind)?;
+            created_paths.push(display_path(link_path));
             Ok(())
         }
         Err(error) => Err(CrabError::Io {
             context: "workspace_symlink_layout",
-            path: Some(display_path(&link_path)),
+            path: Some(display_path(link_path)),
             message: error.to_string(),
         }),
     }
 }
 
-fn write_symlink(link_path: &Path, target: &Path) -> CrabResult<()> {
-    wrap_io(
-        create_symlink(target, link_path),
-        "workspace_symlink_layout",
-        link_path,
-    )
+fn write_symlink(link_path: &Path, target: &Path, kind: SymlinkKind) -> CrabResult<()> {
+    let create_result = match kind {
+        SymlinkKind::File => create_file_symlink(target, link_path),
+        SymlinkKind::Directory => create_directory_symlink(target, link_path),
+    };
+    wrap_io(create_result, "workspace_symlink_layout", link_path)
 }
 
-fn replace_symlink(link_path: &Path, target: &Path) -> CrabResult<()> {
+fn replace_symlink(link_path: &Path, target: &Path, kind: SymlinkKind) -> CrabResult<()> {
     wrap_io(
         fs::remove_file(link_path),
         "workspace_symlink_layout",
         link_path,
     )?;
-    write_symlink(link_path, target)
+    write_symlink(link_path, target, kind)
 }
 
 fn ensure_path_is_directory(path: &Path, context: &'static str) -> CrabResult<()> {
@@ -465,13 +571,23 @@ fn display_path(path: &Path) -> String {
 }
 
 #[cfg(unix)]
-fn create_symlink(target: &Path, link: &Path) -> std::io::Result<()> {
+fn create_file_symlink(target: &Path, link: &Path) -> std::io::Result<()> {
     std::os::unix::fs::symlink(target, link)
 }
 
 #[cfg(windows)]
-fn create_symlink(target: &Path, link: &Path) -> std::io::Result<()> {
+fn create_file_symlink(target: &Path, link: &Path) -> std::io::Result<()> {
     std::os::windows::fs::symlink_file(target, link)
+}
+
+#[cfg(unix)]
+fn create_directory_symlink(target: &Path, link: &Path) -> std::io::Result<()> {
+    std::os::unix::fs::symlink(target, link)
+}
+
+#[cfg(windows)]
+fn create_directory_symlink(target: &Path, link: &Path) -> std::io::Result<()> {
+    std::os::windows::fs::symlink_dir(target, link)
 }
 
 #[cfg(test)]
@@ -481,12 +597,14 @@ mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
 
     use super::{
-        create_symlink, default_workspace_templates, detect_workspace_bootstrap_state,
-        ensure_claude_link, ensure_directory_exists, ensure_named_memory_scope,
-        ensure_path_is_directory, ensure_path_is_regular_file, ensure_template_file,
-        ensure_user_memory_scope, ensure_workspace_layout, wrap_io, WorkspaceBootstrapState,
-        AGENTS_FILE_NAME, BOOTSTRAP_FILE_NAME, CLAUDE_LINK_NAME, IDENTITY_FILE_NAME,
-        MEMORY_FILE_NAME, SOUL_FILE_NAME, USER_FILE_NAME,
+        create_directory_symlink, create_file_symlink, default_workspace_templates,
+        detect_workspace_bootstrap_state, ensure_claude_link, ensure_claude_skills_link,
+        ensure_directory_exists, ensure_named_memory_scope, ensure_path_is_directory,
+        ensure_path_is_regular_file, ensure_template_file, ensure_user_memory_scope,
+        ensure_workspace_layout, wrap_io, WorkspaceBootstrapState, AGENTS_FILE_NAME,
+        AGENTS_SKILLS_ROOT_RELATIVE_PATH, BOOTSTRAP_FILE_NAME, CLAUDE_LINK_NAME,
+        CLAUDE_SKILLS_LINK_RELATIVE_PATH, IDENTITY_FILE_NAME, MEMORY_FILE_NAME,
+        SKILL_AUTHORING_POLICY_FILE_RELATIVE_PATH, SOUL_FILE_NAME, USER_FILE_NAME,
     };
     use crate::CrabError;
 
@@ -593,6 +711,24 @@ mod tests {
         assert!(metadata.file_type().is_symlink());
         let target = fs::read_link(&claude_link).expect("symlink target should be readable");
         assert_eq!(target, PathBuf::from(AGENTS_FILE_NAME));
+
+        let agents_skills = workspace.path.join(AGENTS_SKILLS_ROOT_RELATIVE_PATH);
+        assert!(agents_skills.is_dir());
+        let skill_policy_file = workspace
+            .path
+            .join(SKILL_AUTHORING_POLICY_FILE_RELATIVE_PATH);
+        assert!(skill_policy_file.is_file());
+        let skill_policy_contents =
+            fs::read_to_string(&skill_policy_file).expect("policy skill should be readable");
+        assert!(skill_policy_contents.contains("Canonical skills root is `.agents/skills`."));
+
+        let claude_skills_link = workspace.path.join(CLAUDE_SKILLS_LINK_RELATIVE_PATH);
+        let metadata =
+            fs::symlink_metadata(&claude_skills_link).expect("skills symlink metadata should load");
+        assert!(metadata.file_type().is_symlink());
+        let target =
+            fs::read_link(&claude_skills_link).expect("skills symlink target should be readable");
+        assert_eq!(target, PathBuf::from("../.agents/skills"));
     }
 
     #[test]
@@ -802,7 +938,7 @@ mod tests {
     fn ensure_claude_link_repairs_wrong_symlink_target() {
         let workspace = TempWorkspace::new("claude-repair-symlink");
         fs::create_dir_all(&workspace.path).expect("workspace root should be creatable");
-        create_symlink(Path::new("SOUL.md"), &workspace.path.join(CLAUDE_LINK_NAME))
+        create_file_symlink(Path::new("SOUL.md"), &workspace.path.join(CLAUDE_LINK_NAME))
             .expect("seed symlink should be creatable");
 
         let mut created_paths = Vec::new();
@@ -855,6 +991,83 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn ensure_claude_skills_link_repairs_regular_file() {
+        let workspace = TempWorkspace::new("claude-skills-repair-file");
+        fs::create_dir_all(workspace.path.join(".claude"))
+            .expect("workspace .claude directory should be creatable");
+        fs::write(workspace.path.join(".claude/skills"), "bad")
+            .expect("skills file should be writable");
+
+        let mut created_paths = Vec::new();
+        let mut repaired_paths = Vec::new();
+        ensure_claude_skills_link(
+            &workspace.path.join(".claude"),
+            &mut created_paths,
+            &mut repaired_paths,
+        )
+        .expect("skills link should be repaired");
+
+        assert!(created_paths.is_empty());
+        assert_eq!(repaired_paths.len(), 1);
+        let target = fs::read_link(workspace.path.join(".claude/skills"))
+            .expect("repaired skills symlink should exist");
+        assert_eq!(target, PathBuf::from("../.agents/skills"));
+    }
+
+    #[test]
+    fn ensure_claude_skills_link_repairs_wrong_symlink_target() {
+        let workspace = TempWorkspace::new("claude-skills-repair-symlink");
+        fs::create_dir_all(workspace.path.join(".claude"))
+            .expect("workspace .claude directory should be creatable");
+        create_directory_symlink(
+            Path::new("../memory"),
+            &workspace.path.join(".claude/skills"),
+        )
+        .expect("seed skills symlink should be creatable");
+
+        let mut created_paths = Vec::new();
+        let mut repaired_paths = Vec::new();
+        ensure_claude_skills_link(
+            &workspace.path.join(".claude"),
+            &mut created_paths,
+            &mut repaired_paths,
+        )
+        .expect("skills link should be repaired");
+
+        assert!(created_paths.is_empty());
+        assert_eq!(repaired_paths.len(), 1);
+        let target = fs::read_link(workspace.path.join(".claude/skills"))
+            .expect("repaired skills symlink should exist");
+        assert_eq!(target, PathBuf::from("../.agents/skills"));
+    }
+
+    #[test]
+    fn ensure_claude_skills_link_rejects_directory_entry() {
+        let workspace = TempWorkspace::new("claude-skills-dir");
+        fs::create_dir_all(workspace.path.join(".claude/skills"))
+            .expect("skills directory entry should be creatable");
+
+        let mut created_paths = Vec::new();
+        let mut repaired_paths = Vec::new();
+        let error = ensure_claude_skills_link(
+            &workspace.path.join(".claude"),
+            &mut created_paths,
+            &mut repaired_paths,
+        )
+        .expect_err("directory entry should be rejected");
+        assert_eq!(
+            error,
+            CrabError::InvariantViolation {
+                context: "workspace_symlink_layout",
+                message: format!(
+                    "{} must be a file or symlink",
+                    workspace.path.join(".claude/skills").to_string_lossy()
+                ),
+            }
+        );
     }
 
     #[test]
@@ -993,6 +1206,25 @@ mod tests {
                 message: format!(
                     "{} must be a file or symlink",
                     workspace.path.join(CLAUDE_LINK_NAME).to_string_lossy()
+                ),
+            }
+        );
+    }
+
+    #[test]
+    fn ensure_workspace_rejects_claude_skills_directory_in_layout() {
+        let workspace = TempWorkspace::new("layout-claude-skills-dir");
+        fs::create_dir_all(workspace.path.join(".claude/skills"))
+            .expect("claude skills directory should be creatable");
+        let error = ensure_workspace_layout(&workspace.path)
+            .expect_err("claude skills directory should be rejected");
+        assert_eq!(
+            error,
+            CrabError::InvariantViolation {
+                context: "workspace_symlink_layout",
+                message: format!(
+                    "{} must be a file or symlink",
+                    workspace.path.join(".claude/skills").to_string_lossy()
                 ),
             }
         );
@@ -1217,6 +1449,62 @@ mod tests {
         let error = ensure_claude_link(&workspace.path, &mut created_paths, &mut repaired_paths)
             .expect_err("read-only directory should fail symlink create");
         set_mode(&workspace.path, 0o700);
+
+        assert!(matches!(
+            error,
+            CrabError::Io {
+                context: "workspace_symlink_layout",
+                ..
+            }
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ensure_claude_skills_link_propagates_remove_failures() {
+        let workspace = TempWorkspace::new("claude-skills-remove-fail");
+        fs::create_dir_all(workspace.path.join(".claude"))
+            .expect("workspace .claude directory should be creatable");
+        fs::write(workspace.path.join(".claude/skills"), "stale")
+            .expect("skills file should be writable");
+
+        set_mode(&workspace.path.join(".claude"), 0o500);
+        let mut created_paths = Vec::new();
+        let mut repaired_paths = Vec::new();
+        let error = ensure_claude_skills_link(
+            &workspace.path.join(".claude"),
+            &mut created_paths,
+            &mut repaired_paths,
+        )
+        .expect_err("read-only .claude directory should fail remove_file");
+        set_mode(&workspace.path.join(".claude"), 0o700);
+
+        assert!(matches!(
+            error,
+            CrabError::Io {
+                context: "workspace_symlink_layout",
+                ..
+            }
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ensure_claude_skills_link_propagates_create_failures_for_missing_link() {
+        let workspace = TempWorkspace::new("claude-skills-create-fail");
+        fs::create_dir_all(workspace.path.join(".claude"))
+            .expect("workspace .claude directory should be creatable");
+
+        set_mode(&workspace.path.join(".claude"), 0o500);
+        let mut created_paths = Vec::new();
+        let mut repaired_paths = Vec::new();
+        let error = ensure_claude_skills_link(
+            &workspace.path.join(".claude"),
+            &mut created_paths,
+            &mut repaired_paths,
+        )
+        .expect_err("read-only .claude directory should fail symlink create");
+        set_mode(&workspace.path.join(".claude"), 0o700);
 
         assert!(matches!(
             error,

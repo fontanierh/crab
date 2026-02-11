@@ -87,7 +87,7 @@ Required work:
 
 Run all checks on the target machine using production-like config:
 
-- [ ] Cold workspace first boot creates/repairs required files (`AGENTS.md`, `SOUL.md`, `IDENTITY.md`, `USER.md`, `MEMORY.md`, `CLAUDE.md -> AGENTS.md`, `memory/` layout).
+- [ ] Cold workspace first boot creates/repairs required files and links (`AGENTS.md`, `SOUL.md`, `IDENTITY.md`, `USER.md`, `MEMORY.md`, `CLAUDE.md -> AGENTS.md`, `.agents/skills`, `.claude/skills -> ../.agents/skills`, built-in skill policy file, `memory/` layout).
 - [ ] First owner interaction runs onboarding prompts and persists owner/agent identity context.
 - [ ] Normal owner run processes end-to-end (`ingress -> lane -> backend -> Discord delivery`) with persisted run/event metadata.
 - [ ] Non-owner run obeys per-user memory scope and disclosure policy.

@@ -36,6 +36,9 @@ This document breaks the Crab implementation into execution workstreams and issu
 | WS16 | Comprehensive architecture documentation | Design decisions, lifecycle docs, deployment runbook/gaps |
 | WS17 | Runtime deployment gap closure | Rotation/config/token-accounting/manual controls/heartbeats wired end-to-end |
 | WS18 | Discord auth + production deployment | Real Discord bot runtime, OAuth provisioning runbook, target-machine service playbook |
+| WS19 | Cross-platform installer and host provisioning | Idempotent macOS/Linux install, service setup, upgrade/rollback tooling |
+| WS20 | Skills compatibility and governance | Canonical `.agents/skills` layout, Claude compatibility symlink, built-in skill authoring policy |
+| WS21 | Workspace private Git persistence | Durable workspace history in private repo with safe async push/retry |
 
 ## 3) Detailed Workstreams and Tasks
 
@@ -524,6 +527,109 @@ This document breaks the Crab implementation into execution workstreams and issu
 - Prefer small refactors that improve testability and reduce reliance on IO ordering.
 - Done criteria: previously missed mutants are caught by tests, without weakening existing quality gates.
 
+### WS19 - Cross-Platform Installer and Host Provisioning
+
+### WS19-T1 - Installer CLI and execution model
+- Define installer entrypoint (for example `crabctl install`) with explicit target OS selection and dry-run mode.
+- Support both macOS and Linux host profiles with deterministic command plans.
+- Update docs: `README.md` and `crab/docs/10-target-machine-operations.md`.
+- Done criteria: installer command renders reproducible plan for both platforms and executes on target host.
+
+### WS19-T2 - Host prerequisites and toolchain bootstrap (macOS + Linux)
+- Install/validate required host tools (`tmux`, `git`, `gh`, `jq`, `rg`, Rust toolchain, `cargo-llvm-cov`, Node runtime).
+- Ensure shell profile wiring is correct for non-interactive service shells.
+- Update docs: `crab/docs/10-target-machine-operations.md`.
+- Done criteria: one installer run brings a clean host to required baseline with version verification output.
+
+### WS19-T3 - Runtime filesystem and service provisioning (launchd + systemd)
+- Provision `/opt/crab`, `/etc/crab`, `/var/lib/crab`, `/var/log/crab` layout with least-privilege ownership policy.
+- Install/update service units:
+  - macOS `launchd` (`com.crab.runtime`)
+  - Linux `systemd` (`crab.service`)
+- Done criteria: service boots on restart/reboot and runs with documented env file policy on both platforms.
+
+### WS19-T4 - Upgrade, rollback, and diagnostics commands
+- Add `upgrade`, `rollback`, and `doctor` installer commands.
+- `doctor` must validate runtime binary presence, env config sanity, service status, and log path accessibility.
+- Update docs: `crab/docs/10-target-machine-operations.md` and `crab/docs/08-deployment-readiness-gaps.md`.
+- Done criteria: operator can execute full upgrade and rollback path with deterministic diagnostics output.
+
+### WS19-T5 - Installer safety and idempotency hardening
+- Make install/provision actions idempotent and safe on partial failure.
+- Add failure-injection tests for interrupted install, existing conflicting files, and missing privileges.
+- Done criteria: rerunning installer after partial failure converges to healthy desired state without destructive resets.
+
+### WS20 - Skills Compatibility and Governance
+
+Status (as of 2026-02-11): completed.
+Delivered:
+- canonical `.agents/skills` bootstrap
+- `.claude/skills -> ../.agents/skills` compatibility symlink repair path
+- built-in `skill-authoring-policy` skill
+- prompt-contract `SKILLS_GOVERNANCE` section
+- startup diagnostics + tests for skills layout/governance
+
+### WS20-T1 - Canonical skills layout in workspace bootstrap
+- Extend workspace bootstrap to ensure `.agents/skills/` exists in every workspace.
+- Keep `CLAUDE.md -> AGENTS.md` behavior unchanged and add explicit skills-path diagnostics.
+- Done criteria: cold workspace bootstrap creates skills root deterministically.
+
+### WS20-T2 - Claude compatibility symlink policy
+- Ensure `.claude/skills` exists as a symlink to `.agents/skills`; repair drifted links/files idempotently.
+- Enforce path safety invariants (no directory traversal, no non-symlink collisions without explicit repair path).
+- Done criteria: repeated bootstrap/repair keeps Claude skills path aligned with canonical path.
+
+### WS20-T3 - Built-in skill authoring policy
+- Add a built-in required skill that instructs agents creating/updating skills to place them only under `.agents/skills`.
+- Include explicit folder structure, naming rules, and frontmatter requirements in this governance skill.
+- Done criteria: prompts and runtime context expose this policy before skill-authoring tasks.
+
+### WS20-T4 - Multi-backend skill loading contract (Codex + OpenCode + Claude)
+- Formalize and document skills discovery policy using official backend docs:
+  - Codex reads `.agents/skills`.
+  - OpenCode reads `.agents/skills`.
+  - Claude Code uses `.claude/skills` compatibility path.
+- Update docs: `crab/DESIGN.md`, `crab/docs/06-backend-contract-and-inference-profiles.md`, and `crab/docs/10-target-machine-operations.md`.
+- Done criteria: backend adapters and docs align on one canonical skills source of truth.
+
+### WS20-T5 - Skills governance tests and diagnostics
+- Add tests for bootstrap creation, symlink repair, governance skill presence, and context-injection ordering.
+- Add runtime diagnostics note showing resolved canonical skills path and compatibility path status.
+- Done criteria: skills layout/governance behavior is fully covered and visible in startup diagnostics.
+
+### WS21 - Workspace Private Git Persistence
+
+### WS21-T1 - Git persistence config model
+- Add explicit runtime config for workspace git persistence (`enabled`, `remote`, `branch`, commit identity, push policy).
+- Validate config eagerly and fail fast on malformed/unsafe values.
+- Done criteria: config surface is documented and covered by parser validation tests.
+
+### WS21-T2 - Repository bootstrap and binding
+- Initialize workspace as git repo when enabled, or bind to existing repo safely.
+- Support private remote setup and deterministic branch bootstrap policy.
+- Done criteria: first-run bootstrap creates/validates repo state without mutating unrelated paths.
+
+### WS21-T3 - Commit trigger policy and metadata
+- Define when commits are created (for example on successful run finalization and rotation checkpoints).
+- Standardize commit message schema and include run/session correlation metadata.
+- Done criteria: commit cadence is deterministic and replay-safe under restart conditions.
+
+### WS21-T4 - Async push queue with retry/backoff
+- Push to private remote asynchronously with bounded retry/backoff and durable retry state.
+- Ensure push failures never block turn execution or Discord delivery semantics.
+- Done criteria: push failure/recovery tests prove runtime liveness and eventual sync.
+
+### WS21-T5 - Secret safety and path guardrails
+- Enforce exclusion policy (`.env`, secrets files, token dumps, generated transient artifacts) before commit.
+- Add allowlist/denylist guardrails with explicit audit notes when files are skipped.
+- Done criteria: sensitive files cannot be committed by automated persistence path.
+
+### WS21-T6 - Divergence and conflict recovery policy
+- Handle non-fast-forward, force-pushed remote, and local divergence cases with deterministic fallback behavior.
+- Provide operator-visible recovery commands and clear diagnostics.
+- Update docs: `crab/docs/05-reliability-delivery-and-recovery.md` and `crab/docs/10-target-machine-operations.md`.
+- Done criteria: divergence scenarios are tested and recoverable without workspace corruption.
+
 ## 4) Dependency Order and Critical Path
 
 Execution order:
@@ -541,10 +647,13 @@ Execution order:
 11. WS16 runs across all phases; must be current before deployment milestones are declared complete
 12. WS17 after WS15; required before production deployment cutover
 13. WS18 after WS17 and WS3; required for target-machine rollout
+14. WS20 after WS10 and WS13; required before deployment so skills behavior is deterministic across backends
+15. WS21 after WS15 and WS17; required before deployment evidence is finalized
+16. WS19 after WS18, WS20, and WS21; final installation/provisioning cutover on target macOS/Linux hosts
 
 Critical path to MVP:
 
-- WS0, WS1, WS2, WS3, WS4, WS7, WS8, WS9, WS10, WS11, WS12, WS13, WS14, WS15, WS16, WS17, WS18
+- WS0, WS1, WS2, WS3, WS4, WS7, WS8, WS9, WS10, WS11, WS12, WS13, WS14, WS15, WS16, WS17, WS18, WS20, WS21, WS19
 
 Codex/OpenCode parity path:
 
@@ -579,6 +688,10 @@ Codex/OpenCode parity path:
 ### Milestone M7 - Production Deployment Cutover
 - Scope: WS17, WS18.
 - Exit criteria: runtime gap register resolved, production bot runtime is executable on target machine, and Discord provisioning/service runbooks are validated end-to-end.
+
+### Milestone M8 - Skills + Persistence + Installer Hardening
+- Scope: WS19, WS20, WS21.
+- Exit criteria: canonical skills policy is enforced across backends, workspace state is durably persisted to private git, and installer-based deployment on macOS/Linux is reproducible and idempotent.
 
 ## 6) Issue Template for Task Tickets
 

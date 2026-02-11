@@ -23,6 +23,8 @@ This document defines memory data layout, retrieval surfaces, and context assemb
 ```text
 workspace/
   MEMORY.md
+  .agents/skills/
+  .claude/skills -> ../.agents/skills
   memory/
     users/<discord_user_id>/YYYY-MM-DD.md
     global/YYYY-MM-DD.md
@@ -120,6 +122,12 @@ Prompt contract compiler (`crates/crab-core/src/prompt_contract.rs`) injects mem
 - surface-aware policy (DM vs shared contexts)
 - owner vs non-owner disclosure behavior
 - same policy applies to CLI search/get and native grep/read fallback
+
+Skill governance is injected in the same prompt contract:
+
+- canonical skills root is `.agents/skills`
+- `.claude/skills` is compatibility-only symlink path
+- built-in required policy skill lives at `.agents/skills/skill-authoring-policy/SKILL.md`
 
 ## Current Status
 

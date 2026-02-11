@@ -28,6 +28,12 @@ This document defines first-run behavior, onboarding capture, and how Crab trans
 
 State comes from workspace ensure/detection logic in `crates/crab-core/src/workspace.rs` and startup integration in `crates/crab-app/src/startup.rs`.
 
+On every startup, workspace ensure also enforces skills layout policy:
+
+- canonical skills root `.agents/skills`
+- compatibility symlink `.claude/skills -> ../.agents/skills`
+- built-in policy skill `.agents/skills/skill-authoring-policy/SKILL.md`
+
 ## Required Onboarding Questions
 
 Onboarding question contract (`crates/crab-core/src/onboarding.rs`):

@@ -44,3 +44,6 @@ untracked_references/
 
 # mutation testing output (cargo-mutants)
 mutants.out*/
+
+# local machine credentials / secrets
+.crab-secrets/

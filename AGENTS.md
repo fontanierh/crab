@@ -199,3 +199,48 @@ The repository now enforces quality with executable gates and CI automation.
   `gh project item-add 1 --owner fontanierh --url https://github.com/fontanierh/2026-02-06-autofun/issues/<id>`
 - List project items:
   `gh project item-list 1 --owner fontanierh --limit 500`
+
+## 14. Target Machine Remote Access (Tailscale + tmux)
+
+- Keep target-machine credentials only in local gitignored files under `.crab-secrets/`.
+- Current local credential file path:
+  `.crab-secrets/target-machine.env`
+- Required file mode:
+  `chmod 600 .crab-secrets/target-machine.env`
+
+### tmux-first rule
+
+- All long-running/operational work on the Crab target machine must run inside tmux on the
+  target machine itself (not local tmux on the controller laptop).
+- Session naming convention on target machine:
+  `crab-main` for primary operations, or `crab-<task>` for scoped work.
+
+### Exact operator flow
+
+1. Load credentials locally:
+   `set -a; source .crab-secrets/target-machine.env; set +a`
+2. SSH to target machine:
+   `ssh "$CRAB_TARGET_USER@$CRAB_TARGET_HOST"`
+3. On target machine, start/attach tmux:
+   `tmux new -As crab-main`
+4. Run commands/services inside that remote tmux session.
+5. Detach from remote tmux without stopping work:
+   `Ctrl-b d`
+6. Reattach later on target:
+   `tmux attach -t crab-main`
+
+### Non-interactive command execution (remote tmux)
+
+- For automation, remote commands should create/use tmux on the target machine:
+  `ssh ... 'tmux new-session -d -s crab-<task> \"<cmd>\"'`
+- Use `tmux send-keys` + `tmux capture-pane` remotely when command output must be collected
+  without interactive attachment.
+
+## 15. Skills Governance Policy
+
+- Canonical skills location in Crab workspaces is `.agents/skills`.
+- `.claude/skills` is compatibility-only and must remain a symlink to `.agents/skills`.
+- Do not create/update skills anywhere else in workspace/runtime operations.
+- Built-in required policy skill path:
+  `.agents/skills/skill-authoring-policy/SKILL.md`
+- For skill-authoring tasks, read and follow that policy first.
