@@ -39,6 +39,7 @@ This document breaks the Crab implementation into execution workstreams and issu
 | WS19 | Cross-platform installer and host provisioning | Idempotent macOS/Linux install, service setup, upgrade/rollback tooling |
 | WS20 | Skills compatibility and governance | Canonical `.agents/skills` layout, Claude compatibility symlink, built-in skill authoring policy |
 | WS21 | Workspace private Git persistence | Durable workspace history in private repo with safe async push/retry |
+| WS22 | Runtime state evolution and migration safety | Versioned state marker, startup migrator, actionable compatibility preflight, migration governance |
 
 ## 3) Detailed Workstreams and Tasks
 
@@ -678,6 +679,72 @@ Status (as of 2026-02-11): WS21-T1 through WS21-T6 completed.
    - `WorkspaceGitPushTickOutcome` now carries `failure_kind` and deterministic `recovery_commands`.
    - Queue entries are exhausted immediately for manual-recovery classes, preserving runtime liveness and preventing endless retry churn.
 
+### WS22 - Runtime State Evolution and Migration Safety
+
+Status (as of 2026-02-11): in progress.
+
+### WS22-T1 - Global state schema marker + startup migrator pipeline
+- Add a global state schema marker at `state/schema_version.json` with explicit schema (`version`, `updated_at_epoch_ms`).
+- Run a startup migration engine before runtime stores/process loops begin:
+  - stepwise migrations (`vN -> vN+1`)
+  - deterministic ordering
+  - idempotent reruns
+  - explicit lock to prevent concurrent migrator execution
+- Emit structured migration telemetry (`migration_started`, `migration_step`, `migration_completed`, `migration_failed`).
+- Update docs: `crab/docs/07-storage-and-state-model.md`, `crab/docs/10-target-machine-operations.md`, and `README.md`.
+- Done criteria: cold start initializes marker, older state upgrades deterministically, partial-failure rerun resumes safely, and no-op rerun is proven by tests.
+ - Implemented:
+   - `crab-core::state_schema` module with marker schema (`state/schema_version.json`) and stepwise migrator.
+   - Startup migration lock (`schema_migration.lock.json`) with stale-lock reclamation and active-lock blocking.
+   - Startup integration in composition path so migration runs before runtime stores/process loops.
+   - Structured migration event model (`migration_started`, `migration_step`, `migration_completed`, `migration_failed`) persisted in startup outcome and logged by daemon startup.
+
+### WS22-T2 - Actionable compatibility preflight in `crabctl doctor` and `crabctl upgrade`
+- Add a shared preflight check consumed by both `doctor` and `upgrade`.
+- Block incompatible upgrades with explicit operator remediation output:
+  - detected state version and supported binary range
+  - exact blocking reason (for example, missing migration step)
+  - exact next-action commands (upgrade path or rollback path)
+- Use a distinct non-zero exit code for "upgrade blocked by state compatibility".
+- Update docs: `crab/docs/10-target-machine-operations.md` and `README.md`.
+- Done criteria: blocked upgrade output is directly actionable without code lookup, and behavior is covered by integration tests.
+ - Implemented:
+   - Shared compatibility preflight in installer path using state marker + supported range evaluation.
+   - `crabctl upgrade` now blocks incompatible state before any install mutation and returns distinct exit code `3`.
+   - `crabctl doctor` now reports explicit state-schema compatibility pass/fail and remediation commands.
+
+### WS22-T3 - Migration test harness and case-by-case fixtures
+- Build reusable migration fixture harness for state snapshots and startup migration execution.
+- For each introduced migration, add targeted fixtures/tests:
+  - `N-1 -> N` forward migration
+  - idempotent rerun
+  - restart/resume after interrupted migration step
+- Keep coverage policy unchanged (100% for touched production paths).
+- Done criteria: each migration step ships with deterministic fixtures and regression tests.
+ - Implemented for current `v0 -> v1` step:
+   - deterministic migration tests for cold-start initialization and idempotent rerun
+   - stale-lock recovery and active-lock blocking tests
+   - corrupt-marker regression test
+   - installer integration tests for upgrade-blocked and doctor-preflight reporting paths
+
+### WS22-T4 - Schema evolution policy and contributor guardrails
+- Establish and document policy: persisted schema changes must be additive-only unless paired with a migration.
+- Add contributor checklist updates for persisted-state changes:
+  - schema version impact decision
+  - migration required/not required with justification
+  - compatibility and rollback notes
+  - required tests
+- Update docs: `AGENTS.md`, `crab/DESIGN.md`, and `crab/docs/07-storage-and-state-model.md`.
+- Done criteria: policy is explicit in contributor docs and referenced by implementation tasks/PRs.
+ - Implemented:
+   - contributor policy added to `AGENTS.md` (additive-only schema default; migration requirements when compatibility changes)
+   - design/state docs updated with marker+migration+preflight behavior
+
+### WS22-T5 - (Deferred) snapshot/restore command path for upgrades
+- Evaluate and design a minimal pre-upgrade snapshot/restore path (`workspace + state + env metadata`) in `crabctl`.
+- Keep this out of immediate deployment critical path; implement after WS22-T1/T2/T4 unless risk profile changes.
+- Done criteria: decision doc exists with complexity estimate and go/no-go recommendation for implementation scope.
+
 ## 4) Dependency Order and Critical Path
 
 Execution order:
@@ -698,10 +765,11 @@ Execution order:
 14. WS20 after WS10 and WS13; required before deployment so skills behavior is deterministic across backends
 15. WS21 after WS15 and WS17; required before deployment evidence is finalized
 16. WS19 after WS18, WS20, and WS21; final installation/provisioning cutover on target macOS/Linux hosts
+17. WS22 after WS1, WS10, and WS19; required before declaring deployment-readiness closure for in-place upgrades
 
 Critical path to MVP:
 
-- WS0, WS1, WS2, WS3, WS4, WS7, WS8, WS9, WS10, WS11, WS12, WS13, WS14, WS15, WS16, WS17, WS18, WS20, WS21, WS19
+- WS0, WS1, WS2, WS3, WS4, WS7, WS8, WS9, WS10, WS11, WS12, WS13, WS14, WS15, WS16, WS17, WS18, WS20, WS21, WS19, WS22
 
 Codex/OpenCode parity path:
 
@@ -740,6 +808,10 @@ Codex/OpenCode parity path:
 ### Milestone M8 - Skills + Persistence + Installer Hardening
 - Scope: WS19, WS20, WS21.
 - Exit criteria: canonical skills policy is enforced across backends, workspace state is durably persisted to private git, and installer-based deployment on macOS/Linux is reproducible and idempotent.
+
+### Milestone M9 - Runtime Evolution Safety
+- Scope: WS22.
+- Exit criteria: runtime state is versioned, startup migration is deterministic/idempotent, and upgrade preflight blocks unsafe transitions with actionable remediation steps.
 
 ## 6) Issue Template for Task Tickets
 

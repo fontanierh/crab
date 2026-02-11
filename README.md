@@ -37,6 +37,11 @@ Crab is a Rust harness for running coding agents (Claude Code, Codex CLI, OpenCo
   - `WS21-T4` complete: async push queue is implemented with durable retry state (`state/workspace_git_push_queue.json`), bounded exponential backoff, idempotent enqueue by commit key, daemon-loop non-blocking processing, and restart-safe recovery semantics.
   - `WS21-T5` complete: secret-safe staging guardrails are enforced before automated commits (denylist + allowlist override policy), with commit-time staging audit metadata and runtime skipped-path diagnostics.
   - `WS21-T6` complete: divergence/conflict push failures are classified deterministically (`non_fast_forward`/`diverged_history`), escalated to `manual_recovery_required`, and exposed with operator recovery commands.
+- `WS22` in progress:
+  - `WS22-T1` complete: global state schema marker + startup migrator pipeline (`state/schema_version.json`, migration locking, idempotent reruns, startup migration telemetry events).
+  - `WS22-T2` complete: actionable compatibility preflight is wired into `crabctl upgrade` and `crabctl doctor`, including explicit remediation commands and distinct blocked-upgrade exit code (`3`).
+  - `WS22-T3` started: migration fixture coverage exists for initial `v0 -> v1`, no-op rerun, stale-lock recovery, active-lock blocking, and corrupt-marker handling.
+  - `WS22-T4` started: schema evolution governance is now documented in contributor policy/docs.
 
 ## Docs
 

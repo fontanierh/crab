@@ -57,6 +57,11 @@ Implemented and validated in repository code/tests:
   - `install`/`upgrade`/`rollback`/`doctor` command surface for `macos` and `linux`
   - prerequisite bootstrap + version verification path
   - idempotent runtime layout/service provisioning with deterministic dry-run plans
+- Runtime state schema evolution safety baseline:
+  - global state marker at `workspace/state/schema_version.json`
+  - startup migration engine (stepwise, idempotent, lock-protected)
+  - `crabctl upgrade`/`doctor` compatibility preflight with actionable remediation output
+  - distinct blocked-upgrade exit code (`3`) for incompatible state versions
 
 Important runtime shape today:
 

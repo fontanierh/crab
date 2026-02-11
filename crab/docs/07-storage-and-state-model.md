@@ -23,6 +23,24 @@ App composition creates a state root under workspace:
 
 Stores are mounted from that root (`crates/crab-app/src/composition.rs`).
 
+Global state-schema marker:
+
+- `workspace/state/schema_version.json`
+- JSON schema:
+  - `version` (`u32`)
+  - `updated_at_epoch_ms` (`u64`)
+
+Current schema policy constants (`crates/crab-core/src/state_schema.rs`):
+
+- `MIN_SUPPORTED_STATE_SCHEMA_VERSION=0`
+- `CURRENT_STATE_SCHEMA_VERSION=1`
+
+Compatibility interpretation:
+
+- missing marker is treated as legacy `version=0`
+- versions in `[min, max]` are compatible
+- versions below `min` or above `max` are incompatible
+
 ## Store Responsibilities
 
 ### SessionStore
@@ -92,8 +110,25 @@ Store layer includes:
 - backup-aware reads for corruption recovery paths
 - explicit invariant errors for shape or identity mismatch
 
+State-schema migration layer includes:
+
+- startup migration execution before runtime store/process loops begin
+- migration lock file at `workspace/state/schema_migration.lock.json` to prevent concurrent migrators
+- stale lock reclamation for abandoned lock files
+- deterministic stepwise migration (`vN -> vN+1`) with strict step registry
+- idempotent reruns (already-migrated state is a no-op)
+- explicit failure on unknown migration step or incompatible schema version
+
+Structured migration events are emitted in startup state:
+
+- `migration_started`
+- `migration_step`
+- `migration_completed`
+- `migration_failed`
+
 ## Operational Consequences
 
 - Restart can recover by replaying persisted events and outbound records.
 - Crash during delivery can still avoid duplicate output via outbound dedupe store.
 - Corrupted index/log paths can be surfaced with explicit context-rich errors.
+- Upgrade tooling can evaluate state compatibility using `schema_version.json` without mutating data.

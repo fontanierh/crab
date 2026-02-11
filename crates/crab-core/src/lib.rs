@@ -28,6 +28,7 @@ pub mod rotation;
 pub mod rotation_sequence;
 pub mod sender_identity;
 pub mod startup_reconciliation;
+pub mod state_schema;
 pub mod trust;
 mod validation;
 pub mod workspace;
@@ -146,6 +147,13 @@ pub use sender_identity::{
 pub use startup_reconciliation::{
     execute_startup_reconciliation, StartupReconciliationOutcome,
     StartupReconciliationRecoveredRun, StartupReconciliationRuntime,
+};
+pub use state_schema::{
+    ensure_state_schema_version, evaluate_state_schema_compatibility, state_schema_marker_path,
+    StateSchemaCompatibilityReport, StateSchemaCompatibilityStatus, StateSchemaMigrationEvent,
+    StateSchemaMigrationEventKind, StateSchemaMigrationOutcome, StateSchemaVersionMarker,
+    CURRENT_STATE_SCHEMA_VERSION, MIN_SUPPORTED_STATE_SCHEMA_VERSION,
+    STATE_SCHEMA_MARKER_FILE_NAME,
 };
 pub use trust::{
     resolve_sender_trust_context, MemoryScopeMode, MemoryScopeResolution, SenderTrustContext,

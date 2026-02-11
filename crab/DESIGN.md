@@ -727,6 +727,20 @@ Workspace git async push policy (implemented in WS21-T4):
 - Push processing failures are non-blocking for ingress/dispatch and heartbeat flow;
   runtime liveness is preserved even under sustained remote outages.
 
+State schema evolution policy (implemented in WS22):
+
+- Persisted runtime state carries a global marker at `workspace/state/schema_version.json`:
+  - `version`
+  - `updated_at_epoch_ms`
+- Startup runs a migration engine before runtime stores/process loops:
+  - deterministic stepwise `vN -> vN+1`
+  - migration lock (`schema_migration.lock.json`) to prevent concurrent migrators
+  - idempotent rerun behavior
+  - explicit failure on missing migration step
+- `crabctl upgrade` and `crabctl doctor` run compatibility preflight against supported version
+  range and emit actionable remediation commands when incompatible.
+- Contributor rule: schema changes should be additive-only unless paired with a migration step.
+
 ## 18) Deferred Items
 
 - Branch protection and required CI checks.

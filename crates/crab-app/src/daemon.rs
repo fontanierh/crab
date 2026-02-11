@@ -422,6 +422,25 @@ where
         opencode_process,
         now_epoch_ms,
     )?;
+    #[cfg(not(coverage))]
+    {
+        let migration = &boot.composition.state_schema_migration;
+        tracing::info!(
+            starting_version = migration.starting_version,
+            target_version = migration.target_version,
+            migrated = migration.migrated,
+            "state schema migration evaluated on startup"
+        );
+        for event in &migration.events {
+            tracing::debug!(
+                kind = event.kind.as_token(),
+                from_version = event.from_version,
+                to_version = event.to_version,
+                detail = ?event.detail,
+                "state schema migration event"
+            );
+        }
+    }
     if !boot.startup_reconciliation.recovered_runs.is_empty()
         || !boot.startup_reconciliation.cleared_session_ids.is_empty()
     {

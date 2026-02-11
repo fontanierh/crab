@@ -1,10 +1,12 @@
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use crab_backends::{CodexAppServerProcess, CodexManager, OpenCodeManager, OpenCodeServerProcess};
 use crab_core::{
     config::{HeartbeatConfig, RotationPolicyConfig, StartupReconciliationConfig},
-    CrabError, CrabResult, RuntimeConfig, WorkspaceGitConfig,
+    ensure_state_schema_version, CrabError, CrabResult, RuntimeConfig, StateSchemaMigrationOutcome,
+    WorkspaceGitConfig,
 };
 use crab_discord::{GatewayIngress, IdempotentDeliveryLedger};
 use crab_scheduler::LaneScheduler;
@@ -59,6 +61,7 @@ where
     pub rotation_policy: RotationPolicyConfig,
     pub startup_reconciliation_policy: StartupReconciliationConfig,
     pub heartbeat_policy: HeartbeatConfig,
+    pub state_schema_migration: StateSchemaMigrationOutcome,
     pub state_stores: AppStateStores,
     pub scheduler: LaneScheduler,
     pub gateway_ingress: GatewayIngress,
@@ -99,6 +102,14 @@ where
     let startup = initialize_runtime_startup(config)?;
     let state_root = startup.workspace_root.join(STATE_DIRECTORY_NAME);
     ensure_state_root(&state_root)?;
+    let migration_now_epoch_ms = u64::try_from(
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis(),
+    )
+    .unwrap_or(u64::MAX);
+    let state_schema_migration = ensure_state_schema_version(&state_root, migration_now_epoch_ms)?;
 
     let state_stores = AppStateStores::new(&state_root);
     let scheduler = LaneScheduler::new(config.max_concurrent_lanes, lane_queue_limit)?;
@@ -116,6 +127,7 @@ where
         rotation_policy: config.rotation,
         startup_reconciliation_policy: config.startup_reconciliation,
         heartbeat_policy: config.heartbeat,
+        state_schema_migration,
         state_stores,
         scheduler,
         gateway_ingress,
@@ -138,7 +150,7 @@ fn ensure_state_root(state_root: &Path) -> CrabResult<()> {
 mod tests {
     use std::fs;
 
-    use crab_core::CrabError;
+    use crab_core::{CrabError, CURRENT_STATE_SCHEMA_VERSION};
     use crab_discord::{
         DeliveryAttempt, GatewayConversationKind, GatewayMessage, MarkSentDecision, RoutingKey,
         ShouldSendDecision,
@@ -168,6 +180,10 @@ mod tests {
 
         assert_eq!(composition.state_stores.root, workspace.path.join("state"));
         assert!(composition.state_stores.root.is_dir());
+        assert_eq!(
+            composition.state_schema_migration.target_version,
+            CURRENT_STATE_SCHEMA_VERSION
+        );
         assert_eq!(composition.scheduler.active_lane_count(), 0);
 
         composition

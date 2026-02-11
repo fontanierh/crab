@@ -251,3 +251,15 @@ The repository now enforces quality with executable gates and CI automation.
 - Built-in required policy skill path:
   `.agents/skills/skill-authoring-policy/SKILL.md`
 - For skill-authoring tasks, read and follow that policy first.
+
+## 16. Persisted State Evolution Policy
+
+- Treat any persisted runtime-state schema change as a migration decision point.
+- Default policy: additive-only schema evolution.
+- If a non-additive or compatibility-impacting change is required, ship:
+  - a schema-version bump,
+  - an explicit startup migration step (`vN -> vN+1`),
+  - compatibility preflight behavior/doctor output updates,
+  - regression tests for forward migration and idempotent rerun.
+- Do not merge persisted-state changes without documenting migration/compatibility impact in
+  `crab/docs/07-storage-and-state-model.md` and updating the related issue checklist.

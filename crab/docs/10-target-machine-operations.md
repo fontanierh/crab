@@ -71,6 +71,8 @@ Notes:
 
 - Use `--root-prefix <path>` to stage deterministic integration tests in temporary roots.
 - `doctor` exits `0` when healthy and non-zero when unhealthy.
+- `upgrade` exits `3` when blocked by state-schema incompatibility preflight (no install mutations
+  are performed in this case).
 - Installer operations are idempotent; rerunning converges rather than requiring destructive cleanup.
 
 ## Recommended Host Layout
@@ -217,6 +219,13 @@ Workspace git push divergence handling:
   - `git log --oneline --graph --decorate --left-right HEAD...origin/<branch>`
   - `git rebase origin/<branch>`
   - `git push --porcelain origin HEAD:refs/heads/<branch>`
+
+State-schema compatibility preflight (`crabctl doctor` + `crabctl upgrade`):
+
+- Checks `workspace/state/schema_version.json` against binary-supported range.
+- Missing marker is treated as legacy `version=0`.
+- Incompatible state blocks `upgrade` and prints actionable remediation commands.
+- `doctor` reports compatibility as explicit pass/fail with remediation hints.
 
 ## Logging (Structured, `tracing`)
 

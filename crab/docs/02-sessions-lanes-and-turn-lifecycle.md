@@ -131,5 +131,6 @@ sequenceDiagram
 - Idempotent output replay is implemented.
 - Rotation-trigger evaluation is implemented in turn finalization.
 - Startup reconciliation + heartbeat maintenance entry points are implemented in `crab-app`.
-- Remaining deployment gap is the production runtime binary loop (`WS18-T2`) that wires Discord runtime
-  ingress, scheduler dispatch pumping, and heartbeat ticks together.
+- Production runtime binary loop wiring is implemented (`crabd` + `crab-discord-connector`).
+- Remaining deployment blocker is target-machine acceptance checklist execution evidence (`WS18-T5`),
+  tracked in `crab/docs/08-deployment-readiness-gaps.md`.

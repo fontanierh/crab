@@ -6,6 +6,11 @@ use std::os::unix::fs::{symlink, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use crab_core::{
+    evaluate_state_schema_compatibility, StateSchemaCompatibilityReport,
+    StateSchemaCompatibilityStatus,
+};
+
 const USAGE: &str = "Usage:
   crabctl install --target <macos|linux> [--dry-run] [--root-prefix <path>] [--release-id <id>] [--crabd-bin <path>] [--connector-bin <path>] [--workspace-root <path>] [--service-user <name>] [--service-group <name>]
   crabctl upgrade --target <macos|linux> --release-id <id> [--dry-run] [--root-prefix <path>] [--crabd-bin <path>] [--connector-bin <path>] [--workspace-root <path>] [--service-user <name>] [--service-group <name>]
@@ -31,6 +36,9 @@ const DEFAULT_SERVICE_USER: &str = "crab";
 const DEFAULT_SERVICE_GROUP: &str = "crab";
 const DEFAULT_CRABD_BIN: &str = "./target/release/crabd";
 const DEFAULT_CONNECTOR_BIN: &str = "./target/release/crab-discord-connector";
+const EXIT_CODE_USAGE: i32 = 2;
+const EXIT_CODE_RUNTIME_ERROR: i32 = 1;
+const EXIT_CODE_UPGRADE_BLOCKED_STATE_COMPATIBILITY: i32 = 3;
 const VALUE_FLAGS: [&str; 8] = [
     "--target",
     "--root-prefix",
@@ -234,6 +242,14 @@ struct DoctorCheck {
     detail: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct StateCompatibilityPreflight {
+    report: StateSchemaCompatibilityReport,
+    blocked: bool,
+    reason: String,
+    remediation: Vec<String>,
+}
+
 trait CommandRuntime {
     fn command_exists(&mut self, name: &str) -> Result<bool, String>;
     fn command_version(&mut self, name: &str, args: &[&str]) -> Result<String, String>;
@@ -396,7 +412,7 @@ pub fn run_installer_cli(args: &[String], stdout: &mut dyn Write, stderr: &mut d
         Err(message) => {
             let _ = writeln!(stderr, "error: {}", message);
             let _ = writeln!(stderr, "{}", USAGE);
-            return 2;
+            return EXIT_CODE_USAGE;
         }
     };
 
@@ -410,7 +426,7 @@ pub fn run_installer_cli(args: &[String], stdout: &mut dyn Write, stderr: &mut d
         }
         Err(message) => {
             let _ = writeln!(stderr, "error: {message}");
-            1
+            EXIT_CODE_RUNTIME_ERROR
         }
     }
 }
@@ -432,6 +448,21 @@ fn run_with_runtime(
         InstallerCommandKind::Upgrade => {
             let mut log = ActionLog::new();
             let layout = InstallLayout::from_options(options);
+            let preflight = evaluate_state_compatibility_preflight(options, &layout)?;
+            if preflight.blocked {
+                log.push("upgrade preflight: blocked".to_string());
+                log.push(format!("upgrade preflight reason: {}", preflight.reason));
+                for line in preflight.remediation {
+                    log.push(format!("upgrade preflight remediation: {line}"));
+                }
+                return Ok((log.lines, EXIT_CODE_UPGRADE_BLOCKED_STATE_COMPATIBILITY));
+            }
+            log.push(format!(
+                "upgrade preflight: compatible (state_version={}, supported_range={}..={})",
+                preflight.report.detected_version,
+                preflight.report.supported_min_version,
+                preflight.report.supported_max_version
+            ));
             ensure_prerequisites(options, runtime, &mut log)?;
             ensure_runtime_layout(options, &layout, &mut log)?;
             preserve_previous_release(&layout, options.dry_run, &mut log)?;
@@ -461,6 +492,30 @@ fn run_with_runtime(
                 let status = if check.ok { "PASS" } else { "FAIL" };
                 lines.push(format!("{status} {} :: {}", check.name, check.detail));
                 healthy &= check.ok;
+            }
+            match evaluate_state_compatibility_preflight(options, &layout) {
+                Ok(preflight) => {
+                    let status = if preflight.blocked { "FAIL" } else { "PASS" };
+                    lines.push(format!(
+                        "{status} state_schema_compatibility :: {} (state_version={}, supported_range={}..={})",
+                        preflight.reason,
+                        preflight.report.detected_version,
+                        preflight.report.supported_min_version,
+                        preflight.report.supported_max_version
+                    ));
+                    if preflight.blocked {
+                        healthy = false;
+                        for line in preflight.remediation {
+                            lines.push(format!("state_schema_compatibility remediation: {line}"));
+                        }
+                    }
+                }
+                Err(error) => {
+                    healthy = false;
+                    lines.push(format!(
+                        "FAIL state_schema_compatibility :: failed to evaluate preflight ({error})"
+                    ));
+                }
             }
             if healthy {
                 lines.push("doctor summary: healthy".to_string());
@@ -845,6 +900,116 @@ fn run_doctor_checks(
     }
 
     checks
+}
+
+fn evaluate_state_compatibility_preflight(
+    options: &InstallerOptions,
+    layout: &InstallLayout,
+) -> Result<StateCompatibilityPreflight, String> {
+    let state_root = compatibility_state_root(layout);
+    let report = evaluate_state_schema_compatibility(&state_root).map_err(|error| {
+        format!(
+            "state compatibility preflight failed at {}: {error}",
+            display_path(&state_root)
+        )
+    })?;
+
+    let mut remediation = Vec::new();
+    let (blocked, reason) = match report.status {
+        StateSchemaCompatibilityStatus::Compatible => {
+            (false, "compatible with current binary".to_string())
+        }
+        StateSchemaCompatibilityStatus::UnsupportedTooOld => {
+            remediation.push(format!(
+                "upgrade through a release that supports state schema {} and rerun upgrade",
+                report.detected_version
+            ));
+            remediation.push(render_crabctl_upgrade_command_hint(
+                options,
+                "<intermediate-release-id>",
+            ));
+            remediation.push(render_crabctl_doctor_command_hint(options));
+            (
+                true,
+                format!(
+                    "state schema version {} is below minimum supported {}",
+                    report.detected_version, report.supported_min_version
+                ),
+            )
+        }
+        StateSchemaCompatibilityStatus::UnsupportedTooNew => {
+            remediation.push(
+                "roll back to the previous release or deploy a newer Crab binary that supports this state schema"
+                    .to_string(),
+            );
+            remediation.push(render_crabctl_rollback_command_hint(options));
+            remediation.push(render_crabctl_doctor_command_hint(options));
+            (
+                true,
+                format!(
+                    "state schema version {} is newer than maximum supported {}",
+                    report.detected_version, report.supported_max_version
+                ),
+            )
+        }
+    };
+
+    Ok(StateCompatibilityPreflight {
+        report,
+        blocked,
+        reason,
+        remediation,
+    })
+}
+
+fn compatibility_state_root(layout: &InstallLayout) -> PathBuf {
+    layout.workspace_root.join("state")
+}
+
+fn render_crabctl_upgrade_command_hint(options: &InstallerOptions, release_id: &str) -> String {
+    let mut command = format!(
+        "crabctl upgrade --target {} --release-id {}",
+        options.target.as_token(),
+        release_id
+    );
+    if options.root_prefix != Path::new(DEFAULT_ROOT_PREFIX) {
+        command.push_str(&format!(
+            " --root-prefix {}",
+            display_path(&options.root_prefix)
+        ));
+    }
+    if options.workspace_root != DEFAULT_WORKSPACE_ROOT {
+        command.push_str(&format!(" --workspace-root {}", options.workspace_root));
+    }
+    command
+}
+
+fn render_crabctl_rollback_command_hint(options: &InstallerOptions) -> String {
+    let mut command = format!("crabctl rollback --target {}", options.target.as_token());
+    if options.root_prefix != Path::new(DEFAULT_ROOT_PREFIX) {
+        command.push_str(&format!(
+            " --root-prefix {}",
+            display_path(&options.root_prefix)
+        ));
+    }
+    if options.workspace_root != DEFAULT_WORKSPACE_ROOT {
+        command.push_str(&format!(" --workspace-root {}", options.workspace_root));
+    }
+    command
+}
+
+fn render_crabctl_doctor_command_hint(options: &InstallerOptions) -> String {
+    let mut command = format!("crabctl doctor --target {}", options.target.as_token());
+    if options.root_prefix != Path::new(DEFAULT_ROOT_PREFIX) {
+        command.push_str(&format!(
+            " --root-prefix {}",
+            display_path(&options.root_prefix)
+        ));
+    }
+    if options.workspace_root != DEFAULT_WORKSPACE_ROOT {
+        command.push_str(&format!(" --workspace-root {}", options.workspace_root));
+    }
+    command
 }
 
 fn ensure_binary_copy(
@@ -1451,6 +1616,7 @@ mod tests {
         EnsureState, InstallLayout, InstallTarget, InstallerCommandKind, InstallerOptions,
         ParsedFlags, PrerequisiteSpec, SystemCommandRuntime, DEFAULT_ROOT_PREFIX,
         DEFAULT_SERVICE_GROUP, DEFAULT_SERVICE_USER, DEFAULT_WORKSPACE_ROOT,
+        EXIT_CODE_UPGRADE_BLOCKED_STATE_COMPATIBILITY,
     };
 
     static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -1863,6 +2029,44 @@ mod tests {
     }
 
     #[test]
+    fn upgrade_blocks_when_state_schema_is_too_new() {
+        let root = TempDir::new("upgrade-blocked-schema");
+        let mut runtime = FakeRuntime::with_prerequisites();
+        let mut upgrade_options = options_for(
+            InstallerCommandKind::Upgrade,
+            InstallTarget::Linux,
+            &root.path,
+        );
+        upgrade_options.release_id = "r2".to_string();
+        write_dummy_binary(&upgrade_options.crabd_bin);
+        write_dummy_binary(&upgrade_options.connector_bin);
+
+        let layout = InstallLayout::from_options(&upgrade_options);
+        let state_root = layout.workspace_root.join("state");
+        fs::create_dir_all(&state_root).expect("state root should be creatable");
+        fs::write(
+            state_root.join("schema_version.json"),
+            r#"{"version":999,"updated_at_epoch_ms":1739173200000}"#,
+        )
+        .expect("schema marker should be writable");
+
+        let (lines, code) =
+            run_with_runtime(&upgrade_options, &mut runtime).expect("upgrade should run");
+        assert_eq!(code, EXIT_CODE_UPGRADE_BLOCKED_STATE_COMPATIBILITY);
+        assert!(lines
+            .iter()
+            .any(|line| line.contains("upgrade preflight: blocked")));
+        assert!(lines
+            .iter()
+            .any(|line| line.contains("state schema version 999 is newer than maximum supported")));
+        assert!(lines
+            .iter()
+            .any(|line| line.contains("upgrade preflight remediation: crabctl rollback")));
+        assert!(!layout.previous_release_file.exists());
+        assert!(!layout.current_link.exists());
+    }
+
+    #[test]
     fn rollback_swaps_to_previous_release() {
         let root = TempDir::new("rollback");
         let mut runtime = FakeRuntime::with_prerequisites();
@@ -1945,6 +2149,45 @@ mod tests {
         assert!(lines
             .iter()
             .any(|line| line.contains("doctor summary: healthy")));
+    }
+
+    #[test]
+    fn doctor_reports_state_schema_preflight_failure_when_state_is_too_new() {
+        let root = TempDir::new("doctor-schema-preflight");
+        let mut runtime = FakeRuntime::with_prerequisites();
+        let mut install_options = options_for(
+            InstallerCommandKind::Install,
+            InstallTarget::Linux,
+            &root.path,
+        );
+        install_options.release_id = "r1".to_string();
+        write_dummy_binary(&install_options.crabd_bin);
+        write_dummy_binary(&install_options.connector_bin);
+        run_with_runtime(&install_options, &mut runtime).expect("install should work");
+
+        let layout = InstallLayout::from_options(&install_options);
+        let state_root = layout.workspace_root.join("state");
+        fs::create_dir_all(&state_root).expect("state root should be creatable");
+        fs::write(
+            state_root.join("schema_version.json"),
+            r#"{"version":999,"updated_at_epoch_ms":1739173200000}"#,
+        )
+        .expect("schema marker should be writable");
+
+        let doctor_options = options_for(
+            InstallerCommandKind::Doctor,
+            InstallTarget::Linux,
+            &root.path,
+        );
+        let (lines, code) =
+            run_with_runtime(&doctor_options, &mut runtime).expect("doctor should run");
+        assert_eq!(code, 1);
+        assert!(lines
+            .iter()
+            .any(|line| line.contains("FAIL state_schema_compatibility")));
+        assert!(lines.iter().any(|line| {
+            line.contains("state_schema_compatibility remediation: crabctl rollback")
+        }));
     }
 
     #[test]

@@ -150,6 +150,8 @@ Implemented:
   - `/reset confirm`
 - auditable operator and rotation lifecycle run-note events for manual and automatic rotation
 
-Still pending:
+Deployment note:
 
-- production Discord runtime binary wiring/deployment entrypoint (tracked in `crab/docs/08-deployment-readiness-gaps.md`)
+- production runtime wiring is now implemented (`crabd` + `crab-discord-connector`).
+- remaining deployment blocker is execution evidence for the target-machine acceptance checklist
+  (Gap 2 in `crab/docs/08-deployment-readiness-gaps.md`).
