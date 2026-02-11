@@ -3189,6 +3189,74 @@ mod tests {
     }
 
     #[test]
+    fn daemon_runtime_opencode_test_config_rejects_non_default_backend_bridge() {
+        let workspace = TempWorkspace::new("daemon", "opencode-test-config-reject-non-default");
+        let config = runtime_config_for_workspace_with_lanes(&workspace.path, 1);
+        let discord = ScriptedDiscordIo::with_state(DiscordIoState::default());
+        let mut runtime = DaemonTurnRuntime::new_with_backend_bridge(
+            config.owner.clone(),
+            discord,
+            Box::new(ScriptedBackendBridge::with_results(Vec::new())),
+        )
+        .expect("runtime builds");
+
+        assert!(!runtime.has_opencode_backend_bridge());
+
+        let error = runtime
+            .configure_opencode_backend_bridge(
+                "http://127.0.0.1:9999".to_string(),
+                Box::new(ScriptedOpenCodeBridgeRuntime::with_results(
+                    vec![Ok("ignored".to_string())],
+                    vec![Ok(scripted_opencode_turn_result(
+                        "ignored-turn",
+                        "ignored output",
+                        (1, 1, 2),
+                        OpenCodeTurnState::Completed,
+                    ))],
+                )),
+            )
+            .expect_err("non-default bridge should reject opencode test configuration");
+        assert_eq!(
+            error,
+            CrabError::InvariantViolation {
+                context: "daemon_backend_bridge",
+                message: "runtime backend bridge does not support opencode test configuration"
+                    .to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn daemon_runtime_opencode_trusted_config_ignores_non_default_backend_bridge() {
+        let workspace = TempWorkspace::new("daemon", "opencode-trusted-config-ignore-non-default");
+        let config = runtime_config_for_workspace_with_lanes(&workspace.path, 1);
+        let discord = ScriptedDiscordIo::with_state(DiscordIoState::default());
+        let mut runtime = DaemonTurnRuntime::new_with_backend_bridge(
+            config.owner.clone(),
+            discord,
+            Box::<MutatingBackendBridge>::default(),
+        )
+        .expect("runtime builds");
+
+        assert!(!runtime.has_opencode_backend_bridge());
+
+        runtime.configure_opencode_backend_bridge_trusted(
+            "http://127.0.0.1:9999".to_string(),
+            Box::new(ScriptedOpenCodeBridgeRuntime::with_results(
+                vec![Ok("ignored".to_string())],
+                vec![Ok(scripted_opencode_turn_result(
+                    "ignored-turn",
+                    "ignored output",
+                    (1, 1, 2),
+                    OpenCodeTurnState::Completed,
+                ))],
+            )),
+        );
+
+        assert!(!runtime.has_opencode_backend_bridge());
+    }
+
+    #[test]
     fn daemon_runtime_delivery_propagates_post_and_edit_errors() {
         let workspace = TempWorkspace::new("daemon", "delivery-errors");
         let config = runtime_config_for_workspace_with_lanes(&workspace.path, 1);
