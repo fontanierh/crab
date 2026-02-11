@@ -976,6 +976,12 @@ impl RotationSequenceRuntime for TurnExecutorRotationRuntime<'_> {
             })?;
         }
         self.logical_session.active_physical_session_id = None;
+        // Token-triggered compaction should be based on tokens since last successful rotation.
+        self.logical_session.token_accounting = TokenAccounting {
+            input_tokens: 0,
+            output_tokens: 0,
+            total_tokens: 0,
+        };
         Ok(())
     }
 }
@@ -2005,7 +2011,7 @@ mod tests {
                     &[
                         ("run_usage_input_tokens", "50000"),
                         ("run_usage_output_tokens", "30000"),
-                        ("run_usage_total_tokens", "80000"),
+                        ("run_usage_total_tokens", "120000"),
                     ],
                 ),
                 backend_event(
@@ -2032,7 +2038,7 @@ mod tests {
             .get_session(logical_session_id)
             .expect("session lookup should succeed")
             .expect("session should exist");
-        assert_eq!(session.token_accounting.total_tokens, 80_000);
+        assert_eq!(session.token_accounting.total_tokens, 0);
         assert_eq!(session.active_physical_session_id, None);
         assert!(session.last_successful_checkpoint_id.is_some());
 
@@ -2528,7 +2534,7 @@ mod tests {
                     &[
                         ("run_usage_input_tokens", "60000"),
                         ("run_usage_output_tokens", "20000"),
-                        ("run_usage_total_tokens", "80000"),
+                        ("run_usage_total_tokens", "120000"),
                     ],
                 ),
                 backend_event(

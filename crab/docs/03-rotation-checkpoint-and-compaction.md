@@ -45,6 +45,9 @@ Token usage source for trigger evaluation:
   - `input_tokens` / `output_tokens` / `total_tokens`
 - Token-triggered compaction should consume `token_accounting.total_tokens` from persisted
   session state.
+- On successful rotation, Crab resets `LogicalSession.token_accounting` back to 0 so the
+  threshold represents tokens since the last rotation (avoids retriggering compaction on
+  every subsequent run).
 
 ## Hidden Step A: Memory Flush
 
