@@ -179,7 +179,7 @@ impl<D: DaemonDiscordIo> DaemonTurnRuntime<D> {
         })
     }
 
-    pub fn configure_turn_context_runtime(
+    fn configure_turn_context_runtime(
         &mut self,
         workspace_root: PathBuf,
         checkpoint_store: CheckpointStore,

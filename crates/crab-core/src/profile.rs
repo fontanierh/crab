@@ -34,7 +34,7 @@ pub struct BackendInferenceDefaults {
 }
 
 impl BackendInferenceDefaults {
-    pub fn for_backend(&self, backend: BackendKind) -> &BackendInferenceDefault {
+    fn for_backend(&self, backend: BackendKind) -> &BackendInferenceDefault {
         match backend {
             BackendKind::Claude => &self.claude,
             BackendKind::Codex => &self.codex,

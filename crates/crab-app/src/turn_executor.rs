@@ -119,7 +119,8 @@ where
         &mut self.runtime
     }
 
-    pub fn process_gateway_message(
+    #[cfg(test)]
+    fn process_gateway_message(
         &mut self,
         message: GatewayMessage,
     ) -> CrabResult<Option<DispatchedTurn>> {
@@ -140,7 +141,7 @@ where
         self.enqueue_ingress_message(ingress).map(Some)
     }
 
-    pub fn enqueue_ingress_message(
+    fn enqueue_ingress_message(
         &mut self,
         ingress: crab_discord::IngressMessage,
     ) -> CrabResult<QueuedTurn> {
@@ -219,7 +220,8 @@ where
         ))
     }
 
-    pub fn replay_delivery_for_run(
+    #[cfg(test)]
+    fn replay_delivery_for_run(
         &mut self,
         logical_session_id: &str,
         run_id: &str,

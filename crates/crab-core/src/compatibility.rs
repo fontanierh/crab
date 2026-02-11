@@ -11,7 +11,7 @@ pub struct BackendCompatibilityRules {
 }
 
 impl BackendCompatibilityRules {
-    pub fn supports_model(&self, model: &str) -> bool {
+    fn supports_model(&self, model: &str) -> bool {
         if model == AUTO_MODEL_ALIAS {
             return true;
         }
@@ -21,7 +21,7 @@ impl BackendCompatibilityRules {
         self.supported_models.iter().any(|value| value == model)
     }
 
-    pub fn supports_reasoning_level(&self, reasoning_level: ReasoningLevel) -> bool {
+    fn supports_reasoning_level(&self, reasoning_level: ReasoningLevel) -> bool {
         if self.supported_reasoning_levels.is_empty() {
             return true;
         }

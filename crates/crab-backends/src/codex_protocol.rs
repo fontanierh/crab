@@ -5,6 +5,7 @@ use crab_core::{CrabError, CrabResult};
 use crate::ensure_non_empty_field;
 
 const THREAD_ID_FIELD: &str = "threadId";
+#[cfg(test)]
 const TURN_ID_FIELD: &str = "turnId";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -59,7 +60,8 @@ impl<T: CodexRpcTransport> CodexProtocol<T> {
         required_response_field(&response, "codex_thread_resume_response", THREAD_ID_FIELD)
     }
 
-    pub fn turn_start(
+    #[cfg(test)]
+    fn turn_start(
         &self,
         thread_id: &str,
         input: &[String],
@@ -98,7 +100,8 @@ impl<T: CodexRpcTransport> CodexProtocol<T> {
         required_response_field(&response, "codex_turn_start_response", TURN_ID_FIELD)
     }
 
-    pub fn turn_interrupt(&self, thread_id: &str, turn_id: &str) -> CrabResult<()> {
+    #[cfg(test)]
+    fn turn_interrupt(&self, thread_id: &str, turn_id: &str) -> CrabResult<()> {
         ensure_non_empty_field("codex_turn_interrupt_input", THREAD_ID_FIELD, thread_id)?;
         ensure_non_empty_field("codex_turn_interrupt_input", TURN_ID_FIELD, turn_id)?;
         self.transport.call(CodexRpcRequest {
@@ -113,6 +116,7 @@ impl<T: CodexRpcTransport> CodexProtocol<T> {
     }
 }
 
+#[cfg(test)]
 fn validate_turn_config(config: &CodexTurnConfig) -> CrabResult<()> {
     for (field_name, value) in [
         ("model", config.model.as_deref()),

@@ -155,7 +155,8 @@ impl StreamingDelivery {
         Self::default()
     }
 
-    pub fn push_delta(&mut self, delta: &str) -> Option<StreamingDeliveryOp> {
+    #[cfg(test)]
+    fn push_delta(&mut self, delta: &str) -> Option<StreamingDeliveryOp> {
         if delta.is_empty() {
             return None;
         }
@@ -182,7 +183,8 @@ impl StreamingDelivery {
         })
     }
 
-    pub fn acknowledge_post(
+    #[cfg(test)]
+    fn acknowledge_post(
         &mut self,
         message_id: impl Into<String>,
     ) -> CrabResult<Option<StreamingDeliveryOp>> {
@@ -224,17 +226,20 @@ impl StreamingDelivery {
     }
 
     #[must_use]
-    pub fn rendered_text(&self) -> &str {
+    #[cfg(test)]
+    fn rendered_text(&self) -> &str {
         &self.rendered_text
     }
 
     #[must_use]
+    #[cfg(test)]
     pub fn message_id(&self) -> Option<&str> {
         self.message_id.as_deref()
     }
 
     #[must_use]
-    pub fn rendered_chunks(&self) -> Vec<DiscordMessageChunk> {
+    #[cfg(test)]
+    fn rendered_chunks(&self) -> Vec<DiscordMessageChunk> {
         split_discord_message(&self.rendered_text)
     }
 }
@@ -542,7 +547,8 @@ fn hex_encode(bytes: &[u8]) -> String {
 }
 
 #[must_use]
-pub(crate) fn split_discord_message(content: &str) -> Vec<DiscordMessageChunk> {
+#[cfg(test)]
+fn split_discord_message(content: &str) -> Vec<DiscordMessageChunk> {
     if content.is_empty() {
         return Vec::new();
     }

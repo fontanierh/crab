@@ -6,7 +6,7 @@ if ! command -v rg >/dev/null 2>&1; then
   exit 2
 fi
 
-mapfile -t defs < <(rg -n '^pub (async )?fn ([A-Za-z0-9_]+)' crates --glob '*.rs')
+mapfile -t defs < <(rg -n '^[[:space:]]*pub (async )?fn ([A-Za-z0-9_]+)' crates --glob '*.rs')
 
 if [[ ${#defs[@]} -eq 0 ]]; then
   echo "public-api-check: no pub functions found"
@@ -19,7 +19,7 @@ for def in "${defs[@]}"; do
   rest=${def#*:}
   line=${rest%%:*}
   src=${rest#*:}
-  name=$(sed -E 's/^pub (async )?fn ([A-Za-z0-9_]+).*/\2/' <<<"$src")
+  name=$(sed -E 's/^[[:space:]]*pub (async )?fn ([A-Za-z0-9_]+).*/\2/' <<<"$src")
 
   refs=$(rg -n "\\b${name}\\b" crates --glob '*.rs' \
     | grep -v "^${file}:${line}:" \

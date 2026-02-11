@@ -73,7 +73,8 @@ impl SessionLaneQueues {
         Ok(())
     }
 
-    pub fn dequeue(&mut self, logical_session_id: &str) -> CrabResult<Option<QueuedRun>> {
+    #[cfg(test)]
+    fn dequeue(&mut self, logical_session_id: &str) -> CrabResult<Option<QueuedRun>> {
         validate_session_id(logical_session_id)?;
         let maybe_item = match self.queues.get_mut(logical_session_id) {
             Some(queue) => queue.pop_front(),
@@ -91,7 +92,8 @@ impl SessionLaneQueues {
     }
 
     #[must_use]
-    pub fn lane_count(&self) -> usize {
+    #[cfg(test)]
+    fn lane_count(&self) -> usize {
         self.queues.len()
     }
 
@@ -342,7 +344,8 @@ impl LaneStateMachine {
         self.state
     }
 
-    pub fn transition_to(&mut self, next: LaneState) -> CrabResult<()> {
+    #[cfg(test)]
+    fn transition_to(&mut self, next: LaneState) -> CrabResult<()> {
         if self.state == next {
             return Ok(());
         }
@@ -359,6 +362,7 @@ impl LaneStateMachine {
     }
 }
 
+#[cfg(test)]
 fn is_valid_lane_transition(current: LaneState, next: LaneState) -> bool {
     matches!(
         (current, next),

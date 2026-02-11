@@ -996,7 +996,7 @@ mod live_discord {
     }
 
     impl LiveDiscordIo {
-        pub fn connect(token: String) -> CrabResult<Self> {
+        pub(super) fn connect(token: String) -> CrabResult<Self> {
             if token.trim().is_empty() {
                 return Err(CrabError::MissingConfig {
                     key: "CRAB_DISCORD_TOKEN",
@@ -1209,7 +1209,7 @@ mod live_discord {
     pub struct LiveDiscordIo;
 
     impl LiveDiscordIo {
-        pub fn connect(_token: String) -> CrabResult<Self> {
+        pub(super) fn connect(_token: String) -> CrabResult<Self> {
             Err(CrabError::InvariantViolation {
                 context: "connector_live_discord",
                 message: "live discord integration is unavailable in this build".to_string(),

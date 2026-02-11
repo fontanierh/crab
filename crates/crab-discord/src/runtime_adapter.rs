@@ -1,4 +1,6 @@
-use crate::{ensure_non_empty_field, GatewayIngress, GatewayMessage, IngressMessage};
+#[cfg(test)]
+use crate::IngressMessage;
+use crate::{ensure_non_empty_field, GatewayIngress, GatewayMessage};
 use crab_core::{CrabError, CrabResult};
 
 pub const DEFAULT_DISCORD_RETRY_MAX_ATTEMPTS: u8 = 3;
@@ -113,7 +115,7 @@ pub trait DiscordRuntimeTransport {
 
 #[derive(Debug, Clone)]
 pub struct DiscordRuntimeAdapter<T: DiscordRuntimeTransport> {
-    ingress: GatewayIngress,
+    _ingress: GatewayIngress,
     transport: T,
     retry_policy: DiscordRetryPolicy,
 }
@@ -125,19 +127,20 @@ impl<T: DiscordRuntimeTransport> DiscordRuntimeAdapter<T> {
         retry_policy: DiscordRetryPolicy,
     ) -> CrabResult<Self> {
         Ok(Self {
-            ingress: GatewayIngress::new(bot_user_id)?,
+            _ingress: GatewayIngress::new(bot_user_id)?,
             transport,
             retry_policy: retry_policy.validate()?,
         })
     }
 
-    pub fn next_ingress_message(&mut self) -> CrabResult<Option<IngressMessage>> {
+    #[cfg(test)]
+    fn next_ingress_message(&mut self) -> CrabResult<Option<IngressMessage>> {
         let Some(event) = self.transport.next_event()? else {
             return Ok(None);
         };
 
         match event {
-            DiscordRuntimeEvent::MessageCreate(message) => self.ingress.ingest(message),
+            DiscordRuntimeEvent::MessageCreate(message) => self._ingress.ingest(message),
             DiscordRuntimeEvent::Other => Ok(None),
         }
     }

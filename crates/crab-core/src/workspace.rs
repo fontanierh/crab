@@ -208,13 +208,6 @@ pub struct WorkspaceEnsureOutcome {
     pub repaired_paths: Vec<String>,
 }
 
-impl WorkspaceEnsureOutcome {
-    #[must_use]
-    pub fn is_noop(&self) -> bool {
-        self.created_paths.is_empty() && self.repaired_paths.is_empty()
-    }
-}
-
 #[must_use]
 pub fn default_workspace_templates() -> &'static [WorkspaceTemplate] {
     &WORKSPACE_TEMPLATES
@@ -691,7 +684,7 @@ mod tests {
         );
         assert!(!outcome.created_paths.is_empty());
         assert!(outcome.repaired_paths.is_empty());
-        assert!(!outcome.is_noop());
+        assert!(!outcome.created_paths.is_empty() || !outcome.repaired_paths.is_empty());
 
         for required_file in [
             AGENTS_FILE_NAME,
@@ -742,7 +735,8 @@ mod tests {
             outcome.bootstrap_state,
             WorkspaceBootstrapState::PendingBootstrap
         );
-        assert!(outcome.is_noop());
+        assert!(outcome.created_paths.is_empty());
+        assert!(outcome.repaired_paths.is_empty());
     }
 
     #[test]
@@ -755,7 +749,8 @@ mod tests {
         let outcome =
             ensure_workspace_layout(&workspace.path).expect("ensure should still succeed");
         assert_eq!(outcome.bootstrap_state, WorkspaceBootstrapState::Ready);
-        assert!(outcome.is_noop());
+        assert!(outcome.created_paths.is_empty());
+        assert!(outcome.repaired_paths.is_empty());
         assert!(!workspace.path.join(BOOTSTRAP_FILE_NAME).exists());
     }
 

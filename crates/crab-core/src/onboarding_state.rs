@@ -52,11 +52,6 @@ impl OnboardingLifecycle {
             onboarding_session_id: None,
         }
     }
-
-    #[must_use]
-    pub fn should_resume_after_restart(&self) -> bool {
-        self.state == OnboardingState::InProgress
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -249,13 +244,13 @@ mod tests {
         let lifecycle = OnboardingLifecycle::pending();
         assert_eq!(lifecycle.state, OnboardingState::Pending);
         assert_eq!(lifecycle.onboarding_session_id, None);
-        assert!(!lifecycle.should_resume_after_restart());
+        assert_ne!(lifecycle.state, OnboardingState::InProgress);
     }
 
     #[test]
     fn in_progress_lifecycle_requires_resume_after_restart() {
         let lifecycle = lifecycle(OnboardingState::InProgress, Some("session-1"));
-        assert!(lifecycle.should_resume_after_restart());
+        assert_eq!(lifecycle.state, OnboardingState::InProgress);
     }
 
     #[test]

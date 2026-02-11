@@ -55,7 +55,8 @@ impl HeartbeatLoopState {
     }
 
     #[must_use]
-    pub fn next_heartbeat_due_at_epoch_ms(&self) -> u64 {
+    #[cfg(test)]
+    fn next_heartbeat_due_at_epoch_ms(&self) -> u64 {
         self.next_heartbeat_due_at_epoch_ms
     }
 
@@ -64,7 +65,8 @@ impl HeartbeatLoopState {
         self.last_dispatch_at_epoch_ms
     }
 
-    pub fn record_dispatch(&mut self, dispatched_at_epoch_ms: u64) -> CrabResult<()> {
+    #[cfg(test)]
+    fn record_dispatch(&mut self, dispatched_at_epoch_ms: u64) -> CrabResult<()> {
         if dispatched_at_epoch_ms == 0 {
             return Err(CrabError::InvariantViolation {
                 context: "heartbeat_loop_state_record_dispatch",

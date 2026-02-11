@@ -31,13 +31,6 @@ pub struct RotationTriggerDecision {
     pub triggers: Vec<RotationTrigger>,
 }
 
-impl RotationTriggerDecision {
-    #[must_use]
-    pub fn triggered_by(&self, trigger: RotationTrigger) -> bool {
-        self.triggers.contains(&trigger)
-    }
-}
-
 pub fn evaluate_rotation_triggers(
     input: &RotationTriggerInput,
 ) -> CrabResult<RotationTriggerDecision> {
@@ -136,7 +129,9 @@ mod tests {
         let decision = evaluate_rotation_triggers(&input()).expect("evaluation should succeed");
         assert!(!decision.should_rotate);
         assert!(decision.triggers.is_empty());
-        assert!(!decision.triggered_by(RotationTrigger::TokenCompaction));
+        assert!(!decision
+            .triggers
+            .contains(&RotationTrigger::TokenCompaction));
     }
 
     #[test]
@@ -147,7 +142,7 @@ mod tests {
         let decision = evaluate_rotation_triggers(&value).expect("evaluation should succeed");
         assert!(decision.should_rotate);
         assert_eq!(decision.triggers, vec![RotationTrigger::ManualCompact]);
-        assert!(decision.triggered_by(RotationTrigger::ManualCompact));
+        assert!(decision.triggers.contains(&RotationTrigger::ManualCompact));
     }
 
     #[test]
@@ -158,7 +153,7 @@ mod tests {
         let decision = evaluate_rotation_triggers(&value).expect("evaluation should succeed");
         assert!(decision.should_rotate);
         assert_eq!(decision.triggers, vec![RotationTrigger::ManualReset]);
-        assert!(decision.triggered_by(RotationTrigger::ManualReset));
+        assert!(decision.triggers.contains(&RotationTrigger::ManualReset));
     }
 
     #[test]
@@ -169,7 +164,9 @@ mod tests {
         let decision = evaluate_rotation_triggers(&value).expect("evaluation should succeed");
         assert!(decision.should_rotate);
         assert_eq!(decision.triggers, vec![RotationTrigger::TokenCompaction]);
-        assert!(decision.triggered_by(RotationTrigger::TokenCompaction));
+        assert!(decision
+            .triggers
+            .contains(&RotationTrigger::TokenCompaction));
     }
 
     #[test]
@@ -205,7 +202,9 @@ mod tests {
         let decision = evaluate_rotation_triggers(&value).expect("evaluation should succeed");
         assert!(decision.should_rotate);
         assert_eq!(decision.triggers, vec![RotationTrigger::InactivityTimeout]);
-        assert!(decision.triggered_by(RotationTrigger::InactivityTimeout));
+        assert!(decision
+            .triggers
+            .contains(&RotationTrigger::InactivityTimeout));
     }
 
     #[test]
@@ -218,7 +217,9 @@ mod tests {
 
         let decision = evaluate_rotation_triggers(&value).expect("evaluation should succeed");
         assert!(!decision.should_rotate);
-        assert!(!decision.triggered_by(RotationTrigger::InactivityTimeout));
+        assert!(!decision
+            .triggers
+            .contains(&RotationTrigger::InactivityTimeout));
     }
 
     #[test]
