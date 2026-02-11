@@ -2,13 +2,21 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use serde::{Deserialize, Serialize};
+
 use crate::config::WorkspaceGitConfig;
 use crate::{CrabError, CrabResult};
 
 const WORKSPACE_GIT_CONTEXT: &str = "workspace_git_bootstrap";
 const WORKSPACE_GIT_COMMIT_CONTEXT: &str = "workspace_git_commit";
+const WORKSPACE_GIT_PUSH_QUEUE_CONTEXT: &str = "workspace_git_push_queue";
 const WORKSPACE_GIT_COMMIT_VERSION: &str = "1";
 const WORKSPACE_GIT_COMMIT_KEY_TRAILER: &str = "Crab-Commit-Key";
+const WORKSPACE_GIT_PUSH_QUEUE_FILE_NAME: &str = "workspace_git_push_queue.json";
+const WORKSPACE_GIT_PUSH_QUEUE_VERSION: u8 = 1;
+const WORKSPACE_GIT_PUSH_MAX_ATTEMPTS: u32 = 8;
+const WORKSPACE_GIT_PUSH_BACKOFF_BASE_MS: u64 = 1_000;
+const WORKSPACE_GIT_PUSH_BACKOFF_MAX_MS: u64 = 300_000;
 const GIT_BINARY: &str = "git";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -114,6 +122,110 @@ impl WorkspaceGitCommitOutcome {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkspaceGitPushRequest {
+    pub commit_key: String,
+    pub commit_id: String,
+    pub enqueued_at_epoch_ms: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkspaceGitPushEnqueueOutcome {
+    pub enabled: bool,
+    pub enqueued: bool,
+    pub queue_depth: usize,
+    pub skipped_reason: Option<String>,
+}
+
+impl WorkspaceGitPushEnqueueOutcome {
+    #[must_use]
+    pub const fn disabled() -> Self {
+        Self {
+            enabled: false,
+            enqueued: false,
+            queue_depth: 0,
+            skipped_reason: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkspaceGitPushTickOutcome {
+    pub enabled: bool,
+    pub attempted: bool,
+    pub pushed: bool,
+    pub exhausted: bool,
+    pub commit_key: Option<String>,
+    pub queue_depth: usize,
+    pub next_due_at_epoch_ms: Option<u64>,
+    pub next_backoff_ms: Option<u64>,
+    pub failure: Option<String>,
+    pub skipped_reason: Option<String>,
+}
+
+impl WorkspaceGitPushTickOutcome {
+    #[must_use]
+    pub const fn disabled() -> Self {
+        Self {
+            enabled: false,
+            attempted: false,
+            pushed: false,
+            exhausted: false,
+            commit_key: None,
+            queue_depth: 0,
+            next_due_at_epoch_ms: None,
+            next_backoff_ms: None,
+            failure: None,
+            skipped_reason: None,
+        }
+    }
+
+    fn skipped(
+        skipped_reason: &'static str,
+        queue_depth: usize,
+        next_due_at_epoch_ms: Option<u64>,
+    ) -> Self {
+        Self {
+            enabled: true,
+            attempted: false,
+            pushed: false,
+            exhausted: false,
+            commit_key: None,
+            queue_depth,
+            next_due_at_epoch_ms,
+            next_backoff_ms: None,
+            failure: None,
+            skipped_reason: Some(skipped_reason.to_string()),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct WorkspaceGitPushQueueState {
+    version: u8,
+    entries: Vec<WorkspaceGitPushQueueEntry>,
+}
+
+impl Default for WorkspaceGitPushQueueState {
+    fn default() -> Self {
+        Self {
+            version: WORKSPACE_GIT_PUSH_QUEUE_VERSION,
+            entries: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct WorkspaceGitPushQueueEntry {
+    commit_key: String,
+    commit_id: String,
+    enqueued_at_epoch_ms: u64,
+    next_attempt_at_epoch_ms: u64,
+    attempt_count: u32,
+    exhausted: bool,
+    last_error: Option<String>,
+}
+
 pub fn ensure_workspace_git_repository(
     workspace_root: &Path,
     config: &WorkspaceGitConfig,
@@ -124,7 +236,7 @@ pub fn ensure_workspace_git_repository(
     }
 
     let expected_root = canonicalize_path(workspace_root)?;
-    if probe_bare_repository(workspace_root)? {
+    if probe_bare_repository(workspace_root) {
         return Err(CrabError::InvariantViolation {
             context: WORKSPACE_GIT_CONTEXT,
             message: "workspace git persistence requires a non-bare repository".to_string(),
@@ -152,7 +264,7 @@ pub fn ensure_workspace_git_repository(
 
     let current_branch = resolve_head_branch(workspace_root)?;
     if current_branch != config.branch {
-        if has_commits(workspace_root)? {
+        if has_commits(workspace_root) {
             return Err(CrabError::InvariantViolation {
                 context: WORKSPACE_GIT_CONTEXT,
                 message: format!(
@@ -247,6 +359,188 @@ pub fn maybe_commit_workspace_snapshot(
     ))
 }
 
+pub fn enqueue_workspace_git_push_request(
+    state_root: &Path,
+    config: &WorkspaceGitConfig,
+    request: &WorkspaceGitPushRequest,
+) -> CrabResult<WorkspaceGitPushEnqueueOutcome> {
+    if !config.enabled || config.push_policy != crate::WorkspaceGitPushPolicy::OnCommit {
+        return Ok(WorkspaceGitPushEnqueueOutcome::disabled());
+    }
+
+    validate_push_request(request)?;
+    ensure_push_queue_layout(state_root)?;
+    let queue_path = workspace_git_push_queue_path(state_root);
+    let mut queue = read_workspace_git_push_queue(&queue_path)?;
+
+    if let Some(existing) = queue
+        .entries
+        .iter()
+        .find(|entry| entry.commit_key == request.commit_key)
+    {
+        if existing.commit_id != request.commit_id {
+            return Err(CrabError::InvariantViolation {
+                context: WORKSPACE_GIT_PUSH_QUEUE_CONTEXT,
+                message: format!(
+                    "commit key {:?} already queued with commit id {:?}, received {:?}",
+                    request.commit_key, existing.commit_id, request.commit_id
+                ),
+            });
+        }
+
+        return Ok(WorkspaceGitPushEnqueueOutcome {
+            enabled: true,
+            enqueued: false,
+            queue_depth: queue.entries.len(),
+            skipped_reason: Some("already_queued".to_string()),
+        });
+    }
+
+    queue.entries.push(WorkspaceGitPushQueueEntry {
+        commit_key: request.commit_key.clone(),
+        commit_id: request.commit_id.clone(),
+        enqueued_at_epoch_ms: request.enqueued_at_epoch_ms,
+        next_attempt_at_epoch_ms: request.enqueued_at_epoch_ms,
+        attempt_count: 0,
+        exhausted: false,
+        last_error: None,
+    });
+    persist_workspace_git_push_queue(&queue_path, &queue)?;
+
+    Ok(WorkspaceGitPushEnqueueOutcome {
+        enabled: true,
+        enqueued: true,
+        queue_depth: queue.entries.len(),
+        skipped_reason: None,
+    })
+}
+
+pub fn process_workspace_git_push_queue(
+    workspace_root: &Path,
+    state_root: &Path,
+    config: &WorkspaceGitConfig,
+    now_epoch_ms: u64,
+) -> CrabResult<WorkspaceGitPushTickOutcome> {
+    validate_workspace_root(workspace_root)?;
+    if !config.enabled || config.push_policy != crate::WorkspaceGitPushPolicy::OnCommit {
+        return Ok(WorkspaceGitPushTickOutcome::disabled());
+    }
+    if now_epoch_ms == 0 {
+        return Err(CrabError::InvariantViolation {
+            context: WORKSPACE_GIT_PUSH_QUEUE_CONTEXT,
+            message: "now_epoch_ms must be greater than 0".to_string(),
+        });
+    }
+
+    ensure_push_queue_layout(state_root)?;
+    let queue_path = workspace_git_push_queue_path(state_root);
+    let mut queue = read_workspace_git_push_queue(&queue_path)?;
+    if queue.entries.is_empty() {
+        return Ok(WorkspaceGitPushTickOutcome::skipped("queue_empty", 0, None));
+    }
+
+    let mut due_index: Option<usize> = None;
+    let mut next_due_at: Option<u64> = None;
+    for (index, entry) in queue.entries.iter().enumerate() {
+        if entry.exhausted {
+            continue;
+        }
+        if entry.next_attempt_at_epoch_ms <= now_epoch_ms {
+            due_index = Some(index);
+            break;
+        }
+        next_due_at = Some(
+            next_due_at.map_or(entry.next_attempt_at_epoch_ms, |current| {
+                current.min(entry.next_attempt_at_epoch_ms)
+            }),
+        );
+    }
+
+    let Some(index) = due_index else {
+        return Ok(WorkspaceGitPushTickOutcome::skipped(
+            "no_due_entries",
+            queue.entries.len(),
+            next_due_at,
+        ));
+    };
+
+    let commit_id = queue
+        .entries
+        .get(index)
+        .expect("due index should be in bounds")
+        .commit_id
+        .clone();
+    let push_error = push_workspace_commit(workspace_root, config, &commit_id).err();
+
+    if let Some(error) = push_error {
+        let queue_depth = queue.entries.len();
+        let entry = queue
+            .entries
+            .get_mut(index)
+            .expect("due index should remain in bounds");
+        let attempts = entry.attempt_count.saturating_add(1);
+        entry.attempt_count = attempts;
+        entry.last_error = Some(error.clone());
+        let commit_key = entry.commit_key.clone();
+
+        let mut outcome = WorkspaceGitPushTickOutcome {
+            enabled: true,
+            attempted: true,
+            pushed: false,
+            exhausted: false,
+            commit_key: Some(commit_key),
+            queue_depth,
+            next_due_at_epoch_ms: None,
+            next_backoff_ms: None,
+            failure: Some(error),
+            skipped_reason: None,
+        };
+
+        if attempts >= WORKSPACE_GIT_PUSH_MAX_ATTEMPTS {
+            entry.exhausted = true;
+            entry.next_attempt_at_epoch_ms = u64::MAX;
+            let _ = entry;
+            outcome.exhausted = true;
+            outcome.next_due_at_epoch_ms = next_non_exhausted_due_at(&queue.entries);
+            outcome.skipped_reason = Some("retry_exhausted".to_string());
+        } else {
+            let backoff_ms = compute_push_backoff_ms(attempts);
+            entry.next_attempt_at_epoch_ms = now_epoch_ms.saturating_add(backoff_ms);
+            let next_attempt_at_epoch_ms = entry.next_attempt_at_epoch_ms;
+            let _ = entry;
+            outcome.next_backoff_ms = Some(backoff_ms);
+            outcome.next_due_at_epoch_ms = Some(next_attempt_at_epoch_ms);
+            outcome.skipped_reason = Some("retry_scheduled".to_string());
+        }
+
+        persist_workspace_git_push_queue(&queue_path, &queue)?;
+        return Ok(outcome);
+    }
+
+    let commit_key = queue
+        .entries
+        .get(index)
+        .expect("due index should remain in bounds")
+        .commit_key
+        .clone();
+    queue.entries.remove(index);
+    let next_due = next_non_exhausted_due_at(&queue.entries);
+    persist_workspace_git_push_queue(&queue_path, &queue)?;
+
+    Ok(WorkspaceGitPushTickOutcome {
+        enabled: true,
+        attempted: true,
+        pushed: true,
+        exhausted: false,
+        commit_key: Some(commit_key),
+        queue_depth: queue.entries.len(),
+        next_due_at_epoch_ms: next_due,
+        next_backoff_ms: None,
+        failure: None,
+        skipped_reason: None,
+    })
+}
+
 fn validate_workspace_root(workspace_root: &Path) -> CrabResult<()> {
     if workspace_root.as_os_str().is_empty() {
         return Err(CrabError::InvariantViolation {
@@ -298,6 +592,170 @@ fn ensure_non_empty_commit_field(field: &str, value: &str) -> CrabResult<()> {
     Ok(())
 }
 
+fn validate_push_request(request: &WorkspaceGitPushRequest) -> CrabResult<()> {
+    if request.commit_key.trim().is_empty() {
+        return Err(CrabError::InvariantViolation {
+            context: WORKSPACE_GIT_PUSH_QUEUE_CONTEXT,
+            message: "commit_key must not be empty".to_string(),
+        });
+    }
+    if request.commit_id.trim().is_empty() {
+        return Err(CrabError::InvariantViolation {
+            context: WORKSPACE_GIT_PUSH_QUEUE_CONTEXT,
+            message: "commit_id must not be empty".to_string(),
+        });
+    }
+    if request.enqueued_at_epoch_ms == 0 {
+        return Err(CrabError::InvariantViolation {
+            context: WORKSPACE_GIT_PUSH_QUEUE_CONTEXT,
+            message: "enqueued_at_epoch_ms must be greater than 0".to_string(),
+        });
+    }
+    Ok(())
+}
+
+fn validate_push_queue_entry(entry: &WorkspaceGitPushQueueEntry) -> CrabResult<()> {
+    if entry.commit_key.trim().is_empty() {
+        return Err(CrabError::InvariantViolation {
+            context: WORKSPACE_GIT_PUSH_QUEUE_CONTEXT,
+            message: "queue entry commit_key must not be empty".to_string(),
+        });
+    }
+    if entry.commit_id.trim().is_empty() {
+        return Err(CrabError::InvariantViolation {
+            context: WORKSPACE_GIT_PUSH_QUEUE_CONTEXT,
+            message: "queue entry commit_id must not be empty".to_string(),
+        });
+    }
+    if entry.enqueued_at_epoch_ms == 0 {
+        return Err(CrabError::InvariantViolation {
+            context: WORKSPACE_GIT_PUSH_QUEUE_CONTEXT,
+            message: "queue entry enqueued_at_epoch_ms must be greater than 0".to_string(),
+        });
+    }
+    if !entry.exhausted && entry.next_attempt_at_epoch_ms == 0 {
+        return Err(CrabError::InvariantViolation {
+            context: WORKSPACE_GIT_PUSH_QUEUE_CONTEXT,
+            message: "queue entry next_attempt_at_epoch_ms must be greater than 0".to_string(),
+        });
+    }
+    Ok(())
+}
+
+fn ensure_push_queue_layout(state_root: &Path) -> CrabResult<()> {
+    if state_root.as_os_str().is_empty() {
+        return Err(CrabError::InvariantViolation {
+            context: WORKSPACE_GIT_PUSH_QUEUE_CONTEXT,
+            message: "state_root must not be empty".to_string(),
+        });
+    }
+
+    fs::create_dir_all(state_root).map_err(|error| CrabError::Io {
+        context: WORKSPACE_GIT_PUSH_QUEUE_CONTEXT,
+        path: Some(display_path(state_root)),
+        message: error.to_string(),
+    })
+}
+
+fn workspace_git_push_queue_path(state_root: &Path) -> PathBuf {
+    state_root.join(WORKSPACE_GIT_PUSH_QUEUE_FILE_NAME)
+}
+
+fn read_workspace_git_push_queue(path: &Path) -> CrabResult<WorkspaceGitPushQueueState> {
+    if !path.exists() {
+        return Ok(WorkspaceGitPushQueueState::default());
+    }
+
+    let raw = fs::read_to_string(path).map_err(|error| CrabError::Io {
+        context: WORKSPACE_GIT_PUSH_QUEUE_CONTEXT,
+        path: Some(display_path(path)),
+        message: error.to_string(),
+    })?;
+    let parsed: WorkspaceGitPushQueueState =
+        serde_json::from_str(&raw).map_err(|_error| CrabError::CorruptData {
+            context: WORKSPACE_GIT_PUSH_QUEUE_CONTEXT,
+            path: display_path(path),
+        })?;
+    if parsed.version != WORKSPACE_GIT_PUSH_QUEUE_VERSION {
+        return Err(CrabError::InvariantViolation {
+            context: WORKSPACE_GIT_PUSH_QUEUE_CONTEXT,
+            message: format!(
+                "unsupported queue state version {}; expected {}",
+                parsed.version, WORKSPACE_GIT_PUSH_QUEUE_VERSION
+            ),
+        });
+    }
+
+    for entry in &parsed.entries {
+        validate_push_queue_entry(entry)?;
+    }
+    Ok(parsed)
+}
+
+fn persist_workspace_git_push_queue(
+    path: &Path,
+    queue: &WorkspaceGitPushQueueState,
+) -> CrabResult<()> {
+    for entry in &queue.entries {
+        validate_push_queue_entry(entry)?;
+    }
+
+    let encoded = serde_json::to_vec_pretty(queue).expect("queue serialization should not fail");
+    let temp_path = PathBuf::from(format!("{}.tmp", path.to_string_lossy()));
+    fs::write(&temp_path, encoded).map_err(|error| CrabError::Io {
+        context: WORKSPACE_GIT_PUSH_QUEUE_CONTEXT,
+        path: Some(display_path(&temp_path)),
+        message: error.to_string(),
+    })?;
+    fs::rename(&temp_path, path).map_err(|error| CrabError::Io {
+        context: WORKSPACE_GIT_PUSH_QUEUE_CONTEXT,
+        path: Some(display_path(path)),
+        message: error.to_string(),
+    })
+}
+
+fn push_workspace_commit(
+    workspace_root: &Path,
+    config: &WorkspaceGitConfig,
+    commit_id: &str,
+) -> Result<(), String> {
+    let remote = match config.remote.as_deref() {
+        Some(remote) => remote,
+        None => {
+            return Err("workspace git remote is missing for on-commit push policy".to_string());
+        }
+    };
+
+    let target_ref = format!("{commit_id}:refs/heads/{}", config.branch);
+    let args = ["push", "--porcelain", remote, &target_ref];
+    let output = run_git(workspace_root, &args);
+    if output.success {
+        return Ok(());
+    }
+
+    let stderr = output.stderr.trim();
+    let stdout = output.stdout.trim();
+    Err(format!(
+        "git push failed: stderr={stderr:?}; stdout={stdout:?}"
+    ))
+}
+
+fn compute_push_backoff_ms(attempt_count: u32) -> u64 {
+    let shift = attempt_count.saturating_sub(1).min(16);
+    let factor = 1_u64 << shift;
+    WORKSPACE_GIT_PUSH_BACKOFF_BASE_MS
+        .saturating_mul(factor)
+        .min(WORKSPACE_GIT_PUSH_BACKOFF_MAX_MS)
+}
+
+fn next_non_exhausted_due_at(entries: &[WorkspaceGitPushQueueEntry]) -> Option<u64> {
+    entries
+        .iter()
+        .filter(|entry| !entry.exhausted)
+        .map(|entry| entry.next_attempt_at_epoch_ms)
+        .min()
+}
+
 fn canonicalize_path(path: &Path) -> CrabResult<PathBuf> {
     fs::canonicalize(path).map_err(|error| CrabError::Io {
         context: WORKSPACE_GIT_CONTEXT,
@@ -307,7 +765,7 @@ fn canonicalize_path(path: &Path) -> CrabResult<PathBuf> {
 }
 
 fn detect_git_repository_root(workspace_root: &Path) -> CrabResult<Option<PathBuf>> {
-    let inside = run_git(workspace_root, &["rev-parse", "--is-inside-work-tree"])?;
+    let inside = run_git(workspace_root, &["rev-parse", "--is-inside-work-tree"]);
     if !inside.success {
         return Ok(None);
     }
@@ -338,12 +796,12 @@ fn ensure_same_repository_root(expected_root: &Path, repository_root: &Path) -> 
     })
 }
 
-fn probe_bare_repository(workspace_root: &Path) -> CrabResult<bool> {
-    let raw = run_git(workspace_root, &["rev-parse", "--is-bare-repository"])?;
+fn probe_bare_repository(workspace_root: &Path) -> bool {
+    let raw = run_git(workspace_root, &["rev-parse", "--is-bare-repository"]);
     if !raw.success {
-        return Ok(false);
+        return false;
     }
-    Ok(raw.stdout.trim() == "true")
+    raw.stdout.trim() == "true"
 }
 
 fn resolve_head_branch(workspace_root: &Path) -> CrabResult<String> {
@@ -352,9 +810,9 @@ fn resolve_head_branch(workspace_root: &Path) -> CrabResult<String> {
     Ok(output.trim().to_string())
 }
 
-fn has_commits(workspace_root: &Path) -> CrabResult<bool> {
-    let output = run_git(workspace_root, &["rev-parse", "--verify", "HEAD"])?;
-    Ok(output.success)
+fn has_commits(workspace_root: &Path) -> bool {
+    let output = run_git(workspace_root, &["rev-parse", "--verify", "HEAD"]);
+    output.success
 }
 
 fn workspace_commit_key(request: &WorkspaceGitCommitRequest) -> String {
@@ -374,7 +832,7 @@ fn workspace_commit_key(request: &WorkspaceGitCommitRequest) -> String {
 }
 
 fn head_commit_contains_key(workspace_root: &Path, commit_key: &str) -> CrabResult<bool> {
-    let has_head = has_commits(workspace_root)?;
+    let has_head = has_commits(workspace_root);
     if !has_head {
         return Ok(false);
     }
@@ -466,8 +924,12 @@ struct CommandOutput {
     stderr: String,
 }
 
-fn run_git(workspace_root: &Path, args: &[&str]) -> CrabResult<CommandOutput> {
-    run_command(GIT_BINARY, workspace_root, args)
+fn run_git(workspace_root: &Path, args: &[&str]) -> CommandOutput {
+    run_command(GIT_BINARY, workspace_root, args).unwrap_or_else(|error| CommandOutput {
+        success: false,
+        stdout: String::new(),
+        stderr: error.to_string(),
+    })
 }
 
 fn run_git_checked(workspace_root: &Path, args: &[&str]) -> CrabResult<String> {
@@ -479,7 +941,7 @@ fn run_git_checked_in_context(
     workspace_root: &Path,
     args: &[&str],
 ) -> CrabResult<String> {
-    let output = run_git(workspace_root, args)?;
+    let output = run_git(workspace_root, args);
     if output.success {
         return Ok(output.stdout);
     }
@@ -532,11 +994,17 @@ mod tests {
     use crate::{RuntimeConfig, WorkspaceGitPushPolicy};
 
     use super::{
-        canonicalize_path, detect_git_repository_root, ensure_workspace_git_repository,
-        has_commits, maybe_commit_workspace_snapshot, read_origin_remote, resolve_head_branch,
-        run_command, run_git_checked, validate_workspace_root, WorkspaceGitCommitOutcome,
-        WorkspaceGitCommitRequest, WorkspaceGitCommitTrigger, WorkspaceGitEnsureOutcome,
+        canonicalize_path, detect_git_repository_root, enqueue_workspace_git_push_request,
+        ensure_push_queue_layout, ensure_workspace_git_repository, has_commits,
+        maybe_commit_workspace_snapshot, persist_workspace_git_push_queue,
+        process_workspace_git_push_queue, read_origin_remote, resolve_head_branch, run_command,
+        run_git_checked, validate_workspace_root, workspace_git_push_queue_path,
+        WorkspaceGitCommitOutcome, WorkspaceGitCommitRequest, WorkspaceGitCommitTrigger,
+        WorkspaceGitEnsureOutcome, WorkspaceGitPushEnqueueOutcome, WorkspaceGitPushQueueEntry,
+        WorkspaceGitPushQueueState, WorkspaceGitPushRequest, WorkspaceGitPushTickOutcome,
         WORKSPACE_GIT_COMMIT_CONTEXT, WORKSPACE_GIT_COMMIT_KEY_TRAILER, WORKSPACE_GIT_CONTEXT,
+        WORKSPACE_GIT_PUSH_MAX_ATTEMPTS, WORKSPACE_GIT_PUSH_QUEUE_CONTEXT,
+        WORKSPACE_GIT_PUSH_QUEUE_VERSION,
     };
     use crate::CrabError;
 
@@ -609,6 +1077,33 @@ mod tests {
         run_git_in(path, &["config", "user.name", "Crab Test"]);
         run_git_in(path, &["config", "user.email", "crab-test@example.com"]);
         run_git_in(path, &["commit", "-m", "fixture commit"]);
+    }
+
+    fn initialize_bare_remote(path: &Path) {
+        fs::create_dir_all(path).expect("remote directory should be creatable");
+        run_git_in(path, &["init", "--bare"]);
+    }
+
+    fn state_root(workspace: &TempDir) -> PathBuf {
+        workspace.child("state")
+    }
+
+    fn read_push_queue_entries(state_root: &Path) -> Vec<WorkspaceGitPushQueueEntry> {
+        let path = workspace_git_push_queue_path(state_root);
+        if !path.exists() {
+            return Vec::new();
+        }
+        let raw = fs::read_to_string(path).expect("queue file should be readable");
+        let parsed: WorkspaceGitPushQueueState =
+            serde_json::from_str(&raw).expect("queue file should parse");
+        parsed.entries
+    }
+
+    fn write_push_queue_state(state_root: &Path, queue: &WorkspaceGitPushQueueState) {
+        fs::create_dir_all(state_root).expect("state root should be creatable");
+        let path = workspace_git_push_queue_path(state_root);
+        let encoded = serde_json::to_string_pretty(queue).expect("queue state should encode");
+        fs::write(path, encoded).expect("queue file should be writable");
     }
 
     #[test]
@@ -940,9 +1435,9 @@ mod tests {
         workspace.create();
         initialize_repo(&workspace.path, "main");
 
-        assert!(!has_commits(&workspace.path).expect("empty repo should report no commits"));
+        assert!(!has_commits(&workspace.path));
         commit_file(&workspace.path, "data.txt");
-        assert!(has_commits(&workspace.path).expect("commit should be detected"));
+        assert!(has_commits(&workspace.path));
 
         run_git_in(
             &workspace.path,
@@ -1109,6 +1604,656 @@ mod tests {
     }
 
     #[test]
+    fn enqueue_workspace_git_push_request_is_idempotent_by_commit_key() {
+        let workspace = TempDir::new("push-enqueue-idempotent");
+        workspace.create();
+        let state_root = state_root(&workspace);
+        let config = parse_workspace_git(&[
+            ("CRAB_WORKSPACE_GIT_PERSISTENCE_ENABLED", "true"),
+            ("CRAB_WORKSPACE_GIT_PUSH_POLICY", "on-commit"),
+            (
+                "CRAB_WORKSPACE_GIT_REMOTE",
+                "git@github.com:fontanierh/private.git",
+            ),
+        ]);
+        let request = WorkspaceGitPushRequest {
+            commit_key: "k1".to_string(),
+            commit_id: "c1".to_string(),
+            enqueued_at_epoch_ms: 100,
+        };
+
+        let first = enqueue_workspace_git_push_request(&state_root, &config, &request)
+            .expect("first enqueue should succeed");
+        assert!(first.enabled);
+        assert!(first.enqueued);
+        assert_eq!(first.queue_depth, 1);
+
+        let second = enqueue_workspace_git_push_request(&state_root, &config, &request)
+            .expect("second enqueue should dedupe");
+        assert!(second.enabled);
+        assert!(!second.enqueued);
+        assert_eq!(second.queue_depth, 1);
+        assert_eq!(second.skipped_reason, Some("already_queued".to_string()));
+
+        let entries = read_push_queue_entries(&state_root);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].commit_key, "k1");
+    }
+
+    #[test]
+    fn enqueue_workspace_git_push_request_rejects_conflicting_commit_ids() {
+        let workspace = TempDir::new("push-enqueue-conflict");
+        workspace.create();
+        let state_root = state_root(&workspace);
+        let config = parse_workspace_git(&[
+            ("CRAB_WORKSPACE_GIT_PERSISTENCE_ENABLED", "true"),
+            ("CRAB_WORKSPACE_GIT_PUSH_POLICY", "on-commit"),
+            (
+                "CRAB_WORKSPACE_GIT_REMOTE",
+                "git@github.com:fontanierh/private.git",
+            ),
+        ]);
+
+        enqueue_workspace_git_push_request(
+            &state_root,
+            &config,
+            &WorkspaceGitPushRequest {
+                commit_key: "k1".to_string(),
+                commit_id: "c1".to_string(),
+                enqueued_at_epoch_ms: 100,
+            },
+        )
+        .expect("first enqueue should succeed");
+
+        let conflict = enqueue_workspace_git_push_request(
+            &state_root,
+            &config,
+            &WorkspaceGitPushRequest {
+                commit_key: "k1".to_string(),
+                commit_id: "c2".to_string(),
+                enqueued_at_epoch_ms: 101,
+            },
+        )
+        .expect_err("conflicting commit ids should be rejected");
+        assert!(matches!(
+            conflict,
+            CrabError::InvariantViolation {
+                context: WORKSPACE_GIT_PUSH_QUEUE_CONTEXT,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn process_workspace_git_push_queue_retries_and_recovers() {
+        let workspace = TempDir::new("push-retry-recover-workspace");
+        workspace.create();
+        let remote = TempDir::new("push-retry-recover-remote");
+        let state_root = state_root(&workspace);
+        let remote_url = remote.path.to_string_lossy().to_string();
+        let config = parse_workspace_git(&[
+            ("CRAB_WORKSPACE_GIT_PERSISTENCE_ENABLED", "true"),
+            ("CRAB_WORKSPACE_GIT_PUSH_POLICY", "on-commit"),
+            ("CRAB_WORKSPACE_GIT_REMOTE", &remote_url),
+            ("CRAB_WORKSPACE_GIT_BRANCH", "main"),
+        ]);
+        ensure_workspace_git_repository(&workspace.path, &config)
+            .expect("workspace git bootstrap should succeed");
+        write_fixture(&workspace.path, "state/a.txt", "hello\n");
+        let commit = maybe_commit_workspace_snapshot(
+            &workspace.path,
+            &config,
+            &sample_commit_request(WorkspaceGitCommitTrigger::RunFinalized),
+        )
+        .expect("commit should succeed");
+        let commit_key = commit
+            .commit_key
+            .clone()
+            .expect("commit key should be present");
+        let commit_id = commit
+            .commit_id
+            .clone()
+            .expect("commit id should be present");
+        enqueue_workspace_git_push_request(
+            &state_root,
+            &config,
+            &WorkspaceGitPushRequest {
+                commit_key: commit_key.clone(),
+                commit_id: commit_id.clone(),
+                enqueued_at_epoch_ms: 1_000,
+            },
+        )
+        .expect("enqueue should succeed");
+
+        let failed = process_workspace_git_push_queue(&workspace.path, &state_root, &config, 1_000)
+            .expect("failed push should still return outcome");
+        assert!(failed.attempted);
+        assert!(!failed.pushed);
+        assert_eq!(failed.commit_key, Some(commit_key.clone()));
+        assert_eq!(failed.next_backoff_ms, Some(1_000));
+        assert_eq!(failed.skipped_reason, Some("retry_scheduled".to_string()));
+
+        initialize_bare_remote(&remote.path);
+
+        let early = process_workspace_git_push_queue(&workspace.path, &state_root, &config, 1_500)
+            .expect("early retry should be deferred");
+        assert!(!early.attempted);
+        assert_eq!(early.skipped_reason, Some("no_due_entries".to_string()));
+
+        let recovered =
+            process_workspace_git_push_queue(&workspace.path, &state_root, &config, 2_000)
+                .expect("retry after backoff should succeed");
+        assert!(recovered.attempted);
+        assert!(recovered.pushed);
+        assert_eq!(recovered.commit_key, Some(commit_key));
+        assert_eq!(read_push_queue_entries(&state_root).len(), 0);
+
+        let remote_head = run_git_in(&remote.path, &["rev-parse", "refs/heads/main"]);
+        assert_eq!(remote_head.trim(), commit_id);
+    }
+
+    #[test]
+    fn process_workspace_git_push_queue_marks_entries_exhausted_after_bound() {
+        let workspace = TempDir::new("push-exhaust-workspace");
+        workspace.create();
+        let state_root = state_root(&workspace);
+        let remote_path = workspace.child("missing-remote.git");
+        let remote_url = remote_path.to_string_lossy().to_string();
+        let config = parse_workspace_git(&[
+            ("CRAB_WORKSPACE_GIT_PERSISTENCE_ENABLED", "true"),
+            ("CRAB_WORKSPACE_GIT_PUSH_POLICY", "on-commit"),
+            ("CRAB_WORKSPACE_GIT_REMOTE", &remote_url),
+            ("CRAB_WORKSPACE_GIT_BRANCH", "main"),
+        ]);
+        ensure_workspace_git_repository(&workspace.path, &config)
+            .expect("workspace git bootstrap should succeed");
+        write_fixture(&workspace.path, "state/b.txt", "hello\n");
+        let commit = maybe_commit_workspace_snapshot(
+            &workspace.path,
+            &config,
+            &sample_commit_request(WorkspaceGitCommitTrigger::RunFinalized),
+        )
+        .expect("commit should succeed");
+        enqueue_workspace_git_push_request(
+            &state_root,
+            &config,
+            &WorkspaceGitPushRequest {
+                commit_key: commit
+                    .commit_key
+                    .clone()
+                    .expect("commit key should be present"),
+                commit_id: commit.commit_id.expect("commit id should be present"),
+                enqueued_at_epoch_ms: 1_000,
+            },
+        )
+        .expect("enqueue should succeed");
+
+        let mut now_epoch_ms = 1_000;
+        let mut last_outcome = None;
+        for _ in 0..WORKSPACE_GIT_PUSH_MAX_ATTEMPTS {
+            let outcome = process_workspace_git_push_queue(
+                &workspace.path,
+                &state_root,
+                &config,
+                now_epoch_ms,
+            )
+            .expect("tick should succeed");
+            now_epoch_ms = now_epoch_ms.saturating_add(1_000_000);
+            last_outcome = Some(outcome);
+        }
+
+        let exhausted = last_outcome.expect("final outcome should exist");
+        assert!(exhausted.attempted);
+        assert!(!exhausted.pushed);
+        assert!(exhausted.exhausted);
+        assert_eq!(
+            exhausted.skipped_reason,
+            Some("retry_exhausted".to_string())
+        );
+
+        let entries = read_push_queue_entries(&state_root);
+        assert_eq!(entries.len(), 1);
+        assert!(entries[0].exhausted);
+        assert_eq!(entries[0].attempt_count, WORKSPACE_GIT_PUSH_MAX_ATTEMPTS);
+        assert_eq!(entries[0].next_attempt_at_epoch_ms, u64::MAX);
+    }
+
+    #[test]
+    fn workspace_git_push_disabled_and_validation_paths_are_strict() {
+        let workspace = TempDir::new("push-disabled-validation");
+        workspace.create();
+        let state_root = state_root(&workspace);
+        let disabled_config = parse_workspace_git(&[]);
+        let on_commit_config = parse_workspace_git(&[
+            ("CRAB_WORKSPACE_GIT_PERSISTENCE_ENABLED", "true"),
+            ("CRAB_WORKSPACE_GIT_PUSH_POLICY", "on-commit"),
+            (
+                "CRAB_WORKSPACE_GIT_REMOTE",
+                "git@github.com:fontanierh/private.git",
+            ),
+        ]);
+
+        let disabled_enqueue = enqueue_workspace_git_push_request(
+            &state_root,
+            &disabled_config,
+            &WorkspaceGitPushRequest {
+                commit_key: "k".to_string(),
+                commit_id: "c".to_string(),
+                enqueued_at_epoch_ms: 1,
+            },
+        )
+        .expect("disabled enqueue should succeed");
+        assert_eq!(disabled_enqueue, WorkspaceGitPushEnqueueOutcome::disabled());
+
+        let disabled_tick =
+            process_workspace_git_push_queue(&workspace.path, &state_root, &disabled_config, 1)
+                .expect("disabled tick should succeed");
+        assert_eq!(disabled_tick, WorkspaceGitPushTickOutcome::disabled());
+
+        let blank_key = enqueue_workspace_git_push_request(
+            &state_root,
+            &on_commit_config,
+            &WorkspaceGitPushRequest {
+                commit_key: "  ".to_string(),
+                commit_id: "c".to_string(),
+                enqueued_at_epoch_ms: 1,
+            },
+        )
+        .expect_err("blank key should fail");
+        assert_eq!(
+            blank_key,
+            CrabError::InvariantViolation {
+                context: WORKSPACE_GIT_PUSH_QUEUE_CONTEXT,
+                message: "commit_key must not be empty".to_string(),
+            }
+        );
+
+        let blank_id = enqueue_workspace_git_push_request(
+            &state_root,
+            &on_commit_config,
+            &WorkspaceGitPushRequest {
+                commit_key: "k".to_string(),
+                commit_id: " ".to_string(),
+                enqueued_at_epoch_ms: 1,
+            },
+        )
+        .expect_err("blank id should fail");
+        assert_eq!(
+            blank_id,
+            CrabError::InvariantViolation {
+                context: WORKSPACE_GIT_PUSH_QUEUE_CONTEXT,
+                message: "commit_id must not be empty".to_string(),
+            }
+        );
+
+        let zero_epoch = enqueue_workspace_git_push_request(
+            &state_root,
+            &on_commit_config,
+            &WorkspaceGitPushRequest {
+                commit_key: "k".to_string(),
+                commit_id: "c".to_string(),
+                enqueued_at_epoch_ms: 0,
+            },
+        )
+        .expect_err("zero epoch should fail");
+        assert_eq!(
+            zero_epoch,
+            CrabError::InvariantViolation {
+                context: WORKSPACE_GIT_PUSH_QUEUE_CONTEXT,
+                message: "enqueued_at_epoch_ms must be greater than 0".to_string(),
+            }
+        );
+
+        let zero_now =
+            process_workspace_git_push_queue(&workspace.path, &state_root, &on_commit_config, 0)
+                .expect_err("zero now should fail");
+        assert_eq!(
+            zero_now,
+            CrabError::InvariantViolation {
+                context: WORKSPACE_GIT_PUSH_QUEUE_CONTEXT,
+                message: "now_epoch_ms must be greater than 0".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn workspace_git_push_queue_handles_empty_no_due_and_exhausted_entries() {
+        let workspace = TempDir::new("push-queue-scheduling");
+        workspace.create();
+        let state_root = state_root(&workspace);
+        let config = parse_workspace_git(&[
+            ("CRAB_WORKSPACE_GIT_PERSISTENCE_ENABLED", "true"),
+            ("CRAB_WORKSPACE_GIT_PUSH_POLICY", "on-commit"),
+            (
+                "CRAB_WORKSPACE_GIT_REMOTE",
+                "git@github.com:fontanierh/private.git",
+            ),
+        ]);
+
+        let empty = process_workspace_git_push_queue(&workspace.path, &state_root, &config, 1_000)
+            .expect("empty queue should be handled");
+        assert_eq!(empty.skipped_reason, Some("queue_empty".to_string()));
+
+        write_push_queue_state(
+            &state_root,
+            &WorkspaceGitPushQueueState {
+                version: WORKSPACE_GIT_PUSH_QUEUE_VERSION,
+                entries: vec![
+                    WorkspaceGitPushQueueEntry {
+                        commit_key: "exhausted".to_string(),
+                        commit_id: "c1".to_string(),
+                        enqueued_at_epoch_ms: 10,
+                        next_attempt_at_epoch_ms: u64::MAX,
+                        attempt_count: WORKSPACE_GIT_PUSH_MAX_ATTEMPTS,
+                        exhausted: true,
+                        last_error: Some("final".to_string()),
+                    },
+                    WorkspaceGitPushQueueEntry {
+                        commit_key: "future-1".to_string(),
+                        commit_id: "c2".to_string(),
+                        enqueued_at_epoch_ms: 10,
+                        next_attempt_at_epoch_ms: 5_000,
+                        attempt_count: 1,
+                        exhausted: false,
+                        last_error: None,
+                    },
+                    WorkspaceGitPushQueueEntry {
+                        commit_key: "future-2".to_string(),
+                        commit_id: "c3".to_string(),
+                        enqueued_at_epoch_ms: 10,
+                        next_attempt_at_epoch_ms: 3_000,
+                        attempt_count: 1,
+                        exhausted: false,
+                        last_error: None,
+                    },
+                ],
+            },
+        );
+
+        let no_due = process_workspace_git_push_queue(&workspace.path, &state_root, &config, 2_000)
+            .expect("future queue should be deferred");
+        assert_eq!(no_due.skipped_reason, Some("no_due_entries".to_string()));
+        assert_eq!(no_due.next_due_at_epoch_ms, Some(3_000));
+    }
+
+    #[test]
+    fn workspace_git_push_queue_rejects_malformed_or_inconsistent_queue_files() {
+        let workspace = TempDir::new("push-queue-corruption");
+        workspace.create();
+        let state_root = state_root(&workspace);
+        let queue_path = workspace_git_push_queue_path(&state_root);
+        let config = parse_workspace_git(&[
+            ("CRAB_WORKSPACE_GIT_PERSISTENCE_ENABLED", "true"),
+            ("CRAB_WORKSPACE_GIT_PUSH_POLICY", "on-commit"),
+            (
+                "CRAB_WORKSPACE_GIT_REMOTE",
+                "git@github.com:fontanierh/private.git",
+            ),
+        ]);
+
+        fs::create_dir_all(&state_root).expect("state root should exist");
+        fs::write(&queue_path, "{ not-json").expect("corrupt queue fixture should be written");
+        let corrupt = process_workspace_git_push_queue(&workspace.path, &state_root, &config, 1)
+            .expect_err("corrupt queue should fail");
+        assert_eq!(
+            corrupt,
+            CrabError::CorruptData {
+                context: WORKSPACE_GIT_PUSH_QUEUE_CONTEXT,
+                path: queue_path.to_string_lossy().to_string(),
+            }
+        );
+
+        write_push_queue_state(
+            &state_root,
+            &WorkspaceGitPushQueueState {
+                version: 2,
+                entries: Vec::new(),
+            },
+        );
+        let wrong_version =
+            process_workspace_git_push_queue(&workspace.path, &state_root, &config, 1)
+                .expect_err("unsupported queue version should fail");
+        assert_eq!(
+            wrong_version,
+            CrabError::InvariantViolation {
+                context: WORKSPACE_GIT_PUSH_QUEUE_CONTEXT,
+                message: "unsupported queue state version 2; expected 1".to_string(),
+            }
+        );
+
+        write_push_queue_state(
+            &state_root,
+            &WorkspaceGitPushQueueState {
+                version: WORKSPACE_GIT_PUSH_QUEUE_VERSION,
+                entries: vec![WorkspaceGitPushQueueEntry {
+                    commit_key: " ".to_string(),
+                    commit_id: "c".to_string(),
+                    enqueued_at_epoch_ms: 1,
+                    next_attempt_at_epoch_ms: 1,
+                    attempt_count: 0,
+                    exhausted: false,
+                    last_error: None,
+                }],
+            },
+        );
+        let invalid_entry =
+            process_workspace_git_push_queue(&workspace.path, &state_root, &config, 1)
+                .expect_err("invalid queue entry should fail");
+        assert_eq!(
+            invalid_entry,
+            CrabError::InvariantViolation {
+                context: WORKSPACE_GIT_PUSH_QUEUE_CONTEXT,
+                message: "queue entry commit_key must not be empty".to_string(),
+            }
+        );
+
+        write_push_queue_state(
+            &state_root,
+            &WorkspaceGitPushQueueState {
+                version: WORKSPACE_GIT_PUSH_QUEUE_VERSION,
+                entries: vec![WorkspaceGitPushQueueEntry {
+                    commit_key: "k".to_string(),
+                    commit_id: "  ".to_string(),
+                    enqueued_at_epoch_ms: 1,
+                    next_attempt_at_epoch_ms: 1,
+                    attempt_count: 0,
+                    exhausted: false,
+                    last_error: None,
+                }],
+            },
+        );
+        let invalid_commit_id =
+            process_workspace_git_push_queue(&workspace.path, &state_root, &config, 1)
+                .expect_err("blank queue commit id should fail");
+        assert_eq!(
+            invalid_commit_id,
+            CrabError::InvariantViolation {
+                context: WORKSPACE_GIT_PUSH_QUEUE_CONTEXT,
+                message: "queue entry commit_id must not be empty".to_string(),
+            }
+        );
+
+        write_push_queue_state(
+            &state_root,
+            &WorkspaceGitPushQueueState {
+                version: WORKSPACE_GIT_PUSH_QUEUE_VERSION,
+                entries: vec![WorkspaceGitPushQueueEntry {
+                    commit_key: "k".to_string(),
+                    commit_id: "c".to_string(),
+                    enqueued_at_epoch_ms: 0,
+                    next_attempt_at_epoch_ms: 1,
+                    attempt_count: 0,
+                    exhausted: false,
+                    last_error: None,
+                }],
+            },
+        );
+        let invalid_enqueued_at =
+            process_workspace_git_push_queue(&workspace.path, &state_root, &config, 1)
+                .expect_err("zero enqueued timestamp should fail");
+        assert_eq!(
+            invalid_enqueued_at,
+            CrabError::InvariantViolation {
+                context: WORKSPACE_GIT_PUSH_QUEUE_CONTEXT,
+                message: "queue entry enqueued_at_epoch_ms must be greater than 0".to_string(),
+            }
+        );
+
+        write_push_queue_state(
+            &state_root,
+            &WorkspaceGitPushQueueState {
+                version: WORKSPACE_GIT_PUSH_QUEUE_VERSION,
+                entries: vec![WorkspaceGitPushQueueEntry {
+                    commit_key: "k".to_string(),
+                    commit_id: "c".to_string(),
+                    enqueued_at_epoch_ms: 1,
+                    next_attempt_at_epoch_ms: 0,
+                    attempt_count: 0,
+                    exhausted: false,
+                    last_error: None,
+                }],
+            },
+        );
+        let invalid_next_attempt =
+            process_workspace_git_push_queue(&workspace.path, &state_root, &config, 1)
+                .expect_err("zero next-attempt timestamp should fail");
+        assert_eq!(
+            invalid_next_attempt,
+            CrabError::InvariantViolation {
+                context: WORKSPACE_GIT_PUSH_QUEUE_CONTEXT,
+                message: "queue entry next_attempt_at_epoch_ms must be greater than 0".to_string(),
+            }
+        );
+
+        let _ = fs::remove_file(&queue_path);
+        fs::create_dir_all(&queue_path).expect("queue path directory fixture should be created");
+        let read_io = process_workspace_git_push_queue(&workspace.path, &state_root, &config, 1)
+            .expect_err("queue path directory should fail read");
+        assert!(matches!(
+            read_io,
+            CrabError::Io {
+                context: WORKSPACE_GIT_PUSH_QUEUE_CONTEXT,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn workspace_git_push_persist_reports_temp_write_and_rename_failures() {
+        let workspace = TempDir::new("push-persist-io");
+        workspace.create();
+        let config = parse_workspace_git(&[
+            ("CRAB_WORKSPACE_GIT_PERSISTENCE_ENABLED", "true"),
+            ("CRAB_WORKSPACE_GIT_PUSH_POLICY", "on-commit"),
+            (
+                "CRAB_WORKSPACE_GIT_REMOTE",
+                "git@github.com:fontanierh/private.git",
+            ),
+        ]);
+        let request = WorkspaceGitPushRequest {
+            commit_key: "k1".to_string(),
+            commit_id: "c1".to_string(),
+            enqueued_at_epoch_ms: 1,
+        };
+
+        let write_fail_root = workspace.child("state-write-fail");
+        fs::create_dir_all(&write_fail_root).expect("state root should exist");
+        let write_fail_queue = workspace_git_push_queue_path(&write_fail_root);
+        fs::create_dir_all(format!("{}.tmp", write_fail_queue.to_string_lossy()))
+            .expect("tmp path directory should exist");
+        let write_error = enqueue_workspace_git_push_request(&write_fail_root, &config, &request)
+            .expect_err("temp write should fail");
+        assert!(matches!(
+            write_error,
+            CrabError::Io {
+                context: WORKSPACE_GIT_PUSH_QUEUE_CONTEXT,
+                ..
+            }
+        ));
+
+        let rename_fail_root = workspace.child("state-rename-fail");
+        fs::create_dir_all(&rename_fail_root).expect("state root should exist");
+        let rename_fail_queue = workspace_git_push_queue_path(&rename_fail_root);
+        fs::create_dir_all(&rename_fail_queue).expect("queue path directory should exist");
+        let rename_error = enqueue_workspace_git_push_request(&rename_fail_root, &config, &request)
+            .expect_err("rename should fail");
+        assert!(matches!(
+            rename_error,
+            CrabError::Io {
+                context: WORKSPACE_GIT_PUSH_QUEUE_CONTEXT,
+                ..
+            }
+        ));
+
+        let direct_rename_path = workspace.child("state-direct-rename-fail/queue.json");
+        fs::create_dir_all(&direct_rename_path).expect("target directory should exist");
+        let direct_rename = persist_workspace_git_push_queue(
+            &direct_rename_path,
+            &WorkspaceGitPushQueueState {
+                version: WORKSPACE_GIT_PUSH_QUEUE_VERSION,
+                entries: vec![WorkspaceGitPushQueueEntry {
+                    commit_key: "k2".to_string(),
+                    commit_id: "c2".to_string(),
+                    enqueued_at_epoch_ms: 1,
+                    next_attempt_at_epoch_ms: 1,
+                    attempt_count: 0,
+                    exhausted: false,
+                    last_error: None,
+                }],
+            },
+        )
+        .expect_err("rename into directory path should fail");
+        assert!(matches!(
+            direct_rename,
+            CrabError::Io {
+                context: WORKSPACE_GIT_PUSH_QUEUE_CONTEXT,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn workspace_git_push_missing_remote_configuration_surfaces_actionable_failure() {
+        let workspace = TempDir::new("push-missing-remote");
+        workspace.create();
+        initialize_repo(&workspace.path, "main");
+        let state_root = state_root(&workspace);
+        let config = crate::WorkspaceGitConfig {
+            enabled: true,
+            remote: None,
+            branch: "main".to_string(),
+            commit_name: "Crab Runtime".to_string(),
+            commit_email: "crab-runtime@example.com".to_string(),
+            push_policy: WorkspaceGitPushPolicy::OnCommit,
+        };
+        write_push_queue_state(
+            &state_root,
+            &WorkspaceGitPushQueueState {
+                version: WORKSPACE_GIT_PUSH_QUEUE_VERSION,
+                entries: vec![WorkspaceGitPushQueueEntry {
+                    commit_key: "k1".to_string(),
+                    commit_id: "deadbeef".to_string(),
+                    enqueued_at_epoch_ms: 1,
+                    next_attempt_at_epoch_ms: 1,
+                    attempt_count: 0,
+                    exhausted: false,
+                    last_error: None,
+                }],
+            },
+        );
+
+        let outcome = process_workspace_git_push_queue(&workspace.path, &state_root, &config, 1)
+            .expect("missing remote should be returned as retryable failure");
+        assert!(outcome.attempted);
+        assert!(!outcome.pushed);
+        assert_eq!(outcome.skipped_reason, Some("retry_scheduled".to_string()));
+        assert_eq!(
+            outcome.failure,
+            Some("workspace git remote is missing for on-commit push policy".to_string())
+        );
+    }
+
+    #[test]
     fn workspace_commit_request_validation_is_strict() {
         let workspace = TempDir::new("commit-validate");
         workspace.create();
@@ -1154,6 +2299,57 @@ mod tests {
             }
         );
 
+        let blank_run_id = maybe_commit_workspace_snapshot(
+            &workspace.path,
+            &config,
+            &WorkspaceGitCommitRequest {
+                run_id: " ".to_string(),
+                ..sample_commit_request(WorkspaceGitCommitTrigger::RunFinalized)
+            },
+        )
+        .expect_err("blank run id should fail");
+        assert_eq!(
+            blank_run_id,
+            CrabError::InvariantViolation {
+                context: WORKSPACE_GIT_COMMIT_CONTEXT,
+                message: "run_id must not be empty".to_string(),
+            }
+        );
+
+        let blank_checkpoint_id = maybe_commit_workspace_snapshot(
+            &workspace.path,
+            &config,
+            &WorkspaceGitCommitRequest {
+                checkpoint_id: Some(" ".to_string()),
+                ..sample_commit_request(WorkspaceGitCommitTrigger::RunFinalized)
+            },
+        )
+        .expect_err("blank checkpoint id should fail");
+        assert_eq!(
+            blank_checkpoint_id,
+            CrabError::InvariantViolation {
+                context: WORKSPACE_GIT_COMMIT_CONTEXT,
+                message: "checkpoint_id must not be empty".to_string(),
+            }
+        );
+
+        let blank_run_status = maybe_commit_workspace_snapshot(
+            &workspace.path,
+            &config,
+            &WorkspaceGitCommitRequest {
+                run_status: Some(" ".to_string()),
+                ..sample_commit_request(WorkspaceGitCommitTrigger::RunFinalized)
+            },
+        )
+        .expect_err("blank run status should fail");
+        assert_eq!(
+            blank_run_status,
+            CrabError::InvariantViolation {
+                context: WORKSPACE_GIT_COMMIT_CONTEXT,
+                message: "run_status must not be empty".to_string(),
+            }
+        );
+
         let run_status_none = maybe_commit_workspace_snapshot(
             &workspace.path,
             &config,
@@ -1167,5 +2363,208 @@ mod tests {
             run_status_none.skipped_reason,
             Some("no_changes".to_string())
         );
+    }
+
+    #[test]
+    fn push_queue_layout_validation_is_strict() {
+        let workspace = TempDir::new("push-layout-validation");
+        workspace.create();
+        let config = parse_workspace_git(&[
+            ("CRAB_WORKSPACE_GIT_PERSISTENCE_ENABLED", "true"),
+            ("CRAB_WORKSPACE_GIT_PUSH_POLICY", "on-commit"),
+            (
+                "CRAB_WORKSPACE_GIT_REMOTE",
+                "git@github.com:fontanierh/private.git",
+            ),
+        ]);
+        let request = WorkspaceGitPushRequest {
+            commit_key: "k".to_string(),
+            commit_id: "c".to_string(),
+            enqueued_at_epoch_ms: 1,
+        };
+
+        let blank_layout = enqueue_workspace_git_push_request(Path::new(""), &config, &request)
+            .expect_err("blank state root should fail");
+        assert_eq!(
+            blank_layout,
+            CrabError::InvariantViolation {
+                context: WORKSPACE_GIT_PUSH_QUEUE_CONTEXT,
+                message: "state_root must not be empty".to_string(),
+            }
+        );
+
+        let state_root_file = workspace.child("state-root-file");
+        fs::write(&state_root_file, "payload").expect("state root file fixture should be writable");
+        let file_layout = enqueue_workspace_git_push_request(&state_root_file, &config, &request)
+            .expect_err("file state root should fail");
+        assert!(matches!(
+            file_layout,
+            CrabError::Io {
+                context: WORKSPACE_GIT_PUSH_QUEUE_CONTEXT,
+                ..
+            }
+        ));
+
+        let blank_runtime_layout =
+            process_workspace_git_push_queue(&workspace.path, Path::new(""), &config, 1)
+                .expect_err("blank state root should fail at runtime");
+        assert_eq!(
+            blank_runtime_layout,
+            CrabError::InvariantViolation {
+                context: WORKSPACE_GIT_PUSH_QUEUE_CONTEXT,
+                message: "state_root must not be empty".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn process_workspace_git_push_queue_surfaces_persist_failures_for_retry_and_success_paths() {
+        let workspace = TempDir::new("push-process-persist-failures");
+        workspace.create();
+
+        let remote_retry_path = workspace.child("missing-remote.git");
+        let remote_retry_url = remote_retry_path.to_string_lossy().to_string();
+        let retry_config = parse_workspace_git(&[
+            ("CRAB_WORKSPACE_GIT_PERSISTENCE_ENABLED", "true"),
+            ("CRAB_WORKSPACE_GIT_PUSH_POLICY", "on-commit"),
+            ("CRAB_WORKSPACE_GIT_REMOTE", &remote_retry_url),
+            ("CRAB_WORKSPACE_GIT_BRANCH", "main"),
+        ]);
+        ensure_workspace_git_repository(&workspace.path, &retry_config)
+            .expect("workspace git bootstrap should succeed");
+        write_fixture(&workspace.path, "state/retry.txt", "hello\n");
+        let retry_commit = maybe_commit_workspace_snapshot(
+            &workspace.path,
+            &retry_config,
+            &sample_commit_request(WorkspaceGitCommitTrigger::RunFinalized),
+        )
+        .expect("retry commit should succeed");
+        let retry_state_root = workspace.child("state-retry");
+        enqueue_workspace_git_push_request(
+            &retry_state_root,
+            &retry_config,
+            &WorkspaceGitPushRequest {
+                commit_key: retry_commit
+                    .commit_key
+                    .expect("retry commit key should be present"),
+                commit_id: retry_commit
+                    .commit_id
+                    .expect("retry commit id should be present"),
+                enqueued_at_epoch_ms: 1,
+            },
+        )
+        .expect("retry enqueue should succeed");
+        let retry_queue_path = workspace_git_push_queue_path(&retry_state_root);
+        fs::create_dir_all(format!("{}.tmp", retry_queue_path.to_string_lossy()))
+            .expect("retry tmp path directory should exist");
+        let retry_persist_error =
+            process_workspace_git_push_queue(&workspace.path, &retry_state_root, &retry_config, 1)
+                .expect_err("retry persist failure should surface");
+        assert!(matches!(
+            retry_persist_error,
+            CrabError::Io {
+                context: WORKSPACE_GIT_PUSH_QUEUE_CONTEXT,
+                ..
+            }
+        ));
+
+        let remote_success = TempDir::new("push-process-persist-success-remote");
+        initialize_bare_remote(&remote_success.path);
+        let remote_success_url = remote_success.path.to_string_lossy().to_string();
+        let success_config = parse_workspace_git(&[
+            ("CRAB_WORKSPACE_GIT_PERSISTENCE_ENABLED", "true"),
+            ("CRAB_WORKSPACE_GIT_PUSH_POLICY", "on-commit"),
+            ("CRAB_WORKSPACE_GIT_REMOTE", &remote_success_url),
+            ("CRAB_WORKSPACE_GIT_BRANCH", "main"),
+        ]);
+        let success_workspace = TempDir::new("push-process-persist-success-workspace");
+        success_workspace.create();
+        ensure_workspace_git_repository(&success_workspace.path, &success_config)
+            .expect("success workspace bootstrap should succeed");
+        write_fixture(&success_workspace.path, "state/success.txt", "hello\n");
+        let success_commit = maybe_commit_workspace_snapshot(
+            &success_workspace.path,
+            &success_config,
+            &sample_commit_request(WorkspaceGitCommitTrigger::RunFinalized),
+        )
+        .expect("success commit should succeed");
+        let success_state_root = state_root(&success_workspace);
+        enqueue_workspace_git_push_request(
+            &success_state_root,
+            &success_config,
+            &WorkspaceGitPushRequest {
+                commit_key: success_commit
+                    .commit_key
+                    .expect("success commit key should be present"),
+                commit_id: success_commit
+                    .commit_id
+                    .expect("success commit id should be present"),
+                enqueued_at_epoch_ms: 1,
+            },
+        )
+        .expect("success enqueue should succeed");
+        let success_queue_path = workspace_git_push_queue_path(&success_state_root);
+        fs::create_dir_all(format!("{}.tmp", success_queue_path.to_string_lossy()))
+            .expect("success tmp path directory should exist");
+        let success_persist_error = process_workspace_git_push_queue(
+            &success_workspace.path,
+            &success_state_root,
+            &success_config,
+            1,
+        )
+        .expect_err("success-path persist failure should surface");
+        assert!(matches!(
+            success_persist_error,
+            CrabError::Io {
+                context: WORKSPACE_GIT_PUSH_QUEUE_CONTEXT,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn push_queue_helpers_cover_missing_file_and_validation_error_paths() {
+        let workspace = TempDir::new("push-queue-helper-paths");
+        workspace.create();
+        let state_root = state_root(&workspace);
+
+        let missing_entries = read_push_queue_entries(&state_root);
+        assert!(missing_entries.is_empty());
+
+        let invalid_persist = persist_workspace_git_push_queue(
+            &workspace.child("queue.json"),
+            &WorkspaceGitPushQueueState {
+                version: WORKSPACE_GIT_PUSH_QUEUE_VERSION,
+                entries: vec![WorkspaceGitPushQueueEntry {
+                    commit_key: "k".to_string(),
+                    commit_id: "c".to_string(),
+                    enqueued_at_epoch_ms: 1,
+                    next_attempt_at_epoch_ms: 0,
+                    attempt_count: 0,
+                    exhausted: false,
+                    last_error: None,
+                }],
+            },
+        )
+        .expect_err("invalid queue state should be rejected before write");
+        assert_eq!(
+            invalid_persist,
+            CrabError::InvariantViolation {
+                context: WORKSPACE_GIT_PUSH_QUEUE_CONTEXT,
+                message: "queue entry next_attempt_at_epoch_ms must be greater than 0".to_string(),
+            }
+        );
+
+        let layout_file = workspace.child("layout-file");
+        fs::write(&layout_file, "payload").expect("layout file should be writable");
+        let layout_error =
+            ensure_push_queue_layout(&layout_file).expect_err("layout file should be rejected");
+        assert!(matches!(
+            layout_error,
+            CrabError::Io {
+                context: WORKSPACE_GIT_PUSH_QUEUE_CONTEXT,
+                ..
+            }
+        ));
     }
 }

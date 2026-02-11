@@ -8,8 +8,9 @@ use std::{cell::RefCell, thread_local};
 
 use crab_backends::{BackendEvent, BackendEventKind, CodexAppServerProcess, OpenCodeServerProcess};
 use crab_core::{
-    BackendKind, CrabError, CrabResult, InferenceProfile, OwnerConfig, OwnerProfileMetadata,
-    ProfileValueSource, ReasoningLevel, Run, RunProfileTelemetry, RuntimeConfig,
+    process_workspace_git_push_queue, BackendKind, CrabError, CrabResult, InferenceProfile,
+    OwnerConfig, OwnerProfileMetadata, ProfileValueSource, ReasoningLevel, Run,
+    RunProfileTelemetry, RuntimeConfig,
 };
 use crab_discord::GatewayMessage;
 
@@ -462,9 +463,8 @@ where
         stats.iterations = stats.iterations.saturating_add(1);
 
         if let Some(message) = executor.runtime_mut().next_gateway_message()? {
-            if executor.enqueue_gateway_message(message)?.is_some() {
-                stats.ingested_messages = stats.ingested_messages.saturating_add(1);
-            }
+            let enqueued = executor.enqueue_gateway_message(message)?.is_some();
+            stats.ingested_messages = stats.ingested_messages.saturating_add(u64::from(enqueued));
         }
 
         while executor.dispatch_next_run()?.is_some() {
@@ -472,6 +472,39 @@ where
         }
 
         let now_epoch_ms = control.now_epoch_ms()?;
+        let push_outcome = process_workspace_git_push_queue(
+            &executor.composition().startup.workspace_root,
+            &executor.composition().state_stores.root,
+            &executor.composition().workspace_git,
+            now_epoch_ms,
+        );
+        #[cfg(not(coverage))]
+        match push_outcome {
+            Ok(outcome) => {
+                if outcome.attempted && !outcome.pushed {
+                    tracing::warn!(
+                        commit_key = ?outcome.commit_key,
+                        exhausted = outcome.exhausted,
+                        failure = ?outcome.failure,
+                        next_due_at_epoch_ms = ?outcome.next_due_at_epoch_ms,
+                        next_backoff_ms = ?outcome.next_backoff_ms,
+                        "workspace git push attempt failed"
+                    );
+                } else if outcome.attempted && outcome.pushed {
+                    tracing::info!(
+                        commit_key = ?outcome.commit_key,
+                        queue_depth = outcome.queue_depth,
+                        "workspace git push succeeded"
+                    );
+                }
+            }
+            Err(_error) => {
+                tracing::warn!(error = %_error, "workspace git push queue processing failed");
+            }
+        }
+        #[cfg(coverage)]
+        let _ = push_outcome;
+
         if let Some(outcome) = run_heartbeat_if_due(
             executor.composition_mut(),
             &mut heartbeat_loop_state,
@@ -496,6 +529,7 @@ where
                 #[cfg(not(coverage))]
                 tracing::debug!(?outcome, "heartbeat outcome details");
             } else {
+                #[cfg(not(coverage))]
                 tracing::debug!(events = outcome.events.len(), "heartbeat cycle complete");
             }
         }
@@ -1019,7 +1053,11 @@ mod tests {
         let codex_state = codex.clone();
         let opencode = TrackingOpenCodeProcess::new();
         let opencode_state = opencode.clone();
-        let mut control = ScriptedControl::with_now(vec![1_000, 1_001, 1_002]);
+        let mut control = ScriptedControl::with_now(vec![
+            2_000_000_000_000,
+            2_000_000_000_001,
+            2_000_000_000_002,
+        ]);
 
         let stats = run_daemon_loop_with_transport(
             &config,
@@ -1053,6 +1091,63 @@ mod tests {
         assert_eq!(opencode_stats.spawn_calls, 1);
         assert_eq!(opencode_stats.terminate_calls, 1);
         assert_eq!(control.slept, vec![5, 5]);
+    }
+
+    #[test]
+    fn daemon_loop_keeps_dispatching_when_workspace_git_push_fails() {
+        let workspace = TempWorkspace::new("daemon", "workspace-git-push-failure");
+        let mut config = runtime_config_for_workspace_with_lanes(&workspace.path, 2);
+        config.workspace_git.enabled = true;
+        config.workspace_git.push_policy = crab_core::WorkspaceGitPushPolicy::OnCommit;
+        config.workspace_git.remote = Some(
+            workspace
+                .path
+                .join("missing-remote.git")
+                .to_string_lossy()
+                .to_string(),
+        );
+
+        let daemon_config = DaemonConfig {
+            bot_user_id: "999".to_string(),
+            tick_interval_ms: 5,
+            max_iterations: Some(2),
+        };
+        let discord = ScriptedDiscordIo::with_state(DiscordIoState {
+            inbound: VecDeque::from([
+                Ok(Some(gateway_message("m-1", "111", "hello world"))),
+                Ok(None),
+            ]),
+            ..DiscordIoState::default()
+        });
+        let codex = TrackingCodexProcess::new();
+        let opencode = TrackingOpenCodeProcess::new();
+        let mut control = ScriptedControl::with_now(vec![1_000, 1_001, 1_002]);
+
+        let stats = run_daemon_loop_with_transport(
+            &config,
+            &daemon_config,
+            codex,
+            opencode,
+            discord,
+            &mut control,
+        )
+        .expect("daemon loop should keep running despite push failure");
+        assert_eq!(stats.dispatched_runs, 1);
+
+        let queue_path = workspace.path.join("state/workspace_git_push_queue.json");
+        let queue = std::fs::read_to_string(queue_path).expect("push queue should persist");
+        let parsed: serde_json::Value =
+            serde_json::from_str(&queue).expect("queue json should parse");
+        let entries = parsed["entries"]
+            .as_array()
+            .expect("entries should be an array");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(
+            entries[0]["commit_key"]
+                .as_str()
+                .expect("commit_key should be present"),
+            "discord:channel:777|run:discord:channel:777:m-1|run_finalized|none"
+        );
     }
 
     #[test]

@@ -4,14 +4,14 @@ use std::path::PathBuf;
 use crab_backends::{BackendEvent, BackendEventKind, CodexAppServerProcess, OpenCodeServerProcess};
 use crab_core::{
     apply_operator_command, build_fallback_checkpoint_document, build_memory_flush_prompt,
-    evaluate_rotation_triggers, execute_rotation_sequence, finalize_hidden_memory_flush,
-    maybe_commit_workspace_snapshot, parse_operator_command, Checkpoint, CheckpointTurnDocument,
-    CrabError, CrabResult, EventEnvelope, EventKind, EventSource, InferenceProfile, LaneState,
-    LogicalSession, ManualRotationRequest, OperatorActorContext, OperatorCommand,
-    OperatorSessionState, PhysicalSession, RotationSequenceRuntime, RotationTrigger,
-    RotationTriggerInput, Run, RunProfileTelemetry, RunStatus, TokenAccounting, TranscriptEntry,
-    TranscriptEntryRole, WorkspaceGitCommitRequest, WorkspaceGitCommitTrigger,
-    DEFAULT_FALLBACK_TRANSCRIPT_TAIL_LIMIT,
+    enqueue_workspace_git_push_request, evaluate_rotation_triggers, execute_rotation_sequence,
+    finalize_hidden_memory_flush, maybe_commit_workspace_snapshot, parse_operator_command,
+    Checkpoint, CheckpointTurnDocument, CrabError, CrabResult, EventEnvelope, EventKind,
+    EventSource, InferenceProfile, LaneState, LogicalSession, ManualRotationRequest,
+    OperatorActorContext, OperatorCommand, OperatorSessionState, PhysicalSession,
+    RotationSequenceRuntime, RotationTrigger, RotationTriggerInput, Run, RunProfileTelemetry,
+    RunStatus, TokenAccounting, TranscriptEntry, TranscriptEntryRole, WorkspaceGitCommitRequest,
+    WorkspaceGitCommitTrigger, WorkspaceGitPushRequest, DEFAULT_FALLBACK_TRANSCRIPT_TAIL_LIMIT,
 };
 use crab_discord::{DeliveryAttempt, GatewayMessage, RoutingKey, ShouldSendDecision};
 use crab_scheduler::QueuedRun;
@@ -776,14 +776,65 @@ where
             &self.composition.workspace_git,
             &request,
         );
-        if let Err(_error) = result {
-            #[cfg(not(coverage))]
+        let _ = result.as_ref().map(|outcome| {
+            self.maybe_enqueue_workspace_git_push(run, trigger, emitted_at_epoch_ms, &outcome);
+        });
+        #[cfg(not(coverage))]
+        if let Err(_error) = &result {
             tracing::warn!(
                 logical_session_id = %run.logical_session_id,
                 run_id = %run.id,
                 trigger = %trigger.as_token(),
                 error = %_error,
                 "workspace git commit persistence failed"
+            );
+        }
+    }
+
+    fn maybe_enqueue_workspace_git_push(
+        &self,
+        run: &Run,
+        trigger: WorkspaceGitCommitTrigger,
+        emitted_at_epoch_ms: u64,
+        commit_outcome: &crab_core::WorkspaceGitCommitOutcome,
+    ) {
+        #[cfg(coverage)]
+        let _ = (run, trigger);
+
+        if !commit_outcome.enabled {
+            return;
+        }
+        if self.composition.workspace_git.push_policy != crab_core::WorkspaceGitPushPolicy::OnCommit
+        {
+            return;
+        }
+
+        let Some(commit_key) = commit_outcome.commit_key.as_deref() else {
+            return;
+        };
+        let Some(commit_id) = commit_outcome.commit_id.as_deref() else {
+            return;
+        };
+
+        let push_request = WorkspaceGitPushRequest {
+            commit_key: commit_key.to_string(),
+            commit_id: commit_id.to_string(),
+            enqueued_at_epoch_ms: emitted_at_epoch_ms,
+        };
+        let enqueue_result = enqueue_workspace_git_push_request(
+            &self.composition.state_stores.root,
+            &self.composition.workspace_git,
+            &push_request,
+        );
+        if let Err(_error) = enqueue_result {
+            #[cfg(not(coverage))]
+            tracing::warn!(
+                logical_session_id = %run.logical_session_id,
+                run_id = %run.id,
+                trigger = %trigger.as_token(),
+                commit_key = %commit_key,
+                error = %_error,
+                "workspace git push queue enqueue failed"
             );
         }
     }
@@ -1862,13 +1913,7 @@ mod tests {
             .args(args)
             .output()
             .expect("git command should be executable");
-        assert!(
-            output.status.success(),
-            "git command failed: git -C {} {}: {}",
-            workspace_root.to_string_lossy(),
-            args.join(" "),
-            String::from_utf8_lossy(&output.stderr)
-        );
+        assert!(output.status.success());
         String::from_utf8_lossy(&output.stdout).into_owned()
     }
 
@@ -2143,6 +2188,40 @@ mod tests {
         assert!(head_message.contains("Crab-Run-Id: run:discord:channel:777:m-git-rotation"));
         assert!(head_message
             .contains("Crab-Checkpoint-Id: ckpt:run:discord:channel:777:m-git-rotation:6"));
+    }
+
+    #[test]
+    fn successful_run_enqueues_workspace_git_push_request_when_on_commit_policy_is_enabled() {
+        let workspace = TempWorkspace::new("turn-executor", "workspace-git-push-queue");
+        let runtime = FakeRuntime::with_backend_events(
+            vec![
+                backend_event(1, BackendEventKind::TextDelta, &[("text", "hello")]),
+                backend_event(2, BackendEventKind::TurnCompleted, &[("finish", "done")]),
+            ],
+            &[1, 2, 3, 4, 5, 6],
+        );
+        let mut config = runtime_config_for_workspace_with_lanes(&workspace.path, 2);
+        config.workspace_git.enabled = true;
+        config.workspace_git.push_policy = WorkspaceGitPushPolicy::OnCommit;
+        config.workspace_git.remote = Some(
+            workspace
+                .path
+                .join("missing-remote.git")
+                .to_string_lossy()
+                .to_string(),
+        );
+        let mut executor = build_executor_with_config(runtime, 8, config);
+
+        let dispatched = executor
+            .process_gateway_message(gateway_message("m-git-push"))
+            .expect("run should succeed")
+            .expect("run should dispatch");
+        assert_eq!(dispatched.status, RunStatus::Succeeded);
+
+        let queue_path = workspace.path.join("state/workspace_git_push_queue.json");
+        let queue_body = fs::read_to_string(queue_path).expect("push queue file should exist");
+        assert!(queue_body.contains("run:discord:channel:777:m-git-push"));
+        assert!(queue_body.contains("run_finalized"));
     }
 
     #[test]

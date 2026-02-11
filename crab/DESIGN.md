@@ -712,6 +712,21 @@ Workspace git commit policy (implemented in WS21-T3):
   key and there are no pending workspace changes, Crab marks the commit attempt as
   already persisted and does not write a duplicate commit.
 
+Workspace git async push policy (implemented in WS21-T4):
+
+- When `workspace.git_persistence.push_policy = "on-commit"`, Crab enqueues push intents
+  after successful commit persistence instead of blocking run completion.
+- Queue state is durable at `state/workspace_git_push_queue.json` and survives process restarts.
+- Queue entries are idempotent by commit key:
+  - same `commit_key` + same `commit_id` => dedupe/no-op
+  - same `commit_key` + different `commit_id` => invariant violation
+- Daemon loop runs one due push attempt per tick:
+  - success removes the entry
+  - failure records attempt count and schedules bounded exponential backoff
+  - attempts are capped and then marked exhausted (non-fatal to runtime flow)
+- Push processing failures are non-blocking for ingress/dispatch and heartbeat flow;
+  runtime liveness is preserved even under sustained remote outages.
+
 ## 18) Deferred Items
 
 - Branch protection and required CI checks.

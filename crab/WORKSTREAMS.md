@@ -599,7 +599,7 @@ Delivered:
 
 ### WS21 - Workspace Private Git Persistence
 
-Status (as of 2026-02-11): WS21-T1 through WS21-T3 completed. WS21-T4 through WS21-T6 pending.
+Status (as of 2026-02-11): WS21-T1 through WS21-T4 completed. WS21-T5 and WS21-T6 pending.
 
 ### WS21-T1 - Git persistence config model
 - Add explicit runtime config for workspace git persistence (`enabled`, `remote`, `branch`, commit identity, push policy).
@@ -624,6 +624,12 @@ Status (as of 2026-02-11): WS21-T1 through WS21-T3 completed. WS21-T4 through WS
 - Push to private remote asynchronously with bounded retry/backoff and durable retry state.
 - Ensure push failures never block turn execution or Discord delivery semantics.
 - Done criteria: push failure/recovery tests prove runtime liveness and eventual sync.
+ - Implemented:
+   - Durable queue model in `crab-core` (`WorkspaceGitPushRequest`, enqueue/tick outcomes, persisted queue state in `state/workspace_git_push_queue.json`).
+   - Idempotent enqueue by `commit_key` with conflict rejection when the same key is reused with a different commit id.
+   - Bounded retry/backoff (`WORKSPACE_GIT_PUSH_MAX_ATTEMPTS` + exponential backoff with cap) and deterministic exhaustion state.
+   - Daemon-loop integration that processes queue ticks non-blockingly and never blocks message intake/dispatch when push attempts fail.
+   - Recovery tests for retry scheduling, retry exhaustion, and success after remote recovery.
 
 ### WS21-T5 - Secret safety and path guardrails
 - Enforce exclusion policy (`.env`, secrets files, token dumps, generated transient artifacts) before commit.

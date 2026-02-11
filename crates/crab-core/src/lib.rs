@@ -160,8 +160,10 @@ pub use workspace::{
     SOUL_FILE_NAME, USER_FILE_NAME,
 };
 pub use workspace_git::{
-    ensure_workspace_git_repository, maybe_commit_workspace_snapshot, WorkspaceGitCommitOutcome,
+    enqueue_workspace_git_push_request, ensure_workspace_git_repository,
+    maybe_commit_workspace_snapshot, process_workspace_git_push_queue, WorkspaceGitCommitOutcome,
     WorkspaceGitCommitRequest, WorkspaceGitCommitTrigger, WorkspaceGitEnsureOutcome,
+    WorkspaceGitPushEnqueueOutcome, WorkspaceGitPushRequest, WorkspaceGitPushTickOutcome,
 };
 
 #[cfg(test)]
