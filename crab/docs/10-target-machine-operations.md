@@ -124,6 +124,22 @@ Workspace git bootstrap behavior when `CRAB_WORKSPACE_GIT_PERSISTENCE_ENABLED=tr
 - If `CRAB_WORKSPACE_GIT_REMOTE` is set, Crab validates or binds `origin` deterministically.
 - Existing non-empty repositories with branch mismatch are rejected (operator action required).
 
+Workspace git commit behavior when persistence is enabled:
+
+- Crab attempts commits on successful run finalization.
+- If a run triggers rotation, Crab attempts a `rotation_checkpoint` commit and then
+  a `run_finalized` commit (the second may be a no-op when no additional changes exist).
+- Commit messages include structured trailers for correlation:
+  - `Crab-Trigger`
+  - `Crab-Logical-Session-Id`
+  - `Crab-Run-Id`
+  - `Crab-Checkpoint-Id`
+  - `Crab-Run-Status`
+  - `Crab-Commit-Key`
+- Replay safety:
+  - if HEAD already carries the same `Crab-Commit-Key` and no further changes exist,
+    Crab skips writing a duplicate commit.
+
 ## Logging (Structured, `tracing`)
 
 - `crabd` uses stdout for JSONL IPC frames and logs to stderr.

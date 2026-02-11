@@ -32,6 +32,7 @@ Crab is a Rust harness for running coding agents (Claude Code, Codex CLI, OpenCo
 - `WS21` in progress:
   - `WS21-T1` complete: workspace git persistence config model (`enabled`, `remote`, `branch`, commit identity, push policy) with eager validation for malformed/unsafe values.
   - `WS21-T2` complete: startup-time workspace git repository bootstrap/binding is implemented (`crab-core::ensure_workspace_git_repository` + `crab-app::initialize_runtime_startup`) with safe external-repo guardrails, deterministic branch bootstrap on empty repos, and remote-origin binding validation.
+  - `WS21-T3` complete: deterministic workspace commit triggers are implemented via `crab-core::maybe_commit_workspace_snapshot` with standardized commit trailers (`Crab-Trigger`, `Crab-Logical-Session-Id`, `Crab-Run-Id`, `Crab-Checkpoint-Id`, `Crab-Run-Status`, `Crab-Commit-Key`) and replay-safe duplicate-key handling for restart scenarios.
 
 ## Docs
 

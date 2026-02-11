@@ -6,6 +6,9 @@ use crate::config::WorkspaceGitConfig;
 use crate::{CrabError, CrabResult};
 
 const WORKSPACE_GIT_CONTEXT: &str = "workspace_git_bootstrap";
+const WORKSPACE_GIT_COMMIT_CONTEXT: &str = "workspace_git_commit";
+const WORKSPACE_GIT_COMMIT_VERSION: &str = "1";
+const WORKSPACE_GIT_COMMIT_KEY_TRAILER: &str = "Crab-Commit-Key";
 const GIT_BINARY: &str = "git";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -26,6 +29,87 @@ impl WorkspaceGitEnsureOutcome {
             branch_bootstrapped: false,
             remote_bound: false,
             repository_root: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkspaceGitCommitTrigger {
+    RunFinalized,
+    RotationCheckpoint,
+}
+
+impl WorkspaceGitCommitTrigger {
+    #[must_use]
+    pub const fn as_token(self) -> &'static str {
+        match self {
+            Self::RunFinalized => "run_finalized",
+            Self::RotationCheckpoint => "rotation_checkpoint",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkspaceGitCommitRequest {
+    pub logical_session_id: String,
+    pub run_id: String,
+    pub trigger: WorkspaceGitCommitTrigger,
+    pub checkpoint_id: Option<String>,
+    pub run_status: Option<String>,
+    pub emitted_at_epoch_ms: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkspaceGitCommitOutcome {
+    pub enabled: bool,
+    pub trigger: Option<WorkspaceGitCommitTrigger>,
+    pub committed: bool,
+    pub commit_key: Option<String>,
+    pub commit_id: Option<String>,
+    pub skipped_reason: Option<String>,
+}
+
+impl WorkspaceGitCommitOutcome {
+    #[must_use]
+    pub const fn disabled() -> Self {
+        Self {
+            enabled: false,
+            trigger: None,
+            committed: false,
+            commit_key: None,
+            commit_id: None,
+            skipped_reason: None,
+        }
+    }
+
+    fn skipped(
+        trigger: WorkspaceGitCommitTrigger,
+        commit_key: String,
+        skipped_reason: &'static str,
+        commit_id: Option<String>,
+    ) -> Self {
+        Self {
+            enabled: true,
+            trigger: Some(trigger),
+            committed: false,
+            commit_key: Some(commit_key),
+            commit_id,
+            skipped_reason: Some(skipped_reason.to_string()),
+        }
+    }
+
+    fn committed(
+        trigger: WorkspaceGitCommitTrigger,
+        commit_key: String,
+        commit_id: String,
+    ) -> Self {
+        Self {
+            enabled: true,
+            trigger: Some(trigger),
+            committed: true,
+            commit_key: Some(commit_key),
+            commit_id: Some(commit_id),
+            skipped_reason: None,
         }
     }
 }
@@ -106,6 +190,63 @@ pub fn ensure_workspace_git_repository(
     Ok(outcome)
 }
 
+pub fn maybe_commit_workspace_snapshot(
+    workspace_root: &Path,
+    config: &WorkspaceGitConfig,
+    request: &WorkspaceGitCommitRequest,
+) -> CrabResult<WorkspaceGitCommitOutcome> {
+    validate_workspace_root(workspace_root)?;
+    validate_commit_request(request)?;
+    if !config.enabled {
+        return Ok(WorkspaceGitCommitOutcome::disabled());
+    }
+
+    let expected_root = canonicalize_path(workspace_root)?;
+    let repository_root = require_git_repository_root(workspace_root)?;
+    ensure_same_repository_root(&expected_root, &repository_root)?;
+
+    let commit_key = workspace_commit_key(request);
+    let head_has_commit_key = head_commit_contains_key(workspace_root, &commit_key)?;
+
+    stage_workspace_changes(workspace_root)?;
+    let has_changes = workspace_has_changes(workspace_root)?;
+    if !has_changes {
+        if head_has_commit_key {
+            return Ok(WorkspaceGitCommitOutcome::skipped(
+                request.trigger,
+                commit_key,
+                "already_committed",
+                Some(current_head_commit_id(workspace_root)?),
+            ));
+        }
+
+        return Ok(WorkspaceGitCommitOutcome::skipped(
+            request.trigger,
+            commit_key,
+            "no_changes",
+            None,
+        ));
+    }
+
+    if head_has_commit_key {
+        return Err(CrabError::InvariantViolation {
+            context: WORKSPACE_GIT_COMMIT_CONTEXT,
+            message: format!(
+                "HEAD already contains commit key {commit_key:?} but workspace has staged changes; refusing duplicate-key commit"
+            ),
+        });
+    }
+
+    commit_workspace_changes(workspace_root, config, request, &commit_key)?;
+    let commit_id = current_head_commit_id(workspace_root)?;
+
+    Ok(WorkspaceGitCommitOutcome::committed(
+        request.trigger,
+        commit_key,
+        commit_id,
+    ))
+}
+
 fn validate_workspace_root(workspace_root: &Path) -> CrabResult<()> {
     if workspace_root.as_os_str().is_empty() {
         return Err(CrabError::InvariantViolation {
@@ -126,6 +267,34 @@ fn validate_workspace_root(workspace_root: &Path) -> CrabResult<()> {
         });
     }
 
+    Ok(())
+}
+
+fn validate_commit_request(request: &WorkspaceGitCommitRequest) -> CrabResult<()> {
+    ensure_non_empty_commit_field("logical_session_id", &request.logical_session_id)?;
+    ensure_non_empty_commit_field("run_id", &request.run_id)?;
+    if let Some(checkpoint_id) = request.checkpoint_id.as_deref() {
+        ensure_non_empty_commit_field("checkpoint_id", checkpoint_id)?;
+    }
+    if let Some(run_status) = request.run_status.as_deref() {
+        ensure_non_empty_commit_field("run_status", run_status)?;
+    }
+    if request.emitted_at_epoch_ms == 0 {
+        return Err(CrabError::InvariantViolation {
+            context: WORKSPACE_GIT_COMMIT_CONTEXT,
+            message: "emitted_at_epoch_ms must be greater than 0".to_string(),
+        });
+    }
+    Ok(())
+}
+
+fn ensure_non_empty_commit_field(field: &str, value: &str) -> CrabResult<()> {
+    if value.trim().is_empty() {
+        return Err(CrabError::InvariantViolation {
+            context: WORKSPACE_GIT_COMMIT_CONTEXT,
+            message: format!("{field} must not be empty"),
+        });
+    }
     Ok(())
 }
 
@@ -188,6 +357,93 @@ fn has_commits(workspace_root: &Path) -> CrabResult<bool> {
     Ok(output.success)
 }
 
+fn workspace_commit_key(request: &WorkspaceGitCommitRequest) -> String {
+    let checkpoint_id = request
+        .checkpoint_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("none");
+    format!(
+        "{}|{}|{}|{}",
+        request.logical_session_id,
+        request.run_id,
+        request.trigger.as_token(),
+        checkpoint_id
+    )
+}
+
+fn head_commit_contains_key(workspace_root: &Path, commit_key: &str) -> CrabResult<bool> {
+    let has_head = has_commits(workspace_root)?;
+    if !has_head {
+        return Ok(false);
+    }
+
+    let args = ["log", "-1", "--format=%B"];
+    let body = run_git_checked_in_context(WORKSPACE_GIT_COMMIT_CONTEXT, workspace_root, &args)?;
+    let expected = format!("{WORKSPACE_GIT_COMMIT_KEY_TRAILER}: {commit_key}");
+    Ok(body.lines().map(str::trim).any(|line| line == expected))
+}
+
+fn stage_workspace_changes(workspace_root: &Path) -> CrabResult<()> {
+    let args = ["add", "-A", "."];
+    run_git_checked_in_context(WORKSPACE_GIT_COMMIT_CONTEXT, workspace_root, &args)?;
+    Ok(())
+}
+
+fn workspace_has_changes(workspace_root: &Path) -> CrabResult<bool> {
+    let args = ["status", "--porcelain"];
+    let status = run_git_checked_in_context(WORKSPACE_GIT_COMMIT_CONTEXT, workspace_root, &args)?;
+    Ok(status.lines().any(|line| !line.trim().is_empty()))
+}
+
+fn commit_workspace_changes(
+    workspace_root: &Path,
+    config: &WorkspaceGitConfig,
+    request: &WorkspaceGitCommitRequest,
+    commit_key: &str,
+) -> CrabResult<()> {
+    let subject = format!(
+        "crab(workspace): {} {}",
+        request.trigger.as_token(),
+        request.run_id
+    );
+    let checkpoint_id = request.checkpoint_id.as_deref().unwrap_or("none");
+    let run_status = request.run_status.as_deref().unwrap_or("none");
+    let body = [
+        format!("Crab-Commit-Version: {WORKSPACE_GIT_COMMIT_VERSION}"),
+        format!("Crab-Trigger: {}", request.trigger.as_token()),
+        format!("Crab-Logical-Session-Id: {}", request.logical_session_id),
+        format!("Crab-Run-Id: {}", request.run_id),
+        format!("Crab-Checkpoint-Id: {checkpoint_id}"),
+        format!("Crab-Run-Status: {run_status}"),
+        format!("Crab-Emitted-At-Epoch-Ms: {}", request.emitted_at_epoch_ms),
+        format!("{WORKSPACE_GIT_COMMIT_KEY_TRAILER}: {commit_key}"),
+    ]
+    .join("\n");
+
+    let args = vec![
+        "-c".to_string(),
+        format!("user.name={}", config.commit_name),
+        "-c".to_string(),
+        format!("user.email={}", config.commit_email),
+        "commit".to_string(),
+        "--no-gpg-sign".to_string(),
+        "-m".to_string(),
+        subject,
+        "-m".to_string(),
+        body,
+    ];
+    run_git_checked_owned(WORKSPACE_GIT_COMMIT_CONTEXT, workspace_root, &args)?;
+    Ok(())
+}
+
+fn current_head_commit_id(workspace_root: &Path) -> CrabResult<String> {
+    let args = ["rev-parse", "HEAD"];
+    let head = run_git_checked_in_context(WORKSPACE_GIT_COMMIT_CONTEXT, workspace_root, &args)?;
+    Ok(head.trim().to_string())
+}
+
 fn read_origin_remote(workspace_root: &Path) -> CrabResult<Option<String>> {
     let remotes_output = run_git_checked(workspace_root, &["remote"])?;
     let remotes = remotes_output
@@ -215,15 +471,32 @@ fn run_git(workspace_root: &Path, args: &[&str]) -> CrabResult<CommandOutput> {
 }
 
 fn run_git_checked(workspace_root: &Path, args: &[&str]) -> CrabResult<String> {
+    run_git_checked_in_context(WORKSPACE_GIT_CONTEXT, workspace_root, args)
+}
+
+fn run_git_checked_in_context(
+    context: &'static str,
+    workspace_root: &Path,
+    args: &[&str],
+) -> CrabResult<String> {
     let output = run_git(workspace_root, args)?;
     if output.success {
         return Ok(output.stdout);
     }
 
     Err(CrabError::InvariantViolation {
-        context: WORKSPACE_GIT_CONTEXT,
+        context,
         message: format!("git {} failed: {}", args.join(" "), output.stderr.trim()),
     })
+}
+
+fn run_git_checked_owned(
+    context: &'static str,
+    workspace_root: &Path,
+    args: &[String],
+) -> CrabResult<String> {
+    let refs = args.iter().map(String::as_str).collect::<Vec<_>>();
+    run_git_checked_in_context(context, workspace_root, &refs)
 }
 
 fn run_command(binary: &str, workspace_root: &Path, args: &[&str]) -> CrabResult<CommandOutput> {
@@ -260,8 +533,10 @@ mod tests {
 
     use super::{
         canonicalize_path, detect_git_repository_root, ensure_workspace_git_repository,
-        has_commits, read_origin_remote, resolve_head_branch, run_command, run_git_checked,
-        validate_workspace_root, WorkspaceGitEnsureOutcome, WORKSPACE_GIT_CONTEXT,
+        has_commits, maybe_commit_workspace_snapshot, read_origin_remote, resolve_head_branch,
+        run_command, run_git_checked, validate_workspace_root, WorkspaceGitCommitOutcome,
+        WorkspaceGitCommitRequest, WorkspaceGitCommitTrigger, WorkspaceGitEnsureOutcome,
+        WORKSPACE_GIT_COMMIT_CONTEXT, WORKSPACE_GIT_COMMIT_KEY_TRAILER, WORKSPACE_GIT_CONTEXT,
     };
     use crate::CrabError;
 
@@ -310,6 +585,14 @@ mod tests {
 
     fn run_git_in(path: &Path, args: &[&str]) -> String {
         run_git_checked(path, args).expect("git command should succeed")
+    }
+
+    fn write_fixture(path: &Path, relative: &str, contents: &str) {
+        let full_path = path.join(relative);
+        if let Some(parent) = full_path.parent() {
+            fs::create_dir_all(parent).expect("fixture parent should be creatable");
+        }
+        fs::write(full_path, contents).expect("fixture file should be writable");
     }
 
     fn initialize_repo(path: &Path, branch: &str) {
@@ -680,5 +963,209 @@ mod tests {
         assert!(config.enabled);
         assert_eq!(config.remote, None);
         assert_eq!(config.push_policy, WorkspaceGitPushPolicy::Manual);
+    }
+
+    fn sample_commit_request(trigger: WorkspaceGitCommitTrigger) -> WorkspaceGitCommitRequest {
+        WorkspaceGitCommitRequest {
+            logical_session_id: "discord:channel:777".to_string(),
+            run_id: "run:discord:channel:777:message-1".to_string(),
+            trigger,
+            checkpoint_id: None,
+            run_status: Some("succeeded".to_string()),
+            emitted_at_epoch_ms: 123,
+        }
+    }
+
+    #[test]
+    fn workspace_commit_is_disabled_when_persistence_is_off() {
+        let workspace = TempDir::new("commit-disabled");
+        workspace.create();
+        initialize_repo(&workspace.path, "main");
+        fs::write(workspace.child("state.json"), "{}\n").expect("fixture state should be writable");
+
+        let config = parse_workspace_git(&[]);
+        let outcome = maybe_commit_workspace_snapshot(
+            &workspace.path,
+            &config,
+            &sample_commit_request(WorkspaceGitCommitTrigger::RunFinalized),
+        )
+        .expect("disabled commit should be noop");
+        assert_eq!(outcome, WorkspaceGitCommitOutcome::disabled());
+    }
+
+    #[test]
+    fn workspace_commit_writes_metadata_and_returns_commit_id() {
+        let workspace = TempDir::new("commit-metadata");
+        workspace.create();
+        let config = parse_workspace_git(&[
+            ("CRAB_WORKSPACE_GIT_PERSISTENCE_ENABLED", "true"),
+            ("CRAB_WORKSPACE_GIT_BRANCH", "main"),
+            ("CRAB_WORKSPACE_GIT_PUSH_POLICY", "manual"),
+            ("CRAB_WORKSPACE_GIT_COMMIT_NAME", "Crab Runtime"),
+            (
+                "CRAB_WORKSPACE_GIT_COMMIT_EMAIL",
+                "crab-runtime@example.com",
+            ),
+        ]);
+        ensure_workspace_git_repository(&workspace.path, &config)
+            .expect("repository bootstrap should succeed");
+        write_fixture(&workspace.path, "state/session.json", "{ \"run\": 1 }\n");
+
+        let outcome = maybe_commit_workspace_snapshot(
+            &workspace.path,
+            &config,
+            &WorkspaceGitCommitRequest {
+                checkpoint_id: Some("ckpt:run:777:42".to_string()),
+                ..sample_commit_request(WorkspaceGitCommitTrigger::RotationCheckpoint)
+            },
+        )
+        .expect("commit should succeed");
+        assert!(outcome.enabled);
+        assert!(outcome.committed);
+        assert_eq!(
+            outcome.trigger,
+            Some(WorkspaceGitCommitTrigger::RotationCheckpoint)
+        );
+        assert!(outcome.skipped_reason.is_none());
+        let commit_id = outcome
+            .commit_id
+            .as_deref()
+            .expect("commit id should be returned");
+        assert!(!commit_id.trim().is_empty());
+
+        let message = run_git_in(&workspace.path, &["log", "-1", "--pretty=%B"]);
+        assert!(message.contains("Crab-Commit-Version: 1"));
+        assert!(message.contains("Crab-Trigger: rotation_checkpoint"));
+        assert!(message.contains("Crab-Logical-Session-Id: discord:channel:777"));
+        assert!(message.contains("Crab-Run-Id: run:discord:channel:777:message-1"));
+        assert!(message.contains("Crab-Checkpoint-Id: ckpt:run:777:42"));
+        assert!(message.contains("Crab-Run-Status: succeeded"));
+        assert!(message.contains("Crab-Emitted-At-Epoch-Ms: 123"));
+        let expected_key = outcome
+            .commit_key
+            .as_deref()
+            .expect("commit key should be present");
+        assert!(message.contains(&format!(
+            "{WORKSPACE_GIT_COMMIT_KEY_TRAILER}: {expected_key}"
+        )));
+    }
+
+    #[test]
+    fn workspace_commit_skips_replayed_head_commit_without_changes() {
+        let workspace = TempDir::new("commit-replay");
+        workspace.create();
+        let config = parse_workspace_git(&[
+            ("CRAB_WORKSPACE_GIT_PERSISTENCE_ENABLED", "true"),
+            ("CRAB_WORKSPACE_GIT_BRANCH", "main"),
+            ("CRAB_WORKSPACE_GIT_PUSH_POLICY", "manual"),
+        ]);
+        ensure_workspace_git_repository(&workspace.path, &config)
+            .expect("repository bootstrap should succeed");
+        write_fixture(
+            &workspace.path,
+            "state/run.json",
+            "{ \"status\": \"ok\" }\n",
+        );
+        let request = sample_commit_request(WorkspaceGitCommitTrigger::RunFinalized);
+
+        let first = maybe_commit_workspace_snapshot(&workspace.path, &config, &request)
+            .expect("first commit should succeed");
+        assert!(first.committed);
+
+        let second = maybe_commit_workspace_snapshot(&workspace.path, &config, &request)
+            .expect("replayed commit should be detected");
+        assert!(!second.committed);
+        assert_eq!(second.skipped_reason, Some("already_committed".to_string()));
+        assert_eq!(second.commit_key, first.commit_key);
+        assert_eq!(second.commit_id, first.commit_id);
+    }
+
+    #[test]
+    fn workspace_commit_rejects_duplicate_key_when_new_changes_exist() {
+        let workspace = TempDir::new("commit-duplicate-key-dirty");
+        workspace.create();
+        let config = parse_workspace_git(&[
+            ("CRAB_WORKSPACE_GIT_PERSISTENCE_ENABLED", "true"),
+            ("CRAB_WORKSPACE_GIT_BRANCH", "main"),
+            ("CRAB_WORKSPACE_GIT_PUSH_POLICY", "manual"),
+        ]);
+        ensure_workspace_git_repository(&workspace.path, &config)
+            .expect("repository bootstrap should succeed");
+        write_fixture(&workspace.path, "state/first.json", "one\n");
+        let request = sample_commit_request(WorkspaceGitCommitTrigger::RunFinalized);
+        maybe_commit_workspace_snapshot(&workspace.path, &config, &request)
+            .expect("first commit should succeed");
+
+        write_fixture(&workspace.path, "state/second.json", "two\n");
+        let error = maybe_commit_workspace_snapshot(&workspace.path, &config, &request)
+            .expect_err("duplicate key with pending changes should fail");
+        assert_eq!(
+            error,
+            CrabError::InvariantViolation {
+                context: WORKSPACE_GIT_COMMIT_CONTEXT,
+                message: "HEAD already contains commit key \"discord:channel:777|run:discord:channel:777:message-1|run_finalized|none\" but workspace has staged changes; refusing duplicate-key commit".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn workspace_commit_request_validation_is_strict() {
+        let workspace = TempDir::new("commit-validate");
+        workspace.create();
+        let config = parse_workspace_git(&[
+            ("CRAB_WORKSPACE_GIT_PERSISTENCE_ENABLED", "true"),
+            ("CRAB_WORKSPACE_GIT_BRANCH", "main"),
+            ("CRAB_WORKSPACE_GIT_PUSH_POLICY", "manual"),
+        ]);
+        ensure_workspace_git_repository(&workspace.path, &config)
+            .expect("repository bootstrap should succeed");
+
+        let blank_session = maybe_commit_workspace_snapshot(
+            &workspace.path,
+            &config,
+            &WorkspaceGitCommitRequest {
+                logical_session_id: "   ".to_string(),
+                ..sample_commit_request(WorkspaceGitCommitTrigger::RunFinalized)
+            },
+        )
+        .expect_err("blank logical session id should fail");
+        assert_eq!(
+            blank_session,
+            CrabError::InvariantViolation {
+                context: WORKSPACE_GIT_COMMIT_CONTEXT,
+                message: "logical_session_id must not be empty".to_string(),
+            }
+        );
+
+        let zero_epoch = maybe_commit_workspace_snapshot(
+            &workspace.path,
+            &config,
+            &WorkspaceGitCommitRequest {
+                emitted_at_epoch_ms: 0,
+                ..sample_commit_request(WorkspaceGitCommitTrigger::RunFinalized)
+            },
+        )
+        .expect_err("zero emitted timestamp should fail");
+        assert_eq!(
+            zero_epoch,
+            CrabError::InvariantViolation {
+                context: WORKSPACE_GIT_COMMIT_CONTEXT,
+                message: "emitted_at_epoch_ms must be greater than 0".to_string(),
+            }
+        );
+
+        let run_status_none = maybe_commit_workspace_snapshot(
+            &workspace.path,
+            &config,
+            &WorkspaceGitCommitRequest {
+                run_status: None,
+                ..sample_commit_request(WorkspaceGitCommitTrigger::RunFinalized)
+            },
+        )
+        .expect("missing run_status should be accepted");
+        assert_eq!(
+            run_status_none.skipped_reason,
+            Some("no_changes".to_string())
+        );
     }
 }

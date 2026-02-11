@@ -159,7 +159,10 @@ pub use workspace::{
     MEMORY_FILE_NAME, SKILL_AUTHORING_POLICY_FILE_RELATIVE_PATH, SKILL_AUTHORING_POLICY_SKILL_NAME,
     SOUL_FILE_NAME, USER_FILE_NAME,
 };
-pub use workspace_git::{ensure_workspace_git_repository, WorkspaceGitEnsureOutcome};
+pub use workspace_git::{
+    ensure_workspace_git_repository, maybe_commit_workspace_snapshot, WorkspaceGitCommitOutcome,
+    WorkspaceGitCommitRequest, WorkspaceGitCommitTrigger, WorkspaceGitEnsureOutcome,
+};
 
 #[cfg(test)]
 mod tests {

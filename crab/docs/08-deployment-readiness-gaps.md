@@ -16,6 +16,10 @@ Implemented and validated in repository code/tests:
   - rejects nested/external repository mutation
   - enforces deterministic branch bootstrap on empty repositories
   - validates/binds `origin` against configured private remote
+- Workspace git commit trigger/metadata policy:
+  - successful run finalization attempts deterministic workspace commits
+  - rotation checkpoints are committed with a dedicated trigger metadata path
+  - commit trailers carry run/session/checkpoint correlation fields and replay-safe `Crab-Commit-Key`
 - Session token accounting aggregation from normalized backend usage payloads at turn finalization.
 - Rotation trigger execution in finalization (`evaluate_rotation_triggers` -> `execute_rotation_sequence`).
 - Token-threshold compaction is evaluated against session token usage since the last successful

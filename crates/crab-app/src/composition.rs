@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use crab_backends::{CodexAppServerProcess, CodexManager, OpenCodeManager, OpenCodeServerProcess};
 use crab_core::{
     config::{HeartbeatConfig, RotationPolicyConfig, StartupReconciliationConfig},
-    CrabError, CrabResult, RuntimeConfig,
+    CrabError, CrabResult, RuntimeConfig, WorkspaceGitConfig,
 };
 use crab_discord::{GatewayIngress, IdempotentDeliveryLedger};
 use crab_scheduler::LaneScheduler;
@@ -55,6 +55,7 @@ where
     OP: OpenCodeServerProcess,
 {
     pub startup: AppStartupOutcome,
+    pub workspace_git: WorkspaceGitConfig,
     pub rotation_policy: RotationPolicyConfig,
     pub startup_reconciliation_policy: StartupReconciliationConfig,
     pub heartbeat_policy: HeartbeatConfig,
@@ -111,6 +112,7 @@ where
 
     Ok(AppComposition {
         startup,
+        workspace_git: config.workspace_git.clone(),
         rotation_policy: config.rotation,
         startup_reconciliation_policy: config.startup_reconciliation,
         heartbeat_policy: config.heartbeat,

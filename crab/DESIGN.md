@@ -694,6 +694,24 @@ Workspace git bootstrap policy (implemented in WS21-T2):
 - Branch bootstrap is deterministic for empty repos (`HEAD` is set to configured `branch`).
 - `origin` remote is validated/bound against configured remote when provided.
 
+Workspace git commit policy (implemented in WS21-T3):
+
+- Commit attempts are triggered from turn finalization after successful runs.
+- Rotation runs attempt a `rotation_checkpoint` commit first, then a `run_finalized` commit.
+  The second attempt may intentionally no-op when no additional filesystem changes exist.
+- Commit metadata schema is standardized through trailers:
+  - `Crab-Commit-Version`
+  - `Crab-Trigger`
+  - `Crab-Logical-Session-Id`
+  - `Crab-Run-Id`
+  - `Crab-Checkpoint-Id`
+  - `Crab-Run-Status`
+  - `Crab-Emitted-At-Epoch-Ms`
+  - `Crab-Commit-Key`
+- Replay safety uses deterministic commit keys. If HEAD already contains the same
+  key and there are no pending workspace changes, Crab marks the commit attempt as
+  already persisted and does not write a duplicate commit.
+
 ## 18) Deferred Items
 
 - Branch protection and required CI checks.

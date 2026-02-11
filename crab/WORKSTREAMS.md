@@ -599,7 +599,7 @@ Delivered:
 
 ### WS21 - Workspace Private Git Persistence
 
-Status (as of 2026-02-11): WS21-T1 and WS21-T2 completed. WS21-T3 through WS21-T6 pending.
+Status (as of 2026-02-11): WS21-T1 through WS21-T3 completed. WS21-T4 through WS21-T6 pending.
 
 ### WS21-T1 - Git persistence config model
 - Add explicit runtime config for workspace git persistence (`enabled`, `remote`, `branch`, commit identity, push policy).
@@ -615,6 +615,10 @@ Status (as of 2026-02-11): WS21-T1 and WS21-T2 completed. WS21-T3 through WS21-T
 - Define when commits are created (for example on successful run finalization and rotation checkpoints).
 - Standardize commit message schema and include run/session correlation metadata.
 - Done criteria: commit cadence is deterministic and replay-safe under restart conditions.
+ - Implemented:
+   - `crab-core::maybe_commit_workspace_snapshot` with strict request validation and deterministic commit key schema.
+   - Trigger wiring in `TurnExecutor` for successful run finalization plus rotation checkpoints.
+   - Standardized commit trailers (`Crab-Trigger`, `Crab-Logical-Session-Id`, `Crab-Run-Id`, `Crab-Checkpoint-Id`, `Crab-Run-Status`, `Crab-Commit-Key`) with replay-safe duplicate-key detection.
 
 ### WS21-T4 - Async push queue with retry/backoff
 - Push to private remote asynchronously with bounded retry/backoff and durable retry state.

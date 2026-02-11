@@ -5,11 +5,12 @@ use crab_backends::{BackendEvent, BackendEventKind, CodexAppServerProcess, OpenC
 use crab_core::{
     apply_operator_command, build_fallback_checkpoint_document, build_memory_flush_prompt,
     evaluate_rotation_triggers, execute_rotation_sequence, finalize_hidden_memory_flush,
-    parse_operator_command, Checkpoint, CheckpointTurnDocument, CrabError, CrabResult,
-    EventEnvelope, EventKind, EventSource, InferenceProfile, LaneState, LogicalSession,
-    ManualRotationRequest, OperatorActorContext, OperatorCommand, OperatorSessionState,
-    PhysicalSession, RotationSequenceRuntime, RotationTrigger, RotationTriggerInput, Run,
-    RunProfileTelemetry, RunStatus, TokenAccounting, TranscriptEntry, TranscriptEntryRole,
+    maybe_commit_workspace_snapshot, parse_operator_command, Checkpoint, CheckpointTurnDocument,
+    CrabError, CrabResult, EventEnvelope, EventKind, EventSource, InferenceProfile, LaneState,
+    LogicalSession, ManualRotationRequest, OperatorActorContext, OperatorCommand,
+    OperatorSessionState, PhysicalSession, RotationSequenceRuntime, RotationTrigger,
+    RotationTriggerInput, Run, RunProfileTelemetry, RunStatus, TokenAccounting, TranscriptEntry,
+    TranscriptEntryRole, WorkspaceGitCommitRequest, WorkspaceGitCommitTrigger,
     DEFAULT_FALLBACK_TRANSCRIPT_TAIL_LIMIT,
 };
 use crab_discord::{DeliveryAttempt, GatewayMessage, RoutingKey, ShouldSendDecision};
@@ -470,6 +471,12 @@ where
             .state_stores
             .session_store
             .upsert_session(&session)?;
+        self.maybe_persist_workspace_git_commits(
+            &run,
+            final_status,
+            completed_at_epoch_ms,
+            rotation_outcome.as_ref(),
+        );
 
         Ok(DispatchedTurn {
             logical_session_id: logical_session_id.to_string(),
@@ -715,6 +722,70 @@ where
             .upsert_session(&session)?;
 
         self.append_run_state_event(&run, "failed", now_epoch_ms, Some(cause.to_string()))
+    }
+
+    fn maybe_persist_workspace_git_commits(
+        &self,
+        run: &Run,
+        final_status: RunStatus,
+        completed_at_epoch_ms: u64,
+        rotation_outcome: Option<&RotationExecutionOutcome>,
+    ) {
+        if final_status != RunStatus::Succeeded {
+            return;
+        }
+
+        if let Some(rotation_outcome) = rotation_outcome {
+            self.try_persist_workspace_git_commit(
+                run,
+                WorkspaceGitCommitTrigger::RotationCheckpoint,
+                Some(rotation_outcome.checkpoint_id.as_str()),
+                Some(run_status_token(final_status)),
+                completed_at_epoch_ms,
+            );
+        }
+
+        self.try_persist_workspace_git_commit(
+            run,
+            WorkspaceGitCommitTrigger::RunFinalized,
+            None,
+            Some(run_status_token(final_status)),
+            completed_at_epoch_ms,
+        );
+    }
+
+    fn try_persist_workspace_git_commit(
+        &self,
+        run: &Run,
+        trigger: WorkspaceGitCommitTrigger,
+        checkpoint_id: Option<&str>,
+        run_status: Option<&str>,
+        emitted_at_epoch_ms: u64,
+    ) {
+        let request = WorkspaceGitCommitRequest {
+            logical_session_id: run.logical_session_id.clone(),
+            run_id: run.id.clone(),
+            trigger,
+            checkpoint_id: checkpoint_id.map(ToOwned::to_owned),
+            run_status: run_status.map(ToOwned::to_owned),
+            emitted_at_epoch_ms,
+        };
+
+        let result = maybe_commit_workspace_snapshot(
+            &self.composition.startup.workspace_root,
+            &self.composition.workspace_git,
+            &request,
+        );
+        if let Err(_error) = result {
+            #[cfg(not(coverage))]
+            tracing::warn!(
+                logical_session_id = %run.logical_session_id,
+                run_id = %run.id,
+                trigger = %trigger.as_token(),
+                error = %_error,
+                "workspace git commit persistence failed"
+            );
+        }
     }
 
     fn load_required_run(&self, logical_session_id: &str, run_id: &str) -> CrabResult<Run> {
@@ -1450,6 +1521,7 @@ mod tests {
     use crab_core::{
         BackendKind, CrabError, CrabResult, EventKind, InferenceProfile, LaneState,
         OwnerProfileMetadata, ProfileValueSource, ReasoningLevel, RunProfileTelemetry, RunStatus,
+        WorkspaceGitPushPolicy,
     };
     use crab_discord::{GatewayConversationKind, GatewayMessage};
 
@@ -1758,12 +1830,11 @@ mod tests {
         }
     }
 
-    fn build_executor(
-        workspace: &TempWorkspace,
+    fn build_executor_with_config(
         runtime: FakeRuntime,
         lane_queue_limit: usize,
+        config: crab_core::RuntimeConfig,
     ) -> TurnExecutor<FakeCodexProcess, FakeOpenCodeProcess, FakeRuntime> {
-        let config = runtime_config_for_workspace_with_lanes(&workspace.path, 2);
         let composition = compose_runtime_with_processes_and_queue_limit(
             &config,
             "999999999999999999",
@@ -1773,6 +1844,32 @@ mod tests {
         )
         .expect("composition should build");
         TurnExecutor::new(composition, runtime)
+    }
+
+    fn build_executor(
+        workspace: &TempWorkspace,
+        runtime: FakeRuntime,
+        lane_queue_limit: usize,
+    ) -> TurnExecutor<FakeCodexProcess, FakeOpenCodeProcess, FakeRuntime> {
+        let config = runtime_config_for_workspace_with_lanes(&workspace.path, 2);
+        build_executor_with_config(runtime, lane_queue_limit, config)
+    }
+
+    fn run_git_output(workspace_root: &Path, args: &[&str]) -> String {
+        let output = std::process::Command::new("git")
+            .arg("-C")
+            .arg(workspace_root)
+            .args(args)
+            .output()
+            .expect("git command should be executable");
+        assert!(
+            output.status.success(),
+            "git command failed: git -C {} {}: {}",
+            workspace_root.to_string_lossy(),
+            args.join(" "),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8_lossy(&output.stdout).into_owned()
     }
 
     fn invalid_sender_profile_telemetry() -> RunProfileTelemetry {
@@ -1975,6 +2072,77 @@ mod tests {
                 "hello".to_string(),
             )]
         );
+    }
+
+    #[test]
+    fn successful_run_persists_workspace_git_commit_with_run_metadata() {
+        let workspace = TempWorkspace::new("turn-executor", "workspace-git-run-commit");
+        let runtime = FakeRuntime::with_backend_events(
+            vec![
+                backend_event(1, BackendEventKind::TextDelta, &[("text", "hello")]),
+                backend_event(2, BackendEventKind::TurnCompleted, &[("finish", "done")]),
+            ],
+            &[1, 2, 3, 4, 5, 6],
+        );
+        let mut config = runtime_config_for_workspace_with_lanes(&workspace.path, 2);
+        config.workspace_git.enabled = true;
+        config.workspace_git.push_policy = WorkspaceGitPushPolicy::Manual;
+        let mut executor = build_executor_with_config(runtime, 8, config);
+
+        executor
+            .process_gateway_message(gateway_message("m-git-run"))
+            .expect("run should succeed")
+            .expect("run should dispatch");
+
+        let commit_count = run_git_output(&workspace.path, &["rev-list", "--count", "HEAD"]);
+        assert_eq!(commit_count.trim(), "1");
+        let head_message = run_git_output(&workspace.path, &["log", "-1", "--pretty=%B"]);
+        assert!(head_message.contains("Crab-Trigger: run_finalized"));
+        assert!(head_message.contains("Crab-Logical-Session-Id: discord:channel:777"));
+        assert!(head_message.contains("Crab-Run-Id: run:discord:channel:777:m-git-run"));
+        assert!(head_message.contains("Crab-Run-Status: succeeded"));
+    }
+
+    #[test]
+    fn rotation_run_persists_workspace_git_commit_with_checkpoint_metadata() {
+        let workspace = TempWorkspace::new("turn-executor", "workspace-git-rotation-commit");
+        let runtime = FakeRuntime::with_backend_events(
+            vec![
+                backend_event(1, BackendEventKind::TextDelta, &[("text", "ship it")]),
+                backend_event(
+                    2,
+                    BackendEventKind::RunNote,
+                    &[
+                        ("run_usage_input_tokens", "50000"),
+                        ("run_usage_output_tokens", "30000"),
+                        ("run_usage_total_tokens", "120000"),
+                    ],
+                ),
+                backend_event(
+                    3,
+                    BackendEventKind::TurnCompleted,
+                    &[("stop_reason", "done")],
+                ),
+            ],
+            &[1, 2, 3, 4, 5, 6, 7],
+        );
+        let mut config = runtime_config_for_workspace_with_lanes(&workspace.path, 2);
+        config.workspace_git.enabled = true;
+        config.workspace_git.push_policy = WorkspaceGitPushPolicy::Manual;
+        let mut executor = build_executor_with_config(runtime, 8, config);
+
+        executor
+            .process_gateway_message(gateway_message("m-git-rotation"))
+            .expect("rotation run should succeed")
+            .expect("run should dispatch");
+
+        let commit_count = run_git_output(&workspace.path, &["rev-list", "--count", "HEAD"]);
+        assert_eq!(commit_count.trim(), "1");
+        let head_message = run_git_output(&workspace.path, &["log", "-1", "--pretty=%B"]);
+        assert!(head_message.contains("Crab-Trigger: rotation_checkpoint"));
+        assert!(head_message.contains("Crab-Run-Id: run:discord:channel:777:m-git-rotation"));
+        assert!(head_message
+            .contains("Crab-Checkpoint-Id: ckpt:run:discord:channel:777:m-git-rotation:6"));
     }
 
     #[test]
