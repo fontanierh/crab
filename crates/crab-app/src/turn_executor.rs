@@ -777,7 +777,7 @@ where
             &request,
         );
         let _ = result.as_ref().map(|outcome| {
-            self.maybe_enqueue_workspace_git_push(run, trigger, emitted_at_epoch_ms, &outcome);
+            self.maybe_enqueue_workspace_git_push(run, trigger, emitted_at_epoch_ms, outcome);
         });
         #[cfg(not(coverage))]
         if let Err(_error) = &result {
@@ -2222,6 +2222,102 @@ mod tests {
         let queue_body = fs::read_to_string(queue_path).expect("push queue file should exist");
         assert!(queue_body.contains("run:discord:channel:777:m-git-push"));
         assert!(queue_body.contains("run_finalized"));
+    }
+
+    #[test]
+    fn maybe_enqueue_workspace_git_push_request_skips_when_commit_key_is_missing() {
+        let workspace = TempWorkspace::new("turn-executor", "workspace-git-push-missing-key");
+        let runtime = FakeRuntime::with_backend_events(Vec::new(), &[1]);
+        let mut config = runtime_config_for_workspace_with_lanes(&workspace.path, 2);
+        config.workspace_git.enabled = true;
+        config.workspace_git.push_policy = WorkspaceGitPushPolicy::OnCommit;
+        let executor = build_executor_with_config(runtime, 8, config);
+        let run = delivery_run("discord:channel:777", "run:discord:channel:777:missing-key");
+        let commit_outcome = crab_core::WorkspaceGitCommitOutcome {
+            enabled: true,
+            trigger: Some(crab_core::WorkspaceGitCommitTrigger::RunFinalized),
+            committed: false,
+            commit_key: None,
+            commit_id: Some("deadbeef".to_string()),
+            skipped_reason: Some("missing_key".to_string()),
+        };
+
+        executor.maybe_enqueue_workspace_git_push(
+            &run,
+            crab_core::WorkspaceGitCommitTrigger::RunFinalized,
+            99,
+            &commit_outcome,
+        );
+
+        assert!(!workspace
+            .path
+            .join("state/workspace_git_push_queue.json")
+            .exists());
+    }
+
+    #[test]
+    fn maybe_enqueue_workspace_git_push_request_skips_when_commit_id_is_missing() {
+        let workspace = TempWorkspace::new("turn-executor", "workspace-git-push-missing-id");
+        let runtime = FakeRuntime::with_backend_events(Vec::new(), &[1]);
+        let mut config = runtime_config_for_workspace_with_lanes(&workspace.path, 2);
+        config.workspace_git.enabled = true;
+        config.workspace_git.push_policy = WorkspaceGitPushPolicy::OnCommit;
+        let executor = build_executor_with_config(runtime, 8, config);
+        let run = delivery_run("discord:channel:777", "run:discord:channel:777:missing-id");
+        let commit_outcome = crab_core::WorkspaceGitCommitOutcome {
+            enabled: true,
+            trigger: Some(crab_core::WorkspaceGitCommitTrigger::RunFinalized),
+            committed: false,
+            commit_key: Some("run:discord:channel:777:missing-id:run_finalized".to_string()),
+            commit_id: None,
+            skipped_reason: Some("missing_id".to_string()),
+        };
+
+        executor.maybe_enqueue_workspace_git_push(
+            &run,
+            crab_core::WorkspaceGitCommitTrigger::RunFinalized,
+            99,
+            &commit_outcome,
+        );
+
+        assert!(!workspace
+            .path
+            .join("state/workspace_git_push_queue.json")
+            .exists());
+    }
+
+    #[test]
+    fn maybe_enqueue_workspace_git_push_request_tolerates_enqueue_errors() {
+        let workspace = TempWorkspace::new("turn-executor", "workspace-git-push-enqueue-error");
+        let runtime = FakeRuntime::with_backend_events(Vec::new(), &[1]);
+        let mut config = runtime_config_for_workspace_with_lanes(&workspace.path, 2);
+        config.workspace_git.enabled = true;
+        config.workspace_git.push_policy = WorkspaceGitPushPolicy::OnCommit;
+        let executor = build_executor_with_config(runtime, 8, config);
+        let run = delivery_run(
+            "discord:channel:777",
+            "run:discord:channel:777:enqueue-error",
+        );
+        let commit_outcome = crab_core::WorkspaceGitCommitOutcome {
+            enabled: true,
+            trigger: Some(crab_core::WorkspaceGitCommitTrigger::RunFinalized),
+            committed: true,
+            commit_key: Some("run:discord:channel:777:enqueue-error:run_finalized".to_string()),
+            commit_id: Some("abcdef123456".to_string()),
+            skipped_reason: None,
+        };
+        let state_root = executor.composition.state_stores.root.clone();
+        fs::remove_dir_all(&state_root).expect("state root should be removable");
+        fs::write(&state_root, "blocked").expect("state root file sabotage should succeed");
+
+        executor.maybe_enqueue_workspace_git_push(
+            &run,
+            crab_core::WorkspaceGitCommitTrigger::RunFinalized,
+            99,
+            &commit_outcome,
+        );
+
+        assert!(state_root.is_file());
     }
 
     #[test]

@@ -925,11 +925,15 @@ struct CommandOutput {
 }
 
 fn run_git(workspace_root: &Path, args: &[&str]) -> CommandOutput {
-    run_command(GIT_BINARY, workspace_root, args).unwrap_or_else(|error| CommandOutput {
+    run_command(GIT_BINARY, workspace_root, args).unwrap_or_else(command_spawn_failure_output)
+}
+
+fn command_spawn_failure_output(error: CrabError) -> CommandOutput {
+    CommandOutput {
         success: false,
         stdout: String::new(),
         stderr: error.to_string(),
-    })
+    }
 }
 
 fn run_git_checked(workspace_root: &Path, args: &[&str]) -> CrabResult<String> {
@@ -994,17 +998,17 @@ mod tests {
     use crate::{RuntimeConfig, WorkspaceGitPushPolicy};
 
     use super::{
-        canonicalize_path, detect_git_repository_root, enqueue_workspace_git_push_request,
-        ensure_push_queue_layout, ensure_workspace_git_repository, has_commits,
-        maybe_commit_workspace_snapshot, persist_workspace_git_push_queue,
-        process_workspace_git_push_queue, read_origin_remote, resolve_head_branch, run_command,
-        run_git_checked, validate_workspace_root, workspace_git_push_queue_path,
-        WorkspaceGitCommitOutcome, WorkspaceGitCommitRequest, WorkspaceGitCommitTrigger,
-        WorkspaceGitEnsureOutcome, WorkspaceGitPushEnqueueOutcome, WorkspaceGitPushQueueEntry,
-        WorkspaceGitPushQueueState, WorkspaceGitPushRequest, WorkspaceGitPushTickOutcome,
-        WORKSPACE_GIT_COMMIT_CONTEXT, WORKSPACE_GIT_COMMIT_KEY_TRAILER, WORKSPACE_GIT_CONTEXT,
-        WORKSPACE_GIT_PUSH_MAX_ATTEMPTS, WORKSPACE_GIT_PUSH_QUEUE_CONTEXT,
-        WORKSPACE_GIT_PUSH_QUEUE_VERSION,
+        canonicalize_path, command_spawn_failure_output, detect_git_repository_root,
+        enqueue_workspace_git_push_request, ensure_push_queue_layout,
+        ensure_workspace_git_repository, has_commits, maybe_commit_workspace_snapshot,
+        persist_workspace_git_push_queue, process_workspace_git_push_queue, read_origin_remote,
+        resolve_head_branch, run_command, run_git_checked, validate_workspace_root,
+        workspace_git_push_queue_path, WorkspaceGitCommitOutcome, WorkspaceGitCommitRequest,
+        WorkspaceGitCommitTrigger, WorkspaceGitEnsureOutcome, WorkspaceGitPushEnqueueOutcome,
+        WorkspaceGitPushQueueEntry, WorkspaceGitPushQueueState, WorkspaceGitPushRequest,
+        WorkspaceGitPushTickOutcome, WORKSPACE_GIT_COMMIT_CONTEXT,
+        WORKSPACE_GIT_COMMIT_KEY_TRAILER, WORKSPACE_GIT_CONTEXT, WORKSPACE_GIT_PUSH_MAX_ATTEMPTS,
+        WORKSPACE_GIT_PUSH_QUEUE_CONTEXT, WORKSPACE_GIT_PUSH_QUEUE_VERSION,
     };
     use crate::CrabError;
 
@@ -1416,6 +1420,18 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn command_spawn_failure_output_maps_to_failed_command_output() {
+        let output = command_spawn_failure_output(CrabError::Io {
+            context: WORKSPACE_GIT_CONTEXT,
+            path: None,
+            message: "spawn failed".to_string(),
+        });
+        assert!(!output.success);
+        assert!(output.stdout.is_empty());
+        assert!(output.stderr.contains("spawn failed"));
     }
 
     #[test]
