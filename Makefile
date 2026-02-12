@@ -24,12 +24,7 @@ coverage:
 	cargo llvm-cov --workspace --all-features --locked --lcov --output-path coverage/lcov.info
 
 coverage-gate:
-	cargo llvm-cov --workspace --all-features --locked \
-		--ignore-filename-regex 'crates/crab-app/src/installer.rs' \
-		--fail-under-lines 100 \
-		--fail-under-functions 100 \
-		--fail-uncovered-lines 0 \
-		--fail-uncovered-functions 0
+	bash scripts/coverage_gate.sh
 
 coverage-diagnostics:
 	bash scripts/coverage_diagnostics.sh

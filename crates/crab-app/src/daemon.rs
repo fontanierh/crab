@@ -1249,12 +1249,13 @@ impl OpenCodeExecutionBridge {
             map_opencode_inference_profile(&run.profile.resolved_profile, self.reasoning_mode);
         let prompt = build_opencode_prompt(turn_context, mapping.guidance_note.as_deref());
         if should_materialize_opencode_session(physical_session) {
-            let recovery = self.recover_session_with_helper(
+            let recovery_result = self.recover_session_with_helper(
                 None,
                 mapping.session_config.clone(),
                 None,
                 mapping.turn_config.clone(),
-            )?;
+            );
+            let recovery = recovery_result?;
             physical_session.backend_session_id = recovery.new_session_id;
         }
 
@@ -1268,12 +1269,13 @@ impl OpenCodeExecutionBridge {
             Ok(result) => result,
             Err(error) if should_retry_opencode_session_recovery(&error) => {
                 let previous_session_id = physical_session.backend_session_id.clone();
-                let recovery = self.recover_session_with_helper(
+                let recovery_result = self.recover_session_with_helper(
                     Some(previous_session_id.as_str()),
                     mapping.session_config,
                     None,
                     mapping.turn_config.clone(),
-                )?;
+                );
+                let recovery = recovery_result?;
                 #[cfg(not(coverage))]
                 if let Some(previous_session_end_error) =
                     recovery.previous_session_end_error.as_deref()
@@ -2943,6 +2945,18 @@ mod tests {
         }
     }
 
+    fn onboarding_capture_payload_json() -> String {
+        serde_json::json!({
+            "schema_version": "v1",
+            "agent_identity": "Crab",
+            "owner_identity": "Owner",
+            "machine_location": "Living room",
+            "machine_timezone": "America/New_York",
+            "primary_goals": ["Build reliable automations"]
+        })
+        .to_string()
+    }
+
     fn install_handler_ok(_flag: Arc<AtomicBool>) -> Result<(), String> {
         Ok(())
     }
@@ -4150,6 +4164,61 @@ mod tests {
     }
 
     #[test]
+    fn opencode_recovery_bridge_process_exposes_health_and_terminate_paths() {
+        let process =
+            super::OpenCodeRecoveryBridgeProcess::new("http://127.0.0.1:4210".to_string());
+        let handle = process
+            .spawn_server()
+            .expect("recovery bridge process should spawn deterministic handle");
+        assert_eq!(handle.process_id, 1);
+        assert!(
+            process.is_server_healthy(&handle),
+            "recovery bridge process should always report healthy"
+        );
+        process
+            .terminate_server(&handle)
+            .expect("recovery bridge process terminate should succeed");
+    }
+
+    #[test]
+    fn opencode_recovery_runtime_adapter_send_prompt_delegates_to_runtime_execute_turn() {
+        let bridge_runtime = ScriptedOpenCodeBridgeRuntime::with_results(
+            Vec::new(),
+            vec![Ok(scripted_opencode_turn_result(
+                "checkpoint-turn-1",
+                "checkpoint replay",
+                (3, 2, 5),
+                OpenCodeTurnState::Completed,
+            ))],
+        );
+        let bridge_state = bridge_runtime.clone();
+        let adapter = super::OpenCodeRecoveryBridgeRuntimeAdapter {
+            runtime: &bridge_runtime,
+            server_base_url: "http://127.0.0.1:4210",
+        };
+
+        let turn_id = crab_backends::OpenCodeRecoveryRuntime::send_prompt(
+            &adapter,
+            "session-checkpoint",
+            "restore from checkpoint",
+            OpenCodeTurnConfig::default(),
+        )
+        .expect("send_prompt should return the delegated turn id");
+        assert_eq!(turn_id, "checkpoint-turn-1".to_string());
+
+        let stats = bridge_state.stats();
+        assert_eq!(stats.execute_calls, 1);
+        assert_eq!(
+            stats.seen_session_ids,
+            vec!["session-checkpoint".to_string()]
+        );
+        assert_eq!(
+            stats.seen_prompts,
+            vec!["restore from checkpoint".to_string()]
+        );
+    }
+
+    #[test]
     fn http_opencode_bridge_runtime_parses_session_turn_events_and_usage() {
         let mut http_server = ScriptedHttpServer::start(vec![
             ScriptedHttpResponse {
@@ -4868,6 +4937,129 @@ mod tests {
         let opencode_stats = opencode_state.stats();
         assert_eq!(opencode_stats.spawn_calls, 1);
         assert_eq!(opencode_stats.terminate_calls, 1);
+    }
+
+    #[test]
+    fn daemon_loop_owner_onboarding_capture_emits_conflict_warning_and_run_note() {
+        let workspace = TempWorkspace::new("daemon", "onboarding-capture-conflict");
+        std::fs::create_dir_all(&workspace.path)
+            .expect("workspace root should be creatable for conflict setup");
+        std::fs::write(
+            workspace.path.join("IDENTITY.md"),
+            "# IDENTITY.md\n\n<!-- CRAB:ONBOARDING_MANAGED:START -->\nlegacy",
+        )
+        .expect("malformed identity markers should be writable for conflict setup");
+        std::fs::write(
+            workspace.path.join("BOOTSTRAP.md"),
+            "Bootstrap remains pending until owner onboarding capture is applied.",
+        )
+        .expect("bootstrap marker should be writable for pending onboarding setup");
+
+        let mut config = runtime_config_for_workspace_with_lanes(&workspace.path, 2);
+        config.owner.discord_user_ids = vec!["111".to_string()];
+        let daemon_config = DaemonConfig {
+            bot_user_id: "999".to_string(),
+            tick_interval_ms: 5,
+            max_iterations: Some(1),
+        };
+        let discord = ScriptedDiscordIo::with_state(DiscordIoState {
+            inbound: VecDeque::from([Ok(Some(gateway_message(
+                "m-onboarding-capture-daemon",
+                "111",
+                &onboarding_capture_payload_json(),
+            )))]),
+            ..DiscordIoState::default()
+        });
+        let discord_state = discord.clone();
+        let codex = TrackingCodexProcess::new();
+        let opencode = TrackingOpenCodeProcess::new();
+        let mut control = ScriptedControl::with_now(vec![2_000_000_020_000, 2_000_000_020_001]);
+
+        let stats = run_daemon_loop_with_transport(
+            &config,
+            &daemon_config,
+            codex,
+            opencode,
+            discord,
+            &mut control,
+        )
+        .expect("owner onboarding capture should execute in daemon loop");
+        assert_eq!(stats.dispatched_runs, 1);
+
+        let discord = discord_state.state();
+        assert_eq!(discord.posted.len(), 1);
+        assert!(
+            discord.posted[0].2.contains("Onboarding capture applied."),
+            "owner onboarding completion should produce confirmation response"
+        );
+        assert!(
+            discord.posted[0].2.contains("Profile conflicts detected"),
+            "owner onboarding completion should include conflict warning"
+        );
+
+        let run_id = "run:discord:channel:777:m-onboarding-capture-daemon";
+        let events = EventStore::new(workspace.path.join("state"))
+            .replay_run("discord:channel:777", run_id)
+            .expect("event replay should succeed");
+        let conflict_event = events
+            .iter()
+            .find(|event| {
+                event.kind == crab_core::EventKind::RunNote
+                    && event
+                        .payload
+                        .get("event")
+                        .is_some_and(|value| value == "onboarding_profile_conflicts")
+            })
+            .expect("conflict run note should be recorded");
+        assert!(
+            conflict_event
+                .payload
+                .get("conflict_paths")
+                .is_some_and(|value| value.contains("IDENTITY.md")),
+            "conflict payload should include the identity file path"
+        );
+    }
+
+    #[test]
+    fn daemon_loop_owner_manual_compact_command_rotates_with_checkpoint_response() {
+        let workspace = TempWorkspace::new("daemon", "manual-compact-owner");
+        let mut config = runtime_config_for_workspace_with_lanes(&workspace.path, 2);
+        config.owner.discord_user_ids = vec!["111".to_string()];
+        let daemon_config = DaemonConfig {
+            bot_user_id: "999".to_string(),
+            tick_interval_ms: 5,
+            max_iterations: Some(1),
+        };
+        let discord = ScriptedDiscordIo::with_state(DiscordIoState {
+            inbound: VecDeque::from([Ok(Some(gateway_message(
+                "m-manual-compact",
+                "111",
+                "/compact confirm",
+            )))]),
+            ..DiscordIoState::default()
+        });
+        let discord_state = discord.clone();
+        let codex = TrackingCodexProcess::new();
+        let opencode = TrackingOpenCodeProcess::new();
+        let mut control = ScriptedControl::with_now(vec![2_000_000_030_000, 2_000_000_030_001]);
+
+        let stats = run_daemon_loop_with_transport(
+            &config,
+            &daemon_config,
+            codex,
+            opencode,
+            discord,
+            &mut control,
+        )
+        .expect("owner manual compact command should execute in daemon loop");
+        assert_eq!(stats.dispatched_runs, 1);
+
+        let discord = discord_state.state();
+        assert_eq!(discord.posted.len(), 1);
+        assert!(
+            discord.posted[0].2.contains("checkpoint:"),
+            "manual compact response should include the emitted checkpoint id"
+        );
     }
 
     #[test]

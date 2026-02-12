@@ -28,7 +28,7 @@ Crab is a Rust harness for running coding agents (Claude Code, Codex CLI, OpenCo
   - Discord connector runtime is implemented: `crab-discord-connector` bridges Discord Gateway/REST <-> `crabd` JSONL.
   - `WS18-T3` complete: Discord provisioning + secret operations runbook is documented.
   - `WS18-T4` complete: target-machine service + operations playbook is documented.
-  - `WS18-T5` pending: execute deployment acceptance checklist on target machine and capture evidence/go-no-go decision.
+  - `WS18-T5` in progress: checklist and evidence docs are complete; target-machine execution evidence + final GO/NO-GO recording remain.
 - `WS19` complete: cross-platform installer (`crabctl`) supports `install`, `upgrade`, `rollback`, and `doctor` for macOS/Linux, including prerequisite bootstrap, runtime layout/service provisioning, and idempotent rerun safety.
 - `WS20` complete: canonical skills root bootstrap (`.agents/skills`), Claude compatibility symlink enforcement (`.claude/skills -> ../.agents/skills`), built-in skill-authoring policy file, prompt-contract governance section, and startup diagnostics coverage.
 - `WS21` complete:
@@ -38,11 +38,12 @@ Crab is a Rust harness for running coding agents (Claude Code, Codex CLI, OpenCo
   - `WS21-T4` complete: async push queue is implemented with durable retry state (`state/workspace_git_push_queue.json`), bounded exponential backoff, idempotent enqueue by commit key, daemon-loop non-blocking processing, and restart-safe recovery semantics.
   - `WS21-T5` complete: secret-safe staging guardrails are enforced before automated commits (denylist + allowlist override policy), with commit-time staging audit metadata and runtime skipped-path diagnostics.
   - `WS21-T6` complete: divergence/conflict push failures are classified deterministically (`non_fast_forward`/`diverged_history`), escalated to `manual_recovery_required`, and exposed with operator recovery commands.
-- `WS22` in progress:
+- `WS22` complete for current scoped deliverables:
   - `WS22-T1` complete: global state schema marker + startup migrator pipeline (`state/schema_version.json`, migration locking, idempotent reruns, startup migration telemetry events).
   - `WS22-T2` complete: actionable compatibility preflight is wired into `crabctl upgrade` and `crabctl doctor`, including explicit remediation commands and distinct blocked-upgrade exit code (`3`).
-  - `WS22-T3` started: migration fixture coverage exists for initial `v0 -> v1`, no-op rerun, stale-lock recovery, active-lock blocking, and corrupt-marker handling.
-  - `WS22-T4` started: schema evolution governance is now documented in contributor policy/docs.
+  - `WS22-T3` complete: migration fixture coverage exists for initial `v0 -> v1`, no-op rerun, stale-lock recovery, active-lock blocking, and corrupt-marker handling.
+  - `WS22-T4` complete: schema evolution governance is documented in contributor policy/docs.
+  - `WS22-T5` complete as design scope: snapshot/restore command-path design note is documented and command implementation remains intentionally deferred.
 
 ## Docs
 
@@ -92,7 +93,7 @@ Coverage note:
 - `make coverage-gate` currently applies `--ignore-filename-regex 'crates/crab-app/src/installer.rs'`
   due to a reproducible `cargo-llvm-cov` line-mapping false negative in that file.
 - If `make coverage-gate` fails, run `make coverage-diagnostics` to generate actionable uncovered
-  line/function diagnostics under `coverage/uncovered_locations.txt`.
+  line diagnostics under `coverage/uncovered_locations.txt`.
 
 Duplication note:
 - `make duplication-check` runs `jscpd` against crate Rust sources with explicit ignore rules

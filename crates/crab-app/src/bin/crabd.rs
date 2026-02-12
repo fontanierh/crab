@@ -801,6 +801,18 @@ mod tests {
             .expect("frame json should serialize")
     }
 
+    fn onboarding_capture_payload_json() -> String {
+        serde_json::json!({
+            "schema_version": "v1",
+            "agent_identity": "Crab",
+            "owner_identity": "Owner",
+            "machine_location": "Living room",
+            "machine_timezone": "America/New_York",
+            "primary_goals": ["Build reliable automations"]
+        })
+        .to_string()
+    }
+
     fn ok_receipt_inbound_frame_json(op_id: &str, channel_id: &str, delivery_id: &str) -> String {
         serde_json::to_string(&CrabdInboundFrame::OutboundReceipt(CrabdOutboundReceipt {
             op_id: op_id.to_string(),
@@ -1492,6 +1504,49 @@ mod tests {
         );
         assert_eq!(control.slept, vec![1]);
         assert_run_event_stream_contains_delta(&workspace_root, run_id, "Codex bridge response");
+    }
+
+    #[test]
+    fn run_with_reader_and_control_processes_owner_onboarding_capture() {
+        let workspace_root = temp_workspace_root("run-owner-onboarding-capture");
+        let mut values = runtime_values(&workspace_root);
+        values.insert("CRAB_OWNER_DISCORD_USER_IDS".to_string(), "111".to_string());
+        std::fs::write(
+            Path::new(&workspace_root).join("BOOTSTRAP.md"),
+            "Bootstrap remains pending until owner onboarding capture is applied.",
+        )
+        .expect("bootstrap marker should be writable for onboarding test setup");
+        let run_id = "run:discord:channel:777:m-owner-onboarding";
+        let input = format!(
+            "{}\n{}\n",
+            gateway_inbound_frame_json("m-owner-onboarding", &onboarding_capture_payload_json()),
+            ok_receipt_inbound_frame_json(
+                "op-1",
+                "777",
+                "delivery:run:discord:channel:777:m-owner-onboarding:chunk:0"
+            )
+        );
+        let mut control = ScriptedControl::with_now(vec![1_500, 1_501]);
+        let mut reader = Cursor::new(input);
+
+        let stats = run_with_reader_and_control(&values, &mut reader, &mut control)
+            .expect("owner onboarding capture should succeed in daemon runner");
+        assert_eq!(stats.dispatched_runs, 1);
+        assert_eq!(control.slept, vec![1]);
+        assert!(
+            !Path::new(&workspace_root).join("BOOTSTRAP.md").exists(),
+            "bootstrap marker should be retired after onboarding completion"
+        );
+
+        let events = EventStore::new(Path::new(&workspace_root).join("state"))
+            .replay_run("discord:channel:777", run_id)
+            .expect("run events should replay from store");
+        assert!(events.iter().any(|event| {
+            event
+                .payload
+                .get("event")
+                .is_some_and(|value| value == "bootstrap_completed")
+        }));
     }
 
     #[test]

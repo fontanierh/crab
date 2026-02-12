@@ -689,8 +689,8 @@ Status (as of 2026-02-11): WS21-T1 through WS21-T6 completed.
 
 ### WS22 - Runtime State Evolution and Migration Safety
 
-Status (as of 2026-02-12): in progress (`WS22-T1` to `WS22-T4` implemented; `WS22-T5`
-design note complete, command implementation deferred).
+Status (as of 2026-02-12): scoped deliverables complete (`WS22-T1` to `WS22-T4` implemented;
+`WS22-T5` design note complete with command implementation intentionally deferred).
 
 ### WS22-T1 - Global state schema marker + startup migrator pipeline
 - Add a global state schema marker at `state/schema_version.json` with explicit schema (`version`, `updated_at_epoch_ms`).

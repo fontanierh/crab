@@ -79,7 +79,7 @@ Implemented and validated in repository code/tests:
 - Quality engineering ergonomics are standardized:
   - strict gate: `make quality`
   - fast local preflight: `make quick`
-  - coverage diagnostics helper (`lines + functions`): `make coverage-diagnostics`
+  - coverage diagnostics helper (`lines`): `make coverage-diagnostics`
   - baseline/trend capture helpers: `make quality-baseline` + `make quality-report`
 
 Important runtime shape today:

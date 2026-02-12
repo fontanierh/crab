@@ -152,9 +152,10 @@ The repository now enforces quality with executable gates and CI automation.
   `make test`
 - Coverage gate (100% lines/functions, 0 uncovered lines/functions):
   `make coverage-gate`
-- Coverage diagnostics (actionable uncovered line/function locations):
+- Coverage diagnostics (actionable uncovered line locations):
   `make coverage-diagnostics`
-- Coverage diagnostics include both uncovered line locations and uncovered functions.
+- Function-level coverage is still enforced strictly by `make coverage-gate` via
+  `cargo llvm-cov --fail-under-functions 100 --fail-uncovered-functions 0`.
 - Note: the coverage gate command currently includes
   `--ignore-filename-regex 'crates/crab-app/src/installer.rs'` for the documented tool-mapping
   false negative.
@@ -171,6 +172,8 @@ The repository now enforces quality with executable gates and CI automation.
   `Cargo.lock`
 - Local gate runner:
   `Makefile`
+- Coverage gate script:
+  `scripts/coverage_gate.sh`
 - Duplication config:
   `.jscpd.json`
 - CI workflow:

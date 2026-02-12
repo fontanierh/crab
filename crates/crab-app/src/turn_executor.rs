@@ -420,13 +420,12 @@ where
             }
         }
 
-        let final_status = if manual_command_resolution.is_some() {
-            RunStatus::Succeeded
-        } else if onboarding_completion_resolution.is_some() {
-            RunStatus::Succeeded
-        } else {
-            derive_final_status(&backend_events)
-        };
+        let final_status =
+            if manual_command_resolution.is_some() || onboarding_completion_resolution.is_some() {
+                RunStatus::Succeeded
+            } else {
+                derive_final_status(&backend_events)
+            };
         let completed_at_epoch_ms = self.runtime.now_epoch_ms()?;
         run.status = final_status;
         run.completed_at_epoch_ms = Some(completed_at_epoch_ms);
@@ -492,12 +491,13 @@ where
             let _ =
                 self.deliver_rendered_assistant_output(&run, &response, 0, completed_at_epoch_ms)?;
         } else if let Some(onboarding_completion_resolution) = onboarding_completion_resolution {
-            let _ = self.deliver_rendered_assistant_output(
+            let delivery_result = self.deliver_rendered_assistant_output(
                 &run,
                 &onboarding_completion_resolution.user_message,
                 0,
                 completed_at_epoch_ms,
-            )?;
+            );
+            let _ = delivery_result?;
         }
 
         self.composition
@@ -548,7 +548,7 @@ where
         let capture = parse_onboarding_capture_document(&run.user_input)?;
         let workspace_root = self.composition.startup.workspace_root.clone();
         let profile_write_outcome = persist_onboarding_profile_files(&workspace_root, &capture)?;
-        let completion_outcome = execute_onboarding_completion_protocol(
+        let completion_result = execute_onboarding_completion_protocol(
             self,
             &workspace_root,
             &OnboardingCompletionInput {
@@ -559,7 +559,8 @@ where
                 capture,
                 profile: Some(run.profile.clone()),
             },
-        )?;
+        );
+        let completion_outcome = completion_result?;
 
         if !profile_write_outcome.conflict_paths.is_empty() {
             let mut payload = BTreeMap::new();
@@ -571,13 +572,14 @@ where
                 "conflict_paths".to_string(),
                 profile_write_outcome.conflict_paths.join(","),
             );
-            self.append_run_event(
+            let append_result = self.append_run_event(
                 run,
                 EventKind::RunNote,
                 EventSource::System,
                 payload,
                 completed_at_epoch_ms,
-            )?;
+            );
+            append_result?;
         }
 
         let mut user_message = format!(
@@ -2945,6 +2947,32 @@ mod tests {
     }
 
     #[test]
+    fn onboarding_completion_delivery_errors_are_propagated() {
+        let workspace = TempWorkspace::new("turn-executor", "onboarding-complete-delivery-error");
+        let mut runtime = FakeRuntime::with_backend_events(Vec::new(), &[1, 2, 3, 4, 5]);
+        runtime.resolve_profile_results = VecDeque::from(vec![Ok(owner_profile_telemetry())]);
+        runtime.deliver_results = VecDeque::from(vec![Err(CrabError::InvariantViolation {
+            context: "deliver_onboarding",
+            message: "onboarding response delivery failed".to_string(),
+        })]);
+        let mut executor = build_executor(&workspace, runtime, 8);
+
+        let error = executor
+            .process_gateway_message(gateway_message_with_content(
+                "m-onboarding-complete-delivery-error",
+                onboarding_capture_payload_json(),
+            ))
+            .expect_err("onboarding response delivery failures should bubble up");
+        assert_eq!(
+            error,
+            CrabError::InvariantViolation {
+                context: "deliver_onboarding",
+                message: "onboarding response delivery failed".to_string(),
+            }
+        );
+    }
+
+    #[test]
     fn onboarding_capture_is_owner_only_while_bootstrap_is_pending() {
         let workspace = TempWorkspace::new("turn-executor", "onboarding-capture-non-owner");
         let mut runtime = FakeRuntime::with_backend_events(Vec::new(), &[1, 2, 3, 4]);
@@ -3020,6 +3048,61 @@ mod tests {
             .steps
             .contains(&"ensure_physical_session".to_string()));
         assert!(!runtime.steps.contains(&"execute_backend_turn".to_string()));
+    }
+
+    #[test]
+    fn owner_onboarding_capture_with_profile_conflicts_appends_run_note_and_warning_message() {
+        let workspace = TempWorkspace::new("turn-executor", "onboarding-capture-conflicts");
+        let mut runtime = FakeRuntime::with_backend_events(Vec::new(), &[1, 2, 3, 4, 5]);
+        runtime.resolve_profile_results = VecDeque::from(vec![Ok(owner_profile_telemetry())]);
+        let mut executor = build_executor(&workspace, runtime, 8);
+        fs::write(
+            workspace.path.join("IDENTITY.md"),
+            "# IDENTITY.md\n\n<!-- CRAB:ONBOARDING_MANAGED:START -->\nlegacy",
+        )
+        .expect("malformed identity markers should be writable for conflict setup");
+
+        executor
+            .process_gateway_message(gateway_message_with_content(
+                "m-onboarding-capture-conflicts",
+                onboarding_capture_payload_json(),
+            ))
+            .expect("owner onboarding capture should succeed with conflict warning")
+            .expect("owner onboarding capture should dispatch");
+
+        let runtime = executor.runtime_mut();
+        assert_eq!(runtime.delivered_outputs.len(), 1);
+        assert!(
+            runtime.delivered_outputs[0]
+                .4
+                .contains("Profile conflicts detected"),
+            "user delivery should surface conflict warning"
+        );
+
+        let run_id = "run:discord:channel:777:m-onboarding-capture-conflicts";
+        let events = executor
+            .composition()
+            .state_stores
+            .event_store
+            .replay_run("discord:channel:777", run_id)
+            .expect("event replay should succeed");
+        let conflict_event = events
+            .iter()
+            .find(|event| {
+                event.kind == EventKind::RunNote
+                    && event
+                        .payload
+                        .get("event")
+                        .is_some_and(|value| value == "onboarding_profile_conflicts")
+            })
+            .expect("conflict run note should be emitted");
+        assert!(
+            conflict_event
+                .payload
+                .get("conflict_paths")
+                .is_some_and(|value| value.contains("IDENTITY.md")),
+            "conflict payload should contain IDENTITY path"
+        );
     }
 
     #[test]

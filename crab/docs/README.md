@@ -46,5 +46,5 @@ These docs focus on:
 - Canonical strict gate: `make quality` (coverage gate + duplication gate are blocking).
 - Fast local preflight: `make quick` (non-gating).
 - Coverage failure diagnostics: `make coverage-diagnostics` (writes actionable uncovered
-  line/function details to `coverage/uncovered_locations.txt`).
+  line details to `coverage/uncovered_locations.txt`).
 - Baseline capture/trend inputs: `make quality-baseline` and `make quality-report`.

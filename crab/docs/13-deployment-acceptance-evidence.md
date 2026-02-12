@@ -21,7 +21,7 @@ The table below maps each acceptance item to currently available repository/stag
 | Checklist item | Repository/staging evidence |
 | --- | --- |
 | Cold workspace first boot creates/repairs required files and links | `crates/crab-core/src/workspace.rs` tests (`ensure_workspace_creates_new_workspace_layout`, link repair tests), `crates/crab-app/src/startup.rs` tests (`initialize_runtime_startup_initializes_workspace_before_runtime`) |
-| First owner interaction runs onboarding prompts and persists owner/agent identity context | `crates/crab-app/src/startup.rs` tests (`first_interaction_onboarding_completion_transitions_workspace_to_ready`), onboarding modules in `crates/crab-core/src/onboarding*.rs` |
+| First owner interaction persists owner/agent identity context through strict onboarding capture contract | `crates/crab-app/src/turn_executor.rs` tests (`owner_can_complete_onboarding_capture_through_normal_turn_flow`, malformed/authorization regression tests), onboarding modules in `crates/crab-core/src/onboarding*.rs` |
 | Normal owner run processes end-to-end (`ingress -> lane -> backend -> Discord delivery`) | `crates/crab-app/src/daemon.rs` tests (`daemon_loop_dispatches_claude_owner_turn_and_shuts_down_claude_session`), `crates/crab-app/src/turn_executor.rs` end-to-end dispatch tests |
 | Non-owner run obeys per-user memory scope and disclosure policy | `crates/crab-core/src/trust.rs` tests, `crates/crab-core/src/memory_snippets.rs` tests (`resolves_non_owner_scope_plus_recent_global_memory`) |
 | Restart during/after a run replays missing outbound delivery without duplicate messages/edits | `crates/crab-app/src/turn_executor.rs` tests (`restart_recovery_replays_missing_delivery_and_continues_next_run`, replay delivery tests) |
@@ -30,7 +30,7 @@ The table below maps each acceptance item to currently available repository/stag
 | Manual `/compact confirm` and `/reset confirm` commands execute only for owner and are audited | `crates/crab-app/src/turn_executor.rs` tests for owner-only enforcement and audit event behavior |
 | Heartbeat escalates correctly for stalled run/backend/dispatcher scenarios | `crates/crab-app/src/daemon.rs` heartbeat-action tests and `crates/crab-app/src/maintenance.rs` escalation tests |
 | Service restart/reboot persistence is validated by operations playbook steps | Runbook exists (`crab/docs/10-target-machine-operations.md`), target-host execution still pending |
-| `make quality` passes on deployment commit | `make quality` passed on main at `02280f1` (2026-02-12); rerun `make quality` on final deployment candidate commit before GO |
+| `make quality` passes on deployment commit | `make quality` is required in this readiness pass and must be rerun on the final deployment candidate commit before GO |
 
 ## Target-Machine Execution Log (Fill During Deployment)
 
