@@ -5,7 +5,7 @@
 This document tracks unresolved runtime and deployment gaps before Crab is deployed on
 the target machine.
 
-## Status Snapshot (February 11, 2026)
+## Status Snapshot (February 12, 2026)
 
 Implemented and validated in repository code/tests:
 
@@ -119,30 +119,37 @@ Required work:
 - Execute checklist on target machine.
 - Record evidence links (logs/screenshots/notes) and final go/no-go decision.
 
-### Gap 2A: Real Backend Turn Execution + Hidden Checkpoint Backend Turn Wiring
+### Gap 2A: Real Backend Turn Execution + Hidden Checkpoint Backend Turn Wiring (CLOSED)
 
 Current status:
 
 - `DaemonTurnRuntime::execute_backend_turn` now delegates through a daemon backend bridge.
 - Codex runs are wired through the `daemon_backend_bridge` Codex transport seam.
 - OpenCode runs are wired through normalized backend events/usage metadata in daemon flow.
-- Claude daemon execution path is still not wired.
+- Claude runs are wired through `DaemonClaudeExecutionBridge` in daemon runtime execution.
 - Hidden checkpoint turns in rotation now execute through the runtime backend path with strict
   checkpoint schema parsing/validation and retry policy.
 - Deterministic fallback checkpoint construction now applies only when backend checkpoint-turn
   execution/parsing fails.
+- The same `TurnExecutorRuntime::execute_backend_turn` path is used for normal turns and hidden
+  checkpoint turns, so checkpoint output now comes from the active real backend execution path.
 
 Impact:
 
-- Codex and OpenCode backend transport execution are active through daemon bridge paths.
-- Hidden checkpoint backend-turn output is now active for bridged backends with strict schema
+- Runtime/backend integration gap is closed for Codex, OpenCode, and Claude execution paths.
+- Hidden checkpoint output is generated through runtime backend execution with strict schema
   validation and deterministic fallback-on-failure behavior.
-- Backend coverage is still incomplete until Claude daemon execution is wired.
 
-Required work:
+Exit evidence:
 
-- Wire the remaining daemon backend turn adapter (Claude) through the backend bridge.
-- Add deployment acceptance evidence for normal turns + rotation under real backend execution.
+- Daemon runtime backend integration tests in `crates/crab-app/src/daemon.rs` cover:
+  - Codex and OpenCode backend execution through runtime bridge paths
+  - Claude execution through daemon runtime execution
+  - turn-context assembly and checkpoint-summary injection
+- Rotation tests in `crates/crab-app/src/turn_executor.rs` cover:
+  - hidden checkpoint backend turn path
+  - strict checkpoint schema retries
+  - fallback-on-failure checkpoint generation
 
 ## Deployment Acceptance Checklist (WS18-T5)
 
@@ -171,8 +178,7 @@ Go/no-go rule:
 
 ## Recommended Closure Order
 
-1. Finish remaining daemon backend adapter (Claude) in Gap 2A.
-2. Execute acceptance checklist on target machine and capture evidence (Gap 2).
+1. Execute acceptance checklist on target machine and capture evidence (Gap 2).
 
 ## Exit Criteria For "Deployment Ready"
 

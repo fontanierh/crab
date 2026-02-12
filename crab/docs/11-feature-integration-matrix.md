@@ -5,7 +5,7 @@
 This document maps major Crab feature surfaces to runtime wiring points so we can verify that
 core modules are actually exercised in production flow.
 
-## Status Snapshot (February 11, 2026)
+## Status Snapshot (February 12, 2026)
 
 ## Fully Wired
 
@@ -30,22 +30,18 @@ core modules are actually exercised in production flow.
   - Core: `memory_search`, `memory_get`
   - Runtime: `crates/crab-app/src/memory_cli.rs` and binaries
   - Coverage: CLI tests
-
-## Partially Wired / Fallback-Only
-
 - Daemon backend execution bridge:
-  - `crates/crab-app/src/daemon.rs` now delegates turn execution via a backend bridge.
-  - Codex path uses the `daemon_backend_bridge` transport seam.
-  - OpenCode path now uses transport-backed runtime execution and maps OpenCode API responses into
-    normalized backend events (including usage metadata from backend envelopes).
-  - Claude daemon execution path is not yet wired through this bridge.
+  - Runtime: `crates/crab-app/src/daemon.rs` (`execute_backend_turn`, `DaemonBackendBridge`)
+  - Codex path executes through `crates/crab-app/src/daemon_backend_bridge.rs`.
+  - OpenCode path executes through `OpenCodeExecutionBridge` transport-backed runtime path.
+  - Claude path executes through `DaemonClaudeExecutionBridge` in daemon runtime flow.
+  - Coverage: daemon runtime integration tests
 - Hidden checkpoint backend turn:
-  - Core primitives are wired in runtime (`build_checkpoint_prompt`, parse/resolve helpers,
-    backend checkpoint-turn execution in `crates/crab-app/src/turn_executor.rs`).
-  - Runtime enforces strict checkpoint schema parsing/validation, retries once, and uses
-    deterministic fallback only when backend checkpoint-turn execution/output fails.
-  - Impact: wiring is in place, but daemon backend execution is still stubbed so production daemon
-    runs do not yet emit real provider checkpoint content.
+  - Core: `checkpoint_turn`, `checkpoint_fallback`, `rotation_sequence`
+  - Runtime: `crates/crab-app/src/turn_executor.rs` (`run_hidden_checkpoint_turn`)
+  - Uses the same runtime backend execution path as normal turns
+  - Enforces strict schema parse/retry behavior; fallback only when backend output/execution fails
+  - Coverage: turn executor rotation/checkpoint tests
 
 ## Not Yet Runtime-Wired
 
