@@ -498,6 +498,12 @@ This document breaks the Crab implementation into execution workstreams and issu
 - Ensure final docs are coherent and non-duplicative across `README.md`, `crab/DESIGN.md`, and `crab/docs/`.
 - Update `crab/docs/08-deployment-readiness-gaps.md` with final go/no-go criteria and residual risks.
 - Done criteria: checklist exists, is executable, and can be attached to deployment evidence.
+ - Implemented so far:
+   - deployment checklist + go/no-go rule in `crab/docs/08-deployment-readiness-gaps.md`
+   - deployment acceptance evidence worksheet in `crab/docs/13-deployment-acceptance-evidence.md`
+   - docs reconciled with current runtime wiring (`README.md`, gap register, integration matrix)
+ - Still required:
+   - execute checklist on target machine and fill evidence worksheet
 
 ### WS18-T6 - Connector delivery receipt protocol hardening
 - Extend connector <-> `crabd` IPC contract to include operation request ids and delivery receipts.

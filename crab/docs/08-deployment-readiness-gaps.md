@@ -117,7 +117,8 @@ Impact:
 Required work:
 
 - Execute checklist on target machine.
-- Record evidence links (logs/screenshots/notes) and final go/no-go decision.
+- Record evidence links (logs/screenshots/notes) and final go/no-go decision in
+  `crab/docs/13-deployment-acceptance-evidence.md`.
 
 ### Gap 2A: Real Backend Turn Execution + Hidden Checkpoint Backend Turn Wiring (CLOSED)
 
