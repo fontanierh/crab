@@ -17,6 +17,7 @@ Use `crab/DESIGN.md` as the canonical v1 spec, and use this folder for detailed 
 9. `crab/docs/09-discord-provisioning-and-secrets.md`
 10. `crab/docs/10-target-machine-operations.md`
 11. `crab/docs/11-feature-integration-matrix.md`
+12. `crab/docs/12-snapshot-restore-design-note.md`
 
 ## Doc Conventions
 

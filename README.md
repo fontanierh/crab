@@ -59,6 +59,8 @@ Crab is a Rust harness for running coding agents (Claude Code, Codex CLI, OpenCo
 - Deployment readiness gaps: `crab/docs/08-deployment-readiness-gaps.md`
 - Discord provisioning/secrets: `crab/docs/09-discord-provisioning-and-secrets.md`
 - Target machine operations: `crab/docs/10-target-machine-operations.md`
+- Feature integration matrix: `crab/docs/11-feature-integration-matrix.md`
+- Snapshot/restore design note (deferred hardening): `crab/docs/12-snapshot-restore-design-note.md`
 - Project rules: `AGENTS.md`
 
 ## Quality Gates

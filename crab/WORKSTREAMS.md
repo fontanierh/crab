@@ -681,7 +681,8 @@ Status (as of 2026-02-11): WS21-T1 through WS21-T6 completed.
 
 ### WS22 - Runtime State Evolution and Migration Safety
 
-Status (as of 2026-02-11): in progress.
+Status (as of 2026-02-12): in progress (`WS22-T1` to `WS22-T4` implemented; `WS22-T5`
+design note complete, command implementation deferred).
 
 ### WS22-T1 - Global state schema marker + startup migrator pipeline
 - Add a global state schema marker at `state/schema_version.json` with explicit schema (`version`, `updated_at_epoch_ms`).
@@ -744,6 +745,11 @@ Status (as of 2026-02-11): in progress.
 - Evaluate and design a minimal pre-upgrade snapshot/restore path (`workspace + state + env metadata`) in `crabctl`.
 - Keep this out of immediate deployment critical path; implement after WS22-T1/T2/T4 unless risk profile changes.
 - Done criteria: decision doc exists with complexity estimate and go/no-go recommendation for implementation scope.
+ - Implemented:
+   - decision note added in `crab/docs/12-snapshot-restore-design-note.md`
+   - options/tradeoffs documented (no snapshot vs minimal local `crabctl` snapshot/restore vs full platform integration)
+   - recommendation captured: implement minimal local snapshot/restore in next hardening wave after deployment acceptance
+   - trigger conditions defined for promoting this deferred work to active implementation
 
 ## 4) Dependency Order and Critical Path
 
