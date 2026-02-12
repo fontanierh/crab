@@ -118,18 +118,22 @@ Required work:
 
 Current status:
 
-- `DaemonTurnRuntime::execute_backend_turn` still uses the stubbed backend response path.
+- `DaemonTurnRuntime::execute_backend_turn` now delegates through a daemon backend bridge.
+- Codex runs are wired through the `daemon_backend_bridge` Codex transport seam.
+- OpenCode runs are wired through normalized backend events/usage metadata in daemon flow.
+- Claude daemon execution path is still not wired.
 - Hidden checkpoint turn generation in rotation still uses fallback checkpoint construction unless
   test hook input is used.
 
 Impact:
 
-- Scheduler/storage/replay/rotation infrastructure is validated, but production backend streaming
-  semantics and backend-generated checkpoint-turn output are not yet active in `crabd`.
+- Codex and OpenCode backend transport execution are active through daemon bridge paths, but
+  backend coverage is still incomplete (Claude pending) and
+  backend-generated checkpoint-turn output is not yet active.
 
 Required work:
 
-- Wire `crabd` runtime backend turn execution to real backend adapters.
+- Wire the remaining daemon backend turn adapter (Claude) through the backend bridge.
 - Wire hidden checkpoint turn execution through backend path and validate strict schema parsing.
 - Add deployment acceptance evidence for normal turns + rotation under real backend execution.
 
@@ -160,7 +164,7 @@ Go/no-go rule:
 
 ## Recommended Closure Order
 
-1. Wire real backend execution + hidden checkpoint turn path (Gap 2A).
+1. Finish remaining backend adapter + hidden checkpoint turn path (Gap 2A).
 2. Execute acceptance checklist on target machine and capture evidence (Gap 2).
 
 ## Exit Criteria For "Deployment Ready"

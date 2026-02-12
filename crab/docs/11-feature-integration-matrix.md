@@ -33,6 +33,12 @@ core modules are actually exercised in production flow.
 
 ## Partially Wired / Fallback-Only
 
+- Daemon backend execution bridge:
+  - `crates/crab-app/src/daemon.rs` now delegates turn execution via a backend bridge.
+  - Codex path uses the `daemon_backend_bridge` transport seam.
+  - OpenCode path now uses transport-backed runtime execution and maps OpenCode API responses into
+    normalized backend events (including usage metadata from backend envelopes).
+  - Claude daemon execution path is not yet wired through this bridge.
 - Hidden checkpoint backend turn:
   - Core primitives exist (`build_checkpoint_prompt`, parse/resolve helpers).
   - Runtime currently uses deterministic fallback path in
@@ -43,13 +49,10 @@ core modules are actually exercised in production flow.
 
 ## Not Yet Runtime-Wired
 
-- Real backend execution path in daemon runtime:
-  - `DaemonTurnRuntime::execute_backend_turn` is still stubbed for now.
-  - Impact: orchestration/storage/reliability paths are validated, but true provider streaming
-    semantics are not yet active in `crabd`.
 - Backend session recovery helpers:
-  - Core/backends recovery helpers (`recover_codex_session`, `recover_opencode_session`) are
-    implemented and tested in their crates but not yet invoked by app runtime wiring.
+  - `recover_codex_session` is invoked via `crates/crab-app/src/daemon_backend_bridge.rs`.
+  - `recover_opencode_session` exists in `crab-backends` but is not yet used by app runtime
+    wiring.
 - First-interaction onboarding runtime path:
   - Onboarding schema/prompt/completion modules are implemented and tested.
   - Automatic first-turn runtime orchestration for onboarding capture is still pending integration.
