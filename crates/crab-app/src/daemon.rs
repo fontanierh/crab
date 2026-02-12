@@ -55,9 +55,20 @@ const DAEMON_CLAUDE_STREAM_CONTEXT: &str = "daemon_claude_stream";
 const MILLIS_PER_DAY: u64 = 86_400_000;
 const OPENCODE_SESSION_PLACEHOLDER_PREFIX: &str = "backend-session:";
 const DAEMON_CLAUDE_FORCE_SEND_ERROR_TOKEN: &str = "force-claude-send-error";
-const CRAB_RUNTIME_BRIEF_BASE: &str = "You are running inside Crab, a Discord-driven coding-agent harness.\n\
-Crab provides per-conversation logical sessions and backend physical sessions, with FIFO per-session lanes.\n\
-Your outputs are delivered to Discord through idempotent post/edit replay-safe delivery.";
+const CRAB_RUNTIME_BRIEF_BASE: &str =
+    "You are running inside Crab, a Discord-driven coding-agent harness.\n\
+Execution model:\n\
+- Discord conversations map to logical sessions.\n\
+- Each logical session is processed by a FIFO lane.\n\
+- A backend physical session may persist across turns until rotation.\n\
+Runtime behavior:\n\
+- Your visible assistant output is posted/edited in Discord.\n\
+- Delivery is idempotent and replay-safe across restarts.\n\
+- Hidden maintenance turns may run for memory flush/checkpoint and are not user-visible.\n\
+Operating constraints:\n\
+- Keep responses actionable and concise.\n\
+- Use available workspace files and memory tools when needed.\n\
+- Respect owner/operator commands and current session policy.";
 #[cfg(all(not(any(test, coverage)), debug_assertions))]
 const DAEMON_DETERMINISTIC_CODEX_TRANSPORT_ENV: &str =
     "CRAB_DAEMON_FORCE_DETERMINISTIC_CODEX_TRANSPORT";
