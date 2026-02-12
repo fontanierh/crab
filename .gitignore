@@ -47,3 +47,6 @@ mutants.out*/
 
 # local machine credentials / secrets
 .crab-secrets/
+
+# local quality baseline artifacts
+quality/baselines/

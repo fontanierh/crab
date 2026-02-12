@@ -665,6 +665,37 @@ fn parse_claude_backend_session_id(physical_session_id: &str) -> Option<&str> {
         .filter(|backend_session_id| !backend_session_id.trim().is_empty())
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ClaudeSessionStrategy<'a> {
+    ReuseCached {
+        active_id: &'a str,
+    },
+    RestoreFromActiveId {
+        active_id: &'a str,
+        backend_session_id: &'a str,
+    },
+    CreateNew,
+}
+
+fn resolve_claude_session_strategy(
+    active_physical_session_id: Option<&str>,
+    has_cached_active_session: bool,
+) -> ClaudeSessionStrategy<'_> {
+    let Some(active_id) = active_physical_session_id else {
+        return ClaudeSessionStrategy::CreateNew;
+    };
+    if has_cached_active_session {
+        return ClaudeSessionStrategy::ReuseCached { active_id };
+    }
+    if let Some(backend_session_id) = parse_claude_backend_session_id(active_id) {
+        return ClaudeSessionStrategy::RestoreFromActiveId {
+            active_id,
+            backend_session_id,
+        };
+    }
+    ClaudeSessionStrategy::CreateNew
+}
+
 pub trait DaemonDiscordIo {
     fn next_gateway_message(&mut self) -> CrabResult<Option<GatewayMessage>>;
 
@@ -1747,11 +1778,23 @@ impl<D: DaemonDiscordIo> TurnExecutorRuntime for DaemonTurnRuntime<D> {
         active_physical_session_id: Option<&str>,
     ) -> CrabResult<crab_core::PhysicalSession> {
         if profile.backend == BackendKind::Claude {
-            if let Some(active_id) = active_physical_session_id {
-                if let Some(existing) = self.physical_sessions.get(active_id) {
-                    return Ok(existing.clone());
+            let has_cached_active_session = active_physical_session_id
+                .is_some_and(|active_id| self.physical_sessions.contains_key(active_id));
+            match resolve_claude_session_strategy(
+                active_physical_session_id,
+                has_cached_active_session,
+            ) {
+                ClaudeSessionStrategy::ReuseCached { active_id } => {
+                    let existing =
+                        self.physical_sessions.get(active_id).cloned().expect(
+                            "resolve_claude_session_strategy guarantees cached session exists",
+                        );
+                    return Ok(existing);
                 }
-                if let Some(backend_session_id) = parse_claude_backend_session_id(active_id) {
+                ClaudeSessionStrategy::RestoreFromActiveId {
+                    active_id,
+                    backend_session_id,
+                } => {
                     let session = crab_core::PhysicalSession {
                         id: active_id.to_string(),
                         logical_session_id: logical_session_id.to_string(),
@@ -1764,6 +1807,7 @@ impl<D: DaemonDiscordIo> TurnExecutorRuntime for DaemonTurnRuntime<D> {
                         .insert(active_id.to_string(), session.clone());
                     return Ok(session);
                 }
+                ClaudeSessionStrategy::CreateNew => {}
             }
 
             let session_context = SessionContext {
@@ -3088,6 +3132,46 @@ mod tests {
         run
     }
 
+    fn build_scripted_claude_runtime(
+        workspace_label: &str,
+        claude_process: ScriptedClaudeProcess,
+    ) -> (
+        TempWorkspace,
+        DaemonTurnRuntime<ScriptedDiscordIo>,
+        ScriptedClaudeProcess,
+    ) {
+        let workspace = TempWorkspace::new("daemon", workspace_label);
+        let config = runtime_config_for_workspace_with_lanes(&workspace.path, 1);
+        let discord = ScriptedDiscordIo::with_state(DiscordIoState::default());
+        let mut runtime = DaemonTurnRuntime::new_with_claude_process(
+            config.owner.clone(),
+            discord,
+            claude_process.clone(),
+        )
+        .expect("runtime should build");
+        runtime.configure_turn_context_runtime(
+            workspace.path.clone(),
+            CheckpointStore::new(workspace.path.join("state")),
+        );
+        (workspace, runtime, claude_process)
+    }
+
+    fn assert_run_usage_note(
+        events: &[BackendEvent],
+        input_tokens: &str,
+        output_tokens: &str,
+        total_tokens: &str,
+        source: &str,
+    ) {
+        assert!(events.iter().any(|event| {
+            event.kind == BackendEventKind::RunNote
+                && event.payload.get("run_usage_input_tokens") == Some(&input_tokens.to_string())
+                && event.payload.get("run_usage_output_tokens") == Some(&output_tokens.to_string())
+                && event.payload.get("run_usage_total_tokens") == Some(&total_tokens.to_string())
+                && event.payload.get("run_usage_source") == Some(&source.to_string())
+        }));
+    }
+
     fn sample_session(
         lane_state: LaneState,
         active_physical_session_id: Option<String>,
@@ -3139,6 +3223,31 @@ mod tests {
                 },
             ],
         }
+    }
+
+    #[test]
+    fn resolve_claude_session_strategy_prioritizes_cached_then_restored_then_create() {
+        assert_eq!(
+            super::resolve_claude_session_strategy(Some("claude:cached"), true),
+            super::ClaudeSessionStrategy::ReuseCached {
+                active_id: "claude:cached"
+            }
+        );
+        assert_eq!(
+            super::resolve_claude_session_strategy(Some("claude:resume-1"), false),
+            super::ClaudeSessionStrategy::RestoreFromActiveId {
+                active_id: "claude:resume-1",
+                backend_session_id: "resume-1",
+            }
+        );
+        assert_eq!(
+            super::resolve_claude_session_strategy(Some("physical:missing"), false),
+            super::ClaudeSessionStrategy::CreateNew
+        );
+        assert_eq!(
+            super::resolve_claude_session_strategy(None, false),
+            super::ClaudeSessionStrategy::CreateNew
+        );
     }
 
     #[test]
@@ -3480,9 +3589,6 @@ mod tests {
 
     #[test]
     fn daemon_runtime_claude_bridge_executes_lifecycle_and_usage_flow() {
-        let workspace = TempWorkspace::new("daemon", "claude-bridge-lifecycle");
-        let config = runtime_config_for_workspace_with_lanes(&workspace.path, 1);
-        let discord = ScriptedDiscordIo::with_state(DiscordIoState::default());
         let claude_process = ScriptedClaudeProcess::with_scripted(
             vec![Ok("resume-1".to_string())],
             vec![Ok(vec![
@@ -3501,12 +3607,8 @@ mod tests {
             Vec::new(),
             Vec::new(),
         );
-        let mut runtime = DaemonTurnRuntime::new_with_claude_process(
-            config.owner.clone(),
-            discord,
-            claude_process.clone(),
-        )
-        .expect("runtime should build");
+        let (_workspace, mut runtime, claude_process) =
+            build_scripted_claude_runtime("claude-bridge-lifecycle", claude_process);
 
         let created = runtime
             .ensure_physical_session(
@@ -3536,13 +3638,7 @@ mod tests {
                 "compiled context",
             )
             .expect("claude bridge execution should succeed");
-        assert!(events.iter().any(|event| {
-            event.kind == BackendEventKind::RunNote
-                && event.payload.get("run_usage_input_tokens") == Some(&"5".to_string())
-                && event.payload.get("run_usage_output_tokens") == Some(&"7".to_string())
-                && event.payload.get("run_usage_total_tokens") == Some(&"12".to_string())
-                && event.payload.get("run_usage_source") == Some(&"claude".to_string())
-        }));
+        assert_run_usage_note(&events, "5", "7", "12", "claude");
         assert_eq!(physical.last_turn_id.as_deref(), Some("turn-1"));
 
         let stats = claude_process.stats();
@@ -3553,9 +3649,6 @@ mod tests {
 
     #[test]
     fn daemon_runtime_claude_bridge_restores_session_from_active_id_shape() {
-        let workspace = TempWorkspace::new("daemon", "claude-session-restore");
-        let config = runtime_config_for_workspace_with_lanes(&workspace.path, 1);
-        let discord = ScriptedDiscordIo::with_state(DiscordIoState::default());
         let claude_process = ScriptedClaudeProcess::with_scripted(
             vec![Err(CrabError::InvariantViolation {
                 context: "daemon_test_claude_create",
@@ -3566,12 +3659,8 @@ mod tests {
             Vec::new(),
             Vec::new(),
         );
-        let mut runtime = DaemonTurnRuntime::new_with_claude_process(
-            config.owner.clone(),
-            discord,
-            claude_process.clone(),
-        )
-        .expect("runtime should build");
+        let (_workspace, mut runtime, claude_process) =
+            build_scripted_claude_runtime("claude-session-restore", claude_process);
 
         let restored = runtime
             .ensure_physical_session(
@@ -3587,9 +3676,6 @@ mod tests {
 
     #[test]
     fn daemon_runtime_claude_bridge_surfaces_interruption_and_error_events() {
-        let workspace = TempWorkspace::new("daemon", "claude-interrupt-error");
-        let config = runtime_config_for_workspace_with_lanes(&workspace.path, 1);
-        let discord = ScriptedDiscordIo::with_state(DiscordIoState::default());
         let claude_process = ScriptedClaudeProcess::with_scripted(
             vec![Ok("resume-2".to_string())],
             vec![
@@ -3607,12 +3693,8 @@ mod tests {
             Vec::new(),
             Vec::new(),
         );
-        let mut runtime = DaemonTurnRuntime::new_with_claude_process(
-            config.owner.clone(),
-            discord,
-            claude_process.clone(),
-        )
-        .expect("runtime should build");
+        let (_workspace, mut runtime, _claude_process) =
+            build_scripted_claude_runtime("claude-interrupt-error", claude_process);
         let run = sample_claude_run("123");
         let mut session = runtime
             .ensure_physical_session("discord:channel:777", &claude_profile(), None)
@@ -3691,10 +3773,7 @@ mod tests {
                 "default context",
             )
             .expect("default Claude process should execute through bridge");
-        assert!(events.iter().any(|event| {
-            event.kind == BackendEventKind::RunNote
-                && event.payload.get("run_usage_source") == Some(&"claude".to_string())
-        }));
+        assert_run_usage_note(&events, "2", "3", "5", "claude");
 
         let mut forced_error_run = sample_claude_run("123");
         forced_error_run.id = "run-force-claude-send-error".to_string();

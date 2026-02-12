@@ -68,18 +68,37 @@ Run all checks:
 make quality
 ```
 
+Fast local preflight (non-gating):
+
+```bash
+make quick
+```
+
 Individual checks:
 
 - `make fmt-check`
 - `make clippy`
 - `make deadcode-check`
-- `make test`
+- `make public-api-check`
 - `make coverage-gate`
+- `make coverage-diagnostics`
 - `make duplication-check`
 
 Coverage note:
 - `make coverage-gate` currently applies `--ignore-filename-regex 'crates/crab-app/src/installer.rs'`
   due to a reproducible `cargo-llvm-cov` line-mapping false negative in that file.
+- If `make coverage-gate` fails, run `make coverage-diagnostics` to generate actionable uncovered
+  line/function diagnostics under `coverage/uncovered_locations.txt`.
+
+Duplication note:
+- `make duplication-check` runs `jscpd` against crate Rust sources with explicit ignore rules
+  (for example `src/test_support.rs`) so merge blocking stays focused on production code.
+
+Baseline/trend note:
+- Capture runtime and density baselines with:
+  `make quality-baseline`
+- Regenerate `CODE_QUALITY_REPORT.md` (includes trend sections when baselines exist):
+  `make quality-report`
 
 ## Memory CLI Commands
 

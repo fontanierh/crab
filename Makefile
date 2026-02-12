@@ -1,6 +1,6 @@
 SHELL := /bin/bash
 
-.PHONY: fmt fmt-check clippy test deadcode-check public-api-check coverage coverage-gate duplication-check quality
+.PHONY: fmt fmt-check clippy test deadcode-check public-api-check coverage coverage-gate coverage-diagnostics duplication-check quick quality quality-report quality-baseline
 
 fmt:
 	cargo fmt --all
@@ -31,7 +31,18 @@ coverage-gate:
 		--fail-uncovered-lines 0 \
 		--fail-uncovered-functions 0
 
-duplication-check:
-	npx --yes jscpd@4.0.5 --config .jscpd.json
+coverage-diagnostics:
+	bash scripts/coverage_diagnostics.sh
 
-quality: fmt-check clippy deadcode-check public-api-check test coverage-gate duplication-check
+duplication-check:
+	bash scripts/duplication_check.sh
+
+quick: fmt-check clippy deadcode-check public-api-check test
+
+quality: fmt-check clippy deadcode-check public-api-check coverage-gate duplication-check
+
+quality-report:
+	bash scripts/gen_code_quality_report.sh
+
+quality-baseline:
+	bash scripts/collect_quality_baseline.sh

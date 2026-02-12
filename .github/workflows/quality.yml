@@ -41,8 +41,8 @@ jobs:
       - name: Dead code check
         run: make deadcode-check
 
-      - name: Tests
-        run: make test
+      - name: Public API check
+        run: make public-api-check
 
       - name: Coverage gate (100%)
         run: make coverage-gate

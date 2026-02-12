@@ -150,3 +150,9 @@ Implemented:
 Remaining gap:
 
 - Deployment acceptance evidence is still pending on the target machine (see `crab/docs/08-deployment-readiness-gaps.md`).
+
+Quality/diagnostics note:
+
+- Runtime reliability validation remains guarded by strict coverage gates (`make quality`).
+- When coverage regressions appear, operators can generate actionable missing-line/function
+  diagnostics with `make coverage-diagnostics` before patching tests.

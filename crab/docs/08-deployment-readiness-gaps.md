@@ -67,6 +67,11 @@ Implemented and validated in repository code/tests:
   - startup migration engine (stepwise, idempotent, lock-protected)
   - `crabctl upgrade`/`doctor` compatibility preflight with actionable remediation output
   - distinct blocked-upgrade exit code (`3`) for incompatible state versions
+- Quality engineering ergonomics are standardized:
+  - strict gate: `make quality`
+  - fast local preflight: `make quick`
+  - coverage diagnostics helper (`lines + functions`): `make coverage-diagnostics`
+  - baseline/trend capture helpers: `make quality-baseline` + `make quality-report`
 
 Important runtime shape today:
 

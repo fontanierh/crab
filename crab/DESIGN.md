@@ -53,6 +53,13 @@ Major subsystems:
 - Context Builder: workspace instructions + memory + checkpoint injection.
 - State Store: sessions, checkpoints, events, run metadata.
 
+Quality engineering workflow:
+
+- Strict merge gate remains `make quality` with hard coverage requirements (100% lines/functions,
+  0 uncovered lines/functions).
+- Developer fast lane is `make quick` (non-gating) for iteration speed.
+- Coverage regression triage is standardized via `make coverage-diagnostics`.
+
 ## 4) Session and Lane Model
 
 ### 4.1 Logical Session

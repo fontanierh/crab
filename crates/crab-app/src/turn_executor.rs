@@ -1924,6 +1924,19 @@ mod tests {
         build_executor_with_config(runtime, lane_queue_limit, config)
     }
 
+    fn build_executor_scenario(
+        label: &str,
+        runtime: FakeRuntime,
+        lane_queue_limit: usize,
+    ) -> (
+        TempWorkspace,
+        TurnExecutor<FakeCodexProcess, FakeOpenCodeProcess, FakeRuntime>,
+    ) {
+        let workspace = TempWorkspace::new("turn-executor", label);
+        let executor = build_executor(&workspace, runtime, lane_queue_limit);
+        (workspace, executor)
+    }
+
     fn run_git_output(workspace_root: &Path, args: &[&str]) -> String {
         let output = std::process::Command::new("git")
             .arg("-C")
@@ -2000,7 +2013,6 @@ mod tests {
 
     #[test]
     fn process_gateway_message_runs_end_to_end_pipeline_and_finalizes_success() {
-        let workspace = TempWorkspace::new("turn-executor", "success");
         let runtime = FakeRuntime::with_backend_events(
             vec![
                 backend_event(1, BackendEventKind::TextDelta, &[("text", "hello")]),
@@ -2011,7 +2023,7 @@ mod tests {
             ],
             &[1, 2, 3, 4, 5, 6, 7, 8],
         );
-        let mut executor = build_executor(&workspace, runtime, 8);
+        let (_workspace, mut executor) = build_executor_scenario("success", runtime, 8);
 
         let dispatch = executor
             .process_gateway_message(gateway_message("m-1"))

@@ -245,6 +245,39 @@ struct WorkspaceGitPushQueueEntry {
     last_error: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DueQueueSelection {
+    QueueEmpty,
+    NoDueEntries { next_due_at_epoch_ms: Option<u64> },
+    DueIndex { index: usize },
+}
+
+fn select_due_push_queue_entry(
+    entries: &[WorkspaceGitPushQueueEntry],
+    now_epoch_ms: u64,
+) -> DueQueueSelection {
+    if entries.is_empty() {
+        return DueQueueSelection::QueueEmpty;
+    }
+    let mut next_due_at: Option<u64> = None;
+    for (index, entry) in entries.iter().enumerate() {
+        if entry.exhausted {
+            continue;
+        }
+        if entry.next_attempt_at_epoch_ms <= now_epoch_ms {
+            return DueQueueSelection::DueIndex { index };
+        }
+        next_due_at = Some(
+            next_due_at.map_or(entry.next_attempt_at_epoch_ms, |current| {
+                current.min(entry.next_attempt_at_epoch_ms)
+            }),
+        );
+    }
+    DueQueueSelection::NoDueEntries {
+        next_due_at_epoch_ms: next_due_at,
+    }
+}
+
 pub fn ensure_workspace_git_repository(
     workspace_root: &Path,
     config: &WorkspaceGitConfig,
@@ -457,33 +490,20 @@ pub fn process_workspace_git_push_queue(
     ensure_push_queue_layout(state_root)?;
     let queue_path = workspace_git_push_queue_path(state_root);
     let mut queue = read_workspace_git_push_queue(&queue_path)?;
-    if queue.entries.is_empty() {
-        return Ok(WorkspaceGitPushTickOutcome::skipped("queue_empty", 0, None));
-    }
-
-    let mut due_index: Option<usize> = None;
-    let mut next_due_at: Option<u64> = None;
-    for (index, entry) in queue.entries.iter().enumerate() {
-        if entry.exhausted {
-            continue;
+    let index = match select_due_push_queue_entry(&queue.entries, now_epoch_ms) {
+        DueQueueSelection::QueueEmpty => {
+            return Ok(WorkspaceGitPushTickOutcome::skipped("queue_empty", 0, None));
         }
-        if entry.next_attempt_at_epoch_ms <= now_epoch_ms {
-            due_index = Some(index);
-            break;
+        DueQueueSelection::NoDueEntries {
+            next_due_at_epoch_ms,
+        } => {
+            return Ok(WorkspaceGitPushTickOutcome::skipped(
+                "no_due_entries",
+                queue.entries.len(),
+                next_due_at_epoch_ms,
+            ));
         }
-        next_due_at = Some(
-            next_due_at.map_or(entry.next_attempt_at_epoch_ms, |current| {
-                current.min(entry.next_attempt_at_epoch_ms)
-            }),
-        );
-    }
-
-    let Some(index) = due_index else {
-        return Ok(WorkspaceGitPushTickOutcome::skipped(
-            "no_due_entries",
-            queue.entries.len(),
-            next_due_at,
-        ));
+        DueQueueSelection::DueIndex { index } => index,
     };
 
     let commit_id = queue
@@ -1342,6 +1362,18 @@ mod tests {
         fs::write(path, encoded).expect("queue file should be writable");
     }
 
+    fn queue_entry(commit_key: &str, next_attempt_at_epoch_ms: u64) -> WorkspaceGitPushQueueEntry {
+        WorkspaceGitPushQueueEntry {
+            commit_key: commit_key.to_string(),
+            commit_id: format!("{commit_key}-id"),
+            enqueued_at_epoch_ms: 1,
+            next_attempt_at_epoch_ms,
+            attempt_count: 0,
+            exhausted: false,
+            last_error: None,
+        }
+    }
+
     #[test]
     fn disabled_configuration_is_noop() {
         let workspace = TempDir::new("disabled");
@@ -2123,6 +2155,50 @@ mod tests {
         let entries = read_push_queue_entries(&state_root);
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].commit_key, "k1");
+    }
+
+    #[test]
+    fn select_due_push_queue_entry_handles_empty_due_and_no_due_paths() {
+        assert_eq!(
+            super::select_due_push_queue_entry(&[], 1_000),
+            super::DueQueueSelection::QueueEmpty
+        );
+
+        let entries = vec![
+            queue_entry("first", 3_000),
+            queue_entry("second", 4_000),
+            queue_entry("third", 2_000),
+        ];
+        assert_eq!(
+            super::select_due_push_queue_entry(&entries, 1_500),
+            super::DueQueueSelection::NoDueEntries {
+                next_due_at_epoch_ms: Some(2_000),
+            }
+        );
+
+        assert_eq!(
+            super::select_due_push_queue_entry(&entries, 2_000),
+            super::DueQueueSelection::DueIndex { index: 2 }
+        );
+    }
+
+    #[test]
+    fn select_due_push_queue_entry_skips_exhausted_entries() {
+        let mut exhausted_due = queue_entry("exhausted", 1_000);
+        exhausted_due.exhausted = true;
+        let next_due = queue_entry("next", 5_000);
+        let entries = vec![exhausted_due, next_due];
+
+        assert_eq!(
+            super::select_due_push_queue_entry(&entries, 2_000),
+            super::DueQueueSelection::NoDueEntries {
+                next_due_at_epoch_ms: Some(5_000),
+            }
+        );
+        assert_eq!(
+            super::select_due_push_queue_entry(&entries, 5_000),
+            super::DueQueueSelection::DueIndex { index: 1 }
+        );
     }
 
     #[test]

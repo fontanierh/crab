@@ -9,7 +9,8 @@
     "**/node_modules/**",
     "**/.git/**",
     "**/untracked_references/**",
-    "**/coverage/**"
+    "**/coverage/**",
+    "**/src/test_support.rs"
   ],
   "path": ["crates"]
 }

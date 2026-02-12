@@ -65,13 +65,16 @@ Required outcome:
 
 - Measure duplication with an automated tool (e.g. `jscpd`), and fail when above threshold.
 - Start strict for production Rust source; exclude generated files, fixtures, and vendored code.
+- Duplication gate is production-focused:
+  `scripts/duplication_check.sh` runs `jscpd` over crate Rust sources with explicit ignore rules
+  (for example `src/test_support.rs`).
 - If logic is repeated more than once, extract common abstractions unless it clearly harms readability.
 
 ## 6. CI Gates (Must All Pass)
 
 - `fmt` check
 - `clippy` with warnings denied
-- full test suite
+- coverage gate (authoritative, executes full instrumented test suite)
 - coverage gate at 100%
 - duplication gate
 
@@ -122,11 +125,15 @@ The repository now enforces quality with executable gates and CI automation.
 
 - Run all required checks with:
   `make quality`
+- Fast local preflight (non-gating):
+  `make quick`
 
 ### Code Quality Report (Generated)
 
 - Generate/update `CODE_QUALITY_REPORT.md` with:
   `./scripts/gen_code_quality_report.sh`
+- Capture runtime/density baseline snapshots with:
+  `make quality-baseline`
 - Policy:
   - `CODE_QUALITY_REPORT.md` must be derived from the generator script; do not hand-edit it.
   - Do not commit tool output directories (for example `mutants.out*/` from `cargo mutants`).
@@ -145,6 +152,9 @@ The repository now enforces quality with executable gates and CI automation.
   `make test`
 - Coverage gate (100% lines/functions, 0 uncovered lines/functions):
   `make coverage-gate`
+- Coverage diagnostics (actionable uncovered line/function locations):
+  `make coverage-diagnostics`
+- Coverage diagnostics include both uncovered line locations and uncovered functions.
 - Note: the coverage gate command currently includes
   `--ignore-filename-regex 'crates/crab-app/src/installer.rs'` for the documented tool-mapping
   false negative.
@@ -183,7 +193,10 @@ The repository now enforces quality with executable gates and CI automation.
 
 ### CI behavior
 
-- CI runs `fmt`, `clippy`, `deadcode-check`, `test`, `coverage-gate`, and `duplication-check`.
+- CI runs `fmt`, `clippy`, `deadcode-check`, `public-api-check`, `coverage-gate`, and
+  `duplication-check`.
+- CI intentionally avoids a separate `make test` step because `coverage-gate` already executes the
+  full suite under instrumentation.
 - Any gate failure blocks merge readiness.
 
 ## 12. Deferred for Later
