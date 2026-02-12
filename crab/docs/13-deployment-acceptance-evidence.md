@@ -30,7 +30,7 @@ The table below maps each acceptance item to currently available repository/stag
 | Manual `/compact confirm` and `/reset confirm` commands execute only for owner and are audited | `crates/crab-app/src/turn_executor.rs` tests for owner-only enforcement and audit event behavior |
 | Heartbeat escalates correctly for stalled run/backend/dispatcher scenarios | `crates/crab-app/src/daemon.rs` heartbeat-action tests and `crates/crab-app/src/maintenance.rs` escalation tests |
 | Service restart/reboot persistence is validated by operations playbook steps | Runbook exists (`crab/docs/10-target-machine-operations.md`), target-host execution still pending |
-| `make quality` passes on deployment commit | `make quick` already green on docs reconciliation commits (`93a3353`, `346ba74`); run `make quality` on deployment candidate commit before GO |
+| `make quality` passes on deployment commit | `make quality` passed on main at `02280f1` (2026-02-12); rerun `make quality` on final deployment candidate commit before GO |
 
 ## Target-Machine Execution Log (Fill During Deployment)
 
