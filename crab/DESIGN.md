@@ -297,8 +297,16 @@ Bootstrap context order:
 4. `MEMORY.md` (curated long-term)
 5. Memory snippets/files (global + current author scope)
 6. Latest checkpoint summary
-7. Prompt contract (`RUNTIME_PROFILE`, memory policy, skills governance, owner/runtime/messaging notes)
-8. Current turn input
+7. `CRAB_RUNTIME_BRIEF` (runtime/framework orientation for the backend session)
+8. Prompt contract (`RUNTIME_PROFILE`, memory policy, skills governance, owner/runtime/messaging notes)
+9. Current turn input
+
+Rendered context envelope uses XML boundaries so user input and Crab-provided context are explicit:
+
+- `<crab_turn_context>` as root
+- `<crab_system_context>` for Crab-managed context sections
+- `<crab_user_input>` for user turn payload (`<turn_input>`)
+- section bodies are wrapped in CDATA
 
 `AGENTS.md` is not inline-injected; backend runtimes load it natively from workspace.
 
@@ -308,6 +316,7 @@ Managed-doc token budgets are strict and non-truncating:
 - `IDENTITY.md`: 2048 tokens
 - `USER.md`: 2048 tokens
 - `MEMORY.md`: 16000 tokens
+- `CRAB_RUNTIME_BRIEF`: 1024 tokens
 - `PROMPT_CONTRACT`: 4096 tokens
 - `LATEST_CHECKPOINT`: 4096 tokens
 - `TURN_INPUT`: 4096 tokens

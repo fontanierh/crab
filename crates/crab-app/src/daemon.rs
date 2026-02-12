@@ -6442,13 +6442,16 @@ mod tests {
             .build_turn_context(&run, &session, &physical, true)
             .expect("context should render");
 
-        assert!(context.contains("## SOUL.md"));
+        assert!(context.contains("<crab_turn_context>"));
+        assert!(context.contains("<crab_system_context>"));
+        assert!(context.contains("<soul_md>"));
         assert!(context.contains("Soul profile"));
         assert!(context.contains("## RUNTIME_PROFILE"));
-        assert!(context.contains("## PROMPT_CONTRACT"));
+        assert!(context.contains("<prompt_contract>"));
         assert!(context.contains("memory/users/123/2026-02-10.md"));
         assert!(context.contains("checkpoint_id: ckpt-1"));
-        assert!(context.contains("## TURN_INPUT"));
+        assert!(context.contains("<crab_user_input>"));
+        assert!(context.contains("<turn_input>"));
         assert!(context.contains("hello world"));
     }
 

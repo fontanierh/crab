@@ -99,8 +99,16 @@ Context assembly order (`crates/crab-core/src/context_assembly.rs`):
 4. `MEMORY.md`
 5. memory snippets
 6. latest checkpoint summary
-7. `PROMPT_CONTRACT`
-8. turn input
+7. `CRAB_RUNTIME_BRIEF`
+8. `PROMPT_CONTRACT`
+9. turn input
+
+Rendered envelope shape:
+
+- outer: `<crab_turn_context>`
+- Crab-provided system context: `<crab_system_context> ... </crab_system_context>`
+- user message payload: `<crab_user_input><turn_input>...</turn_input></crab_user_input>`
+- section bodies are wrapped in CDATA for unambiguous boundaries and to preserve source text
 
 Runtime semantics:
 
@@ -116,6 +124,7 @@ Runtime semantics:
 - `IDENTITY.md`: 2048
 - `USER.md`: 2048
 - `MEMORY.md`: 16000
+- `CRAB_RUNTIME_BRIEF`: 1024
 - `PROMPT_CONTRACT`: 4096
 - `LATEST_CHECKPOINT`: 4096
 - `TURN_INPUT`: 4096
@@ -150,7 +159,7 @@ Implemented:
 - citation/disclosure prompt policy
 - runtime context wiring in `DaemonTurnRuntime::build_turn_context`:
   - compiles prompt contract per run profile/surface
-  - injects `SOUL.md`/`IDENTITY.md`/`USER.md`/`MEMORY.md` + `PROMPT_CONTRACT`
+  - injects `SOUL.md`/`IDENTITY.md`/`USER.md`/`MEMORY.md` + `CRAB_RUNTIME_BRIEF` + `PROMPT_CONTRACT`
   - resolves scoped memory snippets (`memory/users/<scope>` + recent global)
   - injects latest checkpoint summary from persistent checkpoint store
   - injects full bootstrap context once per physical session and raw turn input on reused sessions

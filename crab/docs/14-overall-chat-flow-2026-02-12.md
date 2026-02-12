@@ -67,6 +67,11 @@ Runtime composes a full structured context and sends it as the turn input envelo
 9. `TURN_INPUT`
 
 All managed sections are token-budget validated with explicit failure on overflow (no truncation).
+The envelope is XML-structured with explicit boundaries:
+
+- `<crab_turn_context>` root
+- `<crab_system_context>` for Crab-injected context
+- `<crab_user_input>` for user-provided turn input
 
 ### Reused physical session
 

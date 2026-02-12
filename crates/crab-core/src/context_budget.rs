@@ -317,10 +317,13 @@ mod tests {
         let output = render(&input, &generous_policy());
 
         assert_eq!(output.budgeted_input, input);
-        assert!(output.rendered_context.contains("## SOUL.md\nsoul"));
         assert!(output
             .rendered_context
-            .contains("## PROMPT_CONTRACT\nprompt contract"));
+            .contains("<soul_md><![CDATA[soul]]></soul_md>"));
+        assert!(output
+            .rendered_context
+            .contains("<prompt_contract><![CDATA[prompt contract]]></prompt_contract>"));
+        assert!(output.rendered_context.contains("<crab_user_input>"));
         assert_eq!(output.report.section_usage.len(), 8);
         assert!(output.report.snippet_usage.is_empty());
     }

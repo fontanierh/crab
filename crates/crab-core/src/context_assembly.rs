@@ -5,6 +5,9 @@ const CONTEXT_ASSEMBLY_CONTEXT: &str = "context_assembly";
 const EMPTY_SECTION_MARKER: &str = "(empty)";
 const EMPTY_SNIPPETS_MARKER: &str = "(none)";
 const EMPTY_CHECKPOINT_MARKER: &str = "(none)";
+const CONTEXT_ROOT_TAG: &str = "crab_turn_context";
+const SYSTEM_CONTEXT_TAG: &str = "crab_system_context";
+const USER_INPUT_TAG: &str = "crab_user_input";
 
 pub const CONTEXT_INJECTION_ORDER: [&str; 9] = [
     "SOUL.md",
@@ -43,24 +46,15 @@ pub fn assemble_turn_context(input: &ContextAssemblyInput) -> CrabResult<String>
     validate_non_empty_text(CONTEXT_ASSEMBLY_CONTEXT, "turn_input", &input.turn_input)?;
     validate_memory_snippets(&input.memory_snippets)?;
 
-    let mut sections = Vec::with_capacity(CONTEXT_INJECTION_ORDER.len());
-    sections.push(render_section(
-        CONTEXT_INJECTION_ORDER[0],
-        &input.soul_document,
-    ));
-    sections.push(render_section(
-        CONTEXT_INJECTION_ORDER[1],
+    let mut system_sections = Vec::with_capacity(CONTEXT_INJECTION_ORDER.len() - 1);
+    system_sections.push(render_tagged_section("soul_md", &input.soul_document));
+    system_sections.push(render_tagged_section(
+        "identity_md",
         &input.identity_document,
     ));
-    sections.push(render_section(
-        CONTEXT_INJECTION_ORDER[2],
-        &input.user_document,
-    ));
-    sections.push(render_section(
-        CONTEXT_INJECTION_ORDER[3],
-        &input.memory_document,
-    ));
-    sections.push(render_memory_snippets_section(&input.memory_snippets));
+    system_sections.push(render_tagged_section("user_md", &input.user_document));
+    system_sections.push(render_tagged_section("memory_md", &input.memory_document));
+    system_sections.push(render_memory_snippets_section(&input.memory_snippets));
 
     let checkpoint = input
         .latest_checkpoint_summary
@@ -68,21 +62,21 @@ pub fn assemble_turn_context(input: &ContextAssemblyInput) -> CrabResult<String>
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .unwrap_or(EMPTY_CHECKPOINT_MARKER);
-    sections.push(render_section(CONTEXT_INJECTION_ORDER[5], checkpoint));
-    sections.push(render_section(
-        CONTEXT_INJECTION_ORDER[6],
+    system_sections.push(render_tagged_section("latest_checkpoint", checkpoint));
+    system_sections.push(render_tagged_section(
+        "crab_runtime_brief",
         &input.crab_runtime_brief,
     ));
-    sections.push(render_section(
-        CONTEXT_INJECTION_ORDER[7],
+    system_sections.push(render_tagged_section(
+        "prompt_contract",
         &input.prompt_contract,
     ));
-    sections.push(render_section(
-        CONTEXT_INJECTION_ORDER[8],
-        &input.turn_input,
-    ));
+    let user_input_section = render_tagged_section("turn_input", &input.turn_input);
 
-    Ok(sections.join("\n\n"))
+    Ok(render_context_envelope(
+        &system_sections,
+        &user_input_section,
+    ))
 }
 
 fn sort_memory_snippets(snippets: &mut [ContextMemorySnippet]) {
@@ -132,29 +126,71 @@ fn validate_memory_snippets(snippets: &[ContextMemorySnippet]) -> CrabResult<()>
 
 fn render_memory_snippets_section(snippets: &[ContextMemorySnippet]) -> String {
     if snippets.is_empty() {
-        return render_section(CONTEXT_INJECTION_ORDER[4], EMPTY_SNIPPETS_MARKER);
+        return format!(
+            "<memory_snippets>\n  <none>{EMPTY_SNIPPETS_MARKER}</none>\n</memory_snippets>"
+        );
     }
 
     let mut normalized = snippets.to_vec();
     sort_memory_snippets(&mut normalized);
 
-    let mut lines = Vec::with_capacity(normalized.len() * 2);
-    for (index, snippet) in normalized.iter().enumerate() {
+    let mut lines = Vec::with_capacity(2 + normalized.len() * 6);
+    lines.push("<memory_snippets>".to_string());
+    for snippet in &normalized {
+        lines.push("  <snippet>".to_string());
         lines.push(format!(
-            "[{}] {}:{}-{}",
-            index + 1,
-            snippet.path.trim(),
-            snippet.start_line,
-            snippet.end_line
+            "    <path>{}</path>",
+            render_cdata(snippet.path.trim())
         ));
-        lines.push(normalize_section_body(&snippet.content));
+        lines.push(format!(
+            "    <start_line>{}</start_line>",
+            snippet.start_line
+        ));
+        lines.push(format!("    <end_line>{}</end_line>", snippet.end_line));
+        lines.push(format!(
+            "    <content>{}</content>",
+            render_cdata(&normalize_section_body(&snippet.content))
+        ));
+        lines.push("  </snippet>".to_string());
     }
-
-    render_section(CONTEXT_INJECTION_ORDER[4], &lines.join("\n"))
+    lines.push("</memory_snippets>".to_string());
+    lines.join("\n")
 }
 
-fn render_section(name: &str, body: &str) -> String {
-    format!("## {name}\n{}", normalize_section_body(body))
+fn render_tagged_section(tag: &str, body: &str) -> String {
+    format!(
+        "<{tag}>{}</{tag}>",
+        render_cdata(&normalize_section_body(body))
+    )
+}
+
+fn render_context_envelope(system_sections: &[String], user_input_section: &str) -> String {
+    let mut lines = Vec::new();
+    lines.push(format!("<{CONTEXT_ROOT_TAG}>"));
+    lines.push(format!("  <{SYSTEM_CONTEXT_TAG}>"));
+    for section in system_sections {
+        lines.push(indent_block(section, 4));
+    }
+    lines.push(format!("  </{SYSTEM_CONTEXT_TAG}>"));
+    lines.push(format!("  <{USER_INPUT_TAG}>"));
+    lines.push(indent_block(user_input_section, 4));
+    lines.push(format!("  </{USER_INPUT_TAG}>"));
+    lines.push(format!("</{CONTEXT_ROOT_TAG}>"));
+    lines.join("\n")
+}
+
+fn indent_block(content: &str, spaces: usize) -> String {
+    let prefix = " ".repeat(spaces);
+    content
+        .lines()
+        .map(|line| format!("{prefix}{line}"))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn render_cdata(content: &str) -> String {
+    let normalized = content.replace("]]>", "]]]]><![CDATA[>");
+    format!("<![CDATA[{normalized}]]>")
 }
 
 fn normalize_section_body(content: &str) -> String {
@@ -222,15 +258,15 @@ mod tests {
         let rendered = assemble_turn_context(&sample_input()).expect("assembly should succeed");
 
         let expected_sections = [
-            "## SOUL.md",
-            "## IDENTITY.md",
-            "## USER.md",
-            "## MEMORY.md",
-            "## MEMORY_SNIPPETS",
-            "## LATEST_CHECKPOINT",
-            "## CRAB_RUNTIME_BRIEF",
-            "## PROMPT_CONTRACT",
-            "## TURN_INPUT",
+            "<soul_md>",
+            "<identity_md>",
+            "<user_md>",
+            "<memory_md>",
+            "<memory_snippets>",
+            "<latest_checkpoint>",
+            "<crab_runtime_brief>",
+            "<prompt_contract>",
+            "<turn_input>",
         ];
 
         let mut cursor = 0usize;
@@ -241,6 +277,9 @@ mod tests {
             cursor += position + section.len();
         }
 
+        assert!(rendered.contains("<crab_turn_context>"));
+        assert!(rendered.contains("<crab_system_context>"));
+        assert!(rendered.contains("<crab_user_input>"));
         assert!(rendered.contains("Soul section"));
         assert!(rendered.contains("Checkpoint summary"));
         assert!(rendered.contains("Runtime brief section"));
@@ -252,10 +291,10 @@ mod tests {
     fn memory_snippets_are_sorted_deterministically() {
         let rendered = assemble_turn_context(&sample_input()).expect("assembly should succeed");
         let global_pos = rendered
-            .find("[1] memory/global/2026-02-10.md:2-5")
+            .find("<path><![CDATA[memory/global/2026-02-10.md]]></path>")
             .expect("global snippet should be first after sorting");
         let user_pos = rendered
-            .find("[2] memory/users/42/2026-02-10.md:9-10")
+            .find("<path><![CDATA[memory/users/42/2026-02-10.md]]></path>")
             .expect("user snippet should be second after sorting");
         assert!(global_pos < user_pos);
     }
@@ -268,9 +307,11 @@ mod tests {
         input.latest_checkpoint_summary = Some("  ".to_string());
 
         let rendered = assemble_turn_context(&input).expect("assembly should succeed");
-        assert!(rendered.contains("## SOUL.md\n(empty)"));
-        assert!(rendered.contains("## MEMORY_SNIPPETS\n(none)"));
-        assert!(rendered.contains("## LATEST_CHECKPOINT\n(none)"));
+        assert!(rendered.contains("<soul_md><![CDATA[(empty)]]></soul_md>"));
+        assert!(rendered.contains("<memory_snippets>"));
+        assert!(rendered.contains("<none>(none)</none>"));
+        assert!(rendered.contains("</memory_snippets>"));
+        assert!(rendered.contains("<latest_checkpoint><![CDATA[(none)]]></latest_checkpoint>"));
     }
 
     #[test]
@@ -278,7 +319,15 @@ mod tests {
         let mut input = sample_input();
         input.latest_checkpoint_summary = None;
         let rendered = assemble_turn_context(&input).expect("assembly should succeed");
-        assert!(rendered.contains("## LATEST_CHECKPOINT\n(none)"));
+        assert!(rendered.contains("<latest_checkpoint><![CDATA[(none)]]></latest_checkpoint>"));
+    }
+
+    #[test]
+    fn cdata_wrapping_handles_embedded_closing_marker() {
+        let mut input = sample_input();
+        input.turn_input = "payload ]]> with marker".to_string();
+        let rendered = assemble_turn_context(&input).expect("assembly should succeed");
+        assert!(rendered.contains("payload ]]]]><![CDATA[> with marker"));
     }
 
     #[test]
