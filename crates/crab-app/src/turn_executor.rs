@@ -622,6 +622,7 @@ where
             run,
             logical_session: session,
             runtime: &mut self.runtime,
+            codex_lifecycle: &mut self.composition.backends.codex,
             event_store,
             checkpoint_store,
             checkpoint_created_at_epoch_ms: now_epoch_ms,
@@ -1061,6 +1062,7 @@ where
     run: &'a Run,
     logical_session: &'a mut LogicalSession,
     runtime: &'a mut R,
+    codex_lifecycle: &'a mut dyn CodexLifecycleManager,
     event_store: EventStore,
     checkpoint_store: CheckpointStore,
     checkpoint_created_at_epoch_ms: u64,
@@ -1101,6 +1103,7 @@ where
 
             let hidden_turn_id = format!("turn:{}:hidden-checkpoint:{attempt}", self.run.id);
             let backend_events = self.runtime.execute_backend_turn(
+                self.codex_lifecycle,
                 &mut physical_session,
                 &hidden_checkpoint_run,
                 &hidden_turn_id,
