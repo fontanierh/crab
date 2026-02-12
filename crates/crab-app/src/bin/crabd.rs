@@ -643,9 +643,11 @@ mod tests {
     use std::collections::VecDeque;
     use std::io::{self, Cursor, Read, Write};
     use std::mem;
+    use std::path::Path;
     use std::sync::{Arc, Mutex, OnceLock};
     use std::time::{SystemTime, UNIX_EPOCH};
     use std::{cell::RefCell, thread_local};
+    use crab_store::EventStore;
 
     thread_local! {
         static CAPTURED_OUTBOUND_LINES: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
@@ -836,6 +838,27 @@ mod tests {
         let root = std::env::temp_dir().join(format!("crabd-bin-{suffix}-{nanos}"));
         std::fs::create_dir_all(&root).expect("workspace directory should be creatable");
         root.to_string_lossy().into_owned()
+    }
+
+    fn assert_run_event_stream_contains_delta(
+        workspace_root: &str,
+        run_id: &str,
+        expected_substring: &str,
+    ) {
+        let state_root = Path::new(workspace_root).join("state");
+        let event_store = EventStore::new(&state_root);
+        let events = event_store
+            .replay_run("discord:channel:777", run_id)
+            .expect("run events should replay from store");
+        assert!(
+            events.iter().any(|event| {
+                event
+                    .payload
+                    .get("delta")
+                    .is_some_and(|delta| delta.contains(expected_substring))
+            }),
+            "expected run {run_id} to include backend delta containing `{expected_substring}`"
+        );
     }
 
     fn env_lock() -> &'static Mutex<()> {
@@ -1443,6 +1466,7 @@ mod tests {
     fn run_with_reader_and_control_processes_one_message() {
         let workspace_root = temp_workspace_root("run-success");
         let values = runtime_values(&workspace_root);
+        let run_id = "run:discord:channel:777:m-1";
         let input = format!(
             "{}\n{}\n",
             gateway_inbound_frame_json("m-1", "hello daemon"),
@@ -1467,12 +1491,15 @@ mod tests {
             }
         );
         assert_eq!(control.slept, vec![1]);
+        assert_run_event_stream_contains_delta(&workspace_root, run_id, "Codex bridge response");
     }
 
     #[test]
     fn run_with_reader_and_control_processes_claude_owner_turns_across_restarts() {
         let workspace_root = temp_workspace_root("run-claude-owner");
         let mut values = runtime_values(&workspace_root);
+        let first_run_id = "run:discord:channel:777:m-claude-1";
+        let second_run_id = "run:discord:channel:777:m-claude-2";
         values.insert("CRAB_OWNER_DISCORD_USER_IDS".to_string(), "111".to_string());
         values.insert(
             "CRAB_OWNER_DEFAULT_BACKEND".to_string(),
@@ -1511,6 +1538,11 @@ mod tests {
             }
         );
         assert_eq!(first_control.slept, vec![1]);
+        assert_run_event_stream_contains_delta(
+            &workspace_root,
+            first_run_id,
+            "Claude bridge response",
+        );
 
         let second_input = format!(
             "{}\n{}\n",
@@ -1536,6 +1568,11 @@ mod tests {
             }
         );
         assert_eq!(second_control.slept, vec![1]);
+        assert_run_event_stream_contains_delta(
+            &workspace_root,
+            second_run_id,
+            "Claude bridge response",
+        );
     }
 
     #[test]
