@@ -518,8 +518,10 @@ For each run, Crab tracks outbound records keyed by:
 
 Rules:
 
-- Prefer editing one in-flight bot message while streaming.
-- If message length or format constraints require split, create deterministic chunk indices.
+- Prefer editing the active chunk while streaming.
+- If the assistant output includes a blank line, treat it as a boundary and continue delivery in a
+  new consecutive Discord message (new deterministic `chunk_index`).
+- If message length constraints require split, create deterministic chunk indices.
 - Before sending/editing chunk `n`, check if record exists with same content hash.
   - If yes: skip.
   - If no: apply edit/post, await delivery confirmation, then persist record.

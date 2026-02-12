@@ -55,22 +55,33 @@ const DAEMON_CLAUDE_STREAM_CONTEXT: &str = "daemon_claude_stream";
 const MILLIS_PER_DAY: u64 = 86_400_000;
 const OPENCODE_SESSION_PLACEHOLDER_PREFIX: &str = "backend-session:";
 const DAEMON_CLAUDE_FORCE_SEND_ERROR_TOKEN: &str = "force-claude-send-error";
-const CRAB_RUNTIME_BRIEF_BASE: &str =
-    "You are running inside Crab, a Discord-driven coding-agent harness.\n\
-Crab sits between you and Discord users.\n\
-How this works:\n\
-- Crab receives Discord messages and decides when to run you.\n\
-- You are one active backend session for this conversation context.\n\
-- Crab posts your assistant text back to Discord (and may edit streamed messages).\n\
-Continuity and rotation:\n\
-- Crab may keep this same backend session across multiple user turns for continuity.\n\
-- Crab may later rotate to a new backend session after maintenance/checkpoint work.\n\
-Visibility:\n\
-- Assistant responses are user-visible in Discord.\n\
-- Hidden maintenance turns can run for memory flush/checkpoint and are not user-visible.\n\
+const CRAB_RUNTIME_BRIEF_BASE: &str = "You are an AI coding agent running inside Crab.\n\
+\n\
+Crab is a harness that sits between Discord and you:\n\
+- Discord users send messages.\n\
+- Crab decides when to run you and builds one prompt that includes:\n\
+  - system context (identity, curated memory, runtime notes)\n\
+  - the latest user message\n\
+- Your normal assistant text will be delivered back to Discord by Crab.\n\
+\n\
+Continuity:\n\
+- Crab typically keeps this same backend session alive across multiple Discord turns.\n\
+- Crab may occasionally rotate/restart you after maintenance (checkpoint/compaction).\n\
+- Crab can run hidden maintenance turns; those are not user-visible.\n\
+\n\
+Workspace + memory:\n\
+- Use only Crab-managed workspace files for long-term context:\n\
+  - SOUL.md, IDENTITY.md, USER.md, MEMORY.md, and the memory/ directory.\n\
+- During onboarding, ask the owner for missing facts; do not infer identity from unrelated\n\
+  directories or other harnesses (for example `.openclaw/`). Treat onboarding as a blank slate\n\
+  unless Crab-managed files explicitly say otherwise.\n\
+\n\
+Discord message formatting:\n\
+- Crab may stream your output by editing the active message while you generate text.\n\
+- If you want distinct consecutive Discord messages, separate sections with a blank line.\n\
+\n\
 Operating constraints:\n\
 - Keep responses actionable and concise.\n\
-- Use workspace files and memory tools when needed.\n\
 - Respect owner/operator commands and current session policy.";
 #[cfg(all(not(any(test, coverage)), debug_assertions))]
 const DAEMON_DETERMINISTIC_CODEX_TRANSPORT_ENV: &str =
@@ -545,8 +556,13 @@ fn run_claude_turn(
         .arg("--verbose")
         .arg("--output-format")
         .arg("stream-json")
-        .arg("--permission-mode")
-        .arg("dontAsk");
+        .arg("--dangerously-skip-permissions");
+    if let Ok(workspace_root) = std::env::var("CRAB_WORKSPACE_ROOT") {
+        let trimmed = workspace_root.trim();
+        if !trimmed.is_empty() {
+            command.current_dir(trimmed);
+        }
+    }
     if let Some(model) = config
         .model
         .as_deref()
@@ -3344,7 +3360,7 @@ mod tests {
             &owner_dm_run,
             WorkspaceBootstrapState::PendingBootstrap,
         );
-        assert!(owner_pending.contains("You are running inside Crab"));
+        assert!(owner_pending.contains("You are an AI coding agent running inside Crab"));
         assert!(owner_pending.contains("Onboarding is pending."));
         assert!(owner_pending.contains("- machine timezone"));
 

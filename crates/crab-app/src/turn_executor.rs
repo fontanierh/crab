@@ -243,23 +243,24 @@ where
             .state_stores
             .event_store
             .replay_run(logical_session_id, run_id)?;
-        let mut rendered_assistant_output = String::new();
-        let mut delivery_edit_generation = 0_u32;
+        let mut delivery = DiscordAssistantDelivery::new();
         let mut delivered_count = 0_usize;
 
         for event in events {
             if let Some(delta_text) = extract_event_text_delta(&event) {
-                rendered_assistant_output.push_str(delta_text);
-                let delivered = self.deliver_rendered_assistant_output(
-                    &run,
-                    &rendered_assistant_output,
-                    delivery_edit_generation,
-                    event.emitted_at_epoch_ms,
-                )?;
-                if delivered {
-                    delivered_count += 1;
+                let planned = delivery.push_delta(delta_text);
+                for op in planned {
+                    let delivered = self.deliver_rendered_assistant_output(
+                        &run,
+                        &delivery_message_id(&run.id, op.chunk_index),
+                        &op.content,
+                        op.edit_generation,
+                        event.emitted_at_epoch_ms,
+                    )?;
+                    if delivered {
+                        delivered_count += 1;
+                    }
                 }
-                delivery_edit_generation = delivery_edit_generation.saturating_add(1);
             }
         }
 
@@ -422,20 +423,21 @@ where
             run.physical_session_id = session.active_physical_session_id.clone();
         }
 
-        let mut rendered_assistant_output = String::new();
-        let mut delivery_edit_generation = 0_u32;
+        let mut delivery = DiscordAssistantDelivery::new();
         for backend_event in &backend_events {
             let emitted_at_epoch_ms = self.runtime.now_epoch_ms()?;
             self.append_backend_event(&run, backend_event, emitted_at_epoch_ms)?;
             if let Some(delta_text) = extract_backend_text_delta(backend_event) {
-                rendered_assistant_output.push_str(delta_text);
-                let _ = self.deliver_rendered_assistant_output(
-                    &run,
-                    &rendered_assistant_output,
-                    delivery_edit_generation,
-                    emitted_at_epoch_ms,
-                )?;
-                delivery_edit_generation = delivery_edit_generation.saturating_add(1);
+                let planned = delivery.push_delta(delta_text);
+                for op in planned {
+                    let _ = self.deliver_rendered_assistant_output(
+                        &run,
+                        &delivery_message_id(&run.id, op.chunk_index),
+                        &op.content,
+                        op.edit_generation,
+                        emitted_at_epoch_ms,
+                    )?;
+                }
             }
         }
 
@@ -506,7 +508,7 @@ where
             turn_id = %turn_id,
             status = %run_status_token(final_status),
             backend_events = backend_events.len(),
-            rendered_len = rendered_assistant_output.len(),
+            rendered_len = delivery.total_rendered_len,
             token_total_before_rotation,
             rotated = rotation_outcome.is_some(),
             token_total_after_rotation = session.token_accounting.total_tokens,
@@ -522,11 +524,17 @@ where
                 "{} (checkpoint: {})",
                 response, rotation_outcome.checkpoint_id
             );
-            let _ =
-                self.deliver_rendered_assistant_output(&run, &response, 0, completed_at_epoch_ms)?;
+            let _ = self.deliver_rendered_assistant_output(
+                &run,
+                &delivery_message_id(&run.id, 0),
+                &response,
+                0,
+                completed_at_epoch_ms,
+            )?;
         } else if let Some(onboarding_completion_resolution) = onboarding_completion_resolution {
             let delivery_result = self.deliver_rendered_assistant_output(
                 &run,
+                &delivery_message_id(&run.id, 0),
                 &onboarding_completion_resolution.user_message,
                 0,
                 completed_at_epoch_ms,
@@ -535,6 +543,7 @@ where
         } else if let Some(onboarding_gate_resolution) = onboarding_gate_resolution.take() {
             let delivery_result = self.deliver_rendered_assistant_output(
                 &run,
+                &delivery_message_id(&run.id, 0),
                 &onboarding_gate_resolution.user_message,
                 0,
                 completed_at_epoch_ms,
@@ -545,6 +554,7 @@ where
         {
             let delivery_result = self.deliver_rendered_assistant_output(
                 &run,
+                &delivery_message_id(&run.id, 0),
                 &rotation_onboarding_completion_resolution.user_message,
                 0,
                 completed_at_epoch_ms,
@@ -1240,6 +1250,7 @@ where
     fn deliver_rendered_assistant_output(
         &mut self,
         run: &Run,
+        message_id: &str,
         rendered_output: &str,
         edit_generation: u32,
         delivered_at_epoch_ms: u64,
@@ -1252,7 +1263,7 @@ where
             Some(channel_id) => channel_id.to_string(),
             None => delivery_channel_id(&run.logical_session_id)?,
         };
-        let message_id = delivery_message_id(&run.id);
+        let message_id = message_id.to_string();
 
         let attempt = DeliveryAttempt {
             logical_session_id: run.logical_session_id.clone(),
@@ -1980,8 +1991,145 @@ fn delivery_channel_id(logical_session_id: &str) -> CrabResult<String> {
     Ok(trimmed.to_string())
 }
 
-fn delivery_message_id(run_id: &str) -> String {
-    format!("delivery:{run_id}:chunk:0")
+fn delivery_message_id(run_id: &str, chunk_index: u32) -> String {
+    format!("delivery:{run_id}:chunk:{chunk_index}")
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PlannedAssistantDelivery {
+    chunk_index: u32,
+    edit_generation: u32,
+    content: String,
+}
+
+/// Splits assistant output into consecutive Discord messages.
+///
+/// Policy:
+/// - A blank line (`\n\n`) finalizes the current message chunk and starts a new one.
+/// - Any chunk is additionally split at Discord's 2000-char limit.
+/// - Only the active chunk is edited as more text arrives; prior chunks are posted once.
+#[derive(Debug, Default)]
+struct DiscordAssistantDelivery {
+    next_chunk_index: u32,
+    active_content: String,
+    active_edit_generation: u32,
+    active_last_delivered: String,
+    total_rendered_len: usize,
+}
+
+impl DiscordAssistantDelivery {
+    fn new() -> Self {
+        Self::default()
+    }
+
+    fn push_delta(&mut self, delta: &str) -> Vec<PlannedAssistantDelivery> {
+        if delta.is_empty() {
+            return Vec::new();
+        }
+
+        self.active_content.push_str(delta);
+        self.total_rendered_len = self.total_rendered_len.saturating_add(delta.len());
+
+        let mut planned = Vec::new();
+        self.flush_completed_chunks(&mut planned);
+
+        if self.active_content.trim().is_empty() {
+            return planned;
+        }
+
+        planned.push(PlannedAssistantDelivery {
+            chunk_index: self.next_chunk_index,
+            edit_generation: self.active_edit_generation,
+            content: self.active_content.clone(),
+        });
+        self.active_last_delivered = self.active_content.clone();
+        self.active_edit_generation = self.active_edit_generation.saturating_add(1);
+        planned
+    }
+
+    fn flush_completed_chunks(&mut self, planned: &mut Vec<PlannedAssistantDelivery>) {
+        const SECTION_DELIMITER: &str = "\n\n";
+
+        loop {
+            if let Some(pos) = self.active_content.find(SECTION_DELIMITER) {
+                let prefix = self.active_content[..pos].to_string();
+                let remainder = self.active_content[pos + SECTION_DELIMITER.len()..].to_string();
+                let flushed = self.flush_current_prefix(&prefix, planned);
+                // Leading/repeated delimiters should not create empty chunks.
+                if flushed {
+                    self.advance_chunk();
+                }
+                self.active_content = remainder;
+                continue;
+            }
+
+            if self.active_content.chars().count() > crab_discord::DISCORD_MESSAGE_CHAR_LIMIT {
+                let (prefix, remainder) = split_at_char_limit(
+                    &self.active_content,
+                    crab_discord::DISCORD_MESSAGE_CHAR_LIMIT,
+                );
+                let _ = self.flush_current_prefix(&prefix, planned);
+                self.advance_chunk();
+                self.active_content = remainder;
+                continue;
+            }
+
+            break;
+        }
+    }
+
+    fn flush_current_prefix(
+        &mut self,
+        prefix: &str,
+        planned: &mut Vec<PlannedAssistantDelivery>,
+    ) -> bool {
+        let prefix = prefix.trim_end_matches('\n');
+        if prefix.trim().is_empty() {
+            return false;
+        }
+
+        if prefix == self.active_last_delivered {
+            return true;
+        }
+
+        planned.push(PlannedAssistantDelivery {
+            chunk_index: self.next_chunk_index,
+            edit_generation: self.active_edit_generation,
+            content: prefix.to_string(),
+        });
+        self.active_last_delivered = prefix.to_string();
+        self.active_edit_generation = self.active_edit_generation.saturating_add(1);
+        true
+    }
+
+    fn advance_chunk(&mut self) {
+        self.next_chunk_index = self.next_chunk_index.saturating_add(1);
+        self.active_content.clear();
+        self.active_edit_generation = 0;
+        self.active_last_delivered.clear();
+    }
+}
+
+fn split_at_char_limit(value: &str, limit: usize) -> (String, String) {
+    if limit == 0 {
+        return ("".to_string(), value.to_string());
+    }
+
+    let mut split_at = value.len();
+    let mut seen = 0usize;
+    for (byte_index, _) in value.char_indices() {
+        if seen == limit {
+            split_at = byte_index;
+            break;
+        }
+        seen = seen.saturating_add(1);
+    }
+    if seen < limit {
+        split_at = value.len();
+    }
+
+    let (prefix, remainder) = value.split_at(split_at);
+    (prefix.to_string(), remainder.to_string())
 }
 
 impl<CP, OP, R> OnboardingCompletionEventRuntime for TurnExecutor<CP, OP, R>
@@ -5773,6 +5921,55 @@ mod tests {
     }
 
     #[test]
+    fn assistant_delivery_splits_on_blank_lines_and_char_limit() {
+        let mut delivery = super::DiscordAssistantDelivery::new();
+
+        assert!(delivery.push_delta("").is_empty());
+
+        let planned = delivery.push_delta("a\n\nb");
+        assert_eq!(planned.len(), 2);
+        assert_eq!(planned[0].chunk_index, 0);
+        assert_eq!(planned[0].edit_generation, 0);
+        assert_eq!(planned[0].content, "a".to_string());
+        assert_eq!(planned[1].chunk_index, 1);
+        assert_eq!(planned[1].edit_generation, 0);
+        assert_eq!(planned[1].content, "b".to_string());
+
+        // Leading delimiters should not create an empty chunk.
+        let mut delivery = super::DiscordAssistantDelivery::new();
+        let planned = delivery.push_delta("\n\nhello");
+        assert_eq!(planned.len(), 1);
+        assert_eq!(planned[0].chunk_index, 0);
+        assert_eq!(planned[0].content, "hello".to_string());
+
+        // If we already delivered the prefix, delimiters should not force a redundant edit.
+        let mut delivery = super::DiscordAssistantDelivery::new();
+        assert_eq!(delivery.push_delta("hello").len(), 1);
+        assert!(delivery.push_delta("\n\n").is_empty());
+
+        // Exceeding the Discord limit splits into multiple chunks.
+        let mut delivery = super::DiscordAssistantDelivery::new();
+        let oversized = "a".repeat(crab_discord::DISCORD_MESSAGE_CHAR_LIMIT + 1);
+        let planned = delivery.push_delta(&oversized);
+        assert_eq!(planned.len(), 2);
+        assert_eq!(planned[0].chunk_index, 0);
+        assert_eq!(planned[1].chunk_index, 1);
+        assert_eq!(
+            planned[0].content.chars().count(),
+            crab_discord::DISCORD_MESSAGE_CHAR_LIMIT
+        );
+        assert_eq!(planned[1].content, "a".to_string());
+
+        let (prefix, remainder) = super::split_at_char_limit("abc", 0);
+        assert_eq!(prefix, "".to_string());
+        assert_eq!(remainder, "abc".to_string());
+
+        let (prefix, remainder) = super::split_at_char_limit("abc", 5);
+        assert_eq!(prefix, "abc".to_string());
+        assert_eq!(remainder, "".to_string());
+    }
+
+    #[test]
     fn deliver_rendered_assistant_output_skips_empty_or_duplicate_attempts() {
         let workspace = TempWorkspace::new("turn-executor", "delivery-skip-cases");
         let runtime = FakeRuntime::with_backend_events(Vec::new(), &[]);
@@ -5780,15 +5977,33 @@ mod tests {
         let run = delivery_run("discord:channel:777", "run-delivery-skip");
 
         let skipped_empty = executor
-            .deliver_rendered_assistant_output(&run, "   ", 0, 1)
+            .deliver_rendered_assistant_output(
+                &run,
+                &super::delivery_message_id(&run.id, 0),
+                "   ",
+                0,
+                1,
+            )
             .expect("empty output should be skipped");
         assert!(!skipped_empty);
 
         let first = executor
-            .deliver_rendered_assistant_output(&run, "hello", 0, 2)
+            .deliver_rendered_assistant_output(
+                &run,
+                &super::delivery_message_id(&run.id, 0),
+                "hello",
+                0,
+                2,
+            )
             .expect("first delivery should send");
         let duplicate = executor
-            .deliver_rendered_assistant_output(&run, "hello", 0, 3)
+            .deliver_rendered_assistant_output(
+                &run,
+                &super::delivery_message_id(&run.id, 0),
+                "hello",
+                0,
+                3,
+            )
             .expect("duplicate should be skipped");
         assert!(first);
         assert!(!duplicate);
@@ -5807,7 +6022,13 @@ mod tests {
         let mut executor = build_executor(&workspace, runtime, 8);
         let run = delivery_run("discord:channel:777", run_id);
         let should_send_error = executor
-            .deliver_rendered_assistant_output(&run, "hello", 0, 1)
+            .deliver_rendered_assistant_output(
+                &run,
+                &super::delivery_message_id(&run.id, 0),
+                "hello",
+                0,
+                1,
+            )
             .expect_err("should_send read failures should propagate");
         assert!(matches!(
             should_send_error,
@@ -5834,7 +6055,13 @@ mod tests {
 
         let invalid_target_run = delivery_run("discord:unknown:777", "run-delivery-invalid-target");
         let target_error = executor
-            .deliver_rendered_assistant_output(&invalid_target_run, "hello", 0, 1)
+            .deliver_rendered_assistant_output(
+                &invalid_target_run,
+                &super::delivery_message_id(&invalid_target_run.id, 0),
+                "hello",
+                0,
+                1,
+            )
             .expect_err("invalid logical session shape should fail delivery");
         assert!(matches!(
             target_error,
@@ -5847,7 +6074,13 @@ mod tests {
         let mark_sent_error_run =
             delivery_run("discord:channel:777", "run-delivery-mark-sent-error");
         let mark_sent_error = executor
-            .deliver_rendered_assistant_output(&mark_sent_error_run, "hello", 0, 2)
+            .deliver_rendered_assistant_output(
+                &mark_sent_error_run,
+                &super::delivery_message_id(&mark_sent_error_run.id, 0),
+                "hello",
+                0,
+                2,
+            )
             .expect_err("mark_sent write failures should propagate");
         assert!(matches!(
             mark_sent_error,
@@ -6260,7 +6493,7 @@ mod tests {
         assert_eq!(super::backend_kind_token(BackendKind::Codex), "codex");
         assert_eq!(super::backend_kind_token(BackendKind::OpenCode), "opencode");
         assert_eq!(
-            super::delivery_message_id("run:discord:channel:777:msg"),
+            super::delivery_message_id("run:discord:channel:777:msg", 0),
             "delivery:run:discord:channel:777:msg:chunk:0"
         );
         assert_eq!(

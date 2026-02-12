@@ -141,7 +141,7 @@ Escalation path:
 
 Visible:
 
-- assistant text responses (post/edit stream)
+- assistant text responses (post/edit stream; split into consecutive messages on blank-line boundaries and the 2000-char Discord limit)
 - explicit owner command acknowledgments (for supported operator commands)
 
 Not visible:
