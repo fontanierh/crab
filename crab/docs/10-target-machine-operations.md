@@ -256,6 +256,23 @@ State-schema compatibility preflight (`crabctl doctor` + `crabctl upgrade`):
   - `RUST_LOG=info,crab_app=debug,crab_discord_connector=debug` (runtime flow + connector ops)
   - `RUST_LOG=info,crab_backends=debug` (backend protocol/recovery)
 
+## Reset (Blank Slate / Re-Onboarding)
+
+If you need to restart from a clean slate (for example to redo owner onboarding), you can wipe the
+workspace root. This deletes Crab-managed identity/memory files plus runtime state and will
+require onboarding again.
+
+1. Stop the runtime (service or tmux process).
+2. Remove the workspace directory (example):
+   - `rm -rf "$CRAB_WORKSPACE_ROOT"`
+3. Start the runtime again.
+
+Notes:
+
+- The next startup will recreate the required workspace layout and `BOOTSTRAP.md`.
+- For Claude Code, Crab runs the backend in full permissions mode (`--dangerously-skip-permissions`)
+  and sets the Claude working directory to `CRAB_WORKSPACE_ROOT`.
+
 ## Remote Debugging (Tailscale)
 
 Typical workflow once you can SSH to the host over Tailscale:
