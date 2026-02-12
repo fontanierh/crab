@@ -848,6 +848,9 @@ fn validate_run(run: &Run) -> CrabResult<()> {
         &run.logical_session_id,
     )?;
     ensure_non_empty_field("run_validate", "user_input", &run.user_input)?;
+    if let Some(channel_id) = run.delivery_channel_id.as_deref() {
+        ensure_non_empty_field("run_validate", "delivery_channel_id", channel_id)?;
+    }
     ensure_non_empty_field(
         "run_validate",
         "profile.resolved_profile.model",
@@ -3678,6 +3681,7 @@ mod tests {
             physical_session_id: Some("physical-1".to_string()),
             status: RunStatus::Succeeded,
             user_input: "please continue".to_string(),
+            delivery_channel_id: None,
             profile: sample_run_profile_telemetry(),
             queued_at_epoch_ms: 1_739_173_200_000,
             started_at_epoch_ms: Some(1_739_173_200_010),

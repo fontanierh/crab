@@ -195,6 +195,10 @@ pub struct Run {
     pub physical_session_id: Option<String>,
     pub status: RunStatus,
     pub user_input: String,
+    /// Discord channel id to deliver replies into. For DMs this differs from the logical session id
+    /// (which is `discord:dm:<user_id>`); Discord delivery must target the DM channel id.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delivery_channel_id: Option<String>,
     pub profile: RunProfileTelemetry,
     pub queued_at_epoch_ms: u64,
     pub started_at_epoch_ms: Option<u64>,
@@ -347,6 +351,7 @@ mod tests {
             physical_session_id: Some("physical_1".to_string()),
             status: RunStatus::Succeeded,
             user_input: "Please summarize the queue state.".to_string(),
+            delivery_channel_id: None,
             profile: sample_run_profile_telemetry(),
             queued_at_epoch_ms: 1_739_173_200_200,
             started_at_epoch_ms: Some(1_739_173_200_250),

@@ -368,6 +368,7 @@ mod tests {
             physical_session_id: Some("phys-1".to_string()),
             status,
             user_input: "hello".to_string(),
+            delivery_channel_id: None,
             profile: sample_run_profile_telemetry(),
             queued_at_epoch_ms,
             started_at_epoch_ms,

@@ -29,6 +29,9 @@ execution, delivery, rotation, and recovery.
    - channel: `discord:channel:<channel_id>`
    - thread: `discord:thread:<thread_id>`
    - DM: `discord:dm:<user_id>`
+5. `crabd` persists the gateway `channel_id` onto the queued `Run` as `delivery_channel_id`.
+   - For DMs, this is required: Discord replies must target the DM channel id (not the user id
+     embedded in the logical session id).
 
 ## 2) Run Creation + Lane Queue
 

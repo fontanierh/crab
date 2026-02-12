@@ -763,6 +763,7 @@ mod tests {
             physical_session_id: Some("physical-1".to_string()),
             status: RunStatus::Running,
             user_input: "hello".to_string(),
+            delivery_channel_id: None,
             profile: sample_telemetry("111111111111111111"),
             queued_at_epoch_ms: started_at_epoch_ms.saturating_sub(500),
             started_at_epoch_ms: Some(started_at_epoch_ms),

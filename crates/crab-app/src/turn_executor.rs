@@ -284,6 +284,7 @@ where
             physical_session_id: None,
             status: RunStatus::Queued,
             user_input: ingress.content.clone(),
+            delivery_channel_id: Some(ingress.channel_id.clone()),
             profile: profile.clone(),
             queued_at_epoch_ms: now_epoch_ms,
             started_at_epoch_ms: None,
@@ -1247,7 +1248,10 @@ where
             return Ok(false);
         }
 
-        let channel_id = delivery_channel_id(&run.logical_session_id)?;
+        let channel_id = match run.delivery_channel_id.as_deref() {
+            Some(channel_id) => channel_id.to_string(),
+            None => delivery_channel_id(&run.logical_session_id)?,
+        };
         let message_id = delivery_message_id(&run.id);
 
         let attempt = DeliveryAttempt {
@@ -1953,6 +1957,15 @@ fn delivery_channel_id(logical_session_id: &str) -> CrabResult<String> {
         });
     }
 
+    if conversation_kind == Some("dm") {
+        return Err(CrabError::InvariantViolation {
+            context: "turn_executor_delivery_target",
+            message: format!(
+                "direct messages require a delivery_channel_id (DM channel id) and cannot be derived from logical_session_id: {logical_session_id}"
+            ),
+        });
+    }
+
     let provider_scoped_id = provider_scoped_id.ok_or_else(|| CrabError::InvariantViolation {
         context: "turn_executor_delivery_target",
         message: format!("unsupported logical_session_id shape: {logical_session_id}"),
@@ -2285,6 +2298,7 @@ mod tests {
             physical_session_id: Some("physical-1".to_string()),
             status: RunStatus::Running,
             user_input: "ship ws15-t4".to_string(),
+            delivery_channel_id: None,
             profile: sample_profile_telemetry(),
             queued_at_epoch_ms: 1,
             started_at_epoch_ms: Some(2),
@@ -2303,6 +2317,7 @@ mod tests {
             physical_session_id: None,
             status: RunStatus::Running,
             user_input: user_input.to_string(),
+            delivery_channel_id: None,
             profile: owner_profile_telemetry(),
             queued_at_epoch_ms: 1,
             started_at_epoch_ms: Some(2),
@@ -6256,10 +6271,13 @@ mod tests {
             super::delivery_channel_id("discord:thread:888"),
             Ok("888".to_string())
         );
-        assert_eq!(
+        assert!(matches!(
             super::delivery_channel_id("discord:dm:999"),
-            Ok("999".to_string())
-        );
+            Err(CrabError::InvariantViolation {
+                context: "turn_executor_delivery_target",
+                ..
+            })
+        ));
         assert!(matches!(
             super::delivery_channel_id("discord:unknown:777"),
             Err(CrabError::InvariantViolation {

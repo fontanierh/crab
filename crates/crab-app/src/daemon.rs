@@ -1767,6 +1767,8 @@ impl<D: DaemonDiscordIo> DaemonTurnRuntime<D> {
         physical_session: &crab_core::PhysicalSession,
         inject_bootstrap_context: bool,
     ) -> CrabResult<String> {
+        #[cfg(coverage)]
+        let _ = physical_session;
         let Some(runtime) = self.turn_context_runtime.clone() else {
             return Ok(run.user_input.clone());
         };
@@ -3295,6 +3297,7 @@ mod tests {
             physical_session_id: None,
             status: RunStatus::Queued,
             user_input: "hello world".to_string(),
+            delivery_channel_id: None,
             profile: RunProfileTelemetry {
                 requested_profile: None,
                 resolved_profile: InferenceProfile {

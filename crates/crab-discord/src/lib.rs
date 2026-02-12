@@ -118,6 +118,8 @@ impl RoutingKey {
 pub struct IngressMessage {
     pub message_id: String,
     pub author_id: String,
+    /// Discord channel id to reply into (for DMs this is the DM channel id, not the user id).
+    pub channel_id: String,
     pub content: String,
     pub routing_key: RoutingKey,
 }
@@ -338,6 +340,7 @@ impl GatewayIngress {
         Ok(Some(IngressMessage {
             message_id: message.message_id,
             author_id: message.author_id,
+            channel_id: message.channel_id,
             content: message.content,
             routing_key,
         }))

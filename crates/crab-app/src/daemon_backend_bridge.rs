@@ -1397,6 +1397,7 @@ mod tests {
             physical_session_id: Some("physical-1".to_string()),
             status: RunStatus::Running,
             user_input: "hello world".to_string(),
+            delivery_channel_id: None,
             profile: RunProfileTelemetry {
                 requested_profile: None,
                 resolved_profile: InferenceProfile {

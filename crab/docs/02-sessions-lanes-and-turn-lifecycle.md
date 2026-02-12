@@ -30,6 +30,13 @@ This document defines:
 
 This ID is the durable partition key used by scheduler and stores.
 
+Important: DM delivery target differs from the DM logical session id.
+
+- DM `logical_session_id` uses the author's user id for durable lane partitioning.
+- Discord replies must target the DM *channel id* (from the gateway message `channel_id`).
+- Crab persists the DM channel id onto each `Run` as `delivery_channel_id` and uses it for
+  outbound post/edit. It must not derive DM delivery targets from `discord:dm:<user_id>`.
+
 ## Physical Session Model
 
 A logical session may have an active `PhysicalSession` with backend-specific ids:
