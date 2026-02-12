@@ -185,6 +185,7 @@ dependencies = [
  "crab-store",
  "crab-telemetry",
  "ctrlc",
+ "futures",
  "serde_json",
  "tracing",
 ]

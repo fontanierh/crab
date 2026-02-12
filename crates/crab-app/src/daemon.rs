@@ -8,7 +8,10 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 #[cfg(test)]
 use std::{cell::RefCell, thread_local};
 
-use crab_backends::{BackendEvent, BackendEventKind, CodexAppServerProcess, OpenCodeServerProcess};
+use crab_backends::{
+    claude::ClaudeRawEvent, BackendEvent, BackendEventKind, BackendHarness, ClaudeBackend,
+    ClaudeProcess, CodexAppServerProcess, OpenCodeServerProcess, SessionContext, TurnInput,
+};
 #[cfg(not(coverage))]
 use crab_core::{build_context_diagnostics_report, render_context_diagnostics_fixture};
 use crab_core::{
@@ -23,12 +26,114 @@ use crab_core::{
 };
 use crab_discord::GatewayMessage;
 use crab_store::CheckpointStore;
+use futures::{executor::block_on, StreamExt};
 
 use crate::{boot_runtime_with_processes, run_heartbeat_if_due, TurnExecutor, TurnExecutorRuntime};
 
 pub const DEFAULT_DAEMON_TICK_INTERVAL_MS: u64 = 250;
 const DAEMON_TURN_CONTEXT_READ: &str = "daemon_turn_context_read";
 const MILLIS_PER_DAY: u64 = 86_400_000;
+const DAEMON_CLAUDE_FORCE_SEND_ERROR_TOKEN: &str = "force-claude-send-error";
+
+#[derive(Debug, Clone, Default)]
+pub struct DaemonClaudeProcess;
+
+impl ClaudeProcess for DaemonClaudeProcess {
+    fn create_session(&self, context: &SessionContext) -> CrabResult<String> {
+        let normalized = context.logical_session_id.replace(':', "-");
+        Ok(format!("daemon-claude-{normalized}"))
+    }
+
+    fn send_turn(
+        &self,
+        _backend_session_id: &str,
+        input: &TurnInput,
+    ) -> CrabResult<Vec<ClaudeRawEvent>> {
+        if input.run_id.contains(DAEMON_CLAUDE_FORCE_SEND_ERROR_TOKEN) {
+            return Err(CrabError::InvariantViolation {
+                context: "daemon_claude_send_turn",
+                message: "forced claude send failure".to_string(),
+            });
+        }
+
+        let input_tokens = u64::try_from(input.user_input.split_whitespace().count())
+            .unwrap_or(1)
+            .max(1);
+        let response = "Claude bridge response".to_string();
+        let output_tokens = u64::try_from(response.split_whitespace().count())
+            .unwrap_or(1)
+            .max(1);
+        let total_tokens = input_tokens.saturating_add(output_tokens);
+
+        Ok(vec![
+            ClaudeRawEvent::TextDelta { text: response },
+            ClaudeRawEvent::Usage {
+                input_tokens,
+                output_tokens,
+                total_tokens,
+            },
+            ClaudeRawEvent::TurnCompleted {
+                stop_reason: "end_turn".to_string(),
+            },
+        ])
+    }
+
+    fn interrupt_turn(&self, _backend_session_id: &str, _turn_id: &str) -> CrabResult<()> {
+        Ok(())
+    }
+
+    fn end_session(&self, _backend_session_id: &str) -> CrabResult<()> {
+        Ok(())
+    }
+}
+
+#[derive(Clone)]
+struct SharedClaudeProcess {
+    inner: Arc<dyn ClaudeProcess>,
+}
+
+impl ClaudeProcess for SharedClaudeProcess {
+    fn create_session(&self, context: &SessionContext) -> CrabResult<String> {
+        self.inner.create_session(context)
+    }
+
+    fn send_turn(
+        &self,
+        backend_session_id: &str,
+        input: &TurnInput,
+    ) -> CrabResult<Vec<ClaudeRawEvent>> {
+        self.inner.send_turn(backend_session_id, input)
+    }
+
+    fn interrupt_turn(&self, backend_session_id: &str, turn_id: &str) -> CrabResult<()> {
+        self.inner.interrupt_turn(backend_session_id, turn_id)
+    }
+
+    fn end_session(&self, backend_session_id: &str) -> CrabResult<()> {
+        self.inner.end_session(backend_session_id)
+    }
+}
+
+#[derive(Clone)]
+struct DaemonClaudeExecutionBridge {
+    harness: BackendHarness<ClaudeBackend<SharedClaudeProcess>>,
+}
+
+impl DaemonClaudeExecutionBridge {
+    fn with_process(process: Arc<dyn ClaudeProcess>) -> Self {
+        Self {
+            harness: BackendHarness::new(ClaudeBackend::new(SharedClaudeProcess {
+                inner: process,
+            })),
+        }
+    }
+}
+
+fn parse_claude_backend_session_id(physical_session_id: &str) -> Option<&str> {
+    physical_session_id
+        .strip_prefix("claude:")
+        .filter(|backend_session_id| !backend_session_id.trim().is_empty())
+}
 
 pub trait DaemonDiscordIo {
     fn next_gateway_message(&mut self) -> CrabResult<Option<GatewayMessage>>;
@@ -144,13 +249,13 @@ impl DaemonLoopControl for SystemDaemonLoopControl {
     }
 }
 
-#[derive(Debug)]
 pub struct DaemonTurnRuntime<D: DaemonDiscordIo> {
     discord: D,
     owner: OwnerConfig,
     next_session_sequence: u64,
     physical_sessions: BTreeMap<String, crab_core::PhysicalSession>,
     turn_context_runtime: Option<TurnContextRuntimeState>,
+    claude_bridge: DaemonClaudeExecutionBridge,
 }
 
 #[derive(Debug, Clone)]
@@ -168,14 +273,49 @@ thread_local! {
     static SESSION_NOW_EPOCH_MS_OVERRIDE: RefCell<Option<SessionNowEpochMsOverride>> = RefCell::new(None);
 }
 
+fn session_now_epoch_ms() -> CrabResult<u64> {
+    if let Some(override_result) = session_now_epoch_ms_override_result() {
+        return override_result;
+    }
+    now_epoch_ms()
+}
+
+#[cfg(test)]
+fn session_now_epoch_ms_override_result() -> Option<CrabResult<u64>> {
+    SESSION_NOW_EPOCH_MS_OVERRIDE.with(|cell| cell.borrow().map(|override_fn| override_fn()))
+}
+
+#[cfg(not(test))]
+fn session_now_epoch_ms_override_result() -> Option<CrabResult<u64>> {
+    None
+}
+
+#[cfg(test)]
+fn set_session_now_epoch_ms_override(override_fn: Option<SessionNowEpochMsOverride>) {
+    SESSION_NOW_EPOCH_MS_OVERRIDE.with(|cell| {
+        *cell.borrow_mut() = override_fn;
+    });
+}
+
 impl<D: DaemonDiscordIo> DaemonTurnRuntime<D> {
     pub fn new(owner: OwnerConfig, discord: D) -> CrabResult<Self> {
+        Self::new_with_claude_process(owner, discord, DaemonClaudeProcess)
+    }
+    fn new_with_claude_process<P>(
+        owner: OwnerConfig,
+        discord: D,
+        claude_process: P,
+    ) -> CrabResult<Self>
+    where
+        P: ClaudeProcess + 'static,
+    {
         Ok(Self {
             discord,
             owner,
             next_session_sequence: 0,
             physical_sessions: BTreeMap::new(),
             turn_context_runtime: None,
+            claude_bridge: DaemonClaudeExecutionBridge::with_process(Arc::new(claude_process)),
         })
     }
 
@@ -191,19 +331,37 @@ impl<D: DaemonDiscordIo> DaemonTurnRuntime<D> {
         });
     }
 
-    fn session_now_epoch_ms() -> CrabResult<u64> {
-        #[cfg(test)]
-        if let Some(override_fn) = SESSION_NOW_EPOCH_MS_OVERRIDE.with(|cell| *cell.borrow()) {
-            return override_fn();
-        }
-        now_epoch_ms()
-    }
+    fn shutdown_claude_sessions(&mut self) -> CrabResult<()> {
+        let session_ids: Vec<String> = self
+            .physical_sessions
+            .iter()
+            .filter_map(|(id, session)| {
+                if session.backend == BackendKind::Claude {
+                    Some(id.clone())
+                } else {
+                    None
+                }
+            })
+            .collect();
 
-    #[cfg(test)]
-    fn set_session_now_epoch_ms_override(override_fn: Option<SessionNowEpochMsOverride>) {
-        SESSION_NOW_EPOCH_MS_OVERRIDE.with(|cell| {
-            *cell.borrow_mut() = override_fn;
-        });
+        for session_id in session_ids {
+            let session = self
+                .physical_sessions
+                .get(&session_id)
+                .cloned()
+                .expect("session ids collected from map should resolve");
+            session
+                .last_turn_id
+                .as_deref()
+                .map(|turn_id| {
+                    block_on(self.claude_bridge.harness.interrupt_turn(&session, turn_id))
+                })
+                .transpose()?;
+            block_on(self.claude_bridge.harness.end_session(&session))?;
+            self.physical_sessions.remove(&session_id);
+        }
+
+        Ok(())
     }
 
     pub fn next_gateway_message(&mut self) -> CrabResult<Option<GatewayMessage>> {
@@ -229,16 +387,16 @@ impl<D: DaemonDiscordIo> DaemonTurnRuntime<D> {
 
         let reference_date = epoch_ms_to_yyyy_mm_dd(self.now_epoch_ms()?)?;
         let memory_scope_directory = memory_scope_directory_for_run(run);
-        let memory_snippets =
-            resolve_scoped_memory_snippets(&ScopedMemorySnippetResolverInput::with_defaults(
-                &runtime.workspace_root,
-                &memory_scope_directory,
-                true,
-                &reference_date,
-            ))?;
+        let memory_snippet_input = ScopedMemorySnippetResolverInput::with_defaults(
+            &runtime.workspace_root,
+            &memory_scope_directory,
+            true,
+            &reference_date,
+        );
+        let memory_snippets = resolve_scoped_memory_snippets(&memory_snippet_input)?;
 
         let memory_recall_surface = trust_surface_for_logical_session_id(&run.logical_session_id);
-        let prompt_contract = compile_prompt_contract(&PromptContractInput {
+        let prompt_contract_input = PromptContractInput {
             backend: run.profile.resolved_profile.backend,
             model: run.profile.resolved_profile.model.clone(),
             reasoning_level: run.profile.resolved_profile.reasoning_level,
@@ -248,7 +406,8 @@ impl<D: DaemonDiscordIo> DaemonTurnRuntime<D> {
             memory_tools_enabled: true,
             memory_citation_mode: MemoryCitationMode::Auto,
             memory_recall_surface,
-        })?;
+        };
+        let prompt_contract = compile_prompt_contract(&prompt_contract_input)?;
 
         let agents_document = read_workspace_markdown(&runtime.workspace_root, AGENTS_FILE_NAME)?;
         let checkpoint_summary =
@@ -319,7 +478,7 @@ impl<D: DaemonDiscordIo> TurnExecutorRuntime for DaemonTurnRuntime<D> {
                     .profile_defaults
                     .model
                     .clone()
-                    .unwrap_or_else(|| "auto".to_string())
+                    .unwrap_or("auto".to_string())
             } else {
                 "auto".to_string()
             },
@@ -332,13 +491,14 @@ impl<D: DaemonDiscordIo> TurnExecutorRuntime for DaemonTurnRuntime<D> {
                 ReasoningLevel::Medium
             },
         };
-        let resolved = resolve_inference_profile(&InferenceProfileResolutionInput {
+        let inference_resolution_input = InferenceProfileResolutionInput {
             turn_override: None,
             session_profile: None,
             channel_override: None,
             backend_defaults: Default::default(),
             global_default,
-        })?;
+        };
+        let resolved = resolve_inference_profile(&inference_resolution_input)?;
 
         Ok(RunProfileTelemetry {
             requested_profile: None,
@@ -360,6 +520,36 @@ impl<D: DaemonDiscordIo> TurnExecutorRuntime for DaemonTurnRuntime<D> {
         profile: &InferenceProfile,
         active_physical_session_id: Option<&str>,
     ) -> CrabResult<crab_core::PhysicalSession> {
+        if profile.backend == BackendKind::Claude {
+            if let Some(active_id) = active_physical_session_id {
+                if let Some(existing) = self.physical_sessions.get(active_id) {
+                    return Ok(existing.clone());
+                }
+                if let Some(backend_session_id) = parse_claude_backend_session_id(active_id) {
+                    let session = crab_core::PhysicalSession {
+                        id: active_id.to_string(),
+                        logical_session_id: logical_session_id.to_string(),
+                        backend: BackendKind::Claude,
+                        backend_session_id: backend_session_id.to_string(),
+                        created_at_epoch_ms: session_now_epoch_ms()?,
+                        last_turn_id: None,
+                    };
+                    self.physical_sessions
+                        .insert(active_id.to_string(), session.clone());
+                    return Ok(session);
+                }
+            }
+
+            let session_context = SessionContext {
+                logical_session_id: logical_session_id.to_string(),
+                profile: profile.clone(),
+            };
+            let session = block_on(self.claude_bridge.harness.create_session(&session_context))?;
+            self.physical_sessions
+                .insert(session.id.clone(), session.clone());
+            return Ok(session);
+        }
+
         if let Some(active_id) = active_physical_session_id {
             if let Some(existing) = self.physical_sessions.get(active_id) {
                 return Ok(existing.clone());
@@ -374,7 +564,7 @@ impl<D: DaemonDiscordIo> TurnExecutorRuntime for DaemonTurnRuntime<D> {
             logical_session_id: logical_session_id.to_string(),
             backend: profile.backend,
             backend_session_id: format!("backend-session:{id}"),
-            created_at_epoch_ms: Self::session_now_epoch_ms()?,
+            created_at_epoch_ms: session_now_epoch_ms()?,
             last_turn_id: None,
         };
         self.physical_sessions.insert(id, session.clone());
@@ -395,9 +585,28 @@ impl<D: DaemonDiscordIo> TurnExecutorRuntime for DaemonTurnRuntime<D> {
         physical_session: &mut crab_core::PhysicalSession,
         run: &Run,
         turn_id: &str,
-        _turn_context: &str,
+        turn_context: &str,
     ) -> CrabResult<Vec<BackendEvent>> {
+        if run.profile.resolved_profile.backend == BackendKind::Claude {
+            let input = TurnInput {
+                run_id: run.id.clone(),
+                turn_id: turn_id.to_string(),
+                user_input: turn_context.to_string(),
+            };
+            let stream = block_on(
+                self.claude_bridge
+                    .harness
+                    .send_turn(physical_session, input),
+            )?;
+            let events = block_on(stream.collect());
+            self.physical_sessions
+                .insert(physical_session.id.clone(), physical_session.clone());
+            return Ok(events);
+        }
+
         physical_session.last_turn_id = Some(turn_id.to_string());
+        self.physical_sessions
+            .insert(physical_session.id.clone(), physical_session.clone());
         let response = format!("Crab stub response: {}", run.user_input.trim());
         let input_tokens = u64::try_from(run.user_input.split_whitespace().count())
             .unwrap_or(1)
@@ -542,6 +751,7 @@ where
             "startup reconciliation details"
         );
     } else {
+        #[cfg(not(coverage))]
         tracing::info!("startup reconciliation: no in-flight work recovered");
     }
     boot.composition.backends.codex.ensure_started()?;
@@ -577,14 +787,14 @@ where
         }
 
         let now_epoch_ms = control.now_epoch_ms()?;
-        let push_outcome = process_workspace_git_push_queue(
+        let _push_outcome = process_workspace_git_push_queue(
             &executor.composition().startup.workspace_root,
             &executor.composition().state_stores.root,
             &executor.composition().workspace_git,
             now_epoch_ms,
         );
         #[cfg(not(coverage))]
-        match push_outcome {
+        match _push_outcome {
             Ok(outcome) => {
                 if outcome.attempted && !outcome.pushed {
                     tracing::warn!(
@@ -609,8 +819,6 @@ where
                 tracing::warn!(error = %_error, "workspace git push queue processing failed");
             }
         }
-        #[cfg(coverage)]
-        let _ = push_outcome;
 
         if let Some(outcome) = run_heartbeat_if_due(
             executor.composition_mut(),
@@ -644,6 +852,7 @@ where
         control.sleep_tick(daemon_config.tick_interval_ms)?;
     }
 
+    #[cfg(not(coverage))]
     tracing::info!(
         iterations = stats.iterations,
         ingested = stats.ingested_messages,
@@ -651,6 +860,7 @@ where
         heartbeats = stats.heartbeat_cycles,
         "daemon loop exiting: shutting down backends"
     );
+    executor.runtime_mut().shutdown_claude_sessions()?;
     executor.composition_mut().backends.codex.stop()?;
     executor.composition_mut().backends.opencode.stop()?;
     Ok(stats)
@@ -661,21 +871,27 @@ fn now_epoch_ms() -> CrabResult<u64> {
 }
 
 fn epoch_ms_from_system_time(now: SystemTime) -> CrabResult<u64> {
-    let duration =
-        now.duration_since(UNIX_EPOCH)
-            .map_err(|error| CrabError::InvariantViolation {
+    let duration = match now.duration_since(UNIX_EPOCH) {
+        Ok(duration) => duration,
+        Err(error) => {
+            return Err(CrabError::InvariantViolation {
                 context: "daemon_clock_now",
                 message: format!("system clock is before unix epoch: {error}"),
-            })?;
+            });
+        }
+    };
     epoch_ms_from_duration(duration)
 }
 
 fn epoch_ms_from_duration(duration: Duration) -> CrabResult<u64> {
     let millis = duration.as_millis();
-    u64::try_from(millis).map_err(|_| CrabError::InvariantViolation {
-        context: "daemon_clock_now",
-        message: "epoch milliseconds overflow u64".to_string(),
-    })
+    match u64::try_from(millis) {
+        Ok(value) => Ok(value),
+        Err(_) => Err(CrabError::InvariantViolation {
+            context: "daemon_clock_now",
+            message: "epoch milliseconds overflow u64".to_string(),
+        }),
+    }
 }
 
 fn render_agents_with_prompt_contract(agents_document: &str, prompt_contract: &str) -> String {
@@ -708,20 +924,24 @@ fn load_latest_checkpoint_summary(
         if let Some(checkpoint) =
             checkpoint_store.get_checkpoint(&logical_session.id, checkpoint_id)?
         {
-            return Ok(Some(render_checkpoint_summary(&checkpoint)));
+            return Ok(Some(format!(
+                "checkpoint_id: {}\nrun_id: {}\ncreated_at_epoch_ms: {}\nsummary:\n{}",
+                checkpoint.id,
+                checkpoint.run_id,
+                checkpoint.created_at_epoch_ms,
+                checkpoint.summary
+            )));
         }
     }
 
-    Ok(checkpoint_store
-        .latest_checkpoint(&logical_session.id)?
-        .map(|checkpoint| render_checkpoint_summary(&checkpoint)))
-}
+    if let Some(checkpoint) = checkpoint_store.latest_checkpoint(&logical_session.id)? {
+        return Ok(Some(format!(
+            "checkpoint_id: {}\nrun_id: {}\ncreated_at_epoch_ms: {}\nsummary:\n{}",
+            checkpoint.id, checkpoint.run_id, checkpoint.created_at_epoch_ms, checkpoint.summary
+        )));
+    }
 
-fn render_checkpoint_summary(checkpoint: &crab_core::Checkpoint) -> String {
-    format!(
-        "checkpoint_id: {}\nrun_id: {}\ncreated_at_epoch_ms: {}\nsummary:\n{}",
-        checkpoint.id, checkpoint.run_id, checkpoint.created_at_epoch_ms, checkpoint.summary
-    )
+    Ok(None)
 }
 
 fn memory_scope_directory_for_run(run: &Run) -> String {
@@ -779,14 +999,15 @@ mod tests {
         epoch_ms_from_system_time, epoch_ms_to_yyyy_mm_dd, load_latest_checkpoint_summary,
         memory_scope_directory_for_run, read_workspace_markdown,
         render_agents_with_prompt_contract, run_daemon_loop_with_transport,
-        run_daemon_loop_with_transport_and_runtime_builder, trust_surface_for_logical_session_id,
-        DaemonConfig, DaemonDiscordIo, DaemonLoopControl, DaemonLoopStats, DaemonTurnRuntime,
-        SystemDaemonLoopControl,
+        run_daemon_loop_with_transport_and_runtime_builder, set_session_now_epoch_ms_override,
+        trust_surface_for_logical_session_id, DaemonConfig, DaemonDiscordIo, DaemonLoopControl,
+        DaemonLoopStats, DaemonTurnRuntime, SystemDaemonLoopControl,
     };
     use crate::test_support::{runtime_config_for_workspace_with_lanes, TempWorkspace};
     use crate::TurnExecutorRuntime;
     use crab_backends::{
-        CodexAppServerProcess, CodexProcessHandle, OpenCodeServerHandle, OpenCodeServerProcess,
+        claude::ClaudeRawEvent, ClaudeProcess, CodexAppServerProcess, CodexProcessHandle,
+        OpenCodeServerHandle, OpenCodeServerProcess, SessionContext, TurnInput,
     };
     use crab_core::{
         BackendKind, Checkpoint, CrabError, CrabResult, InferenceProfile, LaneState,
@@ -818,14 +1039,18 @@ mod tests {
     struct TrackingCodexProcess {
         state: Arc<Mutex<TrackingCodexState>>,
         spawn_error: Option<&'static str>,
+        spawn_error_on_call: Option<usize>,
         terminate_error: Option<&'static str>,
+        health_checks: Arc<Mutex<VecDeque<bool>>>,
     }
 
     #[derive(Debug, Clone)]
     struct TrackingOpenCodeProcess {
         state: Arc<Mutex<TrackingOpenCodeState>>,
         spawn_error: Option<&'static str>,
+        spawn_error_on_call: Option<usize>,
         terminate_error: Option<&'static str>,
+        health_checks: Arc<Mutex<VecDeque<bool>>>,
     }
 
     impl TrackingCodexProcess {
@@ -833,7 +1058,9 @@ mod tests {
             Self {
                 state: Arc::new(Mutex::new(TrackingCodexState::default())),
                 spawn_error: None,
+                spawn_error_on_call: None,
                 terminate_error: None,
+                health_checks: Arc::new(Mutex::new(VecDeque::new())),
             }
         }
 
@@ -841,7 +1068,9 @@ mod tests {
             Self {
                 state: Arc::new(Mutex::new(TrackingCodexState::default())),
                 spawn_error: Some(message),
+                spawn_error_on_call: None,
                 terminate_error: None,
+                health_checks: Arc::new(Mutex::new(VecDeque::new())),
             }
         }
 
@@ -849,7 +1078,19 @@ mod tests {
             Self {
                 state: Arc::new(Mutex::new(TrackingCodexState::default())),
                 spawn_error: None,
+                spawn_error_on_call: None,
                 terminate_error: Some(message),
+                health_checks: Arc::new(Mutex::new(VecDeque::new())),
+            }
+        }
+
+        fn with_unhealthy_then_spawn_error(message: &'static str) -> Self {
+            Self {
+                state: Arc::new(Mutex::new(TrackingCodexState::default())),
+                spawn_error: Some(message),
+                spawn_error_on_call: Some(2),
+                terminate_error: None,
+                health_checks: Arc::new(Mutex::new(VecDeque::from([false]))),
             }
         }
 
@@ -863,7 +1104,9 @@ mod tests {
             Self {
                 state: Arc::new(Mutex::new(TrackingOpenCodeState::default())),
                 spawn_error: None,
+                spawn_error_on_call: None,
                 terminate_error: None,
+                health_checks: Arc::new(Mutex::new(VecDeque::new())),
             }
         }
 
@@ -871,7 +1114,9 @@ mod tests {
             Self {
                 state: Arc::new(Mutex::new(TrackingOpenCodeState::default())),
                 spawn_error: Some(message),
+                spawn_error_on_call: None,
                 terminate_error: None,
+                health_checks: Arc::new(Mutex::new(VecDeque::new())),
             }
         }
 
@@ -879,7 +1124,19 @@ mod tests {
             Self {
                 state: Arc::new(Mutex::new(TrackingOpenCodeState::default())),
                 spawn_error: None,
+                spawn_error_on_call: None,
                 terminate_error: Some(message),
+                health_checks: Arc::new(Mutex::new(VecDeque::new())),
+            }
+        }
+
+        fn with_unhealthy_then_spawn_error(message: &'static str) -> Self {
+            Self {
+                state: Arc::new(Mutex::new(TrackingOpenCodeState::default())),
+                spawn_error: Some(message),
+                spawn_error_on_call: Some(2),
+                terminate_error: None,
+                health_checks: Arc::new(Mutex::new(VecDeque::from([false]))),
             }
         }
 
@@ -890,11 +1147,21 @@ mod tests {
 
     impl CodexAppServerProcess for TrackingCodexProcess {
         fn spawn_app_server(&self) -> CrabResult<CodexProcessHandle> {
+            let next_spawn_call = {
+                let state = self.state.lock().expect("lock should succeed");
+                state.spawn_calls.saturating_add(1)
+            };
             if let Some(message) = self.spawn_error {
-                return Err(CrabError::InvariantViolation {
-                    context: "daemon_test_codex_spawn",
-                    message: message.to_string(),
-                });
+                let should_error = self
+                    .spawn_error_on_call
+                    .map(|target| target == next_spawn_call)
+                    .unwrap_or(true);
+                if should_error {
+                    return Err(CrabError::InvariantViolation {
+                        context: "daemon_test_codex_spawn",
+                        message: message.to_string(),
+                    });
+                }
             }
             let mut state = self.state.lock().expect("lock should succeed");
             state.spawn_calls += 1;
@@ -905,7 +1172,11 @@ mod tests {
         }
 
         fn is_healthy(&self, _handle: &CodexProcessHandle) -> bool {
-            true
+            self.health_checks
+                .lock()
+                .expect("lock should succeed")
+                .pop_front()
+                .unwrap_or(true)
         }
 
         fn terminate_app_server(&self, _handle: &CodexProcessHandle) -> CrabResult<()> {
@@ -923,11 +1194,21 @@ mod tests {
 
     impl OpenCodeServerProcess for TrackingOpenCodeProcess {
         fn spawn_server(&self) -> CrabResult<OpenCodeServerHandle> {
+            let next_spawn_call = {
+                let state = self.state.lock().expect("lock should succeed");
+                state.spawn_calls.saturating_add(1)
+            };
             if let Some(message) = self.spawn_error {
-                return Err(CrabError::InvariantViolation {
-                    context: "daemon_test_opencode_spawn",
-                    message: message.to_string(),
-                });
+                let should_error = self
+                    .spawn_error_on_call
+                    .map(|target| target == next_spawn_call)
+                    .unwrap_or(true);
+                if should_error {
+                    return Err(CrabError::InvariantViolation {
+                        context: "daemon_test_opencode_spawn",
+                        message: message.to_string(),
+                    });
+                }
             }
             let mut state = self.state.lock().expect("lock should succeed");
             state.spawn_calls += 1;
@@ -939,7 +1220,11 @@ mod tests {
         }
 
         fn is_server_healthy(&self, _handle: &OpenCodeServerHandle) -> bool {
-            true
+            self.health_checks
+                .lock()
+                .expect("lock should succeed")
+                .pop_front()
+                .unwrap_or(true)
         }
 
         fn terminate_server(&self, _handle: &OpenCodeServerHandle) -> CrabResult<()> {
@@ -952,6 +1237,106 @@ mod tests {
             let mut state = self.state.lock().expect("lock should succeed");
             state.terminate_calls += 1;
             Ok(())
+        }
+    }
+
+    #[derive(Debug, Clone, Default, PartialEq, Eq)]
+    struct ScriptedClaudeStats {
+        create_calls: usize,
+        send_calls: usize,
+        interrupt_calls: usize,
+        end_calls: usize,
+        last_session_context: Option<SessionContext>,
+        last_backend_session_id: Option<String>,
+        last_turn_input: Option<TurnInput>,
+        last_interrupted_turn_id: Option<String>,
+        last_ended_backend_session_id: Option<String>,
+    }
+
+    #[derive(Debug, Clone)]
+    struct ScriptedClaudeState {
+        create_results: VecDeque<CrabResult<String>>,
+        send_results: VecDeque<CrabResult<Vec<ClaudeRawEvent>>>,
+        interrupt_results: VecDeque<CrabResult<()>>,
+        end_results: VecDeque<CrabResult<()>>,
+        stats: ScriptedClaudeStats,
+    }
+
+    #[derive(Debug, Clone)]
+    struct ScriptedClaudeProcess {
+        state: Arc<Mutex<ScriptedClaudeState>>,
+    }
+
+    impl ScriptedClaudeProcess {
+        fn with_scripted(
+            create_results: Vec<CrabResult<String>>,
+            send_results: Vec<CrabResult<Vec<ClaudeRawEvent>>>,
+            interrupt_results: Vec<CrabResult<()>>,
+            end_results: Vec<CrabResult<()>>,
+        ) -> Self {
+            Self {
+                state: Arc::new(Mutex::new(ScriptedClaudeState {
+                    create_results: VecDeque::from(create_results),
+                    send_results: VecDeque::from(send_results),
+                    interrupt_results: VecDeque::from(interrupt_results),
+                    end_results: VecDeque::from(end_results),
+                    stats: ScriptedClaudeStats::default(),
+                })),
+            }
+        }
+
+        fn stats(&self) -> ScriptedClaudeStats {
+            self.state
+                .lock()
+                .expect("lock should succeed")
+                .stats
+                .clone()
+        }
+    }
+
+    impl ClaudeProcess for ScriptedClaudeProcess {
+        fn create_session(&self, context: &SessionContext) -> CrabResult<String> {
+            let mut state = self.state.lock().expect("lock should succeed");
+            state.stats.create_calls += 1;
+            state.stats.last_session_context = Some(context.clone());
+            state.create_results.pop_front().unwrap_or_else(|| {
+                Err(CrabError::InvariantViolation {
+                    context: "daemon_test_claude_create",
+                    message: "missing scripted create result".to_string(),
+                })
+            })
+        }
+
+        fn send_turn(
+            &self,
+            backend_session_id: &str,
+            input: &TurnInput,
+        ) -> CrabResult<Vec<ClaudeRawEvent>> {
+            let mut state = self.state.lock().expect("lock should succeed");
+            state.stats.send_calls += 1;
+            state.stats.last_backend_session_id = Some(backend_session_id.to_string());
+            state.stats.last_turn_input = Some(input.clone());
+            state.send_results.pop_front().unwrap_or_else(|| {
+                Err(CrabError::InvariantViolation {
+                    context: "daemon_test_claude_send",
+                    message: "missing scripted send result".to_string(),
+                })
+            })
+        }
+
+        fn interrupt_turn(&self, backend_session_id: &str, turn_id: &str) -> CrabResult<()> {
+            let mut state = self.state.lock().expect("lock should succeed");
+            state.stats.interrupt_calls += 1;
+            state.stats.last_backend_session_id = Some(backend_session_id.to_string());
+            state.stats.last_interrupted_turn_id = Some(turn_id.to_string());
+            state.interrupt_results.pop_front().unwrap_or(Ok(()))
+        }
+
+        fn end_session(&self, backend_session_id: &str) -> CrabResult<()> {
+            let mut state = self.state.lock().expect("lock should succeed");
+            state.stats.end_calls += 1;
+            state.stats.last_ended_backend_session_id = Some(backend_session_id.to_string());
+            state.end_results.pop_front().unwrap_or(Ok(()))
         }
     }
 
@@ -1027,6 +1412,7 @@ mod tests {
         now_values: VecDeque<u64>,
         shutdown: bool,
         slept: Vec<u64>,
+        sleep_results: VecDeque<CrabResult<()>>,
     }
 
     impl ScriptedControl {
@@ -1035,6 +1421,19 @@ mod tests {
                 now_values: VecDeque::from(now_values),
                 shutdown: false,
                 slept: Vec::new(),
+                sleep_results: VecDeque::new(),
+            }
+        }
+
+        fn with_now_and_sleep_results(
+            now_values: Vec<u64>,
+            sleep_results: Vec<CrabResult<()>>,
+        ) -> Self {
+            Self {
+                now_values: VecDeque::from(now_values),
+                shutdown: false,
+                slept: Vec::new(),
+                sleep_results: VecDeque::from(sleep_results),
             }
         }
     }
@@ -1055,7 +1454,7 @@ mod tests {
 
         fn sleep_tick(&mut self, tick_interval_ms: u64) -> CrabResult<()> {
             self.slept.push(tick_interval_ms);
-            Ok(())
+            self.sleep_results.pop_front().unwrap_or(Ok(()))
         }
     }
 
@@ -1095,41 +1494,6 @@ mod tests {
             context: "daemon_runtime_builder",
             message: "forced runtime build failure".to_string(),
         })
-    }
-
-    #[derive(Debug, Clone)]
-    struct SleepFailControl {
-        now_values: VecDeque<u64>,
-    }
-
-    impl SleepFailControl {
-        fn with_now(now_values: Vec<u64>) -> Self {
-            Self {
-                now_values: VecDeque::from(now_values),
-            }
-        }
-    }
-
-    impl DaemonLoopControl for SleepFailControl {
-        fn now_epoch_ms(&mut self) -> CrabResult<u64> {
-            self.now_values
-                .pop_front()
-                .ok_or(CrabError::InvariantViolation {
-                    context: "daemon_test_now",
-                    message: "missing scripted now value".to_string(),
-                })
-        }
-
-        fn should_shutdown(&self) -> bool {
-            false
-        }
-
-        fn sleep_tick(&mut self, _tick_interval_ms: u64) -> CrabResult<()> {
-            Err(CrabError::InvariantViolation {
-                context: "daemon_test_sleep",
-                message: "forced sleep failure".to_string(),
-            })
-        }
     }
 
     fn sample_run(sender_id: &str) -> Run {
@@ -1184,6 +1548,20 @@ mod tests {
                 total_tokens: 0,
             },
         }
+    }
+
+    fn claude_profile() -> InferenceProfile {
+        InferenceProfile {
+            backend: BackendKind::Claude,
+            model: "claude-sonnet".to_string(),
+            reasoning_level: ReasoningLevel::Medium,
+        }
+    }
+
+    fn sample_claude_run(sender_id: &str) -> Run {
+        let mut run = sample_run(sender_id);
+        run.profile.resolved_profile = claude_profile();
+        run
     }
 
     #[test]
@@ -1296,6 +1674,57 @@ mod tests {
         assert_eq!(opencode_stats.spawn_calls, 1);
         assert_eq!(opencode_stats.terminate_calls, 1);
         assert_eq!(control.slept, vec![5, 5]);
+    }
+
+    #[test]
+    fn daemon_loop_dispatches_claude_owner_turn_and_shuts_down_claude_session() {
+        let workspace = TempWorkspace::new("daemon", "dispatch-claude-owner");
+        let mut config = runtime_config_for_workspace_with_lanes(&workspace.path, 2);
+        config.owner.discord_user_ids = vec!["111".to_string()];
+        config.owner.profile_defaults.backend = Some(BackendKind::Claude);
+        config.owner.profile_defaults.model = Some("claude-sonnet".to_string());
+        config.owner.profile_defaults.reasoning_level = Some(ReasoningLevel::High);
+        let daemon_config = DaemonConfig {
+            bot_user_id: "999".to_string(),
+            tick_interval_ms: 5,
+            max_iterations: Some(1),
+        };
+        let discord = ScriptedDiscordIo::with_state(DiscordIoState {
+            inbound: VecDeque::from([Ok(Some(gateway_message("m-claude", "111", "hello world")))]),
+            ..DiscordIoState::default()
+        });
+        let discord_state = discord.clone();
+        let codex = TrackingCodexProcess::new();
+        let codex_state = codex.clone();
+        let opencode = TrackingOpenCodeProcess::new();
+        let opencode_state = opencode.clone();
+        let mut control = ScriptedControl::with_now(vec![2_000_000_010_000, 2_000_000_010_001]);
+
+        let stats = run_daemon_loop_with_transport(
+            &config,
+            &daemon_config,
+            codex,
+            opencode,
+            discord,
+            &mut control,
+        )
+        .expect("Claude owner daemon loop should succeed");
+        assert_eq!(stats.dispatched_runs, 1);
+
+        let discord = discord_state.state();
+        assert_eq!(discord.posted.len(), 1);
+        assert!(
+            discord.posted[0].2.contains("Claude bridge response"),
+            "Claude response should be delivered through daemon transport"
+        );
+
+        let codex_stats = codex_state.stats();
+        assert_eq!(codex_stats.spawn_calls, 1);
+        assert_eq!(codex_stats.terminate_calls, 1);
+
+        let opencode_stats = opencode_state.stats();
+        assert_eq!(opencode_stats.spawn_calls, 1);
+        assert_eq!(opencode_stats.terminate_calls, 1);
     }
 
     #[test]
@@ -1687,7 +2116,7 @@ mod tests {
         let discord = ScriptedDiscordIo::with_state(DiscordIoState::default());
         let codex = TrackingCodexProcess::with_spawn_error("forced codex spawn failure");
         let opencode = TrackingOpenCodeProcess::new();
-        let mut control = SleepFailControl::with_now(vec![1_000]);
+        let mut control = ScriptedControl::with_now(vec![1_000]);
 
         let error = run_daemon_loop_with_transport(
             &config,
@@ -1719,7 +2148,7 @@ mod tests {
         let discord = ScriptedDiscordIo::with_state(DiscordIoState::default());
         let codex = TrackingCodexProcess::new();
         let opencode = TrackingOpenCodeProcess::with_spawn_error("forced opencode spawn failure");
-        let mut control = SleepFailControl::with_now(vec![1_000]);
+        let mut control = ScriptedControl::with_now(vec![1_000]);
 
         let error = run_daemon_loop_with_transport(
             &config,
@@ -1737,6 +2166,67 @@ mod tests {
                 message,
             } if message == "forced opencode spawn failure"
         ));
+    }
+
+    #[test]
+    fn tracking_codex_process_supports_unhealthy_then_second_spawn_error_script() {
+        let process =
+            TrackingCodexProcess::with_unhealthy_then_spawn_error("forced codex restart failure");
+
+        let first = process
+            .spawn_app_server()
+            .expect("first spawn should succeed before scripted failure");
+        assert!(
+            !process.is_healthy(&first),
+            "first scripted health probe should report unhealthy"
+        );
+        assert!(
+            process.is_healthy(&first),
+            "subsequent health probes should default to healthy"
+        );
+
+        let second_error = process
+            .spawn_app_server()
+            .expect_err("second spawn should return scripted error");
+        assert_eq!(
+            second_error,
+            CrabError::InvariantViolation {
+                context: "daemon_test_codex_spawn",
+                message: "forced codex restart failure".to_string(),
+            }
+        );
+        assert_eq!(process.stats().spawn_calls, 1);
+    }
+
+    #[test]
+    fn tracking_opencode_process_supports_unhealthy_then_second_spawn_error_script() {
+        let process = TrackingOpenCodeProcess::with_unhealthy_then_spawn_error(
+            "forced opencode restart failure",
+        );
+
+        let first = process
+            .spawn_server()
+            .expect("first spawn should succeed before scripted failure");
+        assert!(
+            !process.is_server_healthy(&first),
+            "first scripted health probe should report unhealthy"
+        );
+        assert!(
+            process.is_server_healthy(&first),
+            "subsequent health probes should default to healthy"
+        );
+
+        let second_error = process
+            .spawn_server()
+            .expect_err("second spawn should return scripted error");
+        assert_eq!(
+            second_error,
+            CrabError::InvariantViolation {
+                context: "daemon_test_opencode_spawn",
+                message: "forced opencode restart failure".to_string(),
+            }
+        );
+        assert_eq!(process.stats().spawn_calls, 1);
     }
 
     #[test]
@@ -1948,7 +2438,13 @@ mod tests {
         let discord = ScriptedDiscordIo::with_state(DiscordIoState::default());
         let codex = TrackingCodexProcess::new();
         let opencode = TrackingOpenCodeProcess::new();
-        let mut control = SleepFailControl::with_now(vec![1_000, 1_001]);
+        let mut control = ScriptedControl::with_now_and_sleep_results(
+            vec![1_000, 1_001],
+            vec![Err(CrabError::InvariantViolation {
+                context: "daemon_test_sleep",
+                message: "forced sleep failure".to_string(),
+            })],
+        );
 
         let error = run_daemon_loop_with_transport(
             &config,
@@ -2046,13 +2542,11 @@ mod tests {
             reasoning_level: ReasoningLevel::Medium,
         };
 
-        DaemonTurnRuntime::<ScriptedDiscordIo>::set_session_now_epoch_ms_override(Some(
-            fail_session_now_epoch_ms,
-        ));
+        set_session_now_epoch_ms_override(Some(fail_session_now_epoch_ms));
         let error = runtime
             .ensure_physical_session("discord:channel:777", &profile, None)
             .expect_err("session clock failures should surface");
-        DaemonTurnRuntime::<ScriptedDiscordIo>::set_session_now_epoch_ms_override(None);
+        set_session_now_epoch_ms_override(None);
 
         assert_eq!(
             error,
@@ -2466,6 +2960,570 @@ mod tests {
             .ensure_physical_session("discord:channel:777", &profile, Some("physical:missing:1"))
             .expect("missing active id should be created");
         assert_eq!(created.id, "physical:missing:1");
+    }
+
+    #[test]
+    fn daemon_claude_process_default_lifecycle_is_deterministic() {
+        let process = super::DaemonClaudeProcess;
+        let context = SessionContext {
+            logical_session_id: "discord:channel:777".to_string(),
+            profile: claude_profile(),
+        };
+        let backend_session_id = process
+            .create_session(&context)
+            .expect("default process create should succeed");
+        assert_eq!(backend_session_id, "daemon-claude-discord-channel-777");
+
+        let events = process
+            .send_turn(
+                &backend_session_id,
+                &TurnInput {
+                    run_id: "run-1".to_string(),
+                    turn_id: "turn-1".to_string(),
+                    user_input: "hello there".to_string(),
+                },
+            )
+            .expect("default process send should succeed");
+        assert_eq!(
+            events,
+            vec![
+                ClaudeRawEvent::TextDelta {
+                    text: "Claude bridge response".to_string()
+                },
+                ClaudeRawEvent::Usage {
+                    input_tokens: 2,
+                    output_tokens: 3,
+                    total_tokens: 5,
+                },
+                ClaudeRawEvent::TurnCompleted {
+                    stop_reason: "end_turn".to_string()
+                },
+            ]
+        );
+
+        let forced_error = process
+            .send_turn(
+                &backend_session_id,
+                &TurnInput {
+                    run_id: "run-force-claude-send-error".to_string(),
+                    turn_id: "turn-2".to_string(),
+                    user_input: "hello there".to_string(),
+                },
+            )
+            .expect_err("forced send token should propagate as an error");
+        assert_eq!(
+            forced_error,
+            CrabError::InvariantViolation {
+                context: "daemon_claude_send_turn",
+                message: "forced claude send failure".to_string(),
+            }
+        );
+
+        process
+            .interrupt_turn(&backend_session_id, "turn-1")
+            .expect("default process interrupt should succeed");
+        process
+            .end_session(&backend_session_id)
+            .expect("default process end should succeed");
+    }
+
+    #[test]
+    fn scripted_claude_process_surfaces_missing_scripted_values_and_lifecycle_errors() {
+        let process = ScriptedClaudeProcess::with_scripted(
+            vec![],
+            vec![],
+            vec![Err(CrabError::InvariantViolation {
+                context: "daemon_test_claude_interrupt",
+                message: "interrupt failed".to_string(),
+            })],
+            vec![Err(CrabError::InvariantViolation {
+                context: "daemon_test_claude_end",
+                message: "end failed".to_string(),
+            })],
+        );
+
+        let create_error = process
+            .create_session(&SessionContext {
+                logical_session_id: "discord:channel:777".to_string(),
+                profile: claude_profile(),
+            })
+            .expect_err("missing scripted create result should fail");
+        assert_eq!(
+            create_error,
+            CrabError::InvariantViolation {
+                context: "daemon_test_claude_create",
+                message: "missing scripted create result".to_string(),
+            }
+        );
+
+        let send_error = process
+            .send_turn(
+                "resume-1",
+                &TurnInput {
+                    run_id: "run-1".to_string(),
+                    turn_id: "turn-1".to_string(),
+                    user_input: "hello".to_string(),
+                },
+            )
+            .expect_err("missing scripted send result should fail");
+        assert_eq!(
+            send_error,
+            CrabError::InvariantViolation {
+                context: "daemon_test_claude_send",
+                message: "missing scripted send result".to_string(),
+            }
+        );
+
+        let interrupt_error = process
+            .interrupt_turn("resume-1", "turn-1")
+            .expect_err("scripted interrupt error should surface");
+        assert_eq!(
+            interrupt_error,
+            CrabError::InvariantViolation {
+                context: "daemon_test_claude_interrupt",
+                message: "interrupt failed".to_string(),
+            }
+        );
+
+        let end_error = process
+            .end_session("resume-1")
+            .expect_err("scripted end error should surface");
+        assert_eq!(
+            end_error,
+            CrabError::InvariantViolation {
+                context: "daemon_test_claude_end",
+                message: "end failed".to_string(),
+            }
+        );
+
+        let stats = process.stats();
+        assert_eq!(stats.create_calls, 1);
+        assert_eq!(stats.send_calls, 1);
+        assert_eq!(stats.interrupt_calls, 1);
+        assert_eq!(stats.end_calls, 1);
+        assert_eq!(stats.last_backend_session_id.as_deref(), Some("resume-1"));
+        assert_eq!(stats.last_interrupted_turn_id.as_deref(), Some("turn-1"));
+        assert_eq!(
+            stats.last_ended_backend_session_id.as_deref(),
+            Some("resume-1")
+        );
+    }
+
+    #[test]
+    fn daemon_runtime_claude_bridge_executes_lifecycle_and_usage_flow() {
+        let workspace = TempWorkspace::new("daemon", "claude-bridge-lifecycle");
+        let config = runtime_config_for_workspace_with_lanes(&workspace.path, 1);
+        let discord = ScriptedDiscordIo::with_state(DiscordIoState::default());
+        let claude_process = ScriptedClaudeProcess::with_scripted(
+            vec![Ok("resume-1".to_string())],
+            vec![Ok(vec![
+                ClaudeRawEvent::TextDelta {
+                    text: "Claude says hi".to_string(),
+                },
+                ClaudeRawEvent::Usage {
+                    input_tokens: 7,
+                    output_tokens: 5,
+                    total_tokens: 12,
+                },
+                ClaudeRawEvent::TurnCompleted {
+                    stop_reason: "end_turn".to_string(),
+                },
+            ])],
+            vec![],
+            vec![],
+        );
+        let mut runtime = DaemonTurnRuntime::new_with_claude_process(
+            config.owner.clone(),
+            discord,
+            claude_process.clone(),
+        )
+        .expect("runtime should build");
+
+        let created = runtime
+            .ensure_physical_session(
+                "discord:channel:777",
+                &claude_profile(),
+                Some("physical:missing:1"),
+            )
+            .expect("missing non-claude id should create via claude bridge");
+        assert_eq!(created.id, "claude:resume-1");
+        assert_eq!(created.backend_session_id, "resume-1");
+
+        let reused = runtime
+            .ensure_physical_session("discord:channel:777", &claude_profile(), Some(&created.id))
+            .expect("active claude id should reuse existing session");
+        assert_eq!(created, reused);
+
+        let run = sample_claude_run("123");
+        let mut physical = created.clone();
+        let events = runtime
+            .execute_backend_turn(&mut physical, &run, "turn-1", "compiled context")
+            .expect("claude bridge execution should succeed");
+
+        assert_eq!(events.len(), 4);
+        assert_eq!(events[0].kind, crab_backends::BackendEventKind::TextDelta);
+        assert_eq!(events[1].kind, crab_backends::BackendEventKind::RunNote);
+        assert_eq!(
+            events[2].kind,
+            crab_backends::BackendEventKind::TurnCompleted
+        );
+        assert_eq!(events[3].kind, crab_backends::BackendEventKind::RunNote);
+        assert_eq!(
+            events[3]
+                .payload
+                .get("run_usage_source")
+                .map(String::as_str),
+            Some("claude")
+        );
+        assert_eq!(
+            events[3]
+                .payload
+                .get("run_usage_total_tokens")
+                .map(String::as_str),
+            Some("12")
+        );
+        assert_eq!(physical.last_turn_id.as_deref(), Some("turn-1"));
+
+        let stats = claude_process.stats();
+        assert_eq!(stats.create_calls, 1);
+        assert_eq!(stats.send_calls, 1);
+        assert_eq!(stats.last_backend_session_id.as_deref(), Some("resume-1"));
+        assert_eq!(
+            stats
+                .last_turn_input
+                .as_ref()
+                .map(|input| input.user_input.as_str()),
+            Some("compiled context")
+        );
+    }
+
+    #[test]
+    fn daemon_runtime_claude_bridge_restores_session_from_active_id_shape() {
+        let workspace = TempWorkspace::new("daemon", "claude-session-restore");
+        let config = runtime_config_for_workspace_with_lanes(&workspace.path, 1);
+        let discord = ScriptedDiscordIo::with_state(DiscordIoState::default());
+        let claude_process = ScriptedClaudeProcess::with_scripted(
+            vec![Err(CrabError::InvariantViolation {
+                context: "daemon_test_claude_create",
+                message: "create should not be called".to_string(),
+            })],
+            vec![],
+            vec![],
+            vec![],
+        );
+        let mut runtime = DaemonTurnRuntime::new_with_claude_process(
+            config.owner.clone(),
+            discord,
+            claude_process.clone(),
+        )
+        .expect("runtime should build");
+
+        let restored = runtime
+            .ensure_physical_session(
+                "discord:channel:777",
+                &claude_profile(),
+                Some("claude:resume-from-store"),
+            )
+            .expect("active claude id should restore from stored shape");
+        assert_eq!(restored.id, "claude:resume-from-store");
+        assert_eq!(restored.backend_session_id, "resume-from-store");
+        assert_eq!(claude_process.stats().create_calls, 0);
+    }
+
+    #[test]
+    fn daemon_runtime_claude_bridge_surfaces_interruption_and_error_events() {
+        let workspace = TempWorkspace::new("daemon", "claude-interrupt-error");
+        let config = runtime_config_for_workspace_with_lanes(&workspace.path, 1);
+        let discord = ScriptedDiscordIo::with_state(DiscordIoState::default());
+        let claude_process = ScriptedClaudeProcess::with_scripted(
+            vec![Ok("resume-2".to_string())],
+            vec![
+                Ok(vec![ClaudeRawEvent::TurnInterrupted {
+                    reason: "operator_cancelled".to_string(),
+                }]),
+                Ok(vec![ClaudeRawEvent::Error {
+                    message: "backend unavailable".to_string(),
+                }]),
+                Err(CrabError::InvariantViolation {
+                    context: "daemon_test_claude_send",
+                    message: "forced send failure".to_string(),
+                }),
+            ],
+            vec![],
+            vec![],
+        );
+        let mut runtime = DaemonTurnRuntime::new_with_claude_process(
+            config.owner.clone(),
+            discord,
+            claude_process.clone(),
+        )
+        .expect("runtime should build");
+        let run = sample_claude_run("123");
+        let mut session = runtime
+            .ensure_physical_session("discord:channel:777", &claude_profile(), None)
+            .expect("claude session should be created");
+
+        let interrupted = runtime
+            .execute_backend_turn(&mut session, &run, "turn-1", "context one")
+            .expect("interrupted stream should still normalize");
+        assert_eq!(interrupted.len(), 1);
+        assert_eq!(
+            interrupted[0].kind,
+            crab_backends::BackendEventKind::TurnInterrupted
+        );
+        assert_eq!(
+            interrupted[0].payload.get("reason").map(String::as_str),
+            Some("operator_cancelled")
+        );
+
+        let errored = runtime
+            .execute_backend_turn(&mut session, &run, "turn-2", "context two")
+            .expect("error stream should still normalize");
+        assert_eq!(errored.len(), 1);
+        assert_eq!(errored[0].kind, crab_backends::BackendEventKind::Error);
+        assert_eq!(
+            errored[0].payload.get("message").map(String::as_str),
+            Some("backend unavailable")
+        );
+        assert_eq!(session.last_turn_id.as_deref(), Some("turn-2"));
+
+        let send_error = runtime
+            .execute_backend_turn(&mut session, &run, "turn-3", "context three")
+            .expect_err("send errors should propagate through execute_backend_turn");
+        assert_eq!(
+            send_error,
+            CrabError::InvariantViolation {
+                context: "daemon_test_claude_send",
+                message: "forced send failure".to_string(),
+            }
+        );
+
+        let stats = claude_process.stats();
+        assert_eq!(stats.create_calls, 1);
+        assert_eq!(stats.send_calls, 3);
+    }
+
+    #[test]
+    fn daemon_runtime_scripted_claude_process_keeps_non_claude_session_path() {
+        let workspace = TempWorkspace::new("daemon", "scripted-claude-non-claude-session");
+        let config = runtime_config_for_workspace_with_lanes(&workspace.path, 1);
+        let discord = ScriptedDiscordIo::with_state(DiscordIoState::default());
+        let claude_process = ScriptedClaudeProcess::with_scripted(
+            vec![Err(CrabError::InvariantViolation {
+                context: "daemon_test_claude_create",
+                message: "create should not be called for non-claude profile".to_string(),
+            })],
+            vec![],
+            vec![],
+            vec![],
+        );
+        let mut runtime = DaemonTurnRuntime::new_with_claude_process(
+            config.owner.clone(),
+            discord,
+            claude_process.clone(),
+        )
+        .expect("runtime should build");
+
+        let profile = InferenceProfile {
+            backend: BackendKind::Codex,
+            model: "auto".to_string(),
+            reasoning_level: ReasoningLevel::Medium,
+        };
+        let session = runtime
+            .ensure_physical_session("discord:channel:777", &profile, None)
+            .expect("non-claude session should use fallback physical session generation");
+        assert_eq!(session.id, "physical:discord:channel:777:1");
+        assert_eq!(session.backend, BackendKind::Codex);
+        assert_eq!(
+            session.backend_session_id,
+            "backend-session:physical:discord:channel:777:1"
+        );
+        assert_eq!(claude_process.stats().create_calls, 0);
+    }
+
+    #[test]
+    fn daemon_runtime_default_claude_process_exercises_claude_runtime_path() {
+        let workspace = TempWorkspace::new("daemon", "default-claude-runtime-path");
+        let config = runtime_config_for_workspace_with_lanes(&workspace.path, 1);
+        let discord = ScriptedDiscordIo::with_state(DiscordIoState::default());
+        let mut runtime =
+            DaemonTurnRuntime::new(config.owner.clone(), discord).expect("runtime should build");
+
+        let mut session = runtime
+            .ensure_physical_session("discord:channel:777", &claude_profile(), None)
+            .expect("default Claude process should create a Claude-backed physical session");
+        assert_eq!(session.id, "claude:daemon-claude-discord-channel-777");
+        assert_eq!(session.backend, BackendKind::Claude);
+
+        let run = sample_claude_run("123");
+        let events = runtime
+            .execute_backend_turn(&mut session, &run, "turn-default", "default context")
+            .expect("default Claude process should execute through bridge");
+        assert_eq!(events.len(), 4);
+        assert_eq!(events[0].kind, crab_backends::BackendEventKind::TextDelta);
+        assert_eq!(events[1].kind, crab_backends::BackendEventKind::RunNote);
+        assert_eq!(
+            events[2].kind,
+            crab_backends::BackendEventKind::TurnCompleted
+        );
+        assert_eq!(events[3].kind, crab_backends::BackendEventKind::RunNote);
+        assert_eq!(session.last_turn_id.as_deref(), Some("turn-default"));
+
+        let mut forced_error_run = sample_claude_run("123");
+        forced_error_run.id = "run-force-claude-send-error".to_string();
+        let forced_error = runtime
+            .execute_backend_turn(
+                &mut session,
+                &forced_error_run,
+                "turn-default-fail",
+                "default context",
+            )
+            .expect_err("forced send token should propagate as an error");
+        assert_eq!(
+            forced_error,
+            CrabError::InvariantViolation {
+                context: "daemon_claude_send_turn",
+                message: "forced claude send failure".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn daemon_runtime_shutdown_claude_sessions_runs_interrupt_and_end_lifecycle() {
+        let workspace = TempWorkspace::new("daemon", "claude-shutdown-lifecycle");
+        let config = runtime_config_for_workspace_with_lanes(&workspace.path, 1);
+        let discord = ScriptedDiscordIo::with_state(DiscordIoState::default());
+        let claude_process = ScriptedClaudeProcess::with_scripted(
+            vec![Ok("resume-cleanup".to_string())],
+            vec![Ok(vec![ClaudeRawEvent::TurnCompleted {
+                stop_reason: "end_turn".to_string(),
+            }])],
+            vec![Ok(())],
+            vec![Ok(())],
+        );
+        let mut runtime = DaemonTurnRuntime::new_with_claude_process(
+            config.owner.clone(),
+            discord,
+            claude_process.clone(),
+        )
+        .expect("runtime should build");
+        let run = sample_claude_run("123");
+        let mut session = runtime
+            .ensure_physical_session("discord:channel:777", &claude_profile(), None)
+            .expect("claude session should be created");
+        runtime
+            .execute_backend_turn(&mut session, &run, "turn-cleanup", "cleanup context")
+            .expect("claude turn should succeed before shutdown");
+        runtime
+            .physical_sessions
+            .insert(session.id.clone(), session.clone());
+
+        runtime
+            .shutdown_claude_sessions()
+            .expect("shutdown should interrupt and end Claude sessions");
+        assert!(runtime.physical_sessions.is_empty());
+
+        let stats = claude_process.stats();
+        assert_eq!(stats.interrupt_calls, 1);
+        assert_eq!(stats.end_calls, 1);
+        assert_eq!(
+            stats.last_interrupted_turn_id.as_deref(),
+            Some("turn-cleanup")
+        );
+        assert_eq!(
+            stats.last_ended_backend_session_id.as_deref(),
+            Some("resume-cleanup")
+        );
+    }
+
+    #[test]
+    fn daemon_runtime_shutdown_claude_sessions_propagates_interrupt_errors() {
+        let workspace = TempWorkspace::new("daemon", "claude-shutdown-interrupt-error");
+        let config = runtime_config_for_workspace_with_lanes(&workspace.path, 1);
+        let discord = ScriptedDiscordIo::with_state(DiscordIoState::default());
+        let claude_process = ScriptedClaudeProcess::with_scripted(
+            vec![Ok("resume-cleanup-err".to_string())],
+            vec![Ok(vec![ClaudeRawEvent::TurnCompleted {
+                stop_reason: "end_turn".to_string(),
+            }])],
+            vec![Err(CrabError::InvariantViolation {
+                context: "daemon_test_claude_interrupt",
+                message: "interrupt failed".to_string(),
+            })],
+            vec![Ok(())],
+        );
+        let mut runtime = DaemonTurnRuntime::new_with_claude_process(
+            config.owner.clone(),
+            discord,
+            claude_process.clone(),
+        )
+        .expect("runtime should build");
+        let run = sample_claude_run("123");
+        let mut session = runtime
+            .ensure_physical_session("discord:channel:777", &claude_profile(), None)
+            .expect("claude session should be created");
+        runtime
+            .execute_backend_turn(&mut session, &run, "turn-cleanup", "cleanup context")
+            .expect("claude turn should succeed before shutdown");
+        runtime
+            .physical_sessions
+            .insert(session.id.clone(), session.clone());
+
+        let error = runtime
+            .shutdown_claude_sessions()
+            .expect_err("interrupt failures should propagate during shutdown");
+        assert_eq!(
+            error,
+            CrabError::InvariantViolation {
+                context: "daemon_test_claude_interrupt",
+                message: "interrupt failed".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn daemon_runtime_shutdown_claude_sessions_propagates_end_errors() {
+        let workspace = TempWorkspace::new("daemon", "claude-shutdown-end-error");
+        let config = runtime_config_for_workspace_with_lanes(&workspace.path, 1);
+        let discord = ScriptedDiscordIo::with_state(DiscordIoState::default());
+        let claude_process = ScriptedClaudeProcess::with_scripted(
+            vec![Ok("resume-cleanup-end-err".to_string())],
+            vec![Ok(vec![ClaudeRawEvent::TurnCompleted {
+                stop_reason: "end_turn".to_string(),
+            }])],
+            vec![Ok(())],
+            vec![Err(CrabError::InvariantViolation {
+                context: "daemon_test_claude_end",
+                message: "end failed".to_string(),
+            })],
+        );
+        let mut runtime = DaemonTurnRuntime::new_with_claude_process(
+            config.owner.clone(),
+            discord,
+            claude_process.clone(),
+        )
+        .expect("runtime should build");
+        let run = sample_claude_run("123");
+        let mut session = runtime
+            .ensure_physical_session("discord:channel:777", &claude_profile(), None)
+            .expect("claude session should be created");
+        runtime
+            .execute_backend_turn(&mut session, &run, "turn-cleanup", "cleanup context")
+            .expect("claude turn should succeed before shutdown");
+        runtime
+            .physical_sessions
+            .insert(session.id.clone(), session.clone());
+
+        let error = runtime
+            .shutdown_claude_sessions()
+            .expect_err("end failures should propagate during shutdown");
+        assert_eq!(
+            error,
+            CrabError::InvariantViolation {
+                context: "daemon_test_claude_end",
+                message: "end failed".to_string(),
+            }
+        );
     }
 
     #[test]
