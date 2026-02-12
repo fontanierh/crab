@@ -185,6 +185,7 @@ dependencies = [
  "crab-store",
  "crab-telemetry",
  "ctrlc",
+ "futures",
  "reqwest 0.12.9",
  "serde_json",
  "tracing",

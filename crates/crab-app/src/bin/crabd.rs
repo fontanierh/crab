@@ -543,6 +543,7 @@ fn run_with_reader_and_control(
 ) -> CrabResult<DaemonLoopStats> {
     const TEST_DETERMINISTIC_TRANSPORT_ENV: &str =
         "CRAB_DAEMON_FORCE_DETERMINISTIC_CODEX_TRANSPORT";
+    const TEST_DETERMINISTIC_CLAUDE_ENV: &str = "CRAB_DAEMON_FORCE_DETERMINISTIC_CLAUDE_PROCESS";
     static TEST_ENV_LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
 
     let _guard = TEST_ENV_LOCK
@@ -551,6 +552,7 @@ fn run_with_reader_and_control(
         .expect("test env lock should succeed");
 
     std::env::set_var(TEST_DETERMINISTIC_TRANSPORT_ENV, "1");
+    std::env::set_var(TEST_DETERMINISTIC_CLAUDE_ENV, "1");
 
     let result = (|| {
         let receipt_timeout_ms = parse_receipt_timeout_ms(values)?;
@@ -559,6 +561,7 @@ fn run_with_reader_and_control(
     })();
 
     std::env::remove_var(TEST_DETERMINISTIC_TRANSPORT_ENV);
+    std::env::remove_var(TEST_DETERMINISTIC_CLAUDE_ENV);
     result
 }
 
@@ -626,9 +629,10 @@ mod tests {
         run_with_env_and_reader_and_control_installer, run_with_reader_and_control,
         LocalCodexProcess, LocalOpenCodeProcess, StdioDiscordIo,
     };
-    use crab_app::{DaemonDiscordIo, DaemonLoopControl, DaemonLoopStats};
+    use crab_app::{DaemonClaudeProcess, DaemonDiscordIo, DaemonLoopControl, DaemonLoopStats};
     use crab_backends::{
-        CodexAppServerProcess, CodexProcessHandle, OpenCodeServerHandle, OpenCodeServerProcess,
+        ClaudeProcess, CodexAppServerProcess, CodexProcessHandle, OpenCodeServerHandle,
+        OpenCodeServerProcess,
     };
     use crab_core::{CrabError, CrabResult};
     use crab_discord::{
@@ -899,6 +903,17 @@ mod tests {
         opencode
             .terminate_server(&opencode_handle)
             .expect("opencode should stop");
+    }
+
+    #[test]
+    fn daemon_claude_process_interrupt_and_end_are_callable() {
+        let process = DaemonClaudeProcess::default();
+        process
+            .interrupt_turn("resume-session", "turn-1")
+            .expect("interrupt should be a deterministic no-op");
+        process
+            .end_session("resume-session")
+            .expect("end should be a deterministic no-op");
     }
 
     #[test]
@@ -1452,6 +1467,117 @@ mod tests {
             }
         );
         assert_eq!(control.slept, vec![1]);
+    }
+
+    #[test]
+    fn run_with_reader_and_control_processes_claude_owner_turns_across_restarts() {
+        let workspace_root = temp_workspace_root("run-claude-owner");
+        let mut values = runtime_values(&workspace_root);
+        values.insert("CRAB_OWNER_DISCORD_USER_IDS".to_string(), "111".to_string());
+        values.insert(
+            "CRAB_OWNER_DEFAULT_BACKEND".to_string(),
+            "claude".to_string(),
+        );
+        values.insert(
+            "CRAB_OWNER_DEFAULT_MODEL".to_string(),
+            "claude-sonnet".to_string(),
+        );
+        values.insert(
+            "CRAB_OWNER_DEFAULT_REASONING_LEVEL".to_string(),
+            "high".to_string(),
+        );
+
+        let first_input = format!(
+            "{}\n{}\n",
+            gateway_inbound_frame_json("m-claude-1", "hello claude"),
+            ok_receipt_inbound_frame_json(
+                "op-1",
+                "777",
+                "delivery:run:discord:channel:777:m-claude-1:chunk:0"
+            )
+        );
+        let mut first_control = ScriptedControl::with_now(vec![2_000, 2_001]);
+        let mut first_reader = Cursor::new(first_input);
+        let first_stats =
+            run_with_reader_and_control(&values, &mut first_reader, &mut first_control)
+                .expect("first Claude-backed daemon run should succeed");
+        assert_eq!(
+            first_stats,
+            DaemonLoopStats {
+                iterations: 1,
+                ingested_messages: 1,
+                dispatched_runs: 1,
+                heartbeat_cycles: 0,
+            }
+        );
+        assert_eq!(first_control.slept, vec![1]);
+
+        let second_input = format!(
+            "{}\n{}\n",
+            gateway_inbound_frame_json("m-claude-2", "hello again"),
+            ok_receipt_inbound_frame_json(
+                "op-1",
+                "777",
+                "delivery:run:discord:channel:777:m-claude-2:chunk:0"
+            )
+        );
+        let mut second_control = ScriptedControl::with_now(vec![3_000, 3_001]);
+        let mut second_reader = Cursor::new(second_input);
+        let second_stats =
+            run_with_reader_and_control(&values, &mut second_reader, &mut second_control)
+                .expect("second Claude-backed daemon run should succeed");
+        assert_eq!(
+            second_stats,
+            DaemonLoopStats {
+                iterations: 1,
+                ingested_messages: 1,
+                dispatched_runs: 1,
+                heartbeat_cycles: 0,
+            }
+        );
+        assert_eq!(second_control.slept, vec![1]);
+    }
+
+    #[test]
+    fn run_with_reader_and_control_propagates_claude_send_turn_errors() {
+        let workspace_root = temp_workspace_root("run-claude-send-error");
+        let mut values = runtime_values(&workspace_root);
+        values.insert("CRAB_OWNER_DISCORD_USER_IDS".to_string(), "111".to_string());
+        values.insert(
+            "CRAB_OWNER_DEFAULT_BACKEND".to_string(),
+            "claude".to_string(),
+        );
+        values.insert(
+            "CRAB_OWNER_DEFAULT_MODEL".to_string(),
+            "claude-sonnet".to_string(),
+        );
+        values.insert(
+            "CRAB_OWNER_DEFAULT_REASONING_LEVEL".to_string(),
+            "high".to_string(),
+        );
+
+        let message_id = "m-force-claude-send-error";
+        let input = format!(
+            "{}\n{}\n",
+            gateway_inbound_frame_json(message_id, "hello claude"),
+            ok_receipt_inbound_frame_json(
+                "op-1",
+                "777",
+                "delivery:run:discord:channel:777:m-force-claude-send-error:chunk:0"
+            )
+        );
+        let mut control = ScriptedControl::with_now(vec![4_000, 4_001]);
+        let mut reader = Cursor::new(input);
+
+        let error = run_with_reader_and_control(&values, &mut reader, &mut control)
+            .expect_err("forced claude send failure should propagate from daemon runtime");
+        assert_eq!(
+            error,
+            CrabError::InvariantViolation {
+                context: "daemon_claude_send_turn",
+                message: "forced claude send failure".to_string(),
+            }
+        );
     }
 
     #[test]
