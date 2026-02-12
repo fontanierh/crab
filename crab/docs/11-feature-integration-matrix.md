@@ -40,12 +40,12 @@ core modules are actually exercised in production flow.
     normalized backend events (including usage metadata from backend envelopes).
   - Claude daemon execution path is not yet wired through this bridge.
 - Hidden checkpoint backend turn:
-  - Core primitives exist (`build_checkpoint_prompt`, parse/resolve helpers).
-  - Runtime currently uses deterministic fallback path in
-    `crates/crab-app/src/turn_executor.rs` (`run_hidden_checkpoint_turn`) unless a test hook is
-    used.
-  - Impact: checkpoint creation is reliable, but backend-generated hidden checkpoint content is
-    not yet live.
+  - Core primitives are wired in runtime (`build_checkpoint_prompt`, parse/resolve helpers,
+    backend checkpoint-turn execution in `crates/crab-app/src/turn_executor.rs`).
+  - Runtime enforces strict checkpoint schema parsing/validation, retries once, and uses
+    deterministic fallback only when backend checkpoint-turn execution/output fails.
+  - Impact: wiring is in place, but daemon backend execution is still stubbed so production daemon
+    runs do not yet emit real provider checkpoint content.
 
 ## Not Yet Runtime-Wired
 

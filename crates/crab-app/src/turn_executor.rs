@@ -6,15 +6,17 @@ use crab_backends::{
     OpenCodeServerProcess,
 };
 use crab_core::{
-    apply_operator_command, build_fallback_checkpoint_document, build_memory_flush_prompt,
-    enqueue_workspace_git_push_request, evaluate_rotation_triggers, execute_rotation_sequence,
-    finalize_hidden_memory_flush, maybe_commit_workspace_snapshot, parse_operator_command,
-    Checkpoint, CheckpointTurnDocument, CrabError, CrabResult, EventEnvelope, EventKind,
-    EventSource, InferenceProfile, LaneState, LogicalSession, ManualRotationRequest,
-    OperatorActorContext, OperatorCommand, OperatorSessionState, PhysicalSession,
-    RotationSequenceRuntime, RotationTrigger, RotationTriggerInput, Run, RunProfileTelemetry,
-    RunStatus, TokenAccounting, TranscriptEntry, TranscriptEntryRole, WorkspaceGitCommitRequest,
-    WorkspaceGitCommitTrigger, WorkspaceGitPushRequest, DEFAULT_FALLBACK_TRANSCRIPT_TAIL_LIMIT,
+    apply_operator_command, build_checkpoint_prompt, build_fallback_checkpoint_document,
+    build_memory_flush_prompt, enqueue_workspace_git_push_request, evaluate_rotation_triggers,
+    execute_rotation_sequence, finalize_hidden_memory_flush, maybe_commit_workspace_snapshot,
+    parse_operator_command, resolve_checkpoint_turn_output, Checkpoint, CheckpointTurnDocument,
+    CheckpointTurnResolution, CrabError, CrabResult, EventEnvelope, EventKind, EventSource,
+    InferenceProfile, LaneState, LogicalSession, ManualRotationRequest, OperatorActorContext,
+    OperatorCommand, OperatorSessionState, PhysicalSession, RotationSequenceRuntime,
+    RotationTrigger, RotationTriggerInput, Run, RunProfileTelemetry, RunStatus, TokenAccounting,
+    TranscriptEntry, TranscriptEntryRole, WorkspaceGitCommitRequest, WorkspaceGitCommitTrigger,
+    WorkspaceGitPushRequest, DEFAULT_CHECKPOINT_MAX_ATTEMPTS,
+    DEFAULT_FALLBACK_TRANSCRIPT_TAIL_LIMIT,
 };
 use crab_discord::{DeliveryAttempt, GatewayMessage, RoutingKey, ShouldSendDecision};
 use crab_scheduler::QueuedRun;
@@ -619,6 +621,8 @@ where
         let mut rotation_runtime = TurnExecutorRotationRuntime {
             run,
             logical_session: session,
+            runtime: &mut self.runtime,
+            codex_lifecycle: &mut self.composition.backends.codex,
             event_store,
             checkpoint_store,
             checkpoint_created_at_epoch_ms: now_epoch_ms,
@@ -1051,9 +1055,14 @@ struct RotationExecutionOutcome {
     checkpoint_id: String,
 }
 
-struct TurnExecutorRotationRuntime<'a> {
+struct TurnExecutorRotationRuntime<'a, R>
+where
+    R: TurnExecutorRuntime,
+{
     run: &'a Run,
     logical_session: &'a mut LogicalSession,
+    runtime: &'a mut R,
+    codex_lifecycle: &'a mut dyn CodexLifecycleManager,
     event_store: EventStore,
     checkpoint_store: CheckpointStore,
     checkpoint_created_at_epoch_ms: u64,
@@ -1061,7 +1070,10 @@ struct TurnExecutorRotationRuntime<'a> {
     completed_event_log_sabotage_path: Option<PathBuf>,
 }
 
-impl RotationSequenceRuntime for TurnExecutorRotationRuntime<'_> {
+impl<R> RotationSequenceRuntime for TurnExecutorRotationRuntime<'_, R>
+where
+    R: TurnExecutorRuntime,
+{
     fn run_hidden_memory_flush(&mut self) -> CrabResult<()> {
         let cycle_id = format!("{}:{}", self.run.id, self.checkpoint_created_at_epoch_ms);
         let _prompt = build_memory_flush_prompt(&cycle_id)
@@ -1072,24 +1084,55 @@ impl RotationSequenceRuntime for TurnExecutorRotationRuntime<'_> {
     }
 
     fn run_hidden_checkpoint_turn(&mut self) -> CrabResult<CheckpointTurnDocument> {
-        if self.run.user_input.contains("crab-primary-checkpoint") {
-            return Ok(CheckpointTurnDocument {
-                summary: "Primary hidden checkpoint".to_string(),
-                decisions: vec!["Keep current backend/session policy".to_string()],
-                open_questions: vec!["none".to_string()],
-                next_actions: vec!["continue next turn".to_string()],
-                artifacts: vec![crab_core::CheckpointTurnArtifact {
-                    path: "state/rotation".to_string(),
-                    note: "primary checkpoint path".to_string(),
-                }],
-            });
-        }
+        let mut physical_session = self.runtime.ensure_physical_session(
+            &self.run.logical_session_id,
+            &self.run.profile.resolved_profile,
+            self.logical_session.active_physical_session_id.as_deref(),
+        )?;
+        self.logical_session.active_backend = self.run.profile.resolved_profile.backend;
+        self.logical_session.active_profile = self.run.profile.resolved_profile.clone();
+        self.logical_session.active_physical_session_id = Some(physical_session.id.clone());
 
-        Err(CrabError::InvariantViolation {
-            context: "turn_executor_rotation_checkpoint_turn",
-            message: "hidden checkpoint backend turn is not wired yet; forcing fallback checkpoint"
-                .to_string(),
-        })
+        let max_attempts = DEFAULT_CHECKPOINT_MAX_ATTEMPTS;
+        let mut prompt = build_checkpoint_prompt();
+        let mut attempt = 1_u8;
+        loop {
+            let mut hidden_checkpoint_run = self.run.clone();
+            hidden_checkpoint_run.user_input = prompt.clone();
+            hidden_checkpoint_run.physical_session_id = Some(physical_session.id.clone());
+
+            let hidden_turn_id = format!("turn:{}:hidden-checkpoint:{attempt}", self.run.id);
+            let backend_events = self.runtime.execute_backend_turn(
+                self.codex_lifecycle,
+                &mut physical_session,
+                &hidden_checkpoint_run,
+                &hidden_turn_id,
+                &prompt,
+            )?;
+            let raw_output = backend_events
+                .iter()
+                .filter_map(extract_backend_text_delta)
+                .collect::<String>();
+
+            let resolution = resolve_checkpoint_turn_output(&raw_output, attempt, max_attempts)?;
+            match resolution {
+                CheckpointTurnResolution::Parsed(document) => return Ok(document),
+                CheckpointTurnResolution::Retry {
+                    corrective_prompt, ..
+                } => {
+                    prompt = corrective_prompt;
+                    attempt = attempt.saturating_add(1);
+                }
+                CheckpointTurnResolution::Exhausted { error, .. } => {
+                    return Err(CrabError::InvariantViolation {
+                        context: "turn_executor_rotation_checkpoint_turn",
+                        message: format!(
+                            "hidden checkpoint backend output failed strict checkpoint schema validation: {error}"
+                        ),
+                    });
+                }
+            }
+        }
     }
 
     fn build_fallback_checkpoint(&mut self) -> CrabResult<CheckpointTurnDocument> {
@@ -1587,9 +1630,9 @@ mod tests {
 
     use crab_backends::BackendEventKind;
     use crab_core::{
-        BackendKind, CrabError, CrabResult, EventKind, InferenceProfile, LaneState,
-        OwnerProfileMetadata, ProfileValueSource, ReasoningLevel, RunProfileTelemetry, RunStatus,
-        WorkspaceGitPushPolicy,
+        build_checkpoint_prompt, BackendKind, CrabError, CrabResult, EventKind, InferenceProfile,
+        LaneState, OwnerProfileMetadata, ProfileValueSource, ReasoningLevel, RunProfileTelemetry,
+        RunStatus, WorkspaceGitPushPolicy,
     };
     use crab_discord::{GatewayConversationKind, GatewayMessage};
 
@@ -1613,6 +1656,7 @@ mod tests {
         now_epoch_sabotage: Option<(usize, PathBuf)>,
         now_epoch_call_count: usize,
         delivered_outputs: Vec<(String, String, String, u32, String)>,
+        executed_turn_contexts: Vec<(String, String)>,
         steps: Vec<String>,
     }
 
@@ -1621,14 +1665,7 @@ mod tests {
             backend_events: Vec<crab_backends::BackendEvent>,
             now_epochs: &[u64],
         ) -> Self {
-            let session = crab_core::PhysicalSession {
-                id: "physical-1".to_string(),
-                logical_session_id: "discord:channel:777".to_string(),
-                backend: BackendKind::Codex,
-                backend_session_id: "thread-abc".to_string(),
-                created_at_epoch_ms: 1_739_173_200_000,
-                last_turn_id: None,
-            };
+            let session = physical_session_fixture();
             Self {
                 now_epochs: VecDeque::from(now_epochs.to_vec()),
                 resolve_profile_results: VecDeque::from(vec![Ok(sample_profile_telemetry())]),
@@ -1641,6 +1678,7 @@ mod tests {
                 now_epoch_sabotage: None,
                 now_epoch_call_count: 0,
                 delivered_outputs: Vec::new(),
+                executed_turn_contexts: Vec::new(),
                 steps: Vec::new(),
             }
         }
@@ -1743,10 +1781,12 @@ mod tests {
             _codex_lifecycle: &mut dyn crab_backends::CodexLifecycleManager,
             _physical_session: &mut crab_core::PhysicalSession,
             _run: &crab_core::Run,
-            _turn_id: &str,
-            _turn_context: &str,
+            turn_id: &str,
+            turn_context: &str,
         ) -> CrabResult<Vec<crab_backends::BackendEvent>> {
             self.steps.push("execute_backend_turn".to_string());
+            self.executed_turn_contexts
+                .push((turn_id.to_string(), turn_context.to_string()));
             Self::pop_result(
                 &mut self.execute_turn_results,
                 "turn_executor_test_execute_turn",
@@ -1884,6 +1924,17 @@ mod tests {
         }
     }
 
+    fn physical_session_fixture() -> crab_core::PhysicalSession {
+        crab_core::PhysicalSession {
+            id: "physical-1".to_string(),
+            logical_session_id: "discord:channel:777".to_string(),
+            backend: BackendKind::Codex,
+            backend_session_id: "thread-abc".to_string(),
+            created_at_epoch_ms: 1_739_173_200_000,
+            last_turn_id: None,
+        }
+    }
+
     fn backend_event(
         sequence: u64,
         kind: BackendEventKind,
@@ -1897,6 +1948,19 @@ mod tests {
                 .map(|(key, value)| (key.to_string(), value.to_string()))
                 .collect(),
         }
+    }
+
+    fn checkpoint_document_json(summary: &str) -> String {
+        format!(
+            r#"{{"summary":"{summary}","decisions":["keep runtime policy"],"open_questions":["none"],"next_actions":["continue"],"artifacts":[{{"path":"state/rotation","note":"checkpoint"}}]}}"#
+        )
+    }
+
+    fn hidden_checkpoint_backend_events(raw_output: &str) -> Vec<crab_backends::BackendEvent> {
+        vec![
+            backend_event(1, BackendEventKind::TextDelta, &[("text", raw_output)]),
+            backend_event(2, BackendEventKind::TurnCompleted, &[("finish", "done")]),
+        ]
     }
 
     fn build_executor_with_config(
@@ -2181,7 +2245,7 @@ mod tests {
     #[test]
     fn rotation_run_persists_workspace_git_commit_with_checkpoint_metadata() {
         let workspace = TempWorkspace::new("turn-executor", "workspace-git-rotation-commit");
-        let runtime = FakeRuntime::with_backend_events(
+        let mut runtime = FakeRuntime::with_backend_events(
             vec![
                 backend_event(1, BackendEventKind::TextDelta, &[("text", "ship it")]),
                 backend_event(
@@ -2201,6 +2265,28 @@ mod tests {
             ],
             &[1, 2, 3, 4, 5, 6, 7],
         );
+        runtime.execute_turn_results = VecDeque::from(vec![
+            Ok(vec![
+                backend_event(1, BackendEventKind::TextDelta, &[("text", "ship it")]),
+                backend_event(
+                    2,
+                    BackendEventKind::RunNote,
+                    &[
+                        ("run_usage_input_tokens", "50000"),
+                        ("run_usage_output_tokens", "30000"),
+                        ("run_usage_total_tokens", "120000"),
+                    ],
+                ),
+                backend_event(
+                    3,
+                    BackendEventKind::TurnCompleted,
+                    &[("stop_reason", "done")],
+                ),
+            ]),
+            Ok(hidden_checkpoint_backend_events(&checkpoint_document_json(
+                "rotation checkpoint",
+            ))),
+        ]);
         let mut config = runtime_config_for_workspace_with_lanes(&workspace.path, 2);
         config.workspace_git.enabled = true;
         config.workspace_git.push_policy = WorkspaceGitPushPolicy::Manual;
@@ -2459,7 +2545,7 @@ mod tests {
     #[test]
     fn process_gateway_message_rotates_when_token_threshold_is_reached() {
         let workspace = TempWorkspace::new("turn-executor", "rotation-token-trigger");
-        let runtime = FakeRuntime::with_backend_events(
+        let mut runtime = FakeRuntime::with_backend_events(
             vec![
                 backend_event(1, BackendEventKind::TextDelta, &[("text", "shipping now")]),
                 backend_event(
@@ -2479,6 +2565,28 @@ mod tests {
             ],
             &[1, 2, 3, 4, 5, 6],
         );
+        runtime.execute_turn_results = VecDeque::from(vec![
+            Ok(vec![
+                backend_event(1, BackendEventKind::TextDelta, &[("text", "shipping now")]),
+                backend_event(
+                    2,
+                    BackendEventKind::RunNote,
+                    &[
+                        ("run_usage_input_tokens", "50000"),
+                        ("run_usage_output_tokens", "30000"),
+                        ("run_usage_total_tokens", "120000"),
+                    ],
+                ),
+                backend_event(
+                    3,
+                    BackendEventKind::TurnCompleted,
+                    &[("stop_reason", "done")],
+                ),
+            ]),
+            Ok(hidden_checkpoint_backend_events(&checkpoint_document_json(
+                "token trigger checkpoint",
+            ))),
+        ]);
         let mut executor = build_executor(&workspace, runtime, 8);
 
         executor
@@ -2528,10 +2636,13 @@ mod tests {
     }
 
     #[test]
-    fn process_gateway_message_manual_compact_owner_rotates_without_backend_turn() {
+    fn process_gateway_message_manual_compact_owner_rotates_with_hidden_checkpoint_backend_turn() {
         let workspace = TempWorkspace::new("turn-executor", "manual-compact-owner");
         let mut runtime = FakeRuntime::with_backend_events(Vec::new(), &[1, 2, 3, 4]);
         runtime.resolve_profile_results = VecDeque::from(vec![Ok(owner_profile_telemetry())]);
+        runtime.execute_turn_results = VecDeque::from(vec![Ok(hidden_checkpoint_backend_events(
+            &checkpoint_document_json("manual compact checkpoint"),
+        ))]);
         let mut executor = build_executor(&workspace, runtime, 8);
 
         let dispatched = executor
@@ -2548,11 +2659,11 @@ mod tests {
         assert!(runtime
             .steps
             .contains(&"deliver_assistant_output".to_string()));
-        assert!(!runtime
+        assert!(runtime
             .steps
             .contains(&"ensure_physical_session".to_string()));
         assert!(!runtime.steps.contains(&"build_turn_context".to_string()));
-        assert!(!runtime.steps.contains(&"execute_backend_turn".to_string()));
+        assert!(runtime.steps.contains(&"execute_backend_turn".to_string()));
         assert_eq!(runtime.delivered_outputs.len(), 1);
         assert!(runtime.delivered_outputs[0]
             .4
@@ -2597,6 +2708,9 @@ mod tests {
         let workspace = TempWorkspace::new("turn-executor", "manual-compact-delivery-error");
         let mut runtime = FakeRuntime::with_backend_events(Vec::new(), &[1, 2, 3, 4, 5]);
         runtime.resolve_profile_results = VecDeque::from(vec![Ok(owner_profile_telemetry())]);
+        runtime.execute_turn_results = VecDeque::from(vec![Ok(hidden_checkpoint_backend_events(
+            &checkpoint_document_json("manual compact checkpoint"),
+        ))]);
         runtime.deliver_results = VecDeque::from(vec![Err(CrabError::InvariantViolation {
             context: "deliver_manual",
             message: "manual response delivery failed".to_string(),
@@ -2802,7 +2916,10 @@ mod tests {
     fn maybe_execute_rotation_surfaces_rotation_completed_event_errors() {
         let workspace =
             TempWorkspace::new("turn-executor", "rotation-completed-event-direct-error");
-        let runtime = FakeRuntime::with_backend_events(Vec::new(), &[]);
+        let mut runtime = FakeRuntime::with_backend_events(Vec::new(), &[]);
+        runtime.execute_turn_results = VecDeque::from(vec![Ok(hidden_checkpoint_backend_events(
+            &checkpoint_document_json("rotation completed event"),
+        ))]);
         let mut executor = build_executor(&workspace, runtime, 8);
         let logical_session_id = "discord:channel:777";
         let run_id = "run:discord:channel:777:rotation-completed-event-direct-error";
@@ -2834,7 +2951,10 @@ mod tests {
     #[test]
     fn maybe_execute_rotation_surfaces_rotation_sabotage_path_errors() {
         let workspace = TempWorkspace::new("turn-executor", "rotation-sabotage-path-error");
-        let runtime = FakeRuntime::with_backend_events(Vec::new(), &[]);
+        let mut runtime = FakeRuntime::with_backend_events(Vec::new(), &[]);
+        runtime.execute_turn_results = VecDeque::from(vec![Ok(hidden_checkpoint_backend_events(
+            &checkpoint_document_json("rotation sabotage"),
+        ))]);
         let mut executor = build_executor(&workspace, runtime, 8);
         let logical_session_id = "discord:channel:777";
         let run_id = "run:discord:channel:777:rotation-sabotage-path-error";
@@ -2870,6 +2990,9 @@ mod tests {
         let session_path = session_file_path(&state_root, "discord:channel:777");
         let mut runtime = FakeRuntime::with_backend_events(Vec::new(), &[1, 2, 3, 4, 5]);
         runtime.resolve_profile_results = VecDeque::from(vec![Ok(owner_profile_telemetry())]);
+        runtime.execute_turn_results = VecDeque::from(vec![Ok(hidden_checkpoint_backend_events(
+            &checkpoint_document_json("session persist failure checkpoint"),
+        ))]);
         runtime = runtime.with_now_epoch_sabotage(4, session_path);
         let mut executor = build_executor(&workspace, runtime, 8);
 
@@ -2893,6 +3016,9 @@ mod tests {
         let workspace = TempWorkspace::new("turn-executor", "manual-checkpoint-store-error");
         let mut runtime = FakeRuntime::with_backend_events(Vec::new(), &[1, 2, 3, 4, 5]);
         runtime.resolve_profile_results = VecDeque::from(vec![Ok(owner_profile_telemetry())]);
+        runtime.execute_turn_results = VecDeque::from(vec![Ok(hidden_checkpoint_backend_events(
+            &checkpoint_document_json("checkpoint persist failure"),
+        ))]);
         let mut executor = build_executor(&workspace, runtime, 8);
 
         let checkpoints_root = state_root(&workspace).join("checkpoints");
@@ -2981,9 +3107,9 @@ mod tests {
     }
 
     #[test]
-    fn token_trigger_rotation_can_use_primary_checkpoint_turn_without_fallback() {
-        let workspace = TempWorkspace::new("turn-executor", "rotation-primary-checkpoint");
-        let runtime = FakeRuntime::with_backend_events(
+    fn token_trigger_rotation_uses_backend_hidden_checkpoint_turn_without_fallback() {
+        let workspace = TempWorkspace::new("turn-executor", "rotation-backend-checkpoint");
+        let mut runtime = FakeRuntime::with_backend_events(
             vec![
                 backend_event(
                     1,
@@ -3002,39 +3128,300 @@ mod tests {
             ],
             &[1, 2, 3, 4, 5],
         );
+        runtime.execute_turn_results = VecDeque::from(vec![
+            Ok(vec![
+                backend_event(
+                    1,
+                    BackendEventKind::RunNote,
+                    &[
+                        ("run_usage_input_tokens", "60000"),
+                        ("run_usage_output_tokens", "20000"),
+                        ("run_usage_total_tokens", "120000"),
+                    ],
+                ),
+                backend_event(
+                    2,
+                    BackendEventKind::TurnCompleted,
+                    &[("stop_reason", "done")],
+                ),
+            ]),
+            Ok(hidden_checkpoint_backend_events(&checkpoint_document_json(
+                "Primary hidden checkpoint from backend",
+            ))),
+        ]);
+        runtime.ensure_session_results = VecDeque::from(vec![
+            Ok(physical_session_fixture()),
+            Ok(physical_session_fixture()),
+        ]);
         let mut executor = build_executor(&workspace, runtime, 8);
 
         executor
-            .process_gateway_message(gateway_message_with_content(
-                "m-rotation-primary-checkpoint",
-                "crab-primary-checkpoint",
-            ))
-            .expect("primary checkpoint run should succeed")
-            .expect("primary checkpoint run should dispatch");
+            .process_gateway_message(gateway_message("m-rotation-backend-checkpoint"))
+            .expect("backend checkpoint run should succeed")
+            .expect("backend checkpoint run should dispatch");
+        let runtime = executor.runtime_mut();
+        assert_eq!(runtime.executed_turn_contexts.len(), 2);
+        assert_eq!(
+            runtime.executed_turn_contexts[1].0,
+            "turn:run:discord:channel:777:m-rotation-backend-checkpoint:hidden-checkpoint:1"
+        );
+        assert_eq!(
+            runtime.executed_turn_contexts[1].1,
+            build_checkpoint_prompt()
+        );
+
+        let logical_session_id = "discord:channel:777";
+        let run_id = "run:discord:channel:777:m-rotation-backend-checkpoint";
+        let checkpoint = executor
+            .composition()
+            .state_stores
+            .checkpoint_store
+            .latest_checkpoint(logical_session_id)
+            .expect("checkpoint lookup should succeed")
+            .expect("rotation should persist checkpoint");
+        assert_eq!(checkpoint.summary, "Primary hidden checkpoint from backend");
 
         let events = executor
             .composition()
             .state_stores
             .event_store
-            .replay_run(
-                "discord:channel:777",
-                "run:discord:channel:777:m-rotation-primary-checkpoint",
-            )
+            .replay_run(logical_session_id, run_id)
             .expect("event replay should succeed");
-        assert!(events.iter().any(|event| {
-            event.kind == EventKind::RunNote
-                && event
-                    .payload
-                    .get("used_fallback_checkpoint")
-                    .is_some_and(|value| value == "false")
-        }));
-        assert!(events.iter().any(|event| {
-            event.kind == EventKind::RunNote
-                && event
-                    .payload
-                    .get("checkpoint_turn_error")
-                    .is_some_and(|value| value == "none")
-        }));
+        let rotation_completed = events
+            .iter()
+            .find(|event| {
+                event.kind == EventKind::RunNote
+                    && event
+                        .payload
+                        .get("rotation_event")
+                        .is_some_and(|value| value == "completed")
+            })
+            .expect("rotation completed run note should exist");
+        assert_eq!(
+            rotation_completed.payload.get("used_fallback_checkpoint"),
+            Some(&"false".to_string())
+        );
+        assert_eq!(
+            rotation_completed.payload.get("checkpoint_turn_error"),
+            Some(&"none".to_string())
+        );
+    }
+
+    #[test]
+    fn token_trigger_rotation_falls_back_when_backend_checkpoint_schema_validation_fails() {
+        let workspace = TempWorkspace::new("turn-executor", "rotation-checkpoint-schema-failure");
+        let mut runtime = FakeRuntime::with_backend_events(
+            vec![
+                backend_event(
+                    1,
+                    BackendEventKind::RunNote,
+                    &[
+                        ("run_usage_input_tokens", "60000"),
+                        ("run_usage_output_tokens", "20000"),
+                        ("run_usage_total_tokens", "120000"),
+                    ],
+                ),
+                backend_event(
+                    2,
+                    BackendEventKind::TurnCompleted,
+                    &[("stop_reason", "done")],
+                ),
+            ],
+            &[1, 2, 3, 4, 5],
+        );
+        let invalid_checkpoint_json = r#"{"summary":" ","decisions":["keep"],"open_questions":["none"],"next_actions":["continue"],"artifacts":[{"path":"state/rotation","note":"checkpoint"}]}"#;
+        runtime.execute_turn_results = VecDeque::from(vec![
+            Ok(vec![
+                backend_event(
+                    1,
+                    BackendEventKind::RunNote,
+                    &[
+                        ("run_usage_input_tokens", "60000"),
+                        ("run_usage_output_tokens", "20000"),
+                        ("run_usage_total_tokens", "120000"),
+                    ],
+                ),
+                backend_event(
+                    2,
+                    BackendEventKind::TurnCompleted,
+                    &[("stop_reason", "done")],
+                ),
+            ]),
+            Ok(hidden_checkpoint_backend_events(invalid_checkpoint_json)),
+            Ok(hidden_checkpoint_backend_events(invalid_checkpoint_json)),
+        ]);
+        runtime.ensure_session_results = VecDeque::from(vec![
+            Ok(physical_session_fixture()),
+            Ok(physical_session_fixture()),
+        ]);
+        let mut executor = build_executor(&workspace, runtime, 8);
+
+        executor
+            .process_gateway_message(gateway_message("m-rotation-checkpoint-schema-failure"))
+            .expect("rotation should succeed with fallback checkpoint")
+            .expect("schema failure run should dispatch");
+        let runtime = executor.runtime_mut();
+        assert_eq!(runtime.executed_turn_contexts.len(), 3);
+        assert_eq!(
+            runtime.executed_turn_contexts[1].1,
+            build_checkpoint_prompt()
+        );
+        assert_eq!(
+            runtime.executed_turn_contexts[2].0,
+            "turn:run:discord:channel:777:m-rotation-checkpoint-schema-failure:hidden-checkpoint:2"
+        );
+        assert!(runtime.executed_turn_contexts[2]
+            .1
+            .contains("Your previous checkpoint response was invalid"));
+        assert_ne!(
+            runtime.executed_turn_contexts[2].1,
+            runtime.executed_turn_contexts[1].1
+        );
+
+        let logical_session_id = "discord:channel:777";
+        let run_id = "run:discord:channel:777:m-rotation-checkpoint-schema-failure";
+        let checkpoint = executor
+            .composition()
+            .state_stores
+            .checkpoint_store
+            .latest_checkpoint(logical_session_id)
+            .expect("checkpoint lookup should succeed")
+            .expect("rotation should persist checkpoint");
+        assert!(checkpoint
+            .summary
+            .starts_with("Fallback checkpoint generated"));
+
+        let events = executor
+            .composition()
+            .state_stores
+            .event_store
+            .replay_run(logical_session_id, run_id)
+            .expect("event replay should succeed");
+        let rotation_completed = events
+            .iter()
+            .find(|event| {
+                event.kind == EventKind::RunNote
+                    && event
+                        .payload
+                        .get("rotation_event")
+                        .is_some_and(|value| value == "completed")
+            })
+            .expect("rotation completed run note should exist");
+        assert_eq!(
+            rotation_completed.payload.get("used_fallback_checkpoint"),
+            Some(&"true".to_string())
+        );
+        let checkpoint_turn_error = rotation_completed
+            .payload
+            .get("checkpoint_turn_error")
+            .expect("checkpoint turn failure diagnostics should exist");
+        assert!(checkpoint_turn_error.contains("checkpoint_turn_schema"));
+    }
+
+    #[test]
+    fn token_trigger_rotation_falls_back_when_backend_checkpoint_turn_execution_fails() {
+        let workspace = TempWorkspace::new("turn-executor", "rotation-checkpoint-backend-failure");
+        let mut runtime = FakeRuntime::with_backend_events(
+            vec![
+                backend_event(
+                    1,
+                    BackendEventKind::RunNote,
+                    &[
+                        ("run_usage_input_tokens", "60000"),
+                        ("run_usage_output_tokens", "20000"),
+                        ("run_usage_total_tokens", "120000"),
+                    ],
+                ),
+                backend_event(
+                    2,
+                    BackendEventKind::TurnCompleted,
+                    &[("stop_reason", "done")],
+                ),
+            ],
+            &[1, 2, 3, 4, 5],
+        );
+        runtime.execute_turn_results = VecDeque::from(vec![
+            Ok(vec![
+                backend_event(
+                    1,
+                    BackendEventKind::RunNote,
+                    &[
+                        ("run_usage_input_tokens", "60000"),
+                        ("run_usage_output_tokens", "20000"),
+                        ("run_usage_total_tokens", "120000"),
+                    ],
+                ),
+                backend_event(
+                    2,
+                    BackendEventKind::TurnCompleted,
+                    &[("stop_reason", "done")],
+                ),
+            ]),
+            Err(CrabError::InvariantViolation {
+                context: "checkpoint_backend_turn",
+                message: "backend unavailable".to_string(),
+            }),
+        ]);
+        runtime.ensure_session_results = VecDeque::from(vec![
+            Ok(physical_session_fixture()),
+            Ok(physical_session_fixture()),
+        ]);
+        let mut executor = build_executor(&workspace, runtime, 8);
+
+        executor
+            .process_gateway_message(gateway_message("m-rotation-checkpoint-backend-failure"))
+            .expect("rotation should succeed with deterministic fallback")
+            .expect("backend failure run should dispatch");
+        let runtime = executor.runtime_mut();
+        assert_eq!(runtime.executed_turn_contexts.len(), 2);
+        assert_eq!(
+            runtime.executed_turn_contexts[1].0,
+            "turn:run:discord:channel:777:m-rotation-checkpoint-backend-failure:hidden-checkpoint:1"
+        );
+        assert_eq!(
+            runtime.executed_turn_contexts[1].1,
+            build_checkpoint_prompt()
+        );
+
+        let logical_session_id = "discord:channel:777";
+        let run_id = "run:discord:channel:777:m-rotation-checkpoint-backend-failure";
+        let checkpoint = executor
+            .composition()
+            .state_stores
+            .checkpoint_store
+            .latest_checkpoint(logical_session_id)
+            .expect("checkpoint lookup should succeed")
+            .expect("rotation should persist checkpoint");
+        assert!(checkpoint
+            .summary
+            .starts_with("Fallback checkpoint generated"));
+
+        let events = executor
+            .composition()
+            .state_stores
+            .event_store
+            .replay_run(logical_session_id, run_id)
+            .expect("event replay should succeed");
+        let rotation_completed = events
+            .iter()
+            .find(|event| {
+                event.kind == EventKind::RunNote
+                    && event
+                        .payload
+                        .get("rotation_event")
+                        .is_some_and(|value| value == "completed")
+            })
+            .expect("rotation completed run note should exist");
+        assert_eq!(
+            rotation_completed.payload.get("used_fallback_checkpoint"),
+            Some(&"true".to_string())
+        );
+        let checkpoint_turn_error = rotation_completed
+            .payload
+            .get("checkpoint_turn_error")
+            .expect("checkpoint turn failure diagnostics should exist");
+        assert!(checkpoint_turn_error.contains("checkpoint_backend_turn"));
+        assert!(checkpoint_turn_error.contains("backend unavailable"));
     }
 
     #[test]
