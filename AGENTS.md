@@ -238,6 +238,14 @@ The repository now enforces quality with executable gates and CI automation.
 - Required file mode:
   `chmod 600 .crab-secrets/target-machine.env`
 
+### Discord Secrets (Local, Gitignored)
+
+- Store Discord bot secrets locally under:
+  `.crab-secrets/discord.env`
+- Required file mode:
+  `chmod 600 .crab-secrets/discord.env`
+- Do not paste tokens into issues, commits, or chat logs. Prefer editing the secret file locally.
+
 ### tmux-first rule
 
 - All long-running/operational work on the Crab target machine must run inside tmux on the

@@ -110,6 +110,13 @@ Required minimum keys:
 - `CRAB_DISCORD_TOKEN`
 - `CRAB_BOT_USER_ID`
 
+Production secret file policy:
+
+- Store runtime secrets in `/etc/crab/crab.env` on the target machine with mode `0600`.
+- Never commit or paste `CRAB_DISCORD_TOKEN` into git/issues/chat logs.
+- Prefer copying a local gitignored secrets file (`.crab-secrets/discord.env`) onto the target
+  machine and installing it as `/etc/crab/crab.env`.
+
 Strongly recommended keys:
 
 - `CRAB_WORKSPACE_ROOT=/var/lib/crab/workspace`
@@ -161,6 +168,19 @@ CRAB_WORKSPACE_GIT_COMMIT_EMAIL=crab@localhost
 CRAB_WORKSPACE_GIT_PUSH_POLICY=on-commit
 CRAB_OWNER_DISCORD_USER_IDS=123456789012345678
 CRAB_OWNER_MACHINE_TIMEZONE=America/New_York
+```
+
+Copying local secrets to the target machine (recommended flow):
+
+```bash
+set -a; source .crab-secrets/target-machine.env; set +a
+
+# Copy local gitignored secrets to the target (path can be adjusted).
+scp .crab-secrets/discord.env "$CRAB_TARGET_USER@$CRAB_TARGET_HOST:/tmp/crab.env"
+
+# Install as the production env file (requires sudo on target).
+ssh "$CRAB_TARGET_USER@$CRAB_TARGET_HOST" \
+  "sudo mkdir -p /etc/crab && sudo mv /tmp/crab.env /etc/crab/crab.env && sudo chmod 600 /etc/crab/crab.env"
 ```
 
 Timeout and heartbeat semantics:

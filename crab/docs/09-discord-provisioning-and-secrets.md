@@ -73,6 +73,12 @@ Crab runtime requires:
 
 - `CRAB_DISCORD_TOKEN` (required)
 
+Operational policy:
+
+- Keep real tokens out of git, docs, and chat logs.
+- Prefer a local gitignored secret file for development (`.crab-secrets/discord.env`) and a
+  locked-down env file on the target machine (`/etc/crab/crab.env`, mode `0600`).
+
 Recommended additional config for ownership and behavior:
 
 - `CRAB_WORKSPACE_GIT_PERSISTENCE_ENABLED`
@@ -88,6 +94,31 @@ Recommended additional config for ownership and behavior:
 - `CRAB_OWNER_DEFAULT_REASONING_LEVEL`
 - `CRAB_OWNER_MACHINE_LOCATION`
 - `CRAB_OWNER_MACHINE_TIMEZONE`
+
+### Local dev: `.crab-secrets/discord.env` (gitignored)
+
+Create:
+
+```bash
+mkdir -p .crab-secrets
+chmod 700 .crab-secrets
+touch .crab-secrets/discord.env
+chmod 600 .crab-secrets/discord.env
+```
+
+Populate with required keys:
+
+```bash
+CRAB_DISCORD_TOKEN=...
+CRAB_BOT_USER_ID=123...
+CRAB_OWNER_DISCORD_USER_IDS=123...
+```
+
+Load into your shell:
+
+```bash
+set -a; source .crab-secrets/discord.env; set +a
+```
 
 ## 5) Secret Storage Policy For `CRAB_DISCORD_TOKEN`
 
