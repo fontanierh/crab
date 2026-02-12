@@ -1107,7 +1107,7 @@ where
                 &mut physical_session,
                 &hidden_checkpoint_run,
                 &hidden_turn_id,
-                "",
+                &prompt,
             )?;
             let raw_output = backend_events
                 .iter()
@@ -1630,9 +1630,9 @@ mod tests {
 
     use crab_backends::BackendEventKind;
     use crab_core::{
-        BackendKind, CrabError, CrabResult, EventKind, InferenceProfile, LaneState,
-        OwnerProfileMetadata, ProfileValueSource, ReasoningLevel, RunProfileTelemetry, RunStatus,
-        WorkspaceGitPushPolicy,
+        build_checkpoint_prompt, BackendKind, CrabError, CrabResult, EventKind, InferenceProfile,
+        LaneState, OwnerProfileMetadata, ProfileValueSource, ReasoningLevel, RunProfileTelemetry,
+        RunStatus, WorkspaceGitPushPolicy,
     };
     use crab_discord::{GatewayConversationKind, GatewayMessage};
 
@@ -1656,6 +1656,7 @@ mod tests {
         now_epoch_sabotage: Option<(usize, PathBuf)>,
         now_epoch_call_count: usize,
         delivered_outputs: Vec<(String, String, String, u32, String)>,
+        executed_turn_contexts: Vec<(String, String)>,
         steps: Vec<String>,
     }
 
@@ -1677,6 +1678,7 @@ mod tests {
                 now_epoch_sabotage: None,
                 now_epoch_call_count: 0,
                 delivered_outputs: Vec::new(),
+                executed_turn_contexts: Vec::new(),
                 steps: Vec::new(),
             }
         }
@@ -1779,10 +1781,12 @@ mod tests {
             _codex_lifecycle: &mut dyn crab_backends::CodexLifecycleManager,
             _physical_session: &mut crab_core::PhysicalSession,
             _run: &crab_core::Run,
-            _turn_id: &str,
-            _turn_context: &str,
+            turn_id: &str,
+            turn_context: &str,
         ) -> CrabResult<Vec<crab_backends::BackendEvent>> {
             self.steps.push("execute_backend_turn".to_string());
+            self.executed_turn_contexts
+                .push((turn_id.to_string(), turn_context.to_string()));
             Self::pop_result(
                 &mut self.execute_turn_results,
                 "turn_executor_test_execute_turn",
@@ -3155,6 +3159,16 @@ mod tests {
             .process_gateway_message(gateway_message("m-rotation-backend-checkpoint"))
             .expect("backend checkpoint run should succeed")
             .expect("backend checkpoint run should dispatch");
+        let runtime = executor.runtime_mut();
+        assert_eq!(runtime.executed_turn_contexts.len(), 2);
+        assert_eq!(
+            runtime.executed_turn_contexts[1].0,
+            "turn:run:discord:channel:777:m-rotation-backend-checkpoint:hidden-checkpoint:1"
+        );
+        assert_eq!(
+            runtime.executed_turn_contexts[1].1,
+            build_checkpoint_prompt()
+        );
 
         let logical_session_id = "discord:channel:777";
         let run_id = "run:discord:channel:777:m-rotation-backend-checkpoint";
@@ -3246,6 +3260,23 @@ mod tests {
             .process_gateway_message(gateway_message("m-rotation-checkpoint-schema-failure"))
             .expect("rotation should succeed with fallback checkpoint")
             .expect("schema failure run should dispatch");
+        let runtime = executor.runtime_mut();
+        assert_eq!(runtime.executed_turn_contexts.len(), 3);
+        assert_eq!(
+            runtime.executed_turn_contexts[1].1,
+            build_checkpoint_prompt()
+        );
+        assert_eq!(
+            runtime.executed_turn_contexts[2].0,
+            "turn:run:discord:channel:777:m-rotation-checkpoint-schema-failure:hidden-checkpoint:2"
+        );
+        assert!(runtime.executed_turn_contexts[2]
+            .1
+            .contains("Your previous checkpoint response was invalid"));
+        assert_ne!(
+            runtime.executed_turn_contexts[2].1,
+            runtime.executed_turn_contexts[1].1
+        );
 
         let logical_session_id = "discord:channel:777";
         let run_id = "run:discord:channel:777:m-rotation-checkpoint-schema-failure";
@@ -3341,6 +3372,16 @@ mod tests {
             .process_gateway_message(gateway_message("m-rotation-checkpoint-backend-failure"))
             .expect("rotation should succeed with deterministic fallback")
             .expect("backend failure run should dispatch");
+        let runtime = executor.runtime_mut();
+        assert_eq!(runtime.executed_turn_contexts.len(), 2);
+        assert_eq!(
+            runtime.executed_turn_contexts[1].0,
+            "turn:run:discord:channel:777:m-rotation-checkpoint-backend-failure:hidden-checkpoint:1"
+        );
+        assert_eq!(
+            runtime.executed_turn_contexts[1].1,
+            build_checkpoint_prompt()
+        );
 
         let logical_session_id = "discord:channel:777";
         let run_id = "run:discord:channel:777:m-rotation-checkpoint-backend-failure";
