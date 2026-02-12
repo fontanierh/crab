@@ -9,8 +9,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use std::{cell::RefCell, thread_local};
 
 use crab_backends::{
-    map_opencode_inference_profile, normalize_opencode_events, BackendEvent, BackendEventKind,
-    CodexAppServerProcess, OpenCodeRawEvent, OpenCodeReasoningMode, OpenCodeServerProcess,
+    map_opencode_inference_profile, normalize_opencode_events, BackendEvent, CodexAppServerProcess,
+    CodexLifecycleManager, OpenCodeRawEvent, OpenCodeReasoningMode, OpenCodeServerProcess,
     OpenCodeSessionConfig, OpenCodeTokenUsage, OpenCodeTurnConfig, OpenCodeTurnState,
 };
 #[cfg(not(coverage))]
@@ -28,6 +28,13 @@ use crab_core::{
 use crab_discord::GatewayMessage;
 use crab_store::CheckpointStore;
 
+#[cfg(not(any(test, coverage)))]
+use crate::daemon_backend_bridge::CodexAppServerTransport;
+#[cfg(any(test, coverage, debug_assertions))]
+use crate::daemon_backend_bridge::DeterministicCodexTransport;
+use crate::daemon_backend_bridge::{
+    CodexDaemonBackendBridge, DaemonBackendBridge as CodexBackendBridge,
+};
 use crate::{boot_runtime_with_processes, run_heartbeat_if_due, TurnExecutor, TurnExecutorRuntime};
 
 pub const DEFAULT_DAEMON_TICK_INTERVAL_MS: u64 = 250;
@@ -37,6 +44,9 @@ const DAEMON_BACKEND_BRIDGE_CONTEXT: &str = "daemon_backend_bridge";
 const DAEMON_OPENCODE_TRANSPORT_CONTEXT: &str = "daemon_opencode_transport";
 const MILLIS_PER_DAY: u64 = 86_400_000;
 const OPENCODE_SESSION_PLACEHOLDER_PREFIX: &str = "backend-session:";
+#[cfg(all(not(any(test, coverage)), debug_assertions))]
+const DAEMON_DETERMINISTIC_CODEX_TRANSPORT_ENV: &str =
+    "CRAB_DAEMON_FORCE_DETERMINISTIC_CODEX_TRANSPORT";
 
 pub trait DaemonDiscordIo {
     fn next_gateway_message(&mut self) -> CrabResult<Option<GatewayMessage>>;
@@ -568,58 +578,46 @@ fn build_opencode_prompt(turn_context: &str, guidance_note: Option<&str>) -> Str
     }
 }
 
-fn build_daemon_stub_backend_events(run: &Run) -> Vec<BackendEvent> {
-    let response = run.user_input.trim().to_string();
-    let input_tokens = u64::try_from(run.user_input.split_whitespace().count())
-        .unwrap_or(1)
-        .max(1);
-    let output_tokens = u64::try_from(response.split_whitespace().count())
-        .unwrap_or(1)
-        .max(1);
-    let total_tokens = input_tokens.saturating_add(output_tokens);
-
-    vec![
-        BackendEvent {
-            sequence: 1,
-            kind: BackendEventKind::TextDelta,
-            payload: BTreeMap::from([("text".to_string(), response)]),
-        },
-        BackendEvent {
-            sequence: 2,
-            kind: BackendEventKind::RunNote,
-            payload: BTreeMap::from([
-                (
-                    "run_usage_input_tokens".to_string(),
-                    input_tokens.to_string(),
-                ),
-                (
-                    "run_usage_output_tokens".to_string(),
-                    output_tokens.to_string(),
-                ),
-                (
-                    "run_usage_total_tokens".to_string(),
-                    total_tokens.to_string(),
-                ),
-                (
-                    "run_usage_source".to_string(),
-                    "daemon_backend_bridge".to_string(),
-                ),
-            ]),
-        },
-        BackendEvent {
-            sequence: 3,
-            kind: BackendEventKind::TurnCompleted,
-            payload: BTreeMap::from([("finish".to_string(), "completed".to_string())]),
-        },
-    ]
-}
-
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct DaemonBackendBridge {
+    codex: Box<dyn CodexBackendDebugBridge>,
     opencode: Option<OpenCodeExecutionBridge>,
 }
 
+trait CodexBackendDebugBridge: CodexBackendBridge + std::fmt::Debug {}
+
+impl<T: CodexBackendBridge + std::fmt::Debug> CodexBackendDebugBridge for T {}
+
 impl DaemonBackendBridge {
+    fn default_codex_bridge() -> CrabResult<Box<dyn CodexBackendDebugBridge>> {
+        #[cfg(all(not(any(test, coverage)), debug_assertions))]
+        if use_deterministic_codex_transport_override() {
+            return Ok(Box::new(CodexDaemonBackendBridge::new(
+                DeterministicCodexTransport::default(),
+            )));
+        }
+
+        #[cfg(not(any(test, coverage)))]
+        {
+            let transport = CodexAppServerTransport::new()?;
+            Ok(Box::new(CodexDaemonBackendBridge::new(transport)))
+        }
+
+        #[cfg(any(test, coverage))]
+        {
+            Ok(Box::new(CodexDaemonBackendBridge::new(
+                DeterministicCodexTransport::default(),
+            )))
+        }
+    }
+
+    fn new_default() -> CrabResult<Self> {
+        Ok(Self {
+            codex: Self::default_codex_bridge()?,
+            opencode: None,
+        })
+    }
+
     fn has_opencode_backend_bridge(&self) -> bool {
         self.opencode.is_some()
     }
@@ -652,8 +650,10 @@ impl DaemonBackendBridge {
 
     fn execute_turn(
         &mut self,
+        codex_lifecycle: &mut dyn CodexLifecycleManager,
         physical_session: &mut crab_core::PhysicalSession,
         run: &Run,
+        turn_id: &str,
         turn_context: &str,
     ) -> CrabResult<Vec<BackendEvent>> {
         if run.profile.resolved_profile.backend == BackendKind::OpenCode {
@@ -665,19 +665,33 @@ impl DaemonBackendBridge {
             };
             return opencode_bridge.execute_turn(physical_session, run, turn_context);
         }
-        Ok(build_daemon_stub_backend_events(run))
+        self.codex.execute_backend_turn(
+            codex_lifecycle,
+            physical_session,
+            run,
+            turn_id,
+            turn_context,
+        )
     }
 }
 
 impl DaemonBackendExecutionBridge for DaemonBackendBridge {
     fn execute_turn(
         &mut self,
+        codex_lifecycle: &mut dyn CodexLifecycleManager,
         physical_session: &mut crab_core::PhysicalSession,
         run: &Run,
-        _turn_id: &str,
+        turn_id: &str,
         turn_context: &str,
     ) -> CrabResult<Vec<BackendEvent>> {
-        DaemonBackendBridge::execute_turn(self, physical_session, run, turn_context)
+        DaemonBackendBridge::execute_turn(
+            self,
+            codex_lifecycle,
+            physical_session,
+            run,
+            turn_id,
+            turn_context,
+        )
     }
 
     fn as_any(&self) -> &dyn std::any::Any {
@@ -754,6 +768,7 @@ struct TurnContextRuntimeState {
 trait DaemonBackendExecutionBridge: std::fmt::Debug {
     fn execute_turn(
         &mut self,
+        codex_lifecycle: &mut dyn CodexLifecycleManager,
         physical_session: &mut crab_core::PhysicalSession,
         run: &Run,
         turn_id: &str,
@@ -771,9 +786,22 @@ thread_local! {
     static SESSION_NOW_EPOCH_MS_OVERRIDE: RefCell<Option<SessionNowEpochMsOverride>> = RefCell::new(None);
 }
 
+#[cfg(all(not(any(test, coverage)), debug_assertions))]
+fn use_deterministic_codex_transport_override() -> bool {
+    std::env::var(DAEMON_DETERMINISTIC_CODEX_TRANSPORT_ENV)
+        .ok()
+        .is_some_and(|raw| {
+            matches!(
+                raw.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
+}
+
 impl<D: DaemonDiscordIo> DaemonTurnRuntime<D> {
     pub fn new(owner: OwnerConfig, discord: D) -> CrabResult<Self> {
-        Self::new_with_backend_bridge(owner, discord, Box::<DaemonBackendBridge>::default())
+        let backend_bridge = Box::new(DaemonBackendBridge::new_default()?);
+        Self::new_with_backend_bridge(owner, discord, backend_bridge)
     }
 
     fn new_with_backend_bridge(
@@ -1045,6 +1073,7 @@ impl<D: DaemonDiscordIo> TurnExecutorRuntime for DaemonTurnRuntime<D> {
 
     fn execute_backend_turn(
         &mut self,
+        codex_lifecycle: &mut dyn CodexLifecycleManager,
         physical_session: &mut crab_core::PhysicalSession,
         run: &Run,
         turn_id: &str,
@@ -1053,7 +1082,13 @@ impl<D: DaemonDiscordIo> TurnExecutorRuntime for DaemonTurnRuntime<D> {
         let cache_key = physical_session.id.clone();
         let backend_events = self
             .backend_bridge
-            .execute_turn(physical_session, run, turn_id, turn_context)
+            .execute_turn(
+                codex_lifecycle,
+                physical_session,
+                run,
+                turn_id,
+                turn_context,
+            )
             .map_err(|error| CrabError::InvariantViolation {
                 context: DAEMON_BACKEND_BRIDGE_EXECUTE,
                 message: format!(
@@ -1422,9 +1457,9 @@ mod tests {
     use crate::test_support::{runtime_config_for_workspace_with_lanes, TempWorkspace};
     use crate::TurnExecutorRuntime;
     use crab_backends::{
-        BackendEvent, BackendEventKind, CodexAppServerProcess, CodexProcessHandle,
-        OpenCodeRawEvent, OpenCodeServerHandle, OpenCodeServerProcess, OpenCodeSessionConfig,
-        OpenCodeTokenUsage, OpenCodeTurnConfig, OpenCodeTurnState,
+        BackendEvent, BackendEventKind, CodexAppServerProcess, CodexLifecycleManager,
+        CodexProcessHandle, OpenCodeRawEvent, OpenCodeServerHandle, OpenCodeServerProcess,
+        OpenCodeSessionConfig, OpenCodeTokenUsage, OpenCodeTurnConfig, OpenCodeTurnState,
     };
     use crab_core::{
         BackendKind, Checkpoint, CrabError, CrabResult, InferenceProfile, LaneState,
@@ -1705,6 +1740,7 @@ mod tests {
     impl DaemonBackendExecutionBridge for ScriptedBackendBridge {
         fn execute_turn(
             &mut self,
+            _codex_lifecycle: &mut dyn CodexLifecycleManager,
             physical_session: &mut crab_core::PhysicalSession,
             run: &Run,
             turn_id: &str,
@@ -1740,6 +1776,7 @@ mod tests {
     impl DaemonBackendExecutionBridge for MutatingBackendBridge {
         fn execute_turn(
             &mut self,
+            _codex_lifecycle: &mut dyn CodexLifecycleManager,
             physical_session: &mut crab_core::PhysicalSession,
             _run: &Run,
             turn_id: &str,
@@ -1771,6 +1808,7 @@ mod tests {
     impl DaemonBackendExecutionBridge for TurnIdMutatingBackendBridge {
         fn execute_turn(
             &mut self,
+            _codex_lifecycle: &mut dyn CodexLifecycleManager,
             physical_session: &mut crab_core::PhysicalSession,
             _run: &Run,
             _turn_id: &str,
@@ -1794,6 +1832,47 @@ mod tests {
         fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
             self
         }
+    }
+
+    #[derive(Debug, Default)]
+    struct NoopCodexLifecycle;
+
+    impl CodexLifecycleManager for NoopCodexLifecycle {
+        fn ensure_started(&mut self) -> CrabResult<CodexProcessHandle> {
+            Ok(CodexProcessHandle {
+                process_id: 1,
+                started_at_epoch_ms: 1,
+            })
+        }
+
+        fn restart(&mut self) -> CrabResult<CodexProcessHandle> {
+            self.ensure_started()
+        }
+    }
+
+    #[test]
+    fn noop_codex_lifecycle_manager_returns_stable_handle_for_start_and_restart() {
+        let mut lifecycle = NoopCodexLifecycle;
+        let started = lifecycle
+            .ensure_started()
+            .expect("ensure_started should return handle");
+        assert_eq!(
+            started,
+            CodexProcessHandle {
+                process_id: 1,
+                started_at_epoch_ms: 1,
+            }
+        );
+        let restarted = lifecycle
+            .restart()
+            .expect("restart should return stable handle");
+        assert_eq!(
+            restarted,
+            CodexProcessHandle {
+                process_id: 1,
+                started_at_epoch_ms: 1,
+            }
+        );
     }
 
     #[derive(Debug, Clone)]
@@ -2263,7 +2342,8 @@ mod tests {
 
     #[test]
     fn daemon_backend_bridge_rejects_opencode_turn_without_configured_bridge() {
-        let mut bridge = super::DaemonBackendBridge::default();
+        let mut bridge =
+            super::DaemonBackendBridge::new_default().expect("default bridge should construct");
         let mut run = sample_run("111");
         run.profile.resolved_profile.backend = BackendKind::OpenCode;
         let mut physical_session = crab_core::PhysicalSession {
@@ -2274,9 +2354,16 @@ mod tests {
             created_at_epoch_ms: 1,
             last_turn_id: None,
         };
+        let mut codex_lifecycle = NoopCodexLifecycle;
 
         let error = bridge
-            .execute_turn(&mut physical_session, &run, "turn context")
+            .execute_turn(
+                &mut codex_lifecycle,
+                &mut physical_session,
+                &run,
+                "turn-op-1",
+                "turn context",
+            )
             .expect_err("missing opencode bridge should be explicit");
         assert_eq!(
             error,
@@ -2775,11 +2862,22 @@ mod tests {
 
         let discord = discord_state.state();
         assert_eq!(discord.posted.len(), 1);
-        assert_eq!(discord.posted[0].2, "hello world".to_string());
+        assert!(discord.posted[0].2.contains("Codex bridge response"));
+
+        let session = SessionStore::new(workspace.path.join("state"))
+            .get_session("discord:channel:777")
+            .expect("session read should succeed")
+            .expect("session should exist");
+        assert!(session.token_accounting.input_tokens > 0);
+        assert_eq!(session.token_accounting.output_tokens, 3);
+        assert_eq!(
+            session.token_accounting.total_tokens,
+            session.token_accounting.input_tokens + session.token_accounting.output_tokens
+        );
 
         let codex_stats = codex_state.stats();
-        assert_eq!(codex_stats.spawn_calls, 1);
-        assert_eq!(codex_stats.terminate_calls, 1);
+        assert_eq!(codex_stats.spawn_calls, 2);
+        assert_eq!(codex_stats.terminate_calls, 2);
 
         let opencode_stats = opencode_state.stats();
         assert_eq!(opencode_stats.spawn_calls, 1);
@@ -3842,9 +3940,16 @@ mod tests {
             .ensure_physical_session(&run.logical_session_id, &run.profile.resolved_profile, None)
             .expect("physical session should resolve");
         assert_eq!(physical.id, active_id);
+        let mut codex_lifecycle = NoopCodexLifecycle;
 
         let events = runtime
-            .execute_backend_turn(&mut physical, &run, "turn-1", "turn context")
+            .execute_backend_turn(
+                &mut codex_lifecycle,
+                &mut physical,
+                &run,
+                "turn-1",
+                "turn context",
+            )
             .expect("delegated backend turn should succeed");
         assert_eq!(events, expected_events);
         assert_eq!(physical.last_turn_id, Some("turn-1".to_string()));
@@ -3890,9 +3995,16 @@ mod tests {
         let mut physical = runtime
             .ensure_physical_session(&run.logical_session_id, &run.profile.resolved_profile, None)
             .expect("physical session should resolve");
+        let mut codex_lifecycle = NoopCodexLifecycle;
 
         let error = runtime
-            .execute_backend_turn(&mut physical, &run, "turn-2", "turn context")
+            .execute_backend_turn(
+                &mut codex_lifecycle,
+                &mut physical,
+                &run,
+                "turn-2",
+                "turn context",
+            )
             .expect_err("delegated backend failures should be mapped");
         assert!(matches!(
             error,
@@ -3926,9 +4038,16 @@ mod tests {
         let mut physical = runtime
             .ensure_physical_session(&run.logical_session_id, &run.profile.resolved_profile, None)
             .expect("physical session should resolve");
+        let mut codex_lifecycle = NoopCodexLifecycle;
 
         let error = runtime
-            .execute_backend_turn(&mut physical, &run, "turn-3", "turn context")
+            .execute_backend_turn(
+                &mut codex_lifecycle,
+                &mut physical,
+                &run,
+                "turn-3",
+                "turn context",
+            )
             .expect_err("depleted scripted bridge results should fail");
         assert!(matches!(
             error,
@@ -3959,9 +4078,16 @@ mod tests {
             .expect("physical session should resolve");
         let active_id = physical.id.clone();
         let initial_backend_session_id = physical.backend_session_id.clone();
+        let mut codex_lifecycle = NoopCodexLifecycle;
 
         runtime
-            .execute_backend_turn(&mut physical, &run, "turn-4", "turn context")
+            .execute_backend_turn(
+                &mut codex_lifecycle,
+                &mut physical,
+                &run,
+                "turn-4",
+                "turn context",
+            )
             .expect("mutating bridge turn should succeed");
         assert_ne!(physical.backend_session_id, initial_backend_session_id);
         assert_eq!(physical.last_turn_id, Some("turn-4".to_string()));
@@ -4006,9 +4132,16 @@ mod tests {
             .ensure_physical_session(&run.logical_session_id, &run.profile.resolved_profile, None)
             .expect("physical session should resolve");
         let active_id = physical.id.clone();
+        let mut codex_lifecycle = NoopCodexLifecycle;
 
         runtime
-            .execute_backend_turn(&mut physical, &run, "turn-daemon", "turn context")
+            .execute_backend_turn(
+                &mut codex_lifecycle,
+                &mut physical,
+                &run,
+                "turn-daemon",
+                "turn context",
+            )
             .expect("turn execution should succeed");
         assert_eq!(physical.last_turn_id, Some("backend-turn-id-9".to_string()));
 
