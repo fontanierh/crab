@@ -57,17 +57,20 @@ const OPENCODE_SESSION_PLACEHOLDER_PREFIX: &str = "backend-session:";
 const DAEMON_CLAUDE_FORCE_SEND_ERROR_TOKEN: &str = "force-claude-send-error";
 const CRAB_RUNTIME_BRIEF_BASE: &str =
     "You are running inside Crab, a Discord-driven coding-agent harness.\n\
-Execution model:\n\
-- Discord conversations map to logical sessions.\n\
-- Each logical session is processed by a FIFO lane.\n\
-- A backend physical session may persist across turns until rotation.\n\
-Runtime behavior:\n\
-- Your visible assistant output is posted/edited in Discord.\n\
-- Delivery is idempotent and replay-safe across restarts.\n\
-- Hidden maintenance turns may run for memory flush/checkpoint and are not user-visible.\n\
+Crab sits between you and Discord users.\n\
+How this works:\n\
+- Crab receives Discord messages and decides when to run you.\n\
+- You are one active backend session for this conversation context.\n\
+- Crab posts your assistant text back to Discord (and may edit streamed messages).\n\
+Continuity and rotation:\n\
+- Crab may keep this same backend session across multiple user turns for continuity.\n\
+- Crab may later rotate to a new backend session after maintenance/checkpoint work.\n\
+Visibility:\n\
+- Assistant responses are user-visible in Discord.\n\
+- Hidden maintenance turns can run for memory flush/checkpoint and are not user-visible.\n\
 Operating constraints:\n\
 - Keep responses actionable and concise.\n\
-- Use available workspace files and memory tools when needed.\n\
+- Use workspace files and memory tools when needed.\n\
 - Respect owner/operator commands and current session policy.";
 #[cfg(all(not(any(test, coverage)), debug_assertions))]
 const DAEMON_DETERMINISTIC_CODEX_TRANSPORT_ENV: &str =
