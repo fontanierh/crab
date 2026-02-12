@@ -15,8 +15,12 @@ This document defines first-run behavior, onboarding capture, and how Crab trans
   - Mechanism: schema-validated `OnboardingCaptureDocument` (`schema_version`, identity fields, goals, location, timezone).
 
 - Decision: runtime completion trigger is explicit and owner-only while bootstrap is pending.
-  - Rationale: avoid accidental onboarding completion from arbitrary natural-language turns.
-  - Mechanism: owner submits strict onboarding JSON payload; runtime validates/commits it in normal turn flow.
+  - Rationale: avoid accidental onboarding completion from arbitrary natural-language turns while still allowing natural owner conversation.
+  - Mechanism:
+    - non-owner messages are blocked while bootstrap is pending
+    - owner messages outside owner DM are blocked while bootstrap is pending
+    - owner DM remains open for normal conversation and explicit capture
+    - completion is committed only from strict capture JSON (owner message or hidden extraction during rotation)
 
 - Decision: onboarding writes managed blocks and preserves legacy notes.
   - Rationale: avoid losing existing human-authored context while allowing deterministic rewrites.
@@ -80,10 +84,19 @@ sequenceDiagram
     Runtime->>WS: ensure_workspace_layout()
     WS-->>Runtime: bootstrap_state = new/pending/ready
 
-    Note over Runtime,WS: If pending bootstrap, onboarding capture is required for completion
+    Note over Runtime,WS: If pending bootstrap, only owner DM is allowed to proceed
 
-    Owner->>Runtime: onboarding capture JSON (strict schema)
-    Runtime->>Core: parse_onboarding_capture_document()
+    Owner->>Runtime: normal DM conversation
+    Runtime->>Owner: runtime brief asks to gather missing onboarding fields naturally
+
+    alt explicit owner capture JSON
+      Owner->>Runtime: onboarding capture JSON (strict schema)
+      Runtime->>Core: parse_onboarding_capture_document()
+    else rotation extraction path
+      Runtime->>Core: build_onboarding_extraction_prompt()
+      Runtime->>Runtime: hidden backend turn returns strict JSON or INCOMPLETE token
+      Runtime->>Core: parse_onboarding_capture_document()
+    end
     Core-->>Runtime: validated capture
 
     Runtime->>Core: persist_onboarding_profile_files()
@@ -97,8 +110,9 @@ sequenceDiagram
 
 Current implementation note:
 
-- Prompt-orchestrated hidden onboarding question flow is not yet runtime-wired.
-- Runtime completion path is fully wired for explicit owner JSON capture while bootstrap is pending.
+- Pending-bootstrap gate is fully runtime-wired: only owner DM can proceed.
+- Owner DM context includes a runtime brief that asks for missing onboarding fields conversationally.
+- Completion path is fully wired for explicit owner JSON capture and rotation-time hidden extraction.
 
 ## File Mutation Semantics
 

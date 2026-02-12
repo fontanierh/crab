@@ -107,8 +107,9 @@ pub use memory_snippets::{
     DEFAULT_MEMORY_USER_FILE_LIMIT,
 };
 pub use onboarding::{
-    build_onboarding_prompt, default_onboarding_questions, parse_onboarding_capture_document,
-    OnboardingCaptureDocument, OnboardingField, OnboardingQuestion, ONBOARDING_SCHEMA_VERSION,
+    build_onboarding_extraction_prompt, build_onboarding_prompt, default_onboarding_questions,
+    parse_onboarding_capture_document, OnboardingCaptureDocument, OnboardingField,
+    OnboardingQuestion, ONBOARDING_CAPTURE_INCOMPLETE_TOKEN, ONBOARDING_SCHEMA_VERSION,
 };
 pub use onboarding_completion::{
     execute_onboarding_completion_protocol, OnboardingCompletionEventRuntime,

@@ -19,6 +19,7 @@ Use `crab/DESIGN.md` as the canonical v1 spec, and use this folder for detailed 
 11. `crab/docs/11-feature-integration-matrix.md`
 12. `crab/docs/12-snapshot-restore-design-note.md`
 13. `crab/docs/13-deployment-acceptance-evidence.md`
+14. `crab/docs/14-overall-chat-flow-2026-02-12.md`
 
 ## Doc Conventions
 

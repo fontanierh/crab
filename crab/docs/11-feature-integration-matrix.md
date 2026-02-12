@@ -51,18 +51,18 @@ core modules are actually exercised in production flow.
   - Coverage: daemon OpenCode execution bridge tests + HTTP transport end-session contract test
 - First-interaction onboarding completion capture:
   - Core: `parse_onboarding_capture_document`, `persist_onboarding_profile_files`,
-    `execute_onboarding_completion_protocol`
-  - Runtime: `crates/crab-app/src/turn_executor.rs` (`maybe_complete_pending_onboarding_capture`)
-  - Behavior: while bootstrap is pending, owner-submitted onboarding capture JSON is validated, profile files are updated, `MEMORY.md` baseline is written, and `BOOTSTRAP.md` is retired in normal run flow
-  - Coverage: turn executor onboarding completion/rejection tests
-
-## Deferred / Partial
-
-- First-interaction prompt orchestration:
-  - Onboarding completion capture is runtime-wired for strict owner JSON submissions while bootstrap
-    is pending.
-  - Automatic hidden question-asking orchestration that elicits that JSON capture from arbitrary
-    first messages is still deferred.
+    `execute_onboarding_completion_protocol`, `build_onboarding_extraction_prompt`
+  - Runtime:
+    - `crates/crab-app/src/turn_executor.rs` (`resolve_pending_onboarding_gate`,
+      `maybe_complete_pending_onboarding_capture`, `maybe_complete_pending_onboarding_from_rotation`)
+    - `crates/crab-app/src/daemon.rs` (`render_crab_runtime_brief`)
+  - Behavior:
+    - while bootstrap is pending, only owner DM is allowed to proceed
+    - owner DM includes onboarding guidance in runtime brief
+    - strict onboarding capture JSON can complete onboarding directly
+    - rotation can run hidden extraction and complete onboarding when strict capture can be resolved
+    - completion writes managed profile files, updates `MEMORY.md`, and retires `BOOTSTRAP.md`
+  - Coverage: daemon + turn executor onboarding gate/completion/rotation extraction tests
 
 ## API Wiring Guardrail
 

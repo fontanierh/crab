@@ -7,6 +7,7 @@ pub const DEFAULT_CONTEXT_MAX_SOUL_TOKENS: usize = 2_048;
 pub const DEFAULT_CONTEXT_MAX_IDENTITY_TOKENS: usize = 2_048;
 pub const DEFAULT_CONTEXT_MAX_USER_TOKENS: usize = 2_048;
 pub const DEFAULT_CONTEXT_MAX_MEMORY_TOKENS: usize = 16_000;
+pub const DEFAULT_CONTEXT_MAX_RUNTIME_BRIEF_TOKENS: usize = 1_024;
 pub const DEFAULT_CONTEXT_MAX_PROMPT_CONTRACT_TOKENS: usize = 4_096;
 pub const DEFAULT_CONTEXT_MAX_LATEST_CHECKPOINT_TOKENS: usize = 4_096;
 pub const DEFAULT_CONTEXT_MAX_TURN_INPUT_TOKENS: usize = 4_096;
@@ -19,6 +20,7 @@ pub struct ContextBudgetPolicy {
     pub max_identity_tokens: usize,
     pub max_user_tokens: usize,
     pub max_memory_tokens: usize,
+    pub max_runtime_brief_tokens: usize,
     pub max_prompt_contract_tokens: usize,
     pub max_latest_checkpoint_tokens: usize,
     pub max_turn_input_tokens: usize,
@@ -33,6 +35,7 @@ impl Default for ContextBudgetPolicy {
             max_identity_tokens: DEFAULT_CONTEXT_MAX_IDENTITY_TOKENS,
             max_user_tokens: DEFAULT_CONTEXT_MAX_USER_TOKENS,
             max_memory_tokens: DEFAULT_CONTEXT_MAX_MEMORY_TOKENS,
+            max_runtime_brief_tokens: DEFAULT_CONTEXT_MAX_RUNTIME_BRIEF_TOKENS,
             max_prompt_contract_tokens: DEFAULT_CONTEXT_MAX_PROMPT_CONTRACT_TOKENS,
             max_latest_checkpoint_tokens: DEFAULT_CONTEXT_MAX_LATEST_CHECKPOINT_TOKENS,
             max_turn_input_tokens: DEFAULT_CONTEXT_MAX_TURN_INPUT_TOKENS,
@@ -98,6 +101,11 @@ pub fn render_budgeted_turn_context(
             policy.max_memory_tokens,
         ),
         (
+            "CRAB_RUNTIME_BRIEF",
+            input.crab_runtime_brief.as_str(),
+            policy.max_runtime_brief_tokens,
+        ),
+        (
             "PROMPT_CONTRACT",
             input.prompt_contract.as_str(),
             policy.max_prompt_contract_tokens,
@@ -148,6 +156,7 @@ fn validate_policy(policy: &ContextBudgetPolicy) -> CrabResult<()> {
         ("max_identity_tokens", policy.max_identity_tokens),
         ("max_user_tokens", policy.max_user_tokens),
         ("max_memory_tokens", policy.max_memory_tokens),
+        ("max_runtime_brief_tokens", policy.max_runtime_brief_tokens),
         (
             "max_prompt_contract_tokens",
             policy.max_prompt_contract_tokens,
@@ -262,6 +271,7 @@ mod tests {
             memory_document: "memory".to_string(),
             memory_snippets: vec![],
             latest_checkpoint_summary: Some("checkpoint".to_string()),
+            crab_runtime_brief: "runtime brief".to_string(),
             prompt_contract: "prompt contract".to_string(),
             turn_input: "turn".to_string(),
         }
@@ -273,6 +283,7 @@ mod tests {
             max_identity_tokens: 10_000,
             max_user_tokens: 10_000,
             max_memory_tokens: 10_000,
+            max_runtime_brief_tokens: 10_000,
             max_prompt_contract_tokens: 10_000,
             max_latest_checkpoint_tokens: 10_000,
             max_turn_input_tokens: 10_000,
@@ -292,6 +303,7 @@ mod tests {
         assert_eq!(default_policy.max_identity_tokens, 2_048);
         assert_eq!(default_policy.max_user_tokens, 2_048);
         assert_eq!(default_policy.max_memory_tokens, 16_000);
+        assert_eq!(default_policy.max_runtime_brief_tokens, 1_024);
         assert_eq!(default_policy.max_prompt_contract_tokens, 4_096);
         assert_eq!(default_policy.max_latest_checkpoint_tokens, 4_096);
         assert_eq!(default_policy.max_turn_input_tokens, 4_096);
@@ -309,7 +321,7 @@ mod tests {
         assert!(output
             .rendered_context
             .contains("## PROMPT_CONTRACT\nprompt contract"));
-        assert_eq!(output.report.section_usage.len(), 7);
+        assert_eq!(output.report.section_usage.len(), 8);
         assert!(output.report.snippet_usage.is_empty());
     }
 

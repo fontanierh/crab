@@ -7,9 +7,9 @@ use crab_backends::{
 };
 use crab_core::{
     apply_operator_command, build_checkpoint_prompt, build_fallback_checkpoint_document,
-    build_memory_flush_prompt, detect_workspace_bootstrap_state,
-    enqueue_workspace_git_push_request, evaluate_rotation_triggers,
-    execute_onboarding_completion_protocol, execute_rotation_sequence,
+    build_memory_flush_prompt, build_onboarding_extraction_prompt,
+    detect_workspace_bootstrap_state, enqueue_workspace_git_push_request,
+    evaluate_rotation_triggers, execute_onboarding_completion_protocol, execute_rotation_sequence,
     finalize_hidden_memory_flush, maybe_commit_workspace_snapshot,
     parse_onboarding_capture_document, parse_operator_command, persist_onboarding_profile_files,
     resolve_checkpoint_turn_output, Checkpoint, CheckpointTurnDocument, CheckpointTurnResolution,
@@ -20,7 +20,7 @@ use crab_core::{
     RunProfileTelemetry, RunStatus, TokenAccounting, TranscriptEntry, TranscriptEntryRole,
     WorkspaceBootstrapState, WorkspaceGitCommitRequest, WorkspaceGitCommitTrigger,
     WorkspaceGitPushRequest, DEFAULT_CHECKPOINT_MAX_ATTEMPTS,
-    DEFAULT_FALLBACK_TRANSCRIPT_TAIL_LIMIT,
+    DEFAULT_FALLBACK_TRANSCRIPT_TAIL_LIMIT, ONBOARDING_CAPTURE_INCOMPLETE_TOKEN,
 };
 use crab_discord::{DeliveryAttempt, GatewayMessage, RoutingKey, ShouldSendDecision};
 use crab_scheduler::QueuedRun;
@@ -345,10 +345,20 @@ where
 
         let turn_id = build_turn_id(&run.id);
         let mut backend_events = Vec::new();
-        let mut manual_command_resolution =
-            self.resolve_manual_rotation_command(&run, &mut session)?;
+        let mut onboarding_gate_resolution =
+            self.resolve_pending_onboarding_gate(&run, started_at_epoch_ms)?;
+        let mut manual_command_resolution = if onboarding_gate_resolution.is_some() {
+            None
+        } else {
+            self.resolve_manual_rotation_command(&run, &mut session)?
+        };
         let mut onboarding_completion_resolution = None;
         let mut supplemental_emitted_event_count = 0_usize;
+        let mut rotation_onboarding_completion_resolution = None;
+        if let Some(ref resolution) = onboarding_gate_resolution {
+            supplemental_emitted_event_count =
+                supplemental_emitted_event_count.saturating_add(resolution.emitted_event_count);
+        }
 
         // Note: `tracing` macros can create stubborn per-line coverage gaps under `cargo llvm-cov`
         // (cfg(coverage)). Keep runtime logs, but exclude them from coverage builds.
@@ -364,7 +374,7 @@ where
             "run started"
         );
 
-        if manual_command_resolution.is_none() {
+        if manual_command_resolution.is_none() && onboarding_gate_resolution.is_none() {
             onboarding_completion_resolution =
                 self.maybe_complete_pending_onboarding_capture(&run, started_at_epoch_ms)?;
             if let Some(ref resolution) = onboarding_completion_resolution {
@@ -373,7 +383,10 @@ where
             }
         }
 
-        if manual_command_resolution.is_none() && onboarding_completion_resolution.is_none() {
+        if manual_command_resolution.is_none()
+            && onboarding_completion_resolution.is_none()
+            && onboarding_gate_resolution.is_none()
+        {
             let mut physical_session = self.runtime.ensure_physical_session(
                 logical_session_id,
                 &run.profile.resolved_profile,
@@ -425,12 +438,14 @@ where
             }
         }
 
-        let final_status =
-            if manual_command_resolution.is_some() || onboarding_completion_resolution.is_some() {
-                RunStatus::Succeeded
-            } else {
-                derive_final_status(&backend_events)
-            };
+        let final_status = if manual_command_resolution.is_some()
+            || onboarding_completion_resolution.is_some()
+            || onboarding_gate_resolution.is_some()
+        {
+            RunStatus::Succeeded
+        } else {
+            derive_final_status(&backend_events)
+        };
         let completed_at_epoch_ms = self.runtime.now_epoch_ms()?;
         run.status = final_status;
         run.completed_at_epoch_ms = Some(completed_at_epoch_ms);
@@ -463,12 +478,25 @@ where
         let manual_rotation_request = manual_command_resolution
             .as_ref()
             .and_then(|resolution| resolution.request);
-        let rotation_outcome = self.maybe_execute_rotation(
-            &run,
-            &mut session,
-            completed_at_epoch_ms,
-            manual_rotation_request,
-        )?;
+        let rotation_outcome = if onboarding_gate_resolution.is_some() {
+            None
+        } else {
+            self.maybe_execute_rotation(
+                &run,
+                &mut session,
+                completed_at_epoch_ms,
+                manual_rotation_request,
+            )?
+        };
+        if let Some(rotation_outcome) = rotation_outcome.as_ref() {
+            if let Some(ref resolution) = rotation_outcome.onboarding_completion_resolution {
+                supplemental_emitted_event_count =
+                    supplemental_emitted_event_count.saturating_add(resolution.emitted_event_count);
+                rotation_onboarding_completion_resolution = Some(resolution.clone());
+            }
+            supplemental_emitted_event_count = supplemental_emitted_event_count
+                .saturating_add(rotation_outcome.supplemental_emitted_event_count);
+        }
 
         #[cfg(not(coverage))]
         tracing::info!(
@@ -499,6 +527,24 @@ where
             let delivery_result = self.deliver_rendered_assistant_output(
                 &run,
                 &onboarding_completion_resolution.user_message,
+                0,
+                completed_at_epoch_ms,
+            );
+            let _ = delivery_result?;
+        } else if let Some(onboarding_gate_resolution) = onboarding_gate_resolution.take() {
+            let delivery_result = self.deliver_rendered_assistant_output(
+                &run,
+                &onboarding_gate_resolution.user_message,
+                0,
+                completed_at_epoch_ms,
+            );
+            let _ = delivery_result?;
+        } else if let Some(rotation_onboarding_completion_resolution) =
+            rotation_onboarding_completion_resolution
+        {
+            let delivery_result = self.deliver_rendered_assistant_output(
+                &run,
+                &rotation_onboarding_completion_resolution.user_message,
                 0,
                 completed_at_epoch_ms,
             );
@@ -540,33 +586,191 @@ where
             return Ok(None);
         }
 
-        if !run.profile.sender_is_owner {
-            return Err(CrabError::InvariantViolation {
-                context: "onboarding_completion_authorize",
-                message: format!(
-                    "sender {} is not authorized to submit onboarding capture",
-                    run.profile.sender_id
-                ),
-            });
+        let capture = parse_onboarding_capture_document(&run.user_input)?;
+        self.apply_onboarding_capture_document(
+            run,
+            capture,
+            format!("onboarding:{}", run.id),
+            completed_at_epoch_ms,
+            "Onboarding capture applied.",
+        )
+        .map(Some)
+    }
+
+    fn resolve_pending_onboarding_gate(
+        &mut self,
+        run: &Run,
+        emitted_at_epoch_ms: u64,
+    ) -> CrabResult<Option<PendingOnboardingGateResolution>> {
+        let bootstrap_state =
+            detect_workspace_bootstrap_state(&self.composition.startup.workspace_root)?;
+        if bootstrap_state != WorkspaceBootstrapState::PendingBootstrap {
+            return Ok(None);
         }
 
-        let capture = parse_onboarding_capture_document(&run.user_input)?;
+        if run.profile.sender_is_owner && is_dm_logical_session_id(&run.logical_session_id) {
+            return Ok(None);
+        }
+
+        let (reason, user_message) = if !run.profile.sender_is_owner {
+            (
+                "non_owner",
+                "Onboarding is pending. Only the owner can continue onboarding in owner DM."
+                    .to_string(),
+            )
+        } else {
+            (
+                "owner_non_dm",
+                "Onboarding is pending. Continue in owner DM; server channels/threads are blocked until onboarding completes."
+                    .to_string(),
+            )
+        };
+
+        let mut payload = BTreeMap::new();
+        payload.insert("event".to_string(), "onboarding_gate_blocked".to_string());
+        payload.insert("reason".to_string(), reason.to_string());
+        payload.insert("sender_id".to_string(), run.profile.sender_id.clone());
+        payload.insert(
+            "sender_is_owner".to_string(),
+            run.profile.sender_is_owner.to_string(),
+        );
+        payload.insert(
+            "logical_session_id".to_string(),
+            run.logical_session_id.clone(),
+        );
+        self.append_system_run_note(run, payload, emitted_at_epoch_ms)?;
+
+        Ok(Some(PendingOnboardingGateResolution {
+            user_message,
+            emitted_event_count: 1,
+        }))
+    }
+
+    fn maybe_complete_pending_onboarding_from_rotation(
+        &mut self,
+        run: &Run,
+        session: &mut LogicalSession,
+        completed_at_epoch_ms: u64,
+    ) -> CrabResult<(Option<OnboardingCompletionResolution>, usize)> {
+        let bootstrap_state =
+            detect_workspace_bootstrap_state(&self.composition.startup.workspace_root)?;
+        if bootstrap_state != WorkspaceBootstrapState::PendingBootstrap {
+            return Ok((None, 0));
+        }
+        if !run.profile.sender_is_owner || !is_dm_logical_session_id(&run.logical_session_id) {
+            return Ok((None, 0));
+        }
+
+        let ensure_physical_session = self.runtime.ensure_physical_session(
+            &run.logical_session_id,
+            &run.profile.resolved_profile,
+            session.active_physical_session_id.as_deref(),
+        );
+        let mut physical_session = ensure_physical_session?;
+        session.active_backend = run.profile.resolved_profile.backend;
+        session.active_profile = run.profile.resolved_profile.clone();
+        session.active_physical_session_id = Some(physical_session.id.clone());
+        self.composition
+            .state_stores
+            .session_store
+            .upsert_session(session)?;
+
+        let extraction_prompt =
+            build_onboarding_extraction_prompt(&format!("onboarding-rotation:{}", run.id))?;
+        let mut hidden_onboarding_run = run.clone();
+        hidden_onboarding_run.user_input = extraction_prompt.clone();
+        hidden_onboarding_run.physical_session_id = Some(physical_session.id.clone());
+        let hidden_turn_id = format!("turn:{}:hidden-onboarding-capture", run.id);
+        let backend_events_result = self.runtime.execute_backend_turn(
+            &mut self.composition.backends.codex,
+            &mut physical_session,
+            &hidden_onboarding_run,
+            &hidden_turn_id,
+            &extraction_prompt,
+        );
+        let backend_events = backend_events_result?;
+        let raw_output = backend_events
+            .iter()
+            .filter_map(extract_backend_text_delta)
+            .collect::<String>();
+
+        if raw_output.trim() == ONBOARDING_CAPTURE_INCOMPLETE_TOKEN {
+            let mut payload = BTreeMap::new();
+            payload.insert(
+                "event".to_string(),
+                "onboarding_rotation_incomplete".to_string(),
+            );
+            self.append_system_run_note(run, payload, completed_at_epoch_ms)?;
+            return Ok((None, 1));
+        }
+
+        let capture = match parse_onboarding_capture_document(&raw_output) {
+            Ok(capture) => capture,
+            Err(error) => {
+                let mut payload = BTreeMap::new();
+                payload.insert(
+                    "event".to_string(),
+                    "onboarding_rotation_parse_error".to_string(),
+                );
+                payload.insert("error".to_string(), error.to_string());
+                self.append_system_run_note(run, payload, completed_at_epoch_ms)?;
+                return Ok((None, 1));
+            }
+        };
+
+        let completion = match self.apply_onboarding_capture_document(
+            run,
+            capture,
+            format!("onboarding-rotation:{}", run.id),
+            completed_at_epoch_ms,
+            "Onboarding completed during checkpoint rotation.",
+        ) {
+            Ok(resolution) => resolution,
+            Err(error) => {
+                let mut payload = BTreeMap::new();
+                payload.insert(
+                    "event".to_string(),
+                    "onboarding_rotation_apply_error".to_string(),
+                );
+                payload.insert("error".to_string(), error.to_string());
+                self.append_system_run_note(run, payload, completed_at_epoch_ms)?;
+                return Ok((None, 1));
+            }
+        };
+        let mut payload = BTreeMap::new();
+        payload.insert(
+            "event".to_string(),
+            "onboarding_rotation_applied".to_string(),
+        );
+        self.append_system_run_note(run, payload, completed_at_epoch_ms)?;
+        Ok((Some(completion), 1))
+    }
+
+    fn apply_onboarding_capture_document(
+        &mut self,
+        run: &Run,
+        capture: crab_core::OnboardingCaptureDocument,
+        onboarding_session_id: String,
+        completed_at_epoch_ms: u64,
+        response_prefix: &str,
+    ) -> CrabResult<OnboardingCompletionResolution> {
         let workspace_root = self.composition.startup.workspace_root.clone();
         let profile_write_outcome = persist_onboarding_profile_files(&workspace_root, &capture)?;
-        let completion_result = execute_onboarding_completion_protocol(
+        let completion_outcome_result = execute_onboarding_completion_protocol(
             self,
             &workspace_root,
             &OnboardingCompletionInput {
                 logical_session_id: run.logical_session_id.clone(),
                 run_id: run.id.clone(),
-                onboarding_session_id: format!("onboarding:{}", run.id),
+                onboarding_session_id,
                 completed_at_epoch_ms,
                 capture,
                 profile: Some(run.profile.clone()),
             },
         );
-        let completion_outcome = completion_result?;
+        let completion_outcome = completion_outcome_result?;
 
+        let mut emitted_event_count = 1;
         if !profile_write_outcome.conflict_paths.is_empty() {
             let mut payload = BTreeMap::new();
             payload.insert(
@@ -577,18 +781,12 @@ where
                 "conflict_paths".to_string(),
                 profile_write_outcome.conflict_paths.join(","),
             );
-            let append_result = self.append_run_event(
-                run,
-                EventKind::RunNote,
-                EventSource::System,
-                payload,
-                completed_at_epoch_ms,
-            );
-            append_result?;
+            self.append_system_run_note(run, payload, completed_at_epoch_ms)?;
+            emitted_event_count += 1;
         }
 
         let mut user_message = format!(
-            "Onboarding capture applied. BOOTSTRAP.md retired: {}.",
+            "{response_prefix} BOOTSTRAP.md retired: {}.",
             completion_outcome.bootstrap_retired
         );
         if !profile_write_outcome.conflict_paths.is_empty() {
@@ -596,11 +794,10 @@ where
                 .push_str(" Profile conflicts detected; review the conflicted managed files.");
         }
 
-        let emitted_event_count = 1 + usize::from(!profile_write_outcome.conflict_paths.is_empty());
-        Ok(Some(OnboardingCompletionResolution {
+        Ok(OnboardingCompletionResolution {
             user_message,
             emitted_event_count,
-        }))
+        })
     }
 
     fn resolve_manual_rotation_command(
@@ -723,6 +920,9 @@ where
             .session_store
             .upsert_session(session)?;
 
+        let (onboarding_completion_resolution, onboarding_rotation_note_count) =
+            self.maybe_complete_pending_onboarding_from_rotation(run, session, now_epoch_ms)?;
+
         let event_store = self.composition.state_stores.event_store.clone();
         let checkpoint_store = self.composition.state_stores.checkpoint_store.clone();
         let mut rotation_runtime = TurnExecutorRotationRuntime {
@@ -806,6 +1006,8 @@ where
 
         Ok(Some(RotationExecutionOutcome {
             checkpoint_id: outcome.checkpoint_id,
+            onboarding_completion_resolution,
+            supplemental_emitted_event_count: onboarding_rotation_note_count,
         }))
     }
 
@@ -1141,6 +1343,21 @@ where
             .append_event(&event)
     }
 
+    fn append_system_run_note(
+        &self,
+        run: &Run,
+        payload: BTreeMap<String, String>,
+        emitted_at_epoch_ms: u64,
+    ) -> CrabResult<()> {
+        self.append_run_event(
+            run,
+            EventKind::RunNote,
+            EventSource::System,
+            payload,
+            emitted_at_epoch_ms,
+        )
+    }
+
     fn next_event_sequence(&self, logical_session_id: &str, run_id: &str) -> CrabResult<u64> {
         let events = self
             .composition
@@ -1164,8 +1381,16 @@ struct OnboardingCompletionResolution {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+struct PendingOnboardingGateResolution {
+    user_message: String,
+    emitted_event_count: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct RotationExecutionOutcome {
     checkpoint_id: String,
+    onboarding_completion_resolution: Option<OnboardingCompletionResolution>,
+    supplemental_emitted_event_count: usize,
 }
 
 struct TurnExecutorRotationRuntime<'a, R>
@@ -1368,6 +1593,10 @@ fn build_run_id(logical_session_id: &str, message_id: &str) -> String {
 
 fn build_turn_id(run_id: &str) -> String {
     format!("turn:{run_id}")
+}
+
+fn is_dm_logical_session_id(logical_session_id: &str) -> bool {
+    logical_session_id.starts_with("discord:dm:")
 }
 
 fn looks_like_onboarding_capture_payload(input: &str) -> bool {
@@ -1770,7 +1999,7 @@ mod tests {
     use crab_core::{
         build_checkpoint_prompt, BackendKind, CrabError, CrabResult, EventKind, InferenceProfile,
         LaneState, OwnerProfileMetadata, ProfileValueSource, ReasoningLevel, RunProfileTelemetry,
-        RunStatus, WorkspaceGitPushPolicy,
+        RunStatus, WorkspaceGitPushPolicy, ONBOARDING_CAPTURE_INCOMPLETE_TOKEN,
     };
     use crab_discord::{GatewayConversationKind, GatewayMessage};
 
@@ -2017,6 +2246,27 @@ mod tests {
         message
     }
 
+    fn gateway_dm_message_with_content(
+        message_id: &str,
+        author_id: &str,
+        content: &str,
+    ) -> GatewayMessage {
+        GatewayMessage {
+            message_id: message_id.to_string(),
+            author_id: author_id.to_string(),
+            author_is_bot: false,
+            channel_id: format!("dm-{author_id}"),
+            guild_id: None,
+            thread_id: None,
+            content: content.to_string(),
+            conversation_kind: GatewayConversationKind::DirectMessage,
+        }
+    }
+
+    fn gateway_owner_dm_message_with_content(message_id: &str, content: &str) -> GatewayMessage {
+        gateway_dm_message_with_content(message_id, "424242424242424242", content)
+    }
+
     fn onboarding_capture_payload_json() -> &'static str {
         r#"{
   "schema_version": "v1",
@@ -2092,6 +2342,12 @@ mod tests {
         }
     }
 
+    fn physical_session_fixture_for(logical_session_id: &str) -> crab_core::PhysicalSession {
+        let mut session = physical_session_fixture();
+        session.logical_session_id = logical_session_id.to_string();
+        session
+    }
+
     fn backend_event(
         sequence: u64,
         kind: BackendEventKind,
@@ -2125,6 +2381,7 @@ mod tests {
         lane_queue_limit: usize,
         config: crab_core::RuntimeConfig,
     ) -> TurnExecutor<FakeCodexProcess, FakeOpenCodeProcess, FakeRuntime> {
+        let bootstrap_path = Path::new(config.workspace_root.as_str()).join("BOOTSTRAP.md");
         let composition = compose_runtime_with_processes_and_queue_limit(
             &config,
             "999999999999999999",
@@ -2133,6 +2390,7 @@ mod tests {
             lane_queue_limit,
         )
         .expect("composition should build");
+        let _ = std::fs::remove_file(&bootstrap_path);
         TurnExecutor::new(composition, runtime)
     }
 
@@ -2908,12 +3166,24 @@ mod tests {
     #[test]
     fn owner_can_complete_onboarding_capture_through_normal_turn_flow() {
         let workspace = TempWorkspace::new("turn-executor", "onboarding-complete-owner");
+        fs::create_dir_all(&workspace.path)
+            .expect("workspace root should be creatable for onboarding setup");
+        fs::write(
+            workspace.path.join("BOOTSTRAP.md"),
+            "Bootstrap remains pending until owner onboarding capture is applied.",
+        )
+        .expect("bootstrap marker should be writable for onboarding capture");
         let mut runtime = FakeRuntime::with_backend_events(Vec::new(), &[1, 2, 3, 4, 5]);
         runtime.resolve_profile_results = VecDeque::from(vec![Ok(owner_profile_telemetry())]);
         let mut executor = build_executor(&workspace, runtime, 8);
+        fs::write(
+            workspace.path.join("BOOTSTRAP.md"),
+            "Bootstrap remains pending until owner onboarding capture is applied.",
+        )
+        .expect("bootstrap marker should be writable for onboarding capture");
 
         let dispatched = executor
-            .process_gateway_message(gateway_message_with_content(
+            .process_gateway_message(gateway_owner_dm_message_with_content(
                 "m-onboarding-complete-owner",
                 onboarding_capture_payload_json(),
             ))
@@ -2950,12 +3220,12 @@ mod tests {
         assert!(user.contains("Managed Owner Profile"));
         assert!(memory.contains("Managed Onboarding Baseline"));
 
-        let run_id = "run:discord:channel:777:m-onboarding-complete-owner";
+        let run_id = "run:discord:dm:424242424242424242:m-onboarding-complete-owner";
         let run = executor
             .composition()
             .state_stores
             .run_store
-            .get_run("discord:channel:777", run_id)
+            .get_run("discord:dm:424242424242424242", run_id)
             .expect("run lookup should succeed")
             .expect("run should exist");
         assert_eq!(run.status, RunStatus::Succeeded);
@@ -2964,7 +3234,7 @@ mod tests {
             .composition()
             .state_stores
             .event_store
-            .replay_run("discord:channel:777", run_id)
+            .replay_run("discord:dm:424242424242424242", run_id)
             .expect("event replay should succeed");
         assert!(events.iter().any(|event| {
             event.kind == EventKind::RunNote
@@ -2978,6 +3248,13 @@ mod tests {
     #[test]
     fn onboarding_completion_delivery_errors_are_propagated() {
         let workspace = TempWorkspace::new("turn-executor", "onboarding-complete-delivery-error");
+        fs::create_dir_all(&workspace.path)
+            .expect("workspace root should be creatable for onboarding setup");
+        fs::write(
+            workspace.path.join("BOOTSTRAP.md"),
+            "Bootstrap remains pending until owner onboarding capture is applied.",
+        )
+        .expect("bootstrap marker should be writable for onboarding capture");
         let mut runtime = FakeRuntime::with_backend_events(Vec::new(), &[1, 2, 3, 4, 5]);
         runtime.resolve_profile_results = VecDeque::from(vec![Ok(owner_profile_telemetry())]);
         runtime.deliver_results = VecDeque::from(vec![Err(CrabError::InvariantViolation {
@@ -2985,9 +3262,14 @@ mod tests {
             message: "onboarding response delivery failed".to_string(),
         })]);
         let mut executor = build_executor(&workspace, runtime, 8);
+        fs::write(
+            workspace.path.join("BOOTSTRAP.md"),
+            "Bootstrap remains pending until owner onboarding capture is applied.",
+        )
+        .expect("bootstrap marker should be writable for onboarding capture");
 
         let error = executor
-            .process_gateway_message(gateway_message_with_content(
+            .process_gateway_message(gateway_owner_dm_message_with_content(
                 "m-onboarding-complete-delivery-error",
                 onboarding_capture_payload_json(),
             ))
@@ -3004,48 +3286,183 @@ mod tests {
     #[test]
     fn onboarding_capture_is_owner_only_while_bootstrap_is_pending() {
         let workspace = TempWorkspace::new("turn-executor", "onboarding-capture-non-owner");
+        fs::create_dir_all(&workspace.path)
+            .expect("workspace root should be creatable for onboarding setup");
+        fs::write(
+            workspace.path.join("BOOTSTRAP.md"),
+            "Bootstrap remains pending until owner onboarding capture is applied.",
+        )
+        .expect("bootstrap marker should be writable for onboarding capture");
         let mut runtime = FakeRuntime::with_backend_events(Vec::new(), &[1, 2, 3, 4]);
         runtime.resolve_profile_results = VecDeque::from(vec![Ok(sample_profile_telemetry())]);
         let mut executor = build_executor(&workspace, runtime, 8);
+        fs::write(
+            workspace.path.join("BOOTSTRAP.md"),
+            "Bootstrap remains pending until owner onboarding capture is applied.",
+        )
+        .expect("bootstrap marker should be writable for onboarding capture");
 
-        let error = executor
-            .process_gateway_message(gateway_message_with_content(
+        let dispatched = executor
+            .process_gateway_message(gateway_dm_message_with_content(
                 "m-onboarding-capture-non-owner",
+                "111111111111111111",
                 onboarding_capture_payload_json(),
             ))
-            .expect_err("non-owner onboarding capture should be rejected");
-        assert_eq!(
-            error,
-            CrabError::InvariantViolation {
-                context: "onboarding_completion_authorize",
-                message: "sender 111111111111111111 is not authorized to submit onboarding capture"
-                    .to_string(),
-            }
-        );
+            .expect("non-owner onboarding gate should succeed")
+            .expect("non-owner onboarding gate should dispatch");
+        assert_eq!(dispatched.status, RunStatus::Succeeded);
 
         let run = executor
             .composition()
             .state_stores
             .run_store
             .get_run(
-                "discord:channel:777",
-                "run:discord:channel:777:m-onboarding-capture-non-owner",
+                "discord:dm:111111111111111111",
+                "run:discord:dm:111111111111111111:m-onboarding-capture-non-owner",
             )
             .expect("run lookup should succeed")
             .expect("run should exist");
-        assert_eq!(run.status, RunStatus::Failed);
+        assert_eq!(run.status, RunStatus::Succeeded);
+        assert!(workspace.path.join("BOOTSTRAP.md").exists());
+        let runtime = executor.runtime_mut();
+        assert!(runtime.delivered_outputs[0]
+            .4
+            .contains("Only the owner can continue onboarding"));
+    }
+
+    #[test]
+    fn onboarding_pending_owner_non_dm_is_blocked_with_gate_message_and_note() {
+        let workspace = TempWorkspace::new("turn-executor", "onboarding-gate-owner-non-dm");
+        fs::create_dir_all(&workspace.path)
+            .expect("workspace root should be creatable for onboarding setup");
+        fs::write(
+            workspace.path.join("BOOTSTRAP.md"),
+            "Bootstrap remains pending until owner onboarding capture is applied.",
+        )
+        .expect("bootstrap marker should be writable for onboarding capture");
+        let mut runtime = FakeRuntime::with_backend_events(Vec::new(), &[1, 2, 3, 4]);
+        runtime.resolve_profile_results = VecDeque::from(vec![Ok(owner_profile_telemetry())]);
+        let mut executor = build_executor(&workspace, runtime, 8);
+        fs::write(
+            workspace.path.join("BOOTSTRAP.md"),
+            "Bootstrap remains pending until owner onboarding capture is applied.",
+        )
+        .expect("bootstrap marker should be writable for onboarding capture");
+
+        let dispatched = executor
+            .process_gateway_message(gateway_message_with_content(
+                "m-onboarding-owner-non-dm",
+                "hello from owner in guild channel",
+            ))
+            .expect("owner non-dm onboarding gate should succeed")
+            .expect("owner non-dm onboarding gate should dispatch");
+        assert_eq!(dispatched.status, RunStatus::Succeeded);
+
+        let runtime = executor.runtime_mut();
+        assert_eq!(runtime.delivered_outputs.len(), 1);
+        assert!(runtime.delivered_outputs[0]
+            .4
+            .contains("server channels/threads are blocked"));
+        assert!(!runtime
+            .steps
+            .contains(&"ensure_physical_session".to_string()));
+        assert!(!runtime.steps.contains(&"execute_backend_turn".to_string()));
+
+        let run_id = "run:discord:channel:777:m-onboarding-owner-non-dm";
+        let events = executor
+            .composition()
+            .state_stores
+            .event_store
+            .replay_run("discord:channel:777", run_id)
+            .expect("event replay should succeed");
+        let gate_event = events
+            .iter()
+            .find(|event| {
+                event.kind == EventKind::RunNote
+                    && event
+                        .payload
+                        .get("event")
+                        .is_some_and(|value| value == "onboarding_gate_blocked")
+            })
+            .expect("onboarding gate run note should be emitted");
+        assert_eq!(
+            gate_event.payload.get("reason"),
+            Some(&"owner_non_dm".to_string())
+        );
+    }
+
+    #[test]
+    fn owner_dm_pending_bootstrap_without_capture_continues_normal_backend_flow() {
+        let workspace = TempWorkspace::new("turn-executor", "onboarding-owner-dm-non-capture");
+        fs::create_dir_all(&workspace.path)
+            .expect("workspace root should be creatable for onboarding setup");
+        fs::write(
+            workspace.path.join("BOOTSTRAP.md"),
+            "Bootstrap remains pending until owner onboarding capture is applied.",
+        )
+        .expect("bootstrap marker should be writable for onboarding capture");
+        let mut runtime = FakeRuntime::with_backend_events(
+            vec![
+                backend_event(1, BackendEventKind::TextDelta, &[("text", "normal reply")]),
+                backend_event(
+                    2,
+                    BackendEventKind::TurnCompleted,
+                    &[("stop_reason", "done")],
+                ),
+            ],
+            &[1, 2, 3, 4, 5],
+        );
+        runtime.resolve_profile_results = VecDeque::from(vec![Ok(owner_profile_telemetry())]);
+        runtime.ensure_session_results = VecDeque::from(vec![Ok(physical_session_fixture_for(
+            "discord:dm:424242424242424242",
+        ))]);
+        let mut executor = build_executor(&workspace, runtime, 8);
+        fs::write(
+            workspace.path.join("BOOTSTRAP.md"),
+            "Bootstrap remains pending until owner onboarding capture is applied.",
+        )
+        .expect("bootstrap marker should be writable for onboarding capture");
+
+        let dispatched = executor
+            .process_gateway_message(gateway_owner_dm_message_with_content(
+                "m-owner-dm-non-capture",
+                "I have follow-up context",
+            ))
+            .expect("owner dm non-capture run should succeed")
+            .expect("owner dm non-capture run should dispatch");
+        assert_eq!(dispatched.status, RunStatus::Succeeded);
+
+        let runtime = executor.runtime_mut();
+        assert!(runtime
+            .steps
+            .contains(&"ensure_physical_session".to_string()));
+        assert!(runtime.steps.contains(&"execute_backend_turn".to_string()));
+        assert_eq!(runtime.delivered_outputs.len(), 1);
+        assert!(runtime.delivered_outputs[0].4.contains("normal reply"));
         assert!(workspace.path.join("BOOTSTRAP.md").exists());
     }
 
     #[test]
     fn malformed_owner_onboarding_capture_is_rejected_with_explicit_parse_error() {
         let workspace = TempWorkspace::new("turn-executor", "onboarding-capture-malformed");
+        fs::create_dir_all(&workspace.path)
+            .expect("workspace root should be creatable for onboarding setup");
+        fs::write(
+            workspace.path.join("BOOTSTRAP.md"),
+            "Bootstrap remains pending until owner onboarding capture is applied.",
+        )
+        .expect("bootstrap marker should be writable for onboarding capture");
         let mut runtime = FakeRuntime::with_backend_events(Vec::new(), &[1, 2, 3, 4]);
         runtime.resolve_profile_results = VecDeque::from(vec![Ok(owner_profile_telemetry())]);
         let mut executor = build_executor(&workspace, runtime, 8);
+        fs::write(
+            workspace.path.join("BOOTSTRAP.md"),
+            "Bootstrap remains pending until owner onboarding capture is applied.",
+        )
+        .expect("bootstrap marker should be writable for onboarding capture");
 
         let error = executor
-            .process_gateway_message(gateway_message_with_content(
+            .process_gateway_message(gateway_owner_dm_message_with_content(
                 "m-onboarding-capture-malformed",
                 r#"{"schema_version":"v1","agent_identity":"Crab"}"#,
             ))
@@ -3063,8 +3480,8 @@ mod tests {
             .state_stores
             .run_store
             .get_run(
-                "discord:channel:777",
-                "run:discord:channel:777:m-onboarding-capture-malformed",
+                "discord:dm:424242424242424242",
+                "run:discord:dm:424242424242424242:m-onboarding-capture-malformed",
             )
             .expect("run lookup should succeed")
             .expect("run should exist");
@@ -3082,9 +3499,21 @@ mod tests {
     #[test]
     fn owner_onboarding_capture_with_profile_conflicts_appends_run_note_and_warning_message() {
         let workspace = TempWorkspace::new("turn-executor", "onboarding-capture-conflicts");
+        fs::create_dir_all(&workspace.path)
+            .expect("workspace root should be creatable for onboarding setup");
+        fs::write(
+            workspace.path.join("BOOTSTRAP.md"),
+            "Bootstrap remains pending until owner onboarding capture is applied.",
+        )
+        .expect("bootstrap marker should be writable for onboarding capture");
         let mut runtime = FakeRuntime::with_backend_events(Vec::new(), &[1, 2, 3, 4, 5]);
         runtime.resolve_profile_results = VecDeque::from(vec![Ok(owner_profile_telemetry())]);
         let mut executor = build_executor(&workspace, runtime, 8);
+        fs::write(
+            workspace.path.join("BOOTSTRAP.md"),
+            "Bootstrap remains pending until owner onboarding capture is applied.",
+        )
+        .expect("bootstrap marker should be writable for onboarding capture");
         fs::write(
             workspace.path.join("IDENTITY.md"),
             "# IDENTITY.md\n\n<!-- CRAB:ONBOARDING_MANAGED:START -->\nlegacy",
@@ -3092,7 +3521,7 @@ mod tests {
         .expect("malformed identity markers should be writable for conflict setup");
 
         executor
-            .process_gateway_message(gateway_message_with_content(
+            .process_gateway_message(gateway_owner_dm_message_with_content(
                 "m-onboarding-capture-conflicts",
                 onboarding_capture_payload_json(),
             ))
@@ -3108,12 +3537,12 @@ mod tests {
             "user delivery should surface conflict warning"
         );
 
-        let run_id = "run:discord:channel:777:m-onboarding-capture-conflicts";
+        let run_id = "run:discord:dm:424242424242424242:m-onboarding-capture-conflicts";
         let events = executor
             .composition()
             .state_stores
             .event_store
-            .replay_run("discord:channel:777", run_id)
+            .replay_run("discord:dm:424242424242424242", run_id)
             .expect("event replay should succeed");
         let conflict_event = events
             .iter()
@@ -3607,6 +4036,372 @@ mod tests {
             rotation_completed.payload.get("checkpoint_turn_error"),
             Some(&"none".to_string())
         );
+    }
+
+    #[test]
+    fn token_trigger_rotation_owner_dm_can_complete_onboarding_via_hidden_extraction() {
+        let workspace = TempWorkspace::new("turn-executor", "rotation-onboarding-success");
+        fs::create_dir_all(&workspace.path).expect("workspace root should be creatable");
+        fs::write(
+            workspace.path.join("BOOTSTRAP.md"),
+            "Bootstrap remains pending until owner onboarding capture is applied.",
+        )
+        .expect("bootstrap marker should be writable");
+        let mut runtime = FakeRuntime::with_backend_events(Vec::new(), &[1, 2, 3, 4, 5]);
+        runtime.resolve_profile_results = VecDeque::from(vec![Ok(owner_profile_telemetry())]);
+        runtime.execute_turn_results = VecDeque::from(vec![
+            Ok(vec![
+                backend_event(
+                    1,
+                    BackendEventKind::RunNote,
+                    &[
+                        ("run_usage_input_tokens", "60000"),
+                        ("run_usage_output_tokens", "20000"),
+                        ("run_usage_total_tokens", "120000"),
+                    ],
+                ),
+                backend_event(
+                    2,
+                    BackendEventKind::TurnCompleted,
+                    &[("stop_reason", "done")],
+                ),
+            ]),
+            Ok(hidden_checkpoint_backend_events(
+                onboarding_capture_payload_json(),
+            )),
+            Ok(hidden_checkpoint_backend_events(&checkpoint_document_json(
+                "rotation onboarding checkpoint",
+            ))),
+        ]);
+        runtime.ensure_session_results = VecDeque::from(vec![
+            Ok(physical_session_fixture_for(
+                "discord:dm:424242424242424242",
+            )),
+            Ok(physical_session_fixture_for(
+                "discord:dm:424242424242424242",
+            )),
+            Ok(physical_session_fixture_for(
+                "discord:dm:424242424242424242",
+            )),
+        ]);
+        let mut executor = build_executor(&workspace, runtime, 8);
+        executor
+            .composition_mut()
+            .rotation_policy
+            .compaction_token_threshold = 1;
+        fs::write(
+            workspace.path.join("BOOTSTRAP.md"),
+            "Bootstrap remains pending until owner onboarding capture is applied.",
+        )
+        .expect("bootstrap marker should be writable");
+
+        let dispatched = executor
+            .process_gateway_message(gateway_owner_dm_message_with_content(
+                "m-rotation-onboarding-success",
+                "let's keep going",
+            ))
+            .expect("rotation onboarding success should dispatch")
+            .expect("rotation onboarding success should produce a run");
+        assert_eq!(dispatched.status, RunStatus::Succeeded);
+        assert!(!workspace.path.join("BOOTSTRAP.md").exists());
+
+        let runtime = executor.runtime_mut();
+        assert_eq!(runtime.executed_turn_contexts.len(), 3);
+        assert!(runtime.executed_turn_contexts[1]
+            .1
+            .contains("Onboarding extraction session id: onboarding-rotation:run:discord:dm:424242424242424242:m-rotation-onboarding-success"));
+        assert_eq!(runtime.delivered_outputs.len(), 1);
+        assert!(runtime.delivered_outputs[0]
+            .4
+            .contains("Onboarding completed during checkpoint rotation."));
+
+        let logical_session_id = "discord:dm:424242424242424242";
+        let run_id = "run:discord:dm:424242424242424242:m-rotation-onboarding-success";
+        let events = executor
+            .composition()
+            .state_stores
+            .event_store
+            .replay_run(logical_session_id, run_id)
+            .expect("event replay should succeed");
+        assert!(events.iter().any(|event| {
+            event.kind == EventKind::RunNote
+                && event
+                    .payload
+                    .get("event")
+                    .is_some_and(|value| value == "onboarding_rotation_applied")
+        }));
+    }
+
+    #[test]
+    fn maybe_execute_rotation_pending_onboarding_skips_extraction_for_owner_non_dm() {
+        let workspace = TempWorkspace::new("turn-executor", "rotation-onboarding-owner-non-dm");
+        fs::create_dir_all(&workspace.path).expect("workspace root should be creatable");
+        fs::write(
+            workspace.path.join("BOOTSTRAP.md"),
+            "Bootstrap remains pending until owner onboarding capture is applied.",
+        )
+        .expect("bootstrap marker should be writable");
+        let mut runtime = FakeRuntime::with_backend_events(Vec::new(), &[]);
+        runtime.execute_turn_results = VecDeque::from(vec![Ok(hidden_checkpoint_backend_events(
+            &checkpoint_document_json("rotation without onboarding extraction"),
+        ))]);
+        runtime.ensure_session_results = VecDeque::from(vec![Ok(physical_session_fixture_for(
+            "discord:channel:777",
+        ))]);
+        let mut executor = build_executor(&workspace, runtime, 8);
+        fs::write(
+            workspace.path.join("BOOTSTRAP.md"),
+            "Bootstrap remains pending until owner onboarding capture is applied.",
+        )
+        .expect("bootstrap marker should be writable");
+
+        let run = rotation_test_run(
+            "discord:channel:777",
+            "run:discord:channel:777:rotation-onboarding-owner-non-dm",
+            "/compact confirm",
+        );
+        let mut session =
+            rotation_test_session("discord:channel:777", &run.profile.resolved_profile);
+        let outcome = executor
+            .maybe_execute_rotation_with_sabotage(
+                &run,
+                &mut session,
+                4,
+                Some(crab_core::ManualRotationRequest::Compact),
+                None,
+            )
+            .expect("rotation should succeed")
+            .expect("rotation outcome should be present");
+        assert!(outcome.onboarding_completion_resolution.is_none());
+        assert_eq!(outcome.supplemental_emitted_event_count, 0);
+        let runtime = executor.runtime_mut();
+        assert_eq!(runtime.executed_turn_contexts.len(), 1);
+        assert_eq!(
+            runtime.executed_turn_contexts[0].1,
+            build_checkpoint_prompt()
+        );
+    }
+
+    #[test]
+    fn maybe_execute_rotation_onboarding_extraction_incomplete_appends_run_note() {
+        let workspace = TempWorkspace::new("turn-executor", "rotation-onboarding-incomplete");
+        fs::create_dir_all(&workspace.path).expect("workspace root should be creatable");
+        fs::write(
+            workspace.path.join("BOOTSTRAP.md"),
+            "Bootstrap remains pending until owner onboarding capture is applied.",
+        )
+        .expect("bootstrap marker should be writable");
+        let mut runtime = FakeRuntime::with_backend_events(Vec::new(), &[]);
+        runtime.execute_turn_results = VecDeque::from(vec![
+            Ok(hidden_checkpoint_backend_events(
+                ONBOARDING_CAPTURE_INCOMPLETE_TOKEN,
+            )),
+            Ok(hidden_checkpoint_backend_events(&checkpoint_document_json(
+                "rotation after incomplete onboarding extraction",
+            ))),
+        ]);
+        runtime.ensure_session_results = VecDeque::from(vec![
+            Ok(physical_session_fixture_for(
+                "discord:dm:424242424242424242",
+            )),
+            Ok(physical_session_fixture_for(
+                "discord:dm:424242424242424242",
+            )),
+        ]);
+        let mut executor = build_executor(&workspace, runtime, 8);
+        fs::write(
+            workspace.path.join("BOOTSTRAP.md"),
+            "Bootstrap remains pending until owner onboarding capture is applied.",
+        )
+        .expect("bootstrap marker should be writable");
+
+        let run = rotation_test_run(
+            "discord:dm:424242424242424242",
+            "run:discord:dm:424242424242424242:rotation-onboarding-incomplete",
+            "/compact confirm",
+        );
+        let mut session = rotation_test_session(
+            "discord:dm:424242424242424242",
+            &run.profile.resolved_profile,
+        );
+        let outcome = executor
+            .maybe_execute_rotation_with_sabotage(
+                &run,
+                &mut session,
+                4,
+                Some(crab_core::ManualRotationRequest::Compact),
+                None,
+            )
+            .expect("rotation should succeed")
+            .expect("rotation outcome should be present");
+        assert!(outcome.onboarding_completion_resolution.is_none());
+        assert_eq!(outcome.supplemental_emitted_event_count, 1);
+
+        let events = executor
+            .composition()
+            .state_stores
+            .event_store
+            .replay_run(
+                "discord:dm:424242424242424242",
+                "run:discord:dm:424242424242424242:rotation-onboarding-incomplete",
+            )
+            .expect("event replay should succeed");
+        assert!(events.iter().any(|event| {
+            event.kind == EventKind::RunNote
+                && event
+                    .payload
+                    .get("event")
+                    .is_some_and(|value| value == "onboarding_rotation_incomplete")
+        }));
+    }
+
+    #[test]
+    fn maybe_execute_rotation_onboarding_extraction_parse_error_appends_run_note() {
+        let workspace = TempWorkspace::new("turn-executor", "rotation-onboarding-parse-error");
+        fs::create_dir_all(&workspace.path).expect("workspace root should be creatable");
+        fs::write(
+            workspace.path.join("BOOTSTRAP.md"),
+            "Bootstrap remains pending until owner onboarding capture is applied.",
+        )
+        .expect("bootstrap marker should be writable");
+        let mut runtime = FakeRuntime::with_backend_events(Vec::new(), &[]);
+        runtime.execute_turn_results = VecDeque::from(vec![
+            Ok(hidden_checkpoint_backend_events("{")),
+            Ok(hidden_checkpoint_backend_events(&checkpoint_document_json(
+                "rotation after parse error",
+            ))),
+        ]);
+        runtime.ensure_session_results = VecDeque::from(vec![
+            Ok(physical_session_fixture_for(
+                "discord:dm:424242424242424242",
+            )),
+            Ok(physical_session_fixture_for(
+                "discord:dm:424242424242424242",
+            )),
+        ]);
+        let mut executor = build_executor(&workspace, runtime, 8);
+        fs::write(
+            workspace.path.join("BOOTSTRAP.md"),
+            "Bootstrap remains pending until owner onboarding capture is applied.",
+        )
+        .expect("bootstrap marker should be writable");
+
+        let run = rotation_test_run(
+            "discord:dm:424242424242424242",
+            "run:discord:dm:424242424242424242:rotation-onboarding-parse-error",
+            "/compact confirm",
+        );
+        let mut session = rotation_test_session(
+            "discord:dm:424242424242424242",
+            &run.profile.resolved_profile,
+        );
+        let outcome = executor
+            .maybe_execute_rotation_with_sabotage(
+                &run,
+                &mut session,
+                4,
+                Some(crab_core::ManualRotationRequest::Compact),
+                None,
+            )
+            .expect("rotation should succeed")
+            .expect("rotation outcome should be present");
+        assert!(outcome.onboarding_completion_resolution.is_none());
+        assert_eq!(outcome.supplemental_emitted_event_count, 1);
+
+        let events = executor
+            .composition()
+            .state_stores
+            .event_store
+            .replay_run(
+                "discord:dm:424242424242424242",
+                "run:discord:dm:424242424242424242:rotation-onboarding-parse-error",
+            )
+            .expect("event replay should succeed");
+        assert!(events.iter().any(|event| {
+            event.kind == EventKind::RunNote
+                && event
+                    .payload
+                    .get("event")
+                    .is_some_and(|value| value == "onboarding_rotation_parse_error")
+        }));
+    }
+
+    #[test]
+    fn maybe_execute_rotation_onboarding_extraction_apply_error_appends_run_note() {
+        let workspace = TempWorkspace::new("turn-executor", "rotation-onboarding-apply-error");
+        fs::create_dir_all(&workspace.path).expect("workspace root should be creatable");
+        fs::write(
+            workspace.path.join("BOOTSTRAP.md"),
+            "Bootstrap remains pending until owner onboarding capture is applied.",
+        )
+        .expect("bootstrap marker should be writable");
+
+        let mut runtime = FakeRuntime::with_backend_events(Vec::new(), &[]);
+        runtime.execute_turn_results = VecDeque::from(vec![
+            Ok(hidden_checkpoint_backend_events(
+                onboarding_capture_payload_json(),
+            )),
+            Ok(hidden_checkpoint_backend_events(&checkpoint_document_json(
+                "rotation after apply error",
+            ))),
+        ]);
+        runtime.ensure_session_results = VecDeque::from(vec![
+            Ok(physical_session_fixture_for(
+                "discord:dm:424242424242424242",
+            )),
+            Ok(physical_session_fixture_for(
+                "discord:dm:424242424242424242",
+            )),
+        ]);
+        let mut executor = build_executor(&workspace, runtime, 8);
+        fs::write(
+            workspace.path.join("BOOTSTRAP.md"),
+            "Bootstrap remains pending until owner onboarding capture is applied.",
+        )
+        .expect("bootstrap marker should be writable");
+        let soul_path = workspace.path.join("SOUL.md");
+        let _ = fs::remove_file(&soul_path);
+        fs::create_dir_all(&soul_path).expect("SOUL path directory should be creatable");
+
+        let run = rotation_test_run(
+            "discord:dm:424242424242424242",
+            "run:discord:dm:424242424242424242:rotation-onboarding-apply-error",
+            "/compact confirm",
+        );
+        let mut session = rotation_test_session(
+            "discord:dm:424242424242424242",
+            &run.profile.resolved_profile,
+        );
+        let outcome = executor
+            .maybe_execute_rotation_with_sabotage(
+                &run,
+                &mut session,
+                4,
+                Some(crab_core::ManualRotationRequest::Compact),
+                None,
+            )
+            .expect("rotation should succeed")
+            .expect("rotation outcome should be present");
+        assert!(outcome.onboarding_completion_resolution.is_none());
+        assert_eq!(outcome.supplemental_emitted_event_count, 1);
+        assert!(workspace.path.join("BOOTSTRAP.md").exists());
+
+        let events = executor
+            .composition()
+            .state_stores
+            .event_store
+            .replay_run(
+                "discord:dm:424242424242424242",
+                "run:discord:dm:424242424242424242:rotation-onboarding-apply-error",
+            )
+            .expect("event replay should succeed");
+        assert!(events.iter().any(|event| {
+            event.kind == EventKind::RunNote
+                && event
+                    .payload
+                    .get("event")
+                    .is_some_and(|value| value == "onboarding_rotation_apply_error")
+        }));
     }
 
     #[test]

@@ -6,13 +6,14 @@ const EMPTY_SECTION_MARKER: &str = "(empty)";
 const EMPTY_SNIPPETS_MARKER: &str = "(none)";
 const EMPTY_CHECKPOINT_MARKER: &str = "(none)";
 
-pub const CONTEXT_INJECTION_ORDER: [&str; 8] = [
+pub const CONTEXT_INJECTION_ORDER: [&str; 9] = [
     "SOUL.md",
     "IDENTITY.md",
     "USER.md",
     "MEMORY.md",
     "MEMORY_SNIPPETS",
     "LATEST_CHECKPOINT",
+    "CRAB_RUNTIME_BRIEF",
     "PROMPT_CONTRACT",
     "TURN_INPUT",
 ];
@@ -33,6 +34,7 @@ pub struct ContextAssemblyInput {
     pub memory_document: String,
     pub memory_snippets: Vec<ContextMemorySnippet>,
     pub latest_checkpoint_summary: Option<String>,
+    pub crab_runtime_brief: String,
     pub prompt_contract: String,
     pub turn_input: String,
 }
@@ -69,10 +71,14 @@ pub fn assemble_turn_context(input: &ContextAssemblyInput) -> CrabResult<String>
     sections.push(render_section(CONTEXT_INJECTION_ORDER[5], checkpoint));
     sections.push(render_section(
         CONTEXT_INJECTION_ORDER[6],
-        &input.prompt_contract,
+        &input.crab_runtime_brief,
     ));
     sections.push(render_section(
         CONTEXT_INJECTION_ORDER[7],
+        &input.prompt_contract,
+    ));
+    sections.push(render_section(
+        CONTEXT_INJECTION_ORDER[8],
         &input.turn_input,
     ));
 
@@ -187,6 +193,7 @@ mod tests {
                 },
             ],
             latest_checkpoint_summary: Some("Checkpoint summary".to_string()),
+            crab_runtime_brief: "Runtime brief section".to_string(),
             prompt_contract: "Prompt contract section".to_string(),
             turn_input: "Current user message".to_string(),
         }
@@ -203,6 +210,7 @@ mod tests {
                 "MEMORY.md",
                 "MEMORY_SNIPPETS",
                 "LATEST_CHECKPOINT",
+                "CRAB_RUNTIME_BRIEF",
                 "PROMPT_CONTRACT",
                 "TURN_INPUT",
             ]
@@ -220,6 +228,7 @@ mod tests {
             "## MEMORY.md",
             "## MEMORY_SNIPPETS",
             "## LATEST_CHECKPOINT",
+            "## CRAB_RUNTIME_BRIEF",
             "## PROMPT_CONTRACT",
             "## TURN_INPUT",
         ];
@@ -234,6 +243,7 @@ mod tests {
 
         assert!(rendered.contains("Soul section"));
         assert!(rendered.contains("Checkpoint summary"));
+        assert!(rendered.contains("Runtime brief section"));
         assert!(rendered.contains("Prompt contract section"));
         assert!(rendered.contains("Current user message"));
     }

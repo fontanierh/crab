@@ -50,6 +50,10 @@ Crab is a Rust harness for running coding agents (Claude Code, Codex CLI, OpenCo
   - `WS23-T3` complete: char-truncation path removed; managed docs now use strict token budgets with explicit overflow errors.
   - `WS23-T4` complete: OpenCode uses native reasoning mapping without synthetic prompt guidance suffix.
   - `WS23-T5` complete: docs and tests are aligned with the new context lifecycle semantics.
+- `WS24` complete:
+  - `WS24-T1` complete: pending-bootstrap gate enforces owner-DM-only execution until onboarding completes.
+  - `WS24-T2` complete: rotation-time hidden onboarding extraction can complete onboarding from conversational context.
+  - `WS24-T3` complete: initial physical-session context includes `CRAB_RUNTIME_BRIEF` with onboarding guidance when applicable.
 
 ## Docs
 
@@ -69,6 +73,7 @@ Crab is a Rust harness for running coding agents (Claude Code, Codex CLI, OpenCo
 - Feature integration matrix: `crab/docs/11-feature-integration-matrix.md`
 - Snapshot/restore design note (deferred hardening): `crab/docs/12-snapshot-restore-design-note.md`
 - Deployment acceptance evidence worksheet: `crab/docs/13-deployment-acceptance-evidence.md`
+- Dated end-to-end runtime chat flow (as of 2026-02-12): `crab/docs/14-overall-chat-flow-2026-02-12.md`
 - Project rules: `AGENTS.md`
 
 ## Quality Gates

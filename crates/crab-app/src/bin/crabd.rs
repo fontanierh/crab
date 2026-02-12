@@ -801,6 +801,21 @@ mod tests {
             .expect("frame json should serialize")
     }
 
+    fn gateway_dm_inbound_frame_json(message_id: &str, content: &str) -> String {
+        let message = GatewayMessage {
+            message_id: message_id.to_string(),
+            author_id: "111".to_string(),
+            author_is_bot: false,
+            channel_id: "111".to_string(),
+            guild_id: None,
+            thread_id: None,
+            content: content.to_string(),
+            conversation_kind: GatewayConversationKind::DirectMessage,
+        };
+        serde_json::to_string(&CrabdInboundFrame::GatewayMessage(message))
+            .expect("frame json should serialize")
+    }
+
     fn onboarding_capture_payload_json() -> String {
         serde_json::json!({
             "schema_version": "v1",
@@ -1516,14 +1531,14 @@ mod tests {
             "Bootstrap remains pending until owner onboarding capture is applied.",
         )
         .expect("bootstrap marker should be writable for onboarding test setup");
-        let run_id = "run:discord:channel:777:m-owner-onboarding";
+        let run_id = "run:discord:dm:111:m-owner-onboarding";
         let input = format!(
             "{}\n{}\n",
-            gateway_inbound_frame_json("m-owner-onboarding", &onboarding_capture_payload_json()),
+            gateway_dm_inbound_frame_json("m-owner-onboarding", &onboarding_capture_payload_json()),
             ok_receipt_inbound_frame_json(
                 "op-1",
-                "777",
-                "delivery:run:discord:channel:777:m-owner-onboarding:chunk:0"
+                "111",
+                "delivery:run:discord:dm:111:m-owner-onboarding:chunk:0"
             )
         );
         let mut control = ScriptedControl::with_now(vec![1_500, 1_501]);
@@ -1539,7 +1554,7 @@ mod tests {
         );
 
         let events = EventStore::new(Path::new(&workspace_root).join("state"))
-            .replay_run("discord:channel:777", run_id)
+            .replay_run("discord:dm:111", run_id)
             .expect("run events should replay from store");
         assert!(events.iter().any(|event| {
             event

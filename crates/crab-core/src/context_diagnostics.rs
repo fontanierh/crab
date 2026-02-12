@@ -45,6 +45,7 @@ pub fn build_context_diagnostics_report(
         file_entry("IDENTITY.md", &section_usage_map),
         file_entry("USER.md", &section_usage_map),
         file_entry("MEMORY.md", &section_usage_map),
+        file_entry("CRAB_RUNTIME_BRIEF", &section_usage_map),
         file_entry("PROMPT_CONTRACT", &section_usage_map),
     ];
 
@@ -192,6 +193,7 @@ mod tests {
             memory_document: "memory section".to_string(),
             memory_snippets: vec![],
             latest_checkpoint_summary: Some("checkpoint summary".to_string()),
+            crab_runtime_brief: "runtime brief".to_string(),
             prompt_contract: "prompt contract".to_string(),
             turn_input: "turn input".to_string(),
         }
@@ -203,6 +205,7 @@ mod tests {
             max_identity_tokens: 2_500,
             max_user_tokens: 2_500,
             max_memory_tokens: 2_500,
+            max_runtime_brief_tokens: 2_500,
             max_prompt_contract_tokens: 2_500,
             max_latest_checkpoint_tokens: 2_500,
             max_turn_input_tokens: 2_500,
@@ -233,7 +236,7 @@ mod tests {
             .expect("context budgeting should work");
         let report = build_context_diagnostics_report(&output);
 
-        assert_eq!(report.injected_files.len(), 5);
+        assert_eq!(report.injected_files.len(), 6);
         assert!(report
             .injected_files
             .iter()

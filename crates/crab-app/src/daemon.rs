@@ -21,14 +21,14 @@ use crab_backends::{map_claude_inference_profile, ClaudeThinkingMode};
 #[cfg(not(coverage))]
 use crab_core::{build_context_diagnostics_report, render_context_diagnostics_fixture};
 use crab_core::{
-    compile_prompt_contract, process_workspace_git_push_queue, render_budgeted_turn_context,
-    resolve_inference_profile, resolve_scoped_memory_snippets, resolve_sender_identity,
-    resolve_sender_trust_context, BackendKind, ContextAssemblyInput, ContextBudgetPolicy,
-    CrabError, CrabResult, InferenceProfile, InferenceProfileResolutionInput, MemoryCitationMode,
-    OwnerConfig, PromptContractInput, ReasoningLevel, Run, RunProfileTelemetry, RuntimeConfig,
-    ScopedMemorySnippetResolverInput, SenderConversationKind, SenderIdentityInput, TrustSurface,
-    IDENTITY_FILE_NAME, MEMORY_FILE_NAME, OWNER_MEMORY_SCOPE_DIRECTORY, SOUL_FILE_NAME,
-    USER_FILE_NAME,
+    compile_prompt_contract, detect_workspace_bootstrap_state, process_workspace_git_push_queue,
+    render_budgeted_turn_context, resolve_inference_profile, resolve_scoped_memory_snippets,
+    resolve_sender_identity, resolve_sender_trust_context, BackendKind, ContextAssemblyInput,
+    ContextBudgetPolicy, CrabError, CrabResult, InferenceProfile, InferenceProfileResolutionInput,
+    MemoryCitationMode, OwnerConfig, PromptContractInput, ReasoningLevel, Run, RunProfileTelemetry,
+    RuntimeConfig, ScopedMemorySnippetResolverInput, SenderConversationKind, SenderIdentityInput,
+    TrustSurface, WorkspaceBootstrapState, IDENTITY_FILE_NAME, MEMORY_FILE_NAME,
+    OWNER_MEMORY_SCOPE_DIRECTORY, SOUL_FILE_NAME, USER_FILE_NAME,
 };
 use crab_discord::GatewayMessage;
 use crab_store::CheckpointStore;
@@ -55,6 +55,9 @@ const DAEMON_CLAUDE_STREAM_CONTEXT: &str = "daemon_claude_stream";
 const MILLIS_PER_DAY: u64 = 86_400_000;
 const OPENCODE_SESSION_PLACEHOLDER_PREFIX: &str = "backend-session:";
 const DAEMON_CLAUDE_FORCE_SEND_ERROR_TOKEN: &str = "force-claude-send-error";
+const CRAB_RUNTIME_BRIEF_BASE: &str = "You are running inside Crab, a Discord-driven coding-agent harness.\n\
+Crab provides per-conversation logical sessions and backend physical sessions, with FIFO per-session lanes.\n\
+Your outputs are delivered to Discord through idempotent post/edit replay-safe delivery.";
 #[cfg(all(not(any(test, coverage)), debug_assertions))]
 const DAEMON_DETERMINISTIC_CODEX_TRANSPORT_ENV: &str =
     "CRAB_DAEMON_FORCE_DETERMINISTIC_CODEX_TRANSPORT";
@@ -1781,6 +1784,8 @@ impl<D: DaemonDiscordIo> DaemonTurnRuntime<D> {
 
         let checkpoint_summary =
             load_latest_checkpoint_summary(logical_session, &runtime.checkpoint_store)?;
+        let bootstrap_state = detect_workspace_bootstrap_state(&runtime.workspace_root)?;
+        let crab_runtime_brief = render_crab_runtime_brief(run, bootstrap_state);
         let context_input = ContextAssemblyInput {
             soul_document: read_workspace_markdown(&runtime.workspace_root, SOUL_FILE_NAME)?,
             identity_document: read_workspace_markdown(
@@ -1791,6 +1796,7 @@ impl<D: DaemonDiscordIo> DaemonTurnRuntime<D> {
             memory_document: read_workspace_markdown(&runtime.workspace_root, MEMORY_FILE_NAME)?,
             memory_snippets,
             latest_checkpoint_summary: checkpoint_summary,
+            crab_runtime_brief,
             prompt_contract,
             turn_input: run.user_input.clone(),
         };
@@ -1811,6 +1817,25 @@ impl<D: DaemonDiscordIo> DaemonTurnRuntime<D> {
 
         Ok(budgeted.rendered_context)
     }
+}
+
+fn render_crab_runtime_brief(run: &Run, bootstrap_state: WorkspaceBootstrapState) -> String {
+    let mut brief = CRAB_RUNTIME_BRIEF_BASE.to_string();
+    if bootstrap_state == WorkspaceBootstrapState::PendingBootstrap
+        && run.profile.sender_is_owner
+        && run.logical_session_id.starts_with("discord:dm:")
+    {
+        brief.push_str(
+            "\nOnboarding is pending. In this owner DM, prioritize gathering:\n\
+- who the agent is\n\
+- who the owner is\n\
+- primary goals\n\
+- machine location\n\
+- machine timezone\n\
+Keep the conversation natural and concise while filling these gaps.",
+        );
+    }
+    brief
 }
 
 impl<D: DaemonDiscordIo> TurnExecutorRuntime for DaemonTurnRuntime<D> {
@@ -2121,6 +2146,10 @@ where
     let opencode_handle = boot.composition.backends.opencode.ensure_running()?;
 
     let mut heartbeat_loop_state = boot.heartbeat_loop_state;
+    #[cfg(test)]
+    {
+        let _ = std::fs::remove_file(boot.composition.startup.workspace_root.join("BOOTSTRAP.md"));
+    }
     let mut runtime = runtime_builder(runtime_config.owner.clone(), discord)?;
     runtime.configure_turn_context_runtime(
         boot.composition.startup.workspace_root.clone(),
@@ -2364,7 +2393,7 @@ mod tests {
     use crab_core::{
         BackendKind, Checkpoint, CrabError, CrabResult, InferenceProfile, LaneState,
         LogicalSession, OwnerConfig, ProfileValueSource, ReasoningLevel, Run, RunProfileTelemetry,
-        RunStatus, SenderConversationKind, TokenAccounting, TrustSurface,
+        RunStatus, SenderConversationKind, TokenAccounting, TrustSurface, WorkspaceBootstrapState,
     };
     use crab_discord::{GatewayConversationKind, GatewayMessage};
     use crab_store::{CheckpointStore, EventStore, RunStore, SessionStore};
@@ -2925,6 +2954,19 @@ mod tests {
         }
     }
 
+    fn gateway_dm_message(message_id: &str, author_id: &str, content: &str) -> GatewayMessage {
+        GatewayMessage {
+            message_id: message_id.to_string(),
+            author_id: author_id.to_string(),
+            author_is_bot: false,
+            channel_id: format!("dm-{author_id}"),
+            guild_id: None,
+            thread_id: None,
+            content: content.to_string(),
+            conversation_kind: GatewayConversationKind::DirectMessage,
+        }
+    }
+
     fn onboarding_capture_payload_json() -> String {
         serde_json::json!({
             "schema_version": "v1",
@@ -3258,6 +3300,33 @@ mod tests {
         let mut run = sample_run(sender_id);
         run.profile.resolved_profile = claude_profile();
         run
+    }
+
+    #[test]
+    fn render_crab_runtime_brief_appends_onboarding_guidance_only_for_owner_dm_pending_bootstrap() {
+        let mut owner_dm_run = sample_run("424242424242424242");
+        owner_dm_run.profile.sender_is_owner = true;
+        owner_dm_run.logical_session_id = "discord:dm:424242424242424242".to_string();
+
+        let owner_pending = super::render_crab_runtime_brief(
+            &owner_dm_run,
+            WorkspaceBootstrapState::PendingBootstrap,
+        );
+        assert!(owner_pending.contains("You are running inside Crab"));
+        assert!(owner_pending.contains("Onboarding is pending."));
+        assert!(owner_pending.contains("- machine timezone"));
+
+        let owner_ready =
+            super::render_crab_runtime_brief(&owner_dm_run, WorkspaceBootstrapState::Ready);
+        assert!(!owner_ready.contains("Onboarding is pending."));
+
+        let mut owner_channel_run = owner_dm_run.clone();
+        owner_channel_run.logical_session_id = "discord:channel:777".to_string();
+        let owner_channel_pending = super::render_crab_runtime_brief(
+            &owner_channel_run,
+            WorkspaceBootstrapState::PendingBootstrap,
+        );
+        assert!(!owner_channel_pending.contains("Onboarding is pending."));
     }
 
     fn build_scripted_claude_runtime(
@@ -4926,7 +4995,7 @@ mod tests {
             max_iterations: Some(1),
         };
         let discord = ScriptedDiscordIo::with_state(DiscordIoState {
-            inbound: VecDeque::from([Ok(Some(gateway_message(
+            inbound: VecDeque::from([Ok(Some(gateway_dm_message(
                 "m-onboarding-capture-daemon",
                 "111",
                 &onboarding_capture_payload_json(),
@@ -4937,14 +5006,23 @@ mod tests {
         let codex = TrackingCodexProcess::new();
         let opencode = TrackingOpenCodeProcess::new();
         let mut control = ScriptedControl::with_now(vec![2_000_000_020_000, 2_000_000_020_001]);
+        let workspace_root_for_runtime = workspace.path.clone();
 
-        let stats = run_daemon_loop_with_transport(
+        let stats = run_daemon_loop_with_transport_and_runtime_builder(
             &config,
             &daemon_config,
             codex,
             opencode,
             discord,
             &mut control,
+            move |owner, discord| {
+                std::fs::write(
+                    workspace_root_for_runtime.join("BOOTSTRAP.md"),
+                    "Bootstrap remains pending until owner onboarding capture is applied.",
+                )
+                .expect("bootstrap marker should be rewritable for onboarding test");
+                DaemonTurnRuntime::new(owner, discord)
+            },
         )
         .expect("owner onboarding capture should execute in daemon loop");
         assert_eq!(stats.dispatched_runs, 1);
@@ -4960,9 +5038,9 @@ mod tests {
             "owner onboarding completion should include conflict warning"
         );
 
-        let run_id = "run:discord:channel:777:m-onboarding-capture-daemon";
+        let run_id = "run:discord:dm:111:m-onboarding-capture-daemon";
         let events = EventStore::new(workspace.path.join("state"))
-            .replay_run("discord:channel:777", run_id)
+            .replay_run("discord:dm:111", run_id)
             .expect("event replay should succeed");
         let conflict_event = events
             .iter()

@@ -6,6 +6,15 @@ use crate::{CrabError, CrabResult};
 const ONBOARDING_PROMPT_CONTEXT: &str = "onboarding_prompt";
 const ONBOARDING_CAPTURE_CONTEXT: &str = "onboarding_capture_parse";
 pub const ONBOARDING_SCHEMA_VERSION: &str = "v1";
+pub const ONBOARDING_CAPTURE_INCOMPLETE_TOKEN: &str = "INCOMPLETE_ONBOARDING_CAPTURE";
+const ONBOARDING_CAPTURE_SCHEMA_SNIPPET: &str = "{\n\
+  \"schema_version\": \"v1\",\n\
+  \"agent_identity\": \"...\",\n\
+  \"owner_identity\": \"...\",\n\
+  \"primary_goals\": [\"...\"],\n\
+  \"machine_location\": \"...\",\n\
+  \"machine_timezone\": \"...\"\n\
+}";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -76,38 +85,42 @@ pub fn default_onboarding_questions() -> &'static [OnboardingQuestion] {
 }
 
 pub fn build_onboarding_prompt(onboarding_session_id: &str) -> CrabResult<String> {
-    validate_non_empty_text(
-        ONBOARDING_PROMPT_CONTEXT,
-        "onboarding_session_id",
-        onboarding_session_id,
-    )?;
-
-    let question_block = ONBOARDING_QUESTIONS
-        .iter()
-        .enumerate()
-        .map(|(index, question)| format!("{}. {}", index + 1, question.question))
-        .collect::<Vec<_>>()
-        .join("\n");
+    validate_onboarding_session_id(onboarding_session_id)?;
+    let question_block = render_required_questions();
 
     Ok(format!(
         "Onboarding session id: {onboarding_session_id}\n\
 You are running the first-run onboarding contract.\n\
 Ask the owner the required questions and capture answers.\n\
 Return exactly one JSON object with this schema (no markdown fences):\n\
-{{\n\
-  \"schema_version\": \"{ONBOARDING_SCHEMA_VERSION}\",\n\
-  \"agent_identity\": \"...\",\n\
-  \"owner_identity\": \"...\",\n\
-  \"primary_goals\": [\"...\"],\n\
-  \"machine_location\": \"...\",\n\
-  \"machine_timezone\": \"...\"\n\
-}}\n\
+{ONBOARDING_CAPTURE_SCHEMA_SNIPPET}\n\
 Required questions:\n\
 {question_block}\n\
 Rules:\n\
 - Ask each required question at most once.\n\
 - If a required answer is missing, ask a concise follow-up.\n\
 - Do not add extra JSON keys.\n"
+    ))
+}
+
+pub fn build_onboarding_extraction_prompt(onboarding_session_id: &str) -> CrabResult<String> {
+    validate_onboarding_session_id(onboarding_session_id)?;
+    let question_block = render_required_questions();
+
+    Ok(format!(
+        "Onboarding extraction session id: {onboarding_session_id}\n\
+You are extracting owner onboarding capture from conversation context.\n\
+If every required field is known with high confidence, return exactly one JSON object\n\
+matching this schema (no markdown fences):\n\
+{ONBOARDING_CAPTURE_SCHEMA_SNIPPET}\n\
+If any required field is still missing or ambiguous, return exactly this token:\n\
+{ONBOARDING_CAPTURE_INCOMPLETE_TOKEN}\n\
+Required fields/questions:\n\
+{question_block}\n\
+Rules:\n\
+- Do not add extra JSON keys.\n\
+- Do not output markdown fences.\n\
+- Use the incomplete token instead of partial JSON.\n"
     ))
 }
 
@@ -161,11 +174,29 @@ fn normalize_scalar(field: &str, value: &str) -> CrabResult<String> {
     Ok(normalized.to_string())
 }
 
+fn validate_onboarding_session_id(onboarding_session_id: &str) -> CrabResult<()> {
+    validate_non_empty_text(
+        ONBOARDING_PROMPT_CONTEXT,
+        "onboarding_session_id",
+        onboarding_session_id,
+    )
+}
+
+fn render_required_questions() -> String {
+    ONBOARDING_QUESTIONS
+        .iter()
+        .enumerate()
+        .map(|(index, question)| format!("{}. {}", index + 1, question.question))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        build_onboarding_prompt, default_onboarding_questions, parse_onboarding_capture_document,
-        OnboardingCaptureDocument, OnboardingField, ONBOARDING_SCHEMA_VERSION,
+        build_onboarding_extraction_prompt, build_onboarding_prompt, default_onboarding_questions,
+        parse_onboarding_capture_document, OnboardingCaptureDocument, OnboardingField,
+        ONBOARDING_CAPTURE_INCOMPLETE_TOKEN, ONBOARDING_SCHEMA_VERSION,
     };
     use crate::CrabError;
 
@@ -229,6 +260,32 @@ mod tests {
     #[test]
     fn onboarding_prompt_rejects_blank_session_id() {
         let error = build_onboarding_prompt(" ").expect_err("blank onboarding id should fail");
+        assert_eq!(
+            error,
+            CrabError::InvariantViolation {
+                context: "onboarding_prompt",
+                message: "onboarding_session_id must not be empty".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn onboarding_extraction_prompt_contains_incomplete_token_and_schema() {
+        let prompt = build_onboarding_extraction_prompt("extract-1").expect("prompt should render");
+        assert!(prompt.contains("Onboarding extraction session id: extract-1"));
+        assert!(prompt.contains(ONBOARDING_CAPTURE_INCOMPLETE_TOKEN));
+        assert!(prompt.contains(&format!(
+            "\"schema_version\": \"{ONBOARDING_SCHEMA_VERSION}\""
+        )));
+        for question in default_onboarding_questions() {
+            assert!(prompt.contains(question.question));
+        }
+    }
+
+    #[test]
+    fn onboarding_extraction_prompt_rejects_blank_session_id() {
+        let error =
+            build_onboarding_extraction_prompt(" ").expect_err("blank onboarding id should fail");
         assert_eq!(
             error,
             CrabError::InvariantViolation {

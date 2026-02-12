@@ -40,7 +40,7 @@ Implemented and validated in repository code/tests:
   - `run_heartbeat_if_due`
 - Runtime turn-context assembly is wired end-to-end in daemon execution:
   - prompt contract compilation per run profile/surface
-  - bootstrap workspace document injection (`SOUL.md`, `IDENTITY.md`, `USER.md`, `MEMORY.md`, `PROMPT_CONTRACT`)
+  - bootstrap workspace document injection (`SOUL.md`, `IDENTITY.md`, `USER.md`, `MEMORY.md`, `CRAB_RUNTIME_BRIEF`, `PROMPT_CONTRACT`)
   - reused physical sessions receive raw turn input only
   - scoped memory snippet injection + token-budget validation + diagnostics
   - latest checkpoint summary injection from persistent store
@@ -69,9 +69,12 @@ Implemented and validated in repository code/tests:
   - `crabctl upgrade`/`doctor` compatibility preflight with actionable remediation output
   - distinct blocked-upgrade exit code (`3`) for incompatible state versions
 - First-interaction onboarding completion capture path is runtime-wired:
-  - while bootstrap is pending, owner-submitted strict onboarding JSON capture is validated
+  - while bootstrap is pending, non-owner and owner non-DM messages are blocked by runtime gate
+  - owner DM receives runtime onboarding guidance to gather required fields naturally
+  - owner-submitted strict onboarding JSON capture is validated
   - `SOUL.md`/`IDENTITY.md`/`USER.md` managed sections are updated and conflicts are surfaced
   - onboarding completion protocol writes managed `MEMORY.md` baseline and retires `BOOTSTRAP.md`
+  - rotation can run hidden extraction to complete onboarding when strict capture is derivable
 - OpenCode session recovery uses shared backend helper:
   - daemon OpenCode execution bridge now routes materialization/recovery through
     `crab_backends::recover_opencode_session`
