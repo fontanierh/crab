@@ -543,6 +543,7 @@ fn run_with_reader_and_control(
 ) -> CrabResult<DaemonLoopStats> {
     const TEST_DETERMINISTIC_TRANSPORT_ENV: &str =
         "CRAB_DAEMON_FORCE_DETERMINISTIC_CODEX_TRANSPORT";
+    const TEST_DETERMINISTIC_CLAUDE_ENV: &str = "CRAB_DAEMON_FORCE_DETERMINISTIC_CLAUDE_PROCESS";
     static TEST_ENV_LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
 
     let _guard = TEST_ENV_LOCK
@@ -551,6 +552,7 @@ fn run_with_reader_and_control(
         .expect("test env lock should succeed");
 
     std::env::set_var(TEST_DETERMINISTIC_TRANSPORT_ENV, "1");
+    std::env::set_var(TEST_DETERMINISTIC_CLAUDE_ENV, "1");
 
     let result = (|| {
         let receipt_timeout_ms = parse_receipt_timeout_ms(values)?;
@@ -559,6 +561,7 @@ fn run_with_reader_and_control(
     })();
 
     std::env::remove_var(TEST_DETERMINISTIC_TRANSPORT_ENV);
+    std::env::remove_var(TEST_DETERMINISTIC_CLAUDE_ENV);
     result
 }
 
@@ -904,7 +907,7 @@ mod tests {
 
     #[test]
     fn daemon_claude_process_interrupt_and_end_are_callable() {
-        let process = DaemonClaudeProcess;
+        let process = DaemonClaudeProcess::default();
         process
             .interrupt_turn("resume-session", "turn-1")
             .expect("interrupt should be a deterministic no-op");

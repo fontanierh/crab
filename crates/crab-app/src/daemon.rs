@@ -15,6 +15,8 @@ use crab_backends::{
     OpenCodeSessionConfig, OpenCodeTokenUsage, OpenCodeTurnConfig, OpenCodeTurnState,
     SessionContext, TurnInput,
 };
+#[cfg(not(any(test, coverage)))]
+use crab_backends::{map_claude_inference_profile, ClaudeThinkingMode};
 #[cfg(not(coverage))]
 use crab_core::{build_context_diagnostics_report, render_context_diagnostics_fixture};
 use crab_core::{
@@ -45,20 +47,302 @@ const DAEMON_TURN_CONTEXT_READ: &str = "daemon_turn_context_read";
 const DAEMON_BACKEND_BRIDGE_EXECUTE: &str = "daemon_backend_bridge_execute";
 const DAEMON_BACKEND_BRIDGE_CONTEXT: &str = "daemon_backend_bridge";
 const DAEMON_OPENCODE_TRANSPORT_CONTEXT: &str = "daemon_opencode_transport";
+#[cfg(not(any(test, coverage)))]
+const DAEMON_CLAUDE_TRANSPORT_CONTEXT: &str = "daemon_claude_transport";
+#[cfg(any(test, not(coverage)))]
+const DAEMON_CLAUDE_STREAM_CONTEXT: &str = "daemon_claude_stream";
 const MILLIS_PER_DAY: u64 = 86_400_000;
 const OPENCODE_SESSION_PLACEHOLDER_PREFIX: &str = "backend-session:";
 const DAEMON_CLAUDE_FORCE_SEND_ERROR_TOKEN: &str = "force-claude-send-error";
 #[cfg(all(not(any(test, coverage)), debug_assertions))]
 const DAEMON_DETERMINISTIC_CODEX_TRANSPORT_ENV: &str =
     "CRAB_DAEMON_FORCE_DETERMINISTIC_CODEX_TRANSPORT";
+#[cfg(all(not(any(test, coverage)), debug_assertions))]
+const DAEMON_DETERMINISTIC_CLAUDE_PROCESS_ENV: &str =
+    "CRAB_DAEMON_FORCE_DETERMINISTIC_CLAUDE_PROCESS";
 
 #[derive(Debug, Clone, Default)]
-pub struct DaemonClaudeProcess;
+pub struct DaemonClaudeProcess {
+    #[cfg(not(any(test, coverage)))]
+    state: Arc<std::sync::Mutex<DaemonClaudeProcessState>>,
+}
 
+#[cfg(not(any(test, coverage)))]
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ClaudeSessionExecutionConfig {
+    model: Option<String>,
+    effort: Option<String>,
+    initialized: bool,
+}
+
+#[cfg(not(any(test, coverage)))]
+impl Default for ClaudeSessionExecutionConfig {
+    fn default() -> Self {
+        Self {
+            model: None,
+            effort: None,
+            initialized: true,
+        }
+    }
+}
+
+#[cfg(any(test, not(coverage)))]
+fn parse_claude_stream_lines(stdout: &str) -> CrabResult<Vec<ClaudeRawEvent>> {
+    let mut events = Vec::new();
+    for line in stdout.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let payload: serde_json::Value =
+            serde_json::from_str(trimmed).map_err(|error| CrabError::Serialization {
+                context: DAEMON_CLAUDE_STREAM_CONTEXT,
+                path: None,
+                message: format!("invalid stream-json event: {error}"),
+            })?;
+        append_claude_events_from_stream_value(&payload, &mut events)?;
+    }
+    if events.is_empty() {
+        return Err(CrabError::InvariantViolation {
+            context: DAEMON_CLAUDE_STREAM_CONTEXT,
+            message: "claude stream produced no assistant/result events".to_string(),
+        });
+    }
+    if !events
+        .iter()
+        .any(|event| matches!(event, ClaudeRawEvent::TurnCompleted { .. }))
+    {
+        events.push(ClaudeRawEvent::TurnCompleted {
+            stop_reason: "completed".to_string(),
+        });
+    }
+    Ok(events)
+}
+
+#[cfg(any(test, not(coverage)))]
+fn append_claude_events_from_stream_value(
+    payload: &serde_json::Value,
+    events: &mut Vec<ClaudeRawEvent>,
+) -> CrabResult<()> {
+    let Some(event_type) = payload.get("type").and_then(serde_json::Value::as_str) else {
+        return Ok(());
+    };
+    match event_type {
+        "assistant" => {
+            append_claude_assistant_events(payload, events)?;
+            Ok(())
+        }
+        "result" => {
+            append_claude_result_events(payload, events);
+            Ok(())
+        }
+        _ => Ok(()),
+    }
+}
+
+#[cfg(any(test, not(coverage)))]
+fn append_claude_assistant_events(
+    payload: &serde_json::Value,
+    events: &mut Vec<ClaudeRawEvent>,
+) -> CrabResult<()> {
+    let message = payload
+        .get("message")
+        .and_then(serde_json::Value::as_object)
+        .ok_or_else(|| CrabError::InvariantViolation {
+            context: DAEMON_CLAUDE_STREAM_CONTEXT,
+            message: "assistant stream event is missing message payload".to_string(),
+        })?;
+    if let Some(content_items) = message.get("content").and_then(serde_json::Value::as_array) {
+        for content_item in content_items {
+            append_claude_content_item_event(content_item, events)?;
+        }
+    }
+    if let Some(usage_payload) = message.get("usage") {
+        if let Some((input_tokens, output_tokens, total_tokens)) =
+            parse_claude_usage_payload(usage_payload)
+        {
+            events.push(ClaudeRawEvent::Usage {
+                input_tokens,
+                output_tokens,
+                total_tokens,
+            });
+        }
+    }
+    Ok(())
+}
+
+#[cfg(any(test, not(coverage)))]
+fn append_claude_content_item_event(
+    content_item: &serde_json::Value,
+    events: &mut Vec<ClaudeRawEvent>,
+) -> CrabResult<()> {
+    let Some(content_type) = content_item.get("type").and_then(serde_json::Value::as_str) else {
+        return Ok(());
+    };
+    match content_type {
+        "text" => {
+            if let Some(text) = value_as_non_empty_string(content_item.get("text")) {
+                events.push(ClaudeRawEvent::TextDelta { text });
+            }
+        }
+        "tool_use" => {
+            let tool_call_id = value_as_non_empty_string(content_item.get("id"));
+            let tool_name = value_as_non_empty_string(content_item.get("name"));
+            if let (Some(tool_call_id), Some(tool_name)) = (tool_call_id, tool_name) {
+                let input_json = content_item
+                    .get("input")
+                    .cloned()
+                    .unwrap_or(serde_json::Value::Object(serde_json::Map::new()))
+                    .to_string();
+                events.push(ClaudeRawEvent::ToolCall {
+                    tool_call_id,
+                    tool_name,
+                    input_json,
+                });
+            }
+        }
+        "tool_result" => {
+            let tool_call_id = value_as_non_empty_string(
+                content_item
+                    .get("tool_use_id")
+                    .or_else(|| content_item.get("id")),
+            );
+            let tool_name = value_as_non_empty_string(
+                content_item
+                    .get("name")
+                    .or_else(|| content_item.get("tool_name")),
+            )
+            .unwrap_or_else(|| "tool".to_string());
+            if let Some(tool_call_id) = tool_call_id {
+                let output = value_as_non_empty_string(content_item.get("content"))
+                    .or_else(|| value_as_non_empty_string(content_item.get("text")))
+                    .unwrap_or_default();
+                let is_error = content_item
+                    .get("is_error")
+                    .and_then(serde_json::Value::as_bool)
+                    .unwrap_or(false);
+                events.push(ClaudeRawEvent::ToolResult {
+                    tool_call_id,
+                    tool_name,
+                    output,
+                    is_error,
+                });
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+#[cfg(any(test, not(coverage)))]
+fn append_claude_result_events(payload: &serde_json::Value, events: &mut Vec<ClaudeRawEvent>) {
+    if let Some(usage_payload) = payload.get("usage") {
+        if let Some((input_tokens, output_tokens, total_tokens)) =
+            parse_claude_usage_payload(usage_payload)
+        {
+            events.push(ClaudeRawEvent::Usage {
+                input_tokens,
+                output_tokens,
+                total_tokens,
+            });
+        }
+    }
+    let subtype = payload
+        .get("subtype")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("success")
+        .to_ascii_lowercase();
+    let is_error = payload
+        .get("is_error")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+    if is_error || subtype == "error" || subtype == "failure" {
+        let message = value_as_non_empty_string(payload.get("result"))
+            .or_else(|| value_as_non_empty_string(payload.get("error")))
+            .unwrap_or_else(|| "claude stream reported an unspecified error".to_string());
+        events.push(ClaudeRawEvent::Error { message });
+        return;
+    }
+    if matches!(subtype.as_str(), "cancelled" | "canceled" | "interrupted") {
+        events.push(ClaudeRawEvent::TurnInterrupted {
+            reason: subtype.to_string(),
+        });
+        return;
+    }
+    let stop_reason = value_as_non_empty_string(payload.get("stop_reason"))
+        .unwrap_or_else(|| "completed".to_string());
+    events.push(ClaudeRawEvent::TurnCompleted { stop_reason });
+}
+
+#[cfg(any(test, not(coverage)))]
+fn parse_claude_usage_payload(usage_payload: &serde_json::Value) -> Option<(u64, u64, u64)> {
+    let input_tokens = value_as_u64(usage_payload.get("input_tokens"))?;
+    let output_tokens = value_as_u64(usage_payload.get("output_tokens"))?;
+    let total_tokens = value_as_u64(usage_payload.get("total_tokens"))
+        .or_else(|| input_tokens.checked_add(output_tokens))?;
+    Some((input_tokens, output_tokens, total_tokens))
+}
+
+#[cfg(any(test, not(coverage)))]
+fn value_as_non_empty_string(value: Option<&serde_json::Value>) -> Option<String> {
+    let value = value?;
+    match value {
+        serde_json::Value::String(text) => {
+            let trimmed = text.trim();
+            (!trimmed.is_empty()).then(|| trimmed.to_string())
+        }
+        _ => None,
+    }
+}
+
+#[cfg(any(test, not(coverage)))]
+fn value_as_u64(value: Option<&serde_json::Value>) -> Option<u64> {
+    let value = value?;
+    if let Some(number) = value.as_u64() {
+        return Some(number);
+    }
+    value.as_str()?.parse::<u64>().ok()
+}
+
+fn deterministic_claude_backend_session_id(context: &SessionContext) -> String {
+    let normalized = context.logical_session_id.replace(':', "-");
+    format!("daemon-claude-{normalized}")
+}
+
+fn deterministic_claude_send_turn(input: &TurnInput) -> CrabResult<Vec<ClaudeRawEvent>> {
+    if input.run_id.contains(DAEMON_CLAUDE_FORCE_SEND_ERROR_TOKEN) {
+        return Err(CrabError::InvariantViolation {
+            context: "daemon_claude_send_turn",
+            message: "forced claude send failure".to_string(),
+        });
+    }
+
+    let input_tokens = u64::try_from(input.user_input.split_whitespace().count())
+        .unwrap_or(1)
+        .max(1);
+    let response = "Claude bridge response".to_string();
+    let output_tokens = u64::try_from(response.split_whitespace().count())
+        .unwrap_or(1)
+        .max(1);
+    let total_tokens = input_tokens.saturating_add(output_tokens);
+
+    Ok(vec![
+        ClaudeRawEvent::TextDelta { text: response },
+        ClaudeRawEvent::Usage {
+            input_tokens,
+            output_tokens,
+            total_tokens,
+        },
+        ClaudeRawEvent::TurnCompleted {
+            stop_reason: "end_turn".to_string(),
+        },
+    ])
+}
+
+#[cfg(any(test, coverage))]
 impl ClaudeProcess for DaemonClaudeProcess {
     fn create_session(&self, context: &SessionContext) -> CrabResult<String> {
-        let normalized = context.logical_session_id.replace(':', "-");
-        Ok(format!("daemon-claude-{normalized}"))
+        Ok(deterministic_claude_backend_session_id(context))
     }
 
     fn send_turn(
@@ -66,33 +350,7 @@ impl ClaudeProcess for DaemonClaudeProcess {
         _backend_session_id: &str,
         input: &TurnInput,
     ) -> CrabResult<Vec<ClaudeRawEvent>> {
-        if input.run_id.contains(DAEMON_CLAUDE_FORCE_SEND_ERROR_TOKEN) {
-            return Err(CrabError::InvariantViolation {
-                context: "daemon_claude_send_turn",
-                message: "forced claude send failure".to_string(),
-            });
-        }
-
-        let input_tokens = u64::try_from(input.user_input.split_whitespace().count())
-            .unwrap_or(1)
-            .max(1);
-        let response = "Claude bridge response".to_string();
-        let output_tokens = u64::try_from(response.split_whitespace().count())
-            .unwrap_or(1)
-            .max(1);
-        let total_tokens = input_tokens.saturating_add(output_tokens);
-
-        Ok(vec![
-            ClaudeRawEvent::TextDelta { text: response },
-            ClaudeRawEvent::Usage {
-                input_tokens,
-                output_tokens,
-                total_tokens,
-            },
-            ClaudeRawEvent::TurnCompleted {
-                stop_reason: "end_turn".to_string(),
-            },
-        ])
+        deterministic_claude_send_turn(input)
     }
 
     fn interrupt_turn(&self, _backend_session_id: &str, _turn_id: &str) -> CrabResult<()> {
@@ -102,6 +360,245 @@ impl ClaudeProcess for DaemonClaudeProcess {
     fn end_session(&self, _backend_session_id: &str) -> CrabResult<()> {
         Ok(())
     }
+}
+
+#[cfg(not(any(test, coverage)))]
+#[derive(Debug, Default)]
+struct DaemonClaudeProcessState {
+    sessions: BTreeMap<String, ClaudeSessionExecutionConfig>,
+}
+
+#[cfg(not(any(test, coverage)))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ClaudeSessionMode {
+    Start,
+    Resume,
+}
+
+#[cfg(not(any(test, coverage)))]
+impl ClaudeProcess for DaemonClaudeProcess {
+    fn create_session(&self, context: &SessionContext) -> CrabResult<String> {
+        if use_deterministic_claude_process_override() {
+            return Ok(deterministic_claude_backend_session_id(context));
+        }
+
+        let session_id = build_claude_session_id(&context.logical_session_id);
+        let mapped_profile = map_claude_inference_profile(&context.profile);
+        let effort = match mapped_profile.thinking_mode {
+            ClaudeThinkingMode::Low => Some("low".to_string()),
+            ClaudeThinkingMode::Medium => Some("medium".to_string()),
+            ClaudeThinkingMode::High => Some("high".to_string()),
+            ClaudeThinkingMode::Off => None,
+        };
+        let mut state = self.state.lock().expect("lock should succeed");
+        state.sessions.insert(
+            session_id.clone(),
+            ClaudeSessionExecutionConfig {
+                model: mapped_profile.model,
+                effort,
+                initialized: false,
+            },
+        );
+        Ok(session_id)
+    }
+
+    fn send_turn(
+        &self,
+        backend_session_id: &str,
+        input: &TurnInput,
+    ) -> CrabResult<Vec<ClaudeRawEvent>> {
+        if use_deterministic_claude_process_override() {
+            return deterministic_claude_send_turn(input);
+        }
+
+        let (config, mode) = {
+            let state = self.state.lock().expect("lock should succeed");
+            match state.sessions.get(backend_session_id) {
+                Some(config) if config.initialized => (config.clone(), ClaudeSessionMode::Resume),
+                Some(config) => (config.clone(), ClaudeSessionMode::Start),
+                None => (
+                    ClaudeSessionExecutionConfig::default(),
+                    ClaudeSessionMode::Resume,
+                ),
+            }
+        };
+
+        let result = run_claude_turn(backend_session_id, input, &config, mode);
+        let events = match result {
+            Ok(events) => events,
+            Err(error) if mode == ClaudeSessionMode::Start && is_session_in_use_error(&error) => {
+                run_claude_turn(
+                    backend_session_id,
+                    input,
+                    &config,
+                    ClaudeSessionMode::Resume,
+                )?
+            }
+            Err(error)
+                if mode == ClaudeSessionMode::Resume && is_unknown_session_resume_error(&error) =>
+            {
+                run_claude_turn(backend_session_id, input, &config, ClaudeSessionMode::Start)?
+            }
+            Err(error) => return Err(error),
+        };
+
+        let mut state = self.state.lock().expect("lock should succeed");
+        state
+            .sessions
+            .entry(backend_session_id.to_string())
+            .and_modify(|entry| entry.initialized = true)
+            .or_insert_with(|| ClaudeSessionExecutionConfig {
+                initialized: true,
+                ..config
+            });
+
+        Ok(events)
+    }
+
+    fn interrupt_turn(&self, _backend_session_id: &str, _turn_id: &str) -> CrabResult<()> {
+        Ok(())
+    }
+
+    fn end_session(&self, backend_session_id: &str) -> CrabResult<()> {
+        let mut state = self.state.lock().expect("lock should succeed");
+        state.sessions.remove(backend_session_id);
+        Ok(())
+    }
+}
+
+#[cfg(not(any(test, coverage)))]
+fn build_claude_session_id(logical_session_id: &str) -> String {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+
+    let now_nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or(0);
+
+    let mut primary = DefaultHasher::new();
+    logical_session_id.hash(&mut primary);
+    now_nanos.hash(&mut primary);
+    let first = primary.finish();
+
+    let mut secondary = DefaultHasher::new();
+    std::process::id().hash(&mut secondary);
+    logical_session_id.len().hash(&mut secondary);
+    now_nanos.rotate_left(19).hash(&mut secondary);
+    let second = secondary.finish();
+
+    let mut bytes = [0_u8; 16];
+    bytes[..8].copy_from_slice(&first.to_be_bytes());
+    bytes[8..].copy_from_slice(&second.to_be_bytes());
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+
+    format!(
+        "{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
+        bytes[0],
+        bytes[1],
+        bytes[2],
+        bytes[3],
+        bytes[4],
+        bytes[5],
+        bytes[6],
+        bytes[7],
+        bytes[8],
+        bytes[9],
+        bytes[10],
+        bytes[11],
+        bytes[12],
+        bytes[13],
+        bytes[14],
+        bytes[15]
+    )
+}
+
+#[cfg(not(any(test, coverage)))]
+fn run_claude_turn(
+    backend_session_id: &str,
+    input: &TurnInput,
+    config: &ClaudeSessionExecutionConfig,
+    mode: ClaudeSessionMode,
+) -> CrabResult<Vec<ClaudeRawEvent>> {
+    let mut command = std::process::Command::new("claude");
+    command
+        .arg("--print")
+        .arg("--verbose")
+        .arg("--output-format")
+        .arg("stream-json")
+        .arg("--permission-mode")
+        .arg("dontAsk");
+    if let Some(model) = config
+        .model
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        command.arg("--model").arg(model);
+    }
+    if let Some(effort) = config
+        .effort
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        command.arg("--effort").arg(effort);
+    }
+    match mode {
+        ClaudeSessionMode::Start => {
+            command.arg("--session-id").arg(backend_session_id);
+        }
+        ClaudeSessionMode::Resume => {
+            command.arg("--resume").arg(backend_session_id);
+        }
+    }
+    command.arg(&input.user_input);
+
+    let output = command.output().map_err(|error| CrabError::Io {
+        context: DAEMON_CLAUDE_TRANSPORT_CONTEXT,
+        path: None,
+        message: format!("failed to spawn claude process: {error}"),
+    })?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if !output.status.success() {
+        let stderr_trimmed = stderr.trim();
+        let stdout_trimmed = stdout.trim();
+        let detail = if !stderr_trimmed.is_empty() {
+            stderr_trimmed.to_string()
+        } else if !stdout_trimmed.is_empty() {
+            stdout_trimmed.to_string()
+        } else {
+            "claude process exited without error output".to_string()
+        };
+        return Err(CrabError::InvariantViolation {
+            context: DAEMON_CLAUDE_TRANSPORT_CONTEXT,
+            message: format!(
+                "claude process failed for run {} turn {}: {}",
+                input.run_id, input.turn_id, detail
+            ),
+        });
+    }
+    parse_claude_stream_lines(stdout.as_ref())
+}
+
+#[cfg(not(any(test, coverage)))]
+fn is_session_in_use_error(error: &CrabError) -> bool {
+    matches!(
+        error,
+        CrabError::InvariantViolation { context, message }
+            if *context == DAEMON_CLAUDE_TRANSPORT_CONTEXT
+                && message.to_ascii_lowercase().contains("already in use")
+    )
+}
+
+#[cfg(not(any(test, coverage)))]
+fn is_unknown_session_resume_error(error: &CrabError) -> bool {
+    matches!(
+        error,
+        CrabError::InvariantViolation { context, message }
+            if *context == DAEMON_CLAUDE_TRANSPORT_CONTEXT
+                && message.to_ascii_lowercase().contains("could not find session")
+    )
 }
 
 #[derive(Clone)]
@@ -919,6 +1416,23 @@ fn use_deterministic_codex_transport_override() -> bool {
         })
 }
 
+#[cfg(all(not(any(test, coverage)), debug_assertions))]
+fn use_deterministic_claude_process_override() -> bool {
+    std::env::var(DAEMON_DETERMINISTIC_CLAUDE_PROCESS_ENV)
+        .ok()
+        .is_some_and(|raw| {
+            matches!(
+                raw.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
+}
+
+#[cfg(all(not(any(test, coverage)), not(debug_assertions)))]
+fn use_deterministic_claude_process_override() -> bool {
+    false
+}
+
 impl<D: DaemonDiscordIo> DaemonTurnRuntime<D> {
     pub fn new(owner: OwnerConfig, discord: D) -> CrabResult<Self> {
         let backend_bridge = Box::new(DaemonBackendBridge::new_default()?);
@@ -926,7 +1440,7 @@ impl<D: DaemonDiscordIo> DaemonTurnRuntime<D> {
             owner,
             discord,
             backend_bridge,
-            DaemonClaudeProcess,
+            DaemonClaudeProcess::default(),
         )
     }
 
@@ -940,7 +1454,7 @@ impl<D: DaemonDiscordIo> DaemonTurnRuntime<D> {
             owner,
             discord,
             backend_bridge,
-            DaemonClaudeProcess,
+            DaemonClaudeProcess::default(),
         )
     }
 
@@ -2628,8 +3142,198 @@ mod tests {
     }
 
     #[test]
+    fn claude_stream_parser_maps_text_usage_and_completion() {
+        let stream = r#"{"type":"system","subtype":"init","session_id":"session-1"}
+{"type":"assistant","message":{"content":[{"type":"text","text":"hello"}],"usage":{"input_tokens":2,"output_tokens":1}}}
+{"type":"result","subtype":"success","is_error":false,"result":"hello","usage":{"input_tokens":2,"output_tokens":3}}"#;
+
+        let events = super::parse_claude_stream_lines(stream).expect("claude stream should parse");
+
+        assert!(events.iter().any(|event| {
+            matches!(
+                event,
+                ClaudeRawEvent::TextDelta { text } if text == "hello"
+            )
+        }));
+        assert!(events.iter().any(|event| {
+            matches!(
+                event,
+                ClaudeRawEvent::Usage {
+                    input_tokens: 2,
+                    output_tokens: 1,
+                    total_tokens: 3
+                }
+            )
+        }));
+        assert!(events.iter().any(|event| {
+            matches!(
+                event,
+                ClaudeRawEvent::Usage {
+                    input_tokens: 2,
+                    output_tokens: 3,
+                    total_tokens: 5
+                }
+            )
+        }));
+        assert!(events.iter().any(|event| {
+            matches!(
+                event,
+                ClaudeRawEvent::TurnCompleted { stop_reason } if stop_reason == "completed"
+            )
+        }));
+    }
+
+    #[test]
+    fn claude_stream_parser_maps_tool_and_error_events() {
+        let stream = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"tool-1","name":"search","input":{"query":"hello"}},{"type":"tool_result","tool_use_id":"tool-1","name":"search","content":"done","is_error":false}]}}
+{"type":"result","subtype":"error","is_error":true,"result":"boom"}"#;
+
+        let events = super::parse_claude_stream_lines(stream).expect("claude stream should parse");
+
+        assert!(events.iter().any(|event| {
+            matches!(
+                event,
+                ClaudeRawEvent::ToolCall {
+                    tool_call_id,
+                    tool_name,
+                    ..
+                } if tool_call_id == "tool-1" && tool_name == "search"
+            )
+        }));
+        assert!(events.iter().any(|event| {
+            matches!(
+                event,
+                ClaudeRawEvent::ToolResult {
+                    tool_call_id,
+                    tool_name,
+                    output,
+                    is_error
+                } if tool_call_id == "tool-1"
+                    && tool_name == "search"
+                    && output == "done"
+                    && !*is_error
+            )
+        }));
+        assert!(events.iter().any(|event| {
+            matches!(
+                event,
+                ClaudeRawEvent::Error { message } if message == "boom"
+            )
+        }));
+    }
+
+    #[test]
+    fn claude_stream_parser_reports_invalid_assistant_payloads() {
+        let stream = r#"{"type":"assistant"}"#;
+        let error = super::parse_claude_stream_lines(stream)
+            .expect_err("assistant payload missing message should fail parsing");
+        assert_eq!(
+            error,
+            CrabError::InvariantViolation {
+                context: "daemon_claude_stream",
+                message: "assistant stream event is missing message payload".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn claude_stream_parser_reports_invalid_json_payloads() {
+        let stream = r#"{"type":"assistant""#;
+        let error =
+            super::parse_claude_stream_lines(stream).expect_err("invalid json should fail parsing");
+        assert!(matches!(
+            error,
+            CrabError::Serialization {
+                context: "daemon_claude_stream",
+                path: None,
+                message,
+            } if message.contains("invalid stream-json event")
+        ));
+    }
+
+    #[test]
+    fn claude_stream_parser_reports_empty_event_stream() {
+        let stream = "\n{\"message\":\"ignore\"}\n{\"type\":\"system\"}\n";
+        let error = super::parse_claude_stream_lines(stream)
+            .expect_err("stream without assistant/result events should fail");
+        assert_eq!(
+            error,
+            CrabError::InvariantViolation {
+                context: "daemon_claude_stream",
+                message: "claude stream produced no assistant/result events".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn claude_stream_parser_covers_content_and_interrupt_edge_paths() {
+        let stream = r#"{"type":"assistant","message":{"usage":{"input_tokens":"3","output_tokens":"2"}}}
+{"type":"assistant","message":{"content":[{"text":"missing type"},{"type":"tool_use","name":"search","input":{"query":"hello"}},{"type":"tool_result","name":"search","content":"done"},{"type":"other"}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_result","tool_use_id":"tool-fallback","text":"fallback text"}]}}
+{"type":"result","subtype":"interrupted","is_error":false,"usage":{"input_tokens":"7","output_tokens":"5","total_tokens":"12"}}
+{"type":"result","subtype":"error","is_error":true,"result":123}"#;
+
+        let events = super::parse_claude_stream_lines(stream).expect("claude stream should parse");
+
+        let mut has_initial_usage = false;
+        for event in &events {
+            if let ClaudeRawEvent::Usage {
+                input_tokens,
+                output_tokens,
+                total_tokens,
+            } = event
+            {
+                if *input_tokens == 3 && *output_tokens == 2 && *total_tokens == 5 {
+                    has_initial_usage = true;
+                }
+            }
+        }
+        assert!(has_initial_usage);
+        assert!(events.iter().any(|event| {
+            matches!(
+                event,
+                ClaudeRawEvent::Usage {
+                    input_tokens: 7,
+                    output_tokens: 5,
+                    total_tokens: 12
+                }
+            )
+        }));
+        assert!(events.iter().any(|event| {
+            matches!(
+                event,
+                ClaudeRawEvent::TurnInterrupted { reason } if reason == "interrupted"
+            )
+        }));
+        assert!(events.iter().any(|event| {
+            matches!(
+                event,
+                ClaudeRawEvent::Error { message }
+                    if message == "claude stream reported an unspecified error"
+            )
+        }));
+        assert!(events.iter().any(|event| {
+            matches!(
+                event,
+                ClaudeRawEvent::ToolResult {
+                    tool_call_id,
+                    tool_name,
+                    output,
+                    is_error
+                } if tool_call_id == "tool-fallback"
+                    && tool_name == "tool"
+                    && output == "fallback text"
+                    && !*is_error
+            )
+        }));
+        assert!(!events
+            .iter()
+            .any(|event| matches!(event, ClaudeRawEvent::ToolCall { .. })));
+    }
+
+    #[test]
     fn daemon_claude_process_default_lifecycle_is_deterministic() {
-        let process = DaemonClaudeProcess;
+        let process = DaemonClaudeProcess::default();
         let context = SessionContext {
             logical_session_id: "discord:channel:777".to_string(),
             profile: claude_profile(),
@@ -2691,13 +3395,14 @@ mod tests {
     #[test]
     fn claude_bridge_debug_impls_are_callable() {
         let shared = super::SharedClaudeProcess {
-            inner: Arc::new(DaemonClaudeProcess),
+            inner: Arc::new(DaemonClaudeProcess::default()),
         };
         let shared_debug = format!("{shared:?}");
         assert!(shared_debug.contains("SharedClaudeProcess"));
 
-        let bridge =
-            super::DaemonClaudeExecutionBridge::with_process(Arc::new(DaemonClaudeProcess));
+        let bridge = super::DaemonClaudeExecutionBridge::with_process(Arc::new(
+            DaemonClaudeProcess::default(),
+        ));
         let bridge_debug = format!("{bridge:?}");
         assert!(bridge_debug.contains("DaemonClaudeExecutionBridge"));
     }
