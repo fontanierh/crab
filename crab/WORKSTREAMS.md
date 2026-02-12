@@ -41,6 +41,7 @@ This document breaks the Crab implementation into execution workstreams and issu
 | WS21 | Workspace private Git persistence | Durable workspace history in private repo with safe async push/retry |
 | WS22 | Runtime state evolution and migration safety | Versioned state marker, startup migrator, actionable compatibility preflight, migration governance |
 | WS23 | Session context lifecycle hardening | Bootstrap-only context injection, token-capped managed docs, native backend reasoning mapping |
+| WS24 | Onboarding runtime gate and conversational completion | Owner-DM bootstrap gate, rotation-time extraction, runtime brief context guidance |
 
 ## 3) Detailed Workstreams and Tasks
 
@@ -806,6 +807,33 @@ Status (as of 2026-02-12): scoped deliverables complete (`WS22-T1` to `WS22-T4` 
    - daemon and turn-executor tests assert bootstrap-only context injection behavior.
    - design + handbook docs updated (`DESIGN.md`, `02`, `04`, `06`, `08`, `11`).
 
+### WS24 - Onboarding Runtime Gate and Conversational Completion
+
+### WS24-T1 - Enforce pending-onboarding owner-DM gate
+- While `BOOTSTRAP.md` exists, allow only owner DM traffic to proceed.
+- Non-owner and owner non-DM turns should be blocked with explicit user-facing guidance and audit notes.
+- Done criteria: pending-bootstrap traffic policy is deterministic and covered by runtime tests.
+ - Implemented:
+   - `TurnExecutor::resolve_pending_onboarding_gate` enforces owner-DM-only execution while bootstrap is pending.
+   - blocked turns append run-note diagnostics and emit deterministic Discord responses.
+
+### WS24-T2 - Add rotation-time onboarding extraction for conversational first-run
+- During rotation, when bootstrap is still pending in owner DM sessions, run hidden extraction to resolve strict onboarding capture from conversation context.
+- If extraction is incomplete, continue rotation without completing onboarding and emit diagnostics.
+- Done criteria: successful, incomplete, parse-error, and apply-error paths are deterministic and tested.
+ - Implemented:
+   - `build_onboarding_extraction_prompt` + `ONBOARDING_CAPTURE_INCOMPLETE_TOKEN` added in core onboarding module.
+   - `TurnExecutor::maybe_complete_pending_onboarding_from_rotation` added with explicit note events for incomplete/parse/apply outcomes.
+
+### WS24-T3 - Add initial physical-session runtime brief context section
+- Add a dedicated runtime brief context section for initial physical-session bootstrap context.
+- Include onboarding guidance in owner DM while bootstrap is pending.
+- Done criteria: runtime brief is injected in context assembly/budget/diagnostics and validated by daemon tests.
+ - Implemented:
+   - `CRAB_RUNTIME_BRIEF` added to context injection order and strict token budgeting.
+   - daemon runtime now renders and injects onboarding-aware runtime brief during bootstrap-context assembly.
+   - docs updated (`README.md`, onboarding spec, integration matrix, deployment-gap register, overall flow doc).
+
 ## 4) Dependency Order and Critical Path
 
 Execution order:
@@ -828,10 +856,11 @@ Execution order:
 16. WS19 after WS18, WS20, and WS21; final installation/provisioning cutover on target macOS/Linux hosts
 17. WS22 after WS1, WS10, and WS19; required before declaring deployment-readiness closure for in-place upgrades
 18. WS23 after WS13 and WS15; required before deployment to avoid duplicate context replay and silent truncation behavior
+19. WS24 after WS12, WS13, WS15, and WS23; required before deployment so first-run onboarding remains owner-scoped and conversationally recoverable
 
 Critical path to MVP:
 
-- WS0, WS1, WS2, WS3, WS4, WS7, WS8, WS9, WS10, WS11, WS12, WS13, WS14, WS15, WS16, WS17, WS18, WS20, WS21, WS19, WS22, WS23
+- WS0, WS1, WS2, WS3, WS4, WS7, WS8, WS9, WS10, WS11, WS12, WS13, WS14, WS15, WS16, WS17, WS18, WS20, WS21, WS19, WS22, WS23, WS24
 
 Codex/OpenCode parity path:
 
@@ -872,8 +901,8 @@ Codex/OpenCode parity path:
 - Exit criteria: canonical skills policy is enforced across backends, workspace state is durably persisted to private git, and installer-based deployment on macOS/Linux is reproducible and idempotent.
 
 ### Milestone M9 - Runtime Evolution Safety
-- Scope: WS22, WS23.
-- Exit criteria: runtime state upgrades are safe/actionable, and context lifecycle semantics are deterministic (bootstrap-only injection, token-capped no-truncation policy, native backend reasoning mapping).
+- Scope: WS22, WS23, WS24.
+- Exit criteria: runtime state upgrades are safe/actionable; context lifecycle semantics are deterministic (bootstrap-only injection, token-capped no-truncation policy, native backend reasoning mapping); and onboarding remains owner-DM scoped with conversational completion fallback during rotation.
 
 ## 6) Issue Template for Task Tickets
 
