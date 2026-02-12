@@ -14,6 +14,10 @@ This document defines first-run behavior, onboarding capture, and how Crab trans
   - Rationale: machine-parseable owner/agent identity data is required for reliable persistence and recovery.
   - Mechanism: schema-validated `OnboardingCaptureDocument` (`schema_version`, identity fields, goals, location, timezone).
 
+- Decision: runtime completion trigger is explicit and owner-only while bootstrap is pending.
+  - Rationale: avoid accidental onboarding completion from arbitrary natural-language turns.
+  - Mechanism: owner submits strict onboarding JSON payload; runtime validates/commits it in normal turn flow.
+
 - Decision: onboarding writes managed blocks and preserves legacy notes.
   - Rationale: avoid losing existing human-authored context while allowing deterministic rewrites.
   - Mechanism: managed markers in `SOUL.md`, `IDENTITY.md`, `USER.md` plus preserved-notes blocks.
@@ -68,29 +72,33 @@ Validation rules:
 
 ```mermaid
 sequenceDiagram
-    participant Startup as Crab Startup
+    participant Runtime as Crab Runtime
+    participant Owner as Owner
     participant WS as Workspace
-    participant Agent as Backend Agent
     participant Core as Onboarding Core
 
-    Startup->>WS: ensure_workspace_layout()
-    WS-->>Startup: bootstrap_state = new/pending/ready
+    Runtime->>WS: ensure_workspace_layout()
+    WS-->>Runtime: bootstrap_state = new/pending/ready
 
-    Note over Startup,WS: If pending bootstrap, onboarding is required
+    Note over Runtime,WS: If pending bootstrap, onboarding capture is required for completion
 
-    Startup->>Agent: hidden onboarding prompt (question contract + JSON schema)
-    Agent-->>Startup: onboarding capture JSON
-    Startup->>Core: parse_onboarding_capture_document()
-    Core-->>Startup: validated capture
+    Owner->>Runtime: onboarding capture JSON (strict schema)
+    Runtime->>Core: parse_onboarding_capture_document()
+    Core-->>Runtime: validated capture
 
-    Startup->>Core: persist_onboarding_profile_files()
-    Startup->>Core: execute_onboarding_completion_protocol()
+    Runtime->>Core: persist_onboarding_profile_files()
+    Runtime->>Core: execute_onboarding_completion_protocol()
     Core->>WS: update MEMORY.md managed baseline
     Core->>WS: remove BOOTSTRAP.md
-    Core-->>Startup: completion event + bootstrap_retired
+    Core-->>Runtime: completion event + bootstrap_retired
 
-    Note over Startup: Workspace transitions to ready
+    Note over Runtime: Workspace transitions to ready
 ```
+
+Current implementation note:
+
+- Prompt-orchestrated hidden onboarding question flow is not yet runtime-wired.
+- Runtime completion path is fully wired for explicit owner JSON capture while bootstrap is pending.
 
 ## File Mutation Semantics
 

@@ -639,6 +639,7 @@ mod tests {
         CrabdInboundFrame, CrabdOutboundOp, CrabdOutboundReceipt, CrabdOutboundReceiptStatus,
         GatewayConversationKind, GatewayMessage,
     };
+    use crab_store::EventStore;
     use std::collections::HashMap;
     use std::collections::VecDeque;
     use std::io::{self, Cursor, Read, Write};
@@ -647,7 +648,6 @@ mod tests {
     use std::sync::{Arc, Mutex, OnceLock};
     use std::time::{SystemTime, UNIX_EPOCH};
     use std::{cell::RefCell, thread_local};
-    use crab_store::EventStore;
 
     thread_local! {
         static CAPTURED_OUTBOUND_LINES: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };

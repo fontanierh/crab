@@ -501,6 +501,8 @@ This document breaks the Crab implementation into execution workstreams and issu
  - Implemented so far:
    - deployment checklist + go/no-go rule in `crab/docs/08-deployment-readiness-gaps.md`
    - deployment acceptance evidence worksheet in `crab/docs/13-deployment-acceptance-evidence.md`
+   - first-interaction onboarding completion capture wiring in normal turn flow (`turn_executor`)
+   - OpenCode shared recovery-helper wiring in daemon execution bridge (`recover_opencode_session`)
    - docs reconciled with current runtime wiring (`README.md`, gap register, integration matrix)
  - Still required:
    - execute checklist on target machine and fill evidence worksheet

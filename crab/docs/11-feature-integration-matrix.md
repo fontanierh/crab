@@ -42,16 +42,25 @@ core modules are actually exercised in production flow.
   - Uses the same runtime backend execution path as normal turns
   - Enforces strict schema parse/retry behavior; fallback only when backend output/execution fails
   - Coverage: turn executor rotation/checkpoint tests
+- OpenCode recovery helper integration:
+  - Core: `recover_opencode_session`
+  - Runtime: `crates/crab-app/src/daemon.rs` (`OpenCodeExecutionBridge::recover_session_with_helper`)
+  - Materialization/recovery path now uses shared recovery primitive instead of ad-hoc retry-only session creation
+  - Coverage: daemon OpenCode execution bridge tests + HTTP transport end-session contract test
+- First-interaction onboarding completion capture:
+  - Core: `parse_onboarding_capture_document`, `persist_onboarding_profile_files`,
+    `execute_onboarding_completion_protocol`
+  - Runtime: `crates/crab-app/src/turn_executor.rs` (`maybe_complete_pending_onboarding_capture`)
+  - Behavior: while bootstrap is pending, owner-submitted onboarding capture JSON is validated, profile files are updated, `MEMORY.md` baseline is written, and `BOOTSTRAP.md` is retired in normal run flow
+  - Coverage: turn executor onboarding completion/rejection tests
 
-## Not Yet Runtime-Wired
+## Deferred / Partial
 
-- Backend session recovery helpers:
-  - `recover_codex_session` is invoked via `crates/crab-app/src/daemon_backend_bridge.rs`.
-  - `recover_opencode_session` exists in `crab-backends` but is not yet used by app runtime
-    wiring.
-- First-interaction onboarding runtime path:
-  - Onboarding schema/prompt/completion modules are implemented and tested.
-  - Automatic first-turn runtime orchestration for onboarding capture is still pending integration.
+- First-interaction prompt orchestration:
+  - Onboarding completion capture is runtime-wired for strict owner JSON submissions while bootstrap
+    is pending.
+  - Automatic hidden question-asking orchestration that elicits that JSON capture from arbitrary
+    first messages is still deferred.
 
 ## API Wiring Guardrail
 

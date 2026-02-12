@@ -67,6 +67,15 @@ Implemented and validated in repository code/tests:
   - startup migration engine (stepwise, idempotent, lock-protected)
   - `crabctl upgrade`/`doctor` compatibility preflight with actionable remediation output
   - distinct blocked-upgrade exit code (`3`) for incompatible state versions
+- First-interaction onboarding completion capture path is runtime-wired:
+  - while bootstrap is pending, owner-submitted strict onboarding JSON capture is validated
+  - `SOUL.md`/`IDENTITY.md`/`USER.md` managed sections are updated and conflicts are surfaced
+  - onboarding completion protocol writes managed `MEMORY.md` baseline and retires `BOOTSTRAP.md`
+- OpenCode session recovery uses shared backend helper:
+  - daemon OpenCode execution bridge now routes materialization/recovery through
+    `crab_backends::recover_opencode_session`
+  - recoverable session faults rotate sessions through a single recovery primitive with
+    deterministic bookkeeping
 - Quality engineering ergonomics are standardized:
   - strict gate: `make quality`
   - fast local preflight: `make quick`
@@ -157,7 +166,7 @@ Exit evidence:
 Run all checks on the target machine using production-like config:
 
 - [ ] Cold workspace first boot creates/repairs required files and links (`AGENTS.md`, `SOUL.md`, `IDENTITY.md`, `USER.md`, `MEMORY.md`, `CLAUDE.md -> AGENTS.md`, `.agents/skills`, `.claude/skills -> ../.agents/skills`, built-in skill policy file, `memory/` layout).
-- [ ] First owner interaction runs onboarding prompts and persists owner/agent identity context.
+- [ ] First owner onboarding interaction persists owner/agent identity context through the onboarding capture contract.
 - [ ] Normal owner run processes end-to-end (`ingress -> lane -> backend -> Discord delivery`) with persisted run/event metadata.
 - [ ] Non-owner run obeys per-user memory scope and disclosure policy.
 - [ ] Restart during/after a run replays missing outbound delivery without duplicate messages/edits.

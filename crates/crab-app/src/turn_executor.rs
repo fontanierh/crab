@@ -7,14 +7,18 @@ use crab_backends::{
 };
 use crab_core::{
     apply_operator_command, build_checkpoint_prompt, build_fallback_checkpoint_document,
-    build_memory_flush_prompt, enqueue_workspace_git_push_request, evaluate_rotation_triggers,
-    execute_rotation_sequence, finalize_hidden_memory_flush, maybe_commit_workspace_snapshot,
-    parse_operator_command, resolve_checkpoint_turn_output, Checkpoint, CheckpointTurnDocument,
-    CheckpointTurnResolution, CrabError, CrabResult, EventEnvelope, EventKind, EventSource,
-    InferenceProfile, LaneState, LogicalSession, ManualRotationRequest, OperatorActorContext,
-    OperatorCommand, OperatorSessionState, PhysicalSession, RotationSequenceRuntime,
-    RotationTrigger, RotationTriggerInput, Run, RunProfileTelemetry, RunStatus, TokenAccounting,
-    TranscriptEntry, TranscriptEntryRole, WorkspaceGitCommitRequest, WorkspaceGitCommitTrigger,
+    build_memory_flush_prompt, detect_workspace_bootstrap_state,
+    enqueue_workspace_git_push_request, evaluate_rotation_triggers,
+    execute_onboarding_completion_protocol, execute_rotation_sequence,
+    finalize_hidden_memory_flush, maybe_commit_workspace_snapshot,
+    parse_onboarding_capture_document, parse_operator_command, persist_onboarding_profile_files,
+    resolve_checkpoint_turn_output, Checkpoint, CheckpointTurnDocument, CheckpointTurnResolution,
+    CrabError, CrabResult, EventEnvelope, EventKind, EventSource, InferenceProfile, LaneState,
+    LogicalSession, ManualRotationRequest, OnboardingCompletionEventRuntime,
+    OnboardingCompletionInput, OperatorActorContext, OperatorCommand, OperatorSessionState,
+    PhysicalSession, RotationSequenceRuntime, RotationTrigger, RotationTriggerInput, Run,
+    RunProfileTelemetry, RunStatus, TokenAccounting, TranscriptEntry, TranscriptEntryRole,
+    WorkspaceBootstrapState, WorkspaceGitCommitRequest, WorkspaceGitCommitTrigger,
     WorkspaceGitPushRequest, DEFAULT_CHECKPOINT_MAX_ATTEMPTS,
     DEFAULT_FALLBACK_TRANSCRIPT_TAIL_LIMIT,
 };
@@ -342,6 +346,8 @@ where
         let mut backend_events = Vec::new();
         let mut manual_command_resolution =
             self.resolve_manual_rotation_command(&run, &mut session)?;
+        let mut onboarding_completion_resolution = None;
+        let mut supplemental_emitted_event_count = 0_usize;
 
         // Note: `tracing` macros can create stubborn per-line coverage gaps under `cargo llvm-cov`
         // (cfg(coverage)). Keep runtime logs, but exclude them from coverage builds.
@@ -358,6 +364,15 @@ where
         );
 
         if manual_command_resolution.is_none() {
+            onboarding_completion_resolution =
+                self.maybe_complete_pending_onboarding_capture(&run, started_at_epoch_ms)?;
+            if let Some(ref resolution) = onboarding_completion_resolution {
+                supplemental_emitted_event_count =
+                    supplemental_emitted_event_count.saturating_add(resolution.emitted_event_count);
+            }
+        }
+
+        if manual_command_resolution.is_none() && onboarding_completion_resolution.is_none() {
             let mut physical_session = self.runtime.ensure_physical_session(
                 logical_session_id,
                 &run.profile.resolved_profile,
@@ -406,6 +421,8 @@ where
         }
 
         let final_status = if manual_command_resolution.is_some() {
+            RunStatus::Succeeded
+        } else if onboarding_completion_resolution.is_some() {
             RunStatus::Succeeded
         } else {
             derive_final_status(&backend_events)
@@ -474,6 +491,13 @@ where
             );
             let _ =
                 self.deliver_rendered_assistant_output(&run, &response, 0, completed_at_epoch_ms)?;
+        } else if let Some(onboarding_completion_resolution) = onboarding_completion_resolution {
+            let _ = self.deliver_rendered_assistant_output(
+                &run,
+                &onboarding_completion_resolution.user_message,
+                0,
+                completed_at_epoch_ms,
+            )?;
         }
 
         self.composition
@@ -492,8 +516,84 @@ where
             run_id: run.id,
             turn_id,
             status: final_status,
-            emitted_event_count: backend_events.len() + 2,
+            emitted_event_count: backend_events.len() + 2 + supplemental_emitted_event_count,
         })
+    }
+
+    fn maybe_complete_pending_onboarding_capture(
+        &mut self,
+        run: &Run,
+        completed_at_epoch_ms: u64,
+    ) -> CrabResult<Option<OnboardingCompletionResolution>> {
+        let bootstrap_state =
+            detect_workspace_bootstrap_state(&self.composition.startup.workspace_root)?;
+        if bootstrap_state != WorkspaceBootstrapState::PendingBootstrap {
+            return Ok(None);
+        }
+
+        if !looks_like_onboarding_capture_payload(&run.user_input) {
+            return Ok(None);
+        }
+
+        if !run.profile.sender_is_owner {
+            return Err(CrabError::InvariantViolation {
+                context: "onboarding_completion_authorize",
+                message: format!(
+                    "sender {} is not authorized to submit onboarding capture",
+                    run.profile.sender_id
+                ),
+            });
+        }
+
+        let capture = parse_onboarding_capture_document(&run.user_input)?;
+        let workspace_root = self.composition.startup.workspace_root.clone();
+        let profile_write_outcome = persist_onboarding_profile_files(&workspace_root, &capture)?;
+        let completion_outcome = execute_onboarding_completion_protocol(
+            self,
+            &workspace_root,
+            &OnboardingCompletionInput {
+                logical_session_id: run.logical_session_id.clone(),
+                run_id: run.id.clone(),
+                onboarding_session_id: format!("onboarding:{}", run.id),
+                completed_at_epoch_ms,
+                capture,
+                profile: Some(run.profile.clone()),
+            },
+        )?;
+
+        if !profile_write_outcome.conflict_paths.is_empty() {
+            let mut payload = BTreeMap::new();
+            payload.insert(
+                "event".to_string(),
+                "onboarding_profile_conflicts".to_string(),
+            );
+            payload.insert(
+                "conflict_paths".to_string(),
+                profile_write_outcome.conflict_paths.join(","),
+            );
+            self.append_run_event(
+                run,
+                EventKind::RunNote,
+                EventSource::System,
+                payload,
+                completed_at_epoch_ms,
+            )?;
+        }
+
+        let mut user_message = format!(
+            "Onboarding capture applied. BOOTSTRAP.md retired: {}.",
+            completion_outcome.bootstrap_retired
+        );
+        if !profile_write_outcome.conflict_paths.is_empty() {
+            user_message
+                .push_str(" Profile conflicts detected; review the conflicted managed files.");
+        }
+
+        let emitted_event_count = 1 + usize::from(!profile_write_outcome.conflict_paths.is_empty());
+        Ok(Some(OnboardingCompletionResolution {
+            user_message,
+            emitted_event_count,
+        }))
     }
 
     fn resolve_manual_rotation_command(
@@ -541,7 +641,7 @@ where
         );
         payload.insert("message".to_string(), outcome.user_message.clone());
         let emitted_at_epoch_ms = self.runtime.now_epoch_ms()?;
-        self.append_event(
+        self.append_run_event(
             run,
             EventKind::RunNote,
             EventSource::System,
@@ -593,7 +693,7 @@ where
             "triggers".to_string(),
             render_rotation_triggers(&decision.triggers),
         );
-        self.append_event(
+        self.append_run_event(
             run,
             EventKind::RunNote,
             EventSource::System,
@@ -689,7 +789,7 @@ where
             "triggers".to_string(),
             render_rotation_triggers(&decision.triggers),
         );
-        self.append_event(
+        self.append_run_event(
             run,
             EventKind::RunNote,
             EventSource::System,
@@ -918,7 +1018,7 @@ where
         if let Some(state_token) = backend_state_token(backend_event.kind) {
             payload.insert("state".to_string(), state_token.to_string());
         }
-        self.append_event(
+        self.append_run_event(
             run,
             kind,
             EventSource::Backend,
@@ -979,7 +1079,7 @@ where
         if let Some(reason) = reason {
             payload.insert("reason".to_string(), reason);
         }
-        self.append_event(
+        self.append_run_event(
             run,
             EventKind::RunState,
             EventSource::System,
@@ -988,7 +1088,7 @@ where
         )
     }
 
-    fn append_event(
+    fn append_run_event(
         &self,
         run: &Run,
         kind: EventKind,
@@ -1048,6 +1148,12 @@ where
 struct ManualRotationCommandResolution {
     request: Option<ManualRotationRequest>,
     user_message: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct OnboardingCompletionResolution {
+    user_message: String,
+    emitted_event_count: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1255,6 +1361,13 @@ fn build_run_id(logical_session_id: &str, message_id: &str) -> String {
 
 fn build_turn_id(run_id: &str) -> String {
     format!("turn:{run_id}")
+}
+
+fn looks_like_onboarding_capture_payload(input: &str) -> bool {
+    let trimmed = input.trim();
+    trimmed.starts_with('{')
+        && trimmed.contains("\"schema_version\"")
+        && trimmed.contains("\"agent_identity\"")
 }
 
 fn parse_manual_rotation_command(
@@ -1622,6 +1735,24 @@ fn delivery_message_id(run_id: &str) -> String {
     format!("delivery:{run_id}:chunk:0")
 }
 
+impl<CP, OP, R> OnboardingCompletionEventRuntime for TurnExecutor<CP, OP, R>
+where
+    CP: CodexAppServerProcess,
+    OP: OpenCodeServerProcess,
+    R: TurnExecutorRuntime,
+{
+    fn next_event_sequence(&self, logical_session_id: &str, run_id: &str) -> CrabResult<u64> {
+        TurnExecutor::next_event_sequence(self, logical_session_id, run_id)
+    }
+
+    fn append_event(&mut self, event: &EventEnvelope) -> CrabResult<()> {
+        self.composition
+            .state_stores
+            .event_store
+            .append_event(event)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::{BTreeMap, VecDeque};
@@ -1869,6 +2000,17 @@ mod tests {
         let mut message = gateway_message(message_id);
         message.content = content.to_string();
         message
+    }
+
+    fn onboarding_capture_payload_json() -> &'static str {
+        r#"{
+  "schema_version": "v1",
+  "agent_identity": "Crab",
+  "owner_identity": "Henry",
+  "primary_goals": ["Ship reliable automation", "Keep strict quality gates"],
+  "machine_location": "Paris, France",
+  "machine_timezone": "Europe/Paris"
+}"#
     }
 
     fn delivery_run(logical_session_id: &str, run_id: &str) -> crab_core::Run {
@@ -2730,6 +2872,154 @@ mod tests {
                 message: "manual response delivery failed".to_string(),
             }
         );
+    }
+
+    #[test]
+    fn owner_can_complete_onboarding_capture_through_normal_turn_flow() {
+        let workspace = TempWorkspace::new("turn-executor", "onboarding-complete-owner");
+        let mut runtime = FakeRuntime::with_backend_events(Vec::new(), &[1, 2, 3, 4, 5]);
+        runtime.resolve_profile_results = VecDeque::from(vec![Ok(owner_profile_telemetry())]);
+        let mut executor = build_executor(&workspace, runtime, 8);
+
+        let dispatched = executor
+            .process_gateway_message(gateway_message_with_content(
+                "m-onboarding-complete-owner",
+                onboarding_capture_payload_json(),
+            ))
+            .expect("owner onboarding capture should succeed")
+            .expect("owner onboarding capture should dispatch");
+        assert_eq!(dispatched.status, RunStatus::Succeeded);
+
+        let runtime = executor.runtime_mut();
+        assert!(runtime.steps.contains(&"resolve_run_profile".to_string()));
+        assert!(runtime
+            .steps
+            .contains(&"deliver_assistant_output".to_string()));
+        assert!(!runtime
+            .steps
+            .contains(&"ensure_physical_session".to_string()));
+        assert!(!runtime.steps.contains(&"build_turn_context".to_string()));
+        assert!(!runtime.steps.contains(&"execute_backend_turn".to_string()));
+        assert_eq!(runtime.delivered_outputs.len(), 1);
+        assert!(runtime.delivered_outputs[0]
+            .4
+            .contains("Onboarding capture applied."));
+
+        assert!(!workspace.path.join("BOOTSTRAP.md").exists());
+        let soul = fs::read_to_string(workspace.path.join("SOUL.md"))
+            .expect("SOUL profile should be written");
+        let identity = fs::read_to_string(workspace.path.join("IDENTITY.md"))
+            .expect("IDENTITY profile should be written");
+        let user = fs::read_to_string(workspace.path.join("USER.md"))
+            .expect("USER profile should be written");
+        let memory =
+            fs::read_to_string(workspace.path.join("MEMORY.md")).expect("MEMORY should be written");
+        assert!(soul.contains("Managed Mission Profile"));
+        assert!(identity.contains("Managed Onboarding Identity"));
+        assert!(user.contains("Managed Owner Profile"));
+        assert!(memory.contains("Managed Onboarding Baseline"));
+
+        let run_id = "run:discord:channel:777:m-onboarding-complete-owner";
+        let run = executor
+            .composition()
+            .state_stores
+            .run_store
+            .get_run("discord:channel:777", run_id)
+            .expect("run lookup should succeed")
+            .expect("run should exist");
+        assert_eq!(run.status, RunStatus::Succeeded);
+
+        let events = executor
+            .composition()
+            .state_stores
+            .event_store
+            .replay_run("discord:channel:777", run_id)
+            .expect("event replay should succeed");
+        assert!(events.iter().any(|event| {
+            event.kind == EventKind::RunNote
+                && event
+                    .payload
+                    .get("event")
+                    .is_some_and(|value| value == "bootstrap_completed")
+        }));
+    }
+
+    #[test]
+    fn onboarding_capture_is_owner_only_while_bootstrap_is_pending() {
+        let workspace = TempWorkspace::new("turn-executor", "onboarding-capture-non-owner");
+        let mut runtime = FakeRuntime::with_backend_events(Vec::new(), &[1, 2, 3, 4]);
+        runtime.resolve_profile_results = VecDeque::from(vec![Ok(sample_profile_telemetry())]);
+        let mut executor = build_executor(&workspace, runtime, 8);
+
+        let error = executor
+            .process_gateway_message(gateway_message_with_content(
+                "m-onboarding-capture-non-owner",
+                onboarding_capture_payload_json(),
+            ))
+            .expect_err("non-owner onboarding capture should be rejected");
+        assert_eq!(
+            error,
+            CrabError::InvariantViolation {
+                context: "onboarding_completion_authorize",
+                message: "sender 111111111111111111 is not authorized to submit onboarding capture"
+                    .to_string(),
+            }
+        );
+
+        let run = executor
+            .composition()
+            .state_stores
+            .run_store
+            .get_run(
+                "discord:channel:777",
+                "run:discord:channel:777:m-onboarding-capture-non-owner",
+            )
+            .expect("run lookup should succeed")
+            .expect("run should exist");
+        assert_eq!(run.status, RunStatus::Failed);
+        assert!(workspace.path.join("BOOTSTRAP.md").exists());
+    }
+
+    #[test]
+    fn malformed_owner_onboarding_capture_is_rejected_with_explicit_parse_error() {
+        let workspace = TempWorkspace::new("turn-executor", "onboarding-capture-malformed");
+        let mut runtime = FakeRuntime::with_backend_events(Vec::new(), &[1, 2, 3, 4]);
+        runtime.resolve_profile_results = VecDeque::from(vec![Ok(owner_profile_telemetry())]);
+        let mut executor = build_executor(&workspace, runtime, 8);
+
+        let error = executor
+            .process_gateway_message(gateway_message_with_content(
+                "m-onboarding-capture-malformed",
+                r#"{"schema_version":"v1","agent_identity":"Crab"}"#,
+            ))
+            .expect_err("malformed onboarding payload should fail");
+        assert!(matches!(
+            error,
+            CrabError::InvariantViolation {
+                context: "onboarding_capture_parse",
+                ..
+            }
+        ));
+
+        let run = executor
+            .composition()
+            .state_stores
+            .run_store
+            .get_run(
+                "discord:channel:777",
+                "run:discord:channel:777:m-onboarding-capture-malformed",
+            )
+            .expect("run lookup should succeed")
+            .expect("run should exist");
+        assert_eq!(run.status, RunStatus::Failed);
+        assert!(workspace.path.join("BOOTSTRAP.md").exists());
+
+        let runtime = executor.runtime_mut();
+        assert!(runtime.steps.contains(&"resolve_run_profile".to_string()));
+        assert!(!runtime
+            .steps
+            .contains(&"ensure_physical_session".to_string()));
+        assert!(!runtime.steps.contains(&"execute_backend_turn".to_string()));
     }
 
     #[test]

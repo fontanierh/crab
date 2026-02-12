@@ -10,10 +10,11 @@ use std::{cell::RefCell, thread_local};
 
 use crab_backends::{
     claude::ClaudeRawEvent, map_opencode_inference_profile, normalize_opencode_events,
-    BackendEvent, BackendHarness, ClaudeBackend, ClaudeProcess, CodexAppServerProcess,
-    CodexLifecycleManager, OpenCodeRawEvent, OpenCodeReasoningMode, OpenCodeServerProcess,
-    OpenCodeSessionConfig, OpenCodeTokenUsage, OpenCodeTurnConfig, OpenCodeTurnState,
-    SessionContext, TurnInput,
+    recover_opencode_session, BackendEvent, BackendHarness, ClaudeBackend, ClaudeProcess,
+    CodexAppServerProcess, CodexLifecycleManager, OpenCodeManager, OpenCodeRawEvent,
+    OpenCodeReasoningMode, OpenCodeRecoveryPlan, OpenCodeRecoveryRuntime, OpenCodeServerHandle,
+    OpenCodeServerProcess, OpenCodeSessionConfig, OpenCodeTokenUsage, OpenCodeTurnConfig,
+    OpenCodeTurnState, SessionContext, TurnInput,
 };
 #[cfg(not(any(test, coverage)))]
 use crab_backends::{map_claude_inference_profile, ClaudeThinkingMode};
@@ -778,6 +779,8 @@ trait OpenCodeBridgeRuntime: Send + Sync + std::fmt::Debug {
         config: OpenCodeSessionConfig,
     ) -> CrabResult<String>;
 
+    fn end_session(&self, server_base_url: &str, session_id: &str) -> CrabResult<()>;
+
     fn execute_turn(
         &self,
         server_base_url: &str,
@@ -803,16 +806,31 @@ impl HttpOpenCodeBridgeRuntime {
         route: &str,
         payload: &serde_json::Value,
     ) -> CrabResult<serde_json::Value> {
+        self.execute_json_request(reqwest::Method::POST, server_base_url, route, Some(payload))
+    }
+
+    fn delete_json(&self, server_base_url: &str, route: &str) -> CrabResult<serde_json::Value> {
+        self.execute_json_request(reqwest::Method::DELETE, server_base_url, route, None)
+    }
+
+    fn execute_json_request(
+        &self,
+        method: reqwest::Method,
+        server_base_url: &str,
+        route: &str,
+        payload: Option<&serde_json::Value>,
+    ) -> CrabResult<serde_json::Value> {
         let endpoint = Self::endpoint(server_base_url, route);
-        let response = reqwest::blocking::Client::new()
-            .post(&endpoint)
-            .json(payload)
-            .send()
-            .map_err(|error| CrabError::Io {
-                context: DAEMON_OPENCODE_TRANSPORT_CONTEXT,
-                path: None,
-                message: format!("POST {endpoint} failed: {error}"),
-            })?;
+        let client = reqwest::blocking::Client::new();
+        let mut request = client.request(method.clone(), &endpoint);
+        if let Some(payload) = payload {
+            request = request.json(payload);
+        }
+        let response = request.send().map_err(|error| CrabError::Io {
+            context: DAEMON_OPENCODE_TRANSPORT_CONTEXT,
+            path: None,
+            message: format!("{method} {endpoint} failed: {error}"),
+        })?;
         let status = response.status();
         let response_body = response.text().map_err(|error| CrabError::Io {
             context: DAEMON_OPENCODE_TRANSPORT_CONTEXT,
@@ -823,7 +841,7 @@ impl HttpOpenCodeBridgeRuntime {
             return Err(CrabError::InvariantViolation {
                 context: DAEMON_OPENCODE_TRANSPORT_CONTEXT,
                 message: format!(
-                    "POST {endpoint} returned HTTP {} with body {}",
+                    "{method} {endpoint} returned HTTP {} with body {}",
                     status.as_u16(),
                     response_body.trim()
                 ),
@@ -1057,6 +1075,12 @@ impl OpenCodeBridgeRuntime for HttpOpenCodeBridgeRuntime {
         )
     }
 
+    fn end_session(&self, server_base_url: &str, session_id: &str) -> CrabResult<()> {
+        let route = format!("session/{session_id}");
+        let _ = self.delete_json(server_base_url, &route)?;
+        Ok(())
+    }
+
     fn execute_turn(
         &self,
         server_base_url: &str,
@@ -1136,6 +1160,62 @@ impl OpenCodeBridgeRuntime for HttpOpenCodeBridgeRuntime {
     }
 }
 
+#[derive(Debug, Clone)]
+struct OpenCodeRecoveryBridgeProcess {
+    server_base_url: String,
+}
+
+impl OpenCodeRecoveryBridgeProcess {
+    fn new(server_base_url: String) -> Self {
+        Self { server_base_url }
+    }
+}
+
+impl OpenCodeServerProcess for OpenCodeRecoveryBridgeProcess {
+    fn spawn_server(&self) -> CrabResult<OpenCodeServerHandle> {
+        Ok(OpenCodeServerHandle {
+            process_id: 1,
+            started_at_epoch_ms: 1,
+            server_base_url: self.server_base_url.clone(),
+        })
+    }
+
+    fn is_server_healthy(&self, _handle: &OpenCodeServerHandle) -> bool {
+        true
+    }
+
+    fn terminate_server(&self, _handle: &OpenCodeServerHandle) -> CrabResult<()> {
+        Ok(())
+    }
+}
+
+#[derive(Debug)]
+struct OpenCodeRecoveryBridgeRuntimeAdapter<'a> {
+    runtime: &'a dyn OpenCodeBridgeRuntime,
+    server_base_url: &'a str,
+}
+
+impl OpenCodeRecoveryRuntime for OpenCodeRecoveryBridgeRuntimeAdapter<'_> {
+    fn create_session(&self, config: OpenCodeSessionConfig) -> CrabResult<String> {
+        self.runtime.create_session(self.server_base_url, config)
+    }
+
+    fn end_session(&self, session_id: &str) -> CrabResult<()> {
+        self.runtime.end_session(self.server_base_url, session_id)
+    }
+
+    fn send_prompt(
+        &self,
+        session_id: &str,
+        prompt: &str,
+        config: OpenCodeTurnConfig,
+    ) -> CrabResult<String> {
+        self.runtime
+            .execute_turn(self.server_base_url, session_id, prompt, config)
+            .map(|result| result.turn_id)
+    }
+}
+
 #[derive(Debug)]
 struct OpenCodeExecutionBridge {
     server_base_url: String,
@@ -1169,10 +1249,13 @@ impl OpenCodeExecutionBridge {
             map_opencode_inference_profile(&run.profile.resolved_profile, self.reasoning_mode);
         let prompt = build_opencode_prompt(turn_context, mapping.guidance_note.as_deref());
         if should_materialize_opencode_session(physical_session) {
-            let base_url = &self.server_base_url;
-            let session_config = mapping.session_config.clone();
-            physical_session.backend_session_id =
-                self.runtime.create_session(base_url, session_config)?;
+            let recovery = self.recover_session_with_helper(
+                None,
+                mapping.session_config.clone(),
+                None,
+                mapping.turn_config.clone(),
+            )?;
+            physical_session.backend_session_id = recovery.new_session_id;
         }
 
         let send_result = self.runtime.execute_turn(
@@ -1184,9 +1267,24 @@ impl OpenCodeExecutionBridge {
         let turn_result = match send_result {
             Ok(result) => result,
             Err(error) if should_retry_opencode_session_recovery(&error) => {
-                physical_session.backend_session_id = self
-                    .runtime
-                    .create_session(&self.server_base_url, mapping.session_config)?;
+                let previous_session_id = physical_session.backend_session_id.clone();
+                let recovery = self.recover_session_with_helper(
+                    Some(previous_session_id.as_str()),
+                    mapping.session_config,
+                    None,
+                    mapping.turn_config.clone(),
+                )?;
+                #[cfg(not(coverage))]
+                if let Some(previous_session_end_error) =
+                    recovery.previous_session_end_error.as_deref()
+                {
+                    tracing::warn!(
+                        previous_session_id = %previous_session_id,
+                        previous_session_end_error,
+                        "opencode session recovery rotated session after end-session warning"
+                    );
+                }
+                physical_session.backend_session_id = recovery.new_session_id;
                 let base_url = &self.server_base_url;
                 let session_id = &physical_session.backend_session_id;
                 self.runtime
@@ -1197,6 +1295,28 @@ impl OpenCodeExecutionBridge {
 
         physical_session.last_turn_id = Some(turn_result.turn_id);
         normalize_opencode_events(&turn_result.raw_events)
+    }
+
+    fn recover_session_with_helper(
+        &self,
+        previous_session_id: Option<&str>,
+        session_config: OpenCodeSessionConfig,
+        checkpoint_prompt: Option<String>,
+        checkpoint_turn_config: OpenCodeTurnConfig,
+    ) -> CrabResult<crab_backends::OpenCodeRecoveryOutcome> {
+        let runtime_adapter = OpenCodeRecoveryBridgeRuntimeAdapter {
+            runtime: self.runtime.as_ref(),
+            server_base_url: &self.server_base_url,
+        };
+        let plan = OpenCodeRecoveryPlan {
+            session_config,
+            checkpoint_prompt,
+            checkpoint_turn_config,
+        };
+        let mut manager = OpenCodeManager::new(OpenCodeRecoveryBridgeProcess::new(
+            self.server_base_url.clone(),
+        ));
+        recover_opencode_session(&mut manager, &runtime_adapter, previous_session_id, &plan)
     }
 }
 
@@ -2886,8 +3006,10 @@ mod tests {
     #[derive(Debug, Clone, Default, PartialEq, Eq)]
     struct ScriptedOpenCodeBridgeStats {
         create_calls: usize,
+        end_calls: usize,
         execute_calls: usize,
         seen_session_ids: Vec<String>,
+        seen_ended_session_ids: Vec<String>,
         seen_prompts: Vec<String>,
     }
 
@@ -2899,6 +3021,7 @@ mod tests {
     #[derive(Debug, Clone)]
     struct ScriptedOpenCodeBridgeState {
         create_results: VecDeque<CrabResult<String>>,
+        end_results: VecDeque<CrabResult<()>>,
         execute_results: VecDeque<CrabResult<OpenCodeBridgeTurnResult>>,
         stats: ScriptedOpenCodeBridgeStats,
     }
@@ -2911,6 +3034,7 @@ mod tests {
             Self {
                 state: Arc::new(Mutex::new(ScriptedOpenCodeBridgeState {
                     create_results: VecDeque::from(create_results),
+                    end_results: VecDeque::new(),
                     execute_results: VecDeque::from(execute_results),
                     stats: ScriptedOpenCodeBridgeStats::default(),
                 })),
@@ -2941,6 +3065,16 @@ mod tests {
                     context: "daemon_test_opencode_bridge_create",
                     message: "missing scripted create_session result".to_string(),
                 }))
+        }
+
+        fn end_session(&self, _server_base_url: &str, session_id: &str) -> CrabResult<()> {
+            let mut state = self.state.lock().expect("lock should succeed");
+            state.stats.end_calls += 1;
+            state
+                .stats
+                .seen_ended_session_ids
+                .push(session_id.to_string());
+            state.end_results.pop_front().unwrap_or(Ok(()))
         }
 
         fn execute_turn(
@@ -3941,6 +4075,7 @@ mod tests {
             .expect("recoverable transport errors should retry and recover");
         let bridge_stats = bridge_state.stats();
         assert_eq!(bridge_stats.create_calls, 2);
+        assert_eq!(bridge_stats.end_calls, 1);
         assert_eq!(bridge_stats.execute_calls, 2);
         assert_eq!(
             bridge_stats.seen_session_ids,
@@ -3948,6 +4083,10 @@ mod tests {
                 "opencode-session-initial".to_string(),
                 "opencode-session-recovered".to_string(),
             ]
+        );
+        assert_eq!(
+            bridge_stats.seen_ended_session_ids,
+            vec!["opencode-session-initial".to_string()]
         );
         assert!(
             bridge_stats.seen_prompts[0].contains("[opencode_reasoning_guidance]"),
@@ -4002,6 +4141,7 @@ mod tests {
             .expect("existing opencode sessions should not force recreation");
         let bridge_stats = bridge_state.stats();
         assert_eq!(bridge_stats.create_calls, 0);
+        assert_eq!(bridge_stats.end_calls, 0);
         assert_eq!(bridge_stats.execute_calls, 1);
         assert_eq!(
             bridge_stats.seen_session_ids,
@@ -4094,6 +4234,27 @@ mod tests {
         assert!(requests[0].body.contains("\"model\":\"open-model\""));
         assert!(requests[1].body.contains("\"prompt\":\"bridge prompt\""));
         assert!(requests[1].body.contains("\"parts\""));
+    }
+
+    #[test]
+    fn http_opencode_bridge_runtime_sends_delete_for_end_session() {
+        let mut http_server = ScriptedHttpServer::start(vec![ScriptedHttpResponse {
+            status_code: 200,
+            body: serde_json::json!({
+                "ok": true
+            })
+            .to_string(),
+        }]);
+        let runtime = super::HttpOpenCodeBridgeRuntime;
+        runtime
+            .end_session(&http_server.base_url(), "session-end-1")
+            .expect("delete end_session should succeed");
+
+        http_server.join();
+        let requests = http_server.requests();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].method, "DELETE".to_string());
+        assert_eq!(requests[0].path, "/session/session-end-1".to_string());
     }
 
     #[test]
