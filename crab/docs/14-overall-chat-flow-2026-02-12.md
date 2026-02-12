@@ -72,6 +72,8 @@ The envelope is XML-structured with explicit boundaries:
 - `<crab_turn_context>` root
 - `<crab_system_context>` for Crab-injected context
 - `<crab_user_input>` for user-provided turn input
+- Runtime logs bootstrap-context size (`injected_context_tokens`, `injected_context_chars`) for
+  physical-session init observability.
 
 ### Reused physical session
 

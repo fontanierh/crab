@@ -53,7 +53,7 @@ Crab is a Rust harness for running coding agents (Claude Code, Codex CLI, OpenCo
 - `WS24` complete:
   - `WS24-T1` complete: pending-bootstrap gate enforces owner-DM-only execution until onboarding completes.
   - `WS24-T2` complete: rotation-time hidden onboarding extraction can complete onboarding from conversational context.
-  - `WS24-T3` complete: initial physical-session context includes `CRAB_RUNTIME_BRIEF` with onboarding guidance when applicable.
+  - `WS24-T3` complete: initial physical-session context includes `CRAB_RUNTIME_BRIEF` with onboarding guidance when applicable, and bootstrap injection logs context size (`injected_context_tokens`, `injected_context_chars`) for debugging.
 
 ## Docs
 

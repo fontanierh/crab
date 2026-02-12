@@ -19,6 +19,7 @@ core modules are actually exercised in production flow.
   - Runtime: `crates/crab-app/src/daemon.rs` (`build_turn_context`)
   - Behavior: bootstrap context injected once per physical session; reused sessions send raw user input only
   - Guardrails: token-capped managed docs with explicit failure on budget overflow (no truncation)
+  - Observability: bootstrap context size is logged (`injected_context_tokens`, `injected_context_chars`)
   - Coverage: daemon context wiring tests + full workspace integration tests
 - Rotation trigger + checkpoint persistence:
   - Core: `rotation`, `rotation_sequence`, `checkpoint_fallback`

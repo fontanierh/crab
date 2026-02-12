@@ -86,6 +86,9 @@ No bypasses on main branch.
 - Prefer explicit types and errors over implicit behavior.
 - Avoid panics in production paths; return typed errors.
 - Log with structured, actionable messages.
+- Keep bootstrap-context observability intact:
+  emit injected context size metrics (`injected_context_tokens`, `injected_context_chars`) when a
+  new physical session receives full context injection.
 - Document non-obvious design decisions in code comments or short ADR notes.
 - When rejecting user actions (queue overflow, unsupported operation, invalid command), return explicit user-facing reasons; avoid opaque failure text.
 

@@ -115,6 +115,8 @@ Runtime semantics:
 - Bootstrap context is injected only for new physical sessions (when `last_turn_id` is absent).
 - Reused physical sessions receive only raw turn input.
 - `AGENTS.md` is not inline-injected in context; backend runtimes load it natively.
+- On bootstrap injection, runtime logs injected context size (`injected_context_tokens`,
+  `injected_context_chars`) with logical/physical session correlation ids.
 
 ## Context Budgeting (Token-Capped, No Truncation)
 
@@ -163,6 +165,7 @@ Implemented:
   - resolves scoped memory snippets (`memory/users/<scope>` + recent global)
   - injects latest checkpoint summary from persistent checkpoint store
   - injects full bootstrap context once per physical session and raw turn input on reused sessions
+  - logs bootstrap context size (tokens + chars) at injection time for debugging
   - emits deterministic context diagnostics fixture to tracing
 
 Deferred:

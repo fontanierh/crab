@@ -44,6 +44,7 @@ Implemented and validated in repository code/tests:
   - reused physical sessions receive raw turn input only
   - scoped memory snippet injection + token-budget validation + diagnostics
   - latest checkpoint summary injection from persistent store
+  - bootstrap context size observability logging (`injected_context_tokens`, `injected_context_chars`)
 - Production daemon binary exists: `crabd` (`crates/crab-app/src/bin/crabd.rs`) with:
   - startup boot + reconciliation
   - backend lifecycle ensure (Codex/OpenCode managers)

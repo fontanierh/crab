@@ -288,6 +288,8 @@ Single shared workspace:
 
 Crab composes bootstrap context only when a physical session is first materialized
 (`last_turn_id == None`). Reused physical sessions receive raw user input only.
+At bootstrap injection time, Crab logs injected context size metrics
+(`injected_context_tokens`, `injected_context_chars`) with logical/physical session ids.
 
 Bootstrap context order:
 

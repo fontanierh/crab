@@ -1764,6 +1764,7 @@ impl<D: DaemonDiscordIo> DaemonTurnRuntime<D> {
         &mut self,
         run: &Run,
         logical_session: &crab_core::LogicalSession,
+        physical_session: &crab_core::PhysicalSession,
         inject_bootstrap_context: bool,
     ) -> CrabResult<String> {
         let Some(runtime) = self.turn_context_runtime.clone() else {
@@ -1821,8 +1822,17 @@ impl<D: DaemonDiscordIo> DaemonTurnRuntime<D> {
         {
             let report = build_context_diagnostics_report(&budgeted);
             let fixture = render_context_diagnostics_fixture(&report);
+            tracing::info!(
+                logical_session_id = %run.logical_session_id,
+                physical_session_id = %physical_session.id,
+                run_id = %run.id,
+                injected_context_tokens = report.rendered_context_tokens,
+                injected_context_chars = report.rendered_context_chars,
+                "bootstrap context prepared for physical session"
+            );
             tracing::debug!(
                 logical_session_id = %run.logical_session_id,
+                physical_session_id = %physical_session.id,
                 run_id = %run.id,
                 context_diagnostics = %fixture,
                 "rendered turn context"
@@ -1995,10 +2005,15 @@ impl<D: DaemonDiscordIo> TurnExecutorRuntime for DaemonTurnRuntime<D> {
         &mut self,
         run: &Run,
         logical_session: &crab_core::LogicalSession,
-        _physical_session: &crab_core::PhysicalSession,
+        physical_session: &crab_core::PhysicalSession,
         inject_bootstrap_context: bool,
     ) -> CrabResult<String> {
-        self.build_runtime_turn_context(run, logical_session, inject_bootstrap_context)
+        self.build_runtime_turn_context(
+            run,
+            logical_session,
+            physical_session,
+            inject_bootstrap_context,
+        )
     }
 
     fn execute_backend_turn(

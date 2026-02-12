@@ -245,6 +245,7 @@ Typical workflow once you can SSH to the host over Tailscale:
 2. Grep by identifiers shown in logs:
    - `rg \"run:discord:\" /var/log/crab/runtime.log | tail -n 50`
    - `rg \"rotation (started|completed)\" /var/log/crab/runtime.log | tail -n 50`
+   - `rg \"bootstrap context prepared for physical session|injected_context_tokens|injected_context_chars\" /var/log/crab/runtime.log | tail -n 50`
 3. Inspect service state:
    - Linux: `systemctl status crab` and `journalctl -u crab -f`
    - macOS: `launchctl print system/com.crab.runtime`
