@@ -229,7 +229,7 @@ Backend mapping rules:
   - `reasoning_level`: mapped directly to `turn/start.effort` (`none|minimal|low|medium|high|xhigh`).
 - OpenCode:
   - `model`: applied through OpenCode session/turn model controls.
-  - `reasoning_level`: mapped to native setting when available; otherwise treated as best-effort and injected as run guidance.
+  - `reasoning_level`: mapped directly to OpenCode native reasoning controls on session/turn config.
 
 Profile stickiness:
 
@@ -286,16 +286,34 @@ Single shared workspace:
 
 ### 6.2 Injection Order
 
-Per turn, Crab composes context in this order:
+Crab composes bootstrap context only when a physical session is first materialized
+(`last_turn_id == None`). Reused physical sessions receive raw user input only.
+
+Bootstrap context order:
 
 1. `SOUL.md`
 2. `IDENTITY.md`
-3. `AGENTS.md`
-4. `USER.md`
-5. `MEMORY.md` (curated long-term)
-6. Memory snippets/files (global + current author scope)
-7. Latest checkpoint summary
+3. `USER.md`
+4. `MEMORY.md` (curated long-term)
+5. Memory snippets/files (global + current author scope)
+6. Latest checkpoint summary
+7. Prompt contract (`RUNTIME_PROFILE`, memory policy, skills governance, owner/runtime/messaging notes)
 8. Current turn input
+
+`AGENTS.md` is not inline-injected; backend runtimes load it natively from workspace.
+
+Managed-doc token budgets are strict and non-truncating:
+
+- `SOUL.md`: 2048 tokens
+- `IDENTITY.md`: 2048 tokens
+- `USER.md`: 2048 tokens
+- `MEMORY.md`: 16000 tokens
+- `PROMPT_CONTRACT`: 4096 tokens
+- `LATEST_CHECKPOINT`: 4096 tokens
+- `TURN_INPUT`: 4096 tokens
+
+If a section exceeds its budget, the turn is rejected with an explicit invariant error; Crab does
+not silently truncate context.
 
 ### 6.3 Memory Scope Policy
 
@@ -348,9 +366,10 @@ skill-authoring tasks consistently follow this policy.
 4. Dequeue: scheduler starts run when lane head and global capacity available.
 5. Resolve effective inference profile (`backend`, `model`, `reasoning_level`).
 6. Ensure physical session exists (create or resume).
-7. Build context and start backend turn.
-8. Stream backend events -> normalize -> persist -> deliver.
-9. Finalize run:
+7. Build bootstrap context only for new physical sessions; otherwise use raw turn input.
+8. Start backend turn.
+9. Stream backend events -> normalize -> persist -> deliver.
+10. Finalize run:
    - update usage and last activity
    - evaluate compaction/inactivity/reset rules
    - ack completion in lane
@@ -670,7 +689,7 @@ binary = "opencode"
 serve_port = 4210
 [backends.opencode.inference]
 default_model = "auto"
-reasoning_mode = "best-effort"   # native | best-effort
+# reasoning_level is always mapped through native OpenCode session/turn config
 
 [memory]
 access_mode = "cli"             # cli (v1)

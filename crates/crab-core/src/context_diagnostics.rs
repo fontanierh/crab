@@ -1,14 +1,16 @@
-use std::collections::BTreeSet;
+use std::collections::BTreeMap;
 
-use crate::context_budget::{BudgetedContextOutput, MEMORY_SNIPPET_DROP_MARKER_PATH};
+use crate::context_budget::{
+    estimate_token_count, BudgetedContextOutput, ContextSectionTokenUsage, ContextSnippetTokenUsage,
+};
 
-pub const CONTEXT_DIAGNOSTICS_FIXTURE_HEADER: &str = "CONTEXT_DIAGNOSTICS_V1";
+pub const CONTEXT_DIAGNOSTICS_FIXTURE_HEADER: &str = "CONTEXT_DIAGNOSTICS_V2";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ContextDiagnosticsFileEntry {
     pub file: String,
-    pub chars: usize,
-    pub truncated: bool,
+    pub estimated_tokens: usize,
+    pub budget_tokens: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -16,136 +18,106 @@ pub struct ContextDiagnosticsSnippetEntry {
     pub path: String,
     pub start_line: u32,
     pub end_line: u32,
-    pub chars: usize,
-    pub truncated: bool,
-    pub drop_marker: bool,
+    pub estimated_tokens: usize,
+    pub budget_tokens: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ContextDiagnosticsReport {
     pub injected_files: Vec<ContextDiagnosticsFileEntry>,
-    pub latest_checkpoint_chars: usize,
-    pub latest_checkpoint_truncated: bool,
-    pub turn_input_chars: usize,
-    pub turn_input_truncated: bool,
+    pub latest_checkpoint_tokens: usize,
+    pub latest_checkpoint_budget_tokens: usize,
+    pub turn_input_tokens: usize,
+    pub turn_input_budget_tokens: usize,
     pub memory_snippets: Vec<ContextDiagnosticsSnippetEntry>,
-    pub dropped_memory_snippet_count: usize,
-    pub truncated_sections: Vec<String>,
-    pub truncated_memory_snippet_paths: Vec<String>,
     pub rendered_context_chars: usize,
-    pub total_truncated: bool,
+    pub rendered_context_tokens: usize,
 }
 
 pub fn build_context_diagnostics_report(
     output: &BudgetedContextOutput,
 ) -> ContextDiagnosticsReport {
-    let truncated_sections: BTreeSet<&str> = output
-        .report
-        .truncated_sections
-        .iter()
-        .map(String::as_str)
-        .collect();
-    let truncated_memory_paths: BTreeSet<&str> = output
-        .report
-        .truncated_memory_snippet_paths
-        .iter()
-        .map(String::as_str)
-        .collect();
+    let section_usage_map = section_usage_by_name(&output.report.section_usage);
+    let snippet_usage_map = snippet_usage_by_path(&output.report.snippet_usage);
 
     let injected_files = vec![
-        file_entry(
-            "SOUL.md",
-            &output.budgeted_input.soul_document,
-            &truncated_sections,
-        ),
-        file_entry(
-            "IDENTITY.md",
-            &output.budgeted_input.identity_document,
-            &truncated_sections,
-        ),
-        file_entry(
-            "AGENTS.md",
-            &output.budgeted_input.agents_document,
-            &truncated_sections,
-        ),
-        file_entry(
-            "USER.md",
-            &output.budgeted_input.user_document,
-            &truncated_sections,
-        ),
-        file_entry(
-            "MEMORY.md",
-            &output.budgeted_input.memory_document,
-            &truncated_sections,
-        ),
+        file_entry("SOUL.md", &section_usage_map),
+        file_entry("IDENTITY.md", &section_usage_map),
+        file_entry("USER.md", &section_usage_map),
+        file_entry("MEMORY.md", &section_usage_map),
+        file_entry("PROMPT_CONTRACT", &section_usage_map),
     ];
+
+    let latest_checkpoint_tokens = section_usage_map
+        .get("LATEST_CHECKPOINT")
+        .map(|usage| usage.estimated_tokens)
+        .unwrap_or(0);
+    let latest_checkpoint_budget_tokens = section_usage_map
+        .get("LATEST_CHECKPOINT")
+        .map(|usage| usage.budget_tokens)
+        .unwrap_or(0);
+
+    let turn_input_tokens = section_usage_map
+        .get("TURN_INPUT")
+        .map(|usage| usage.estimated_tokens)
+        .unwrap_or(0);
+    let turn_input_budget_tokens = section_usage_map
+        .get("TURN_INPUT")
+        .map(|usage| usage.budget_tokens)
+        .unwrap_or(0);
 
     let memory_snippets = output
         .budgeted_input
         .memory_snippets
         .iter()
-        .map(|snippet| ContextDiagnosticsSnippetEntry {
-            path: snippet.path.clone(),
-            start_line: snippet.start_line,
-            end_line: snippet.end_line,
-            chars: text_char_count(&snippet.content),
-            truncated: truncated_memory_paths.contains(snippet.path.as_str()),
-            drop_marker: snippet.path == MEMORY_SNIPPET_DROP_MARKER_PATH,
+        .map(|snippet| {
+            let usage = snippet_usage_map
+                .get(snippet.path.as_str())
+                .expect("snippet usage should exist for each injected snippet");
+            ContextDiagnosticsSnippetEntry {
+                path: snippet.path.clone(),
+                start_line: snippet.start_line,
+                end_line: snippet.end_line,
+                estimated_tokens: usage.estimated_tokens,
+                budget_tokens: usage.budget_tokens,
+            }
         })
         .collect();
 
     ContextDiagnosticsReport {
         injected_files,
-        latest_checkpoint_chars: output
-            .budgeted_input
-            .latest_checkpoint_summary
-            .as_deref()
-            .map(text_char_count)
-            .unwrap_or(0),
-        latest_checkpoint_truncated: truncated_sections.contains("LATEST_CHECKPOINT"),
-        turn_input_chars: text_char_count(&output.budgeted_input.turn_input),
-        turn_input_truncated: truncated_sections.contains("TURN_INPUT"),
+        latest_checkpoint_tokens,
+        latest_checkpoint_budget_tokens,
+        turn_input_tokens,
+        turn_input_budget_tokens,
         memory_snippets,
-        dropped_memory_snippet_count: output.report.dropped_memory_snippet_count,
-        truncated_sections: output.report.truncated_sections.clone(),
-        truncated_memory_snippet_paths: output.report.truncated_memory_snippet_paths.clone(),
-        rendered_context_chars: text_char_count(&output.rendered_context),
-        total_truncated: output.report.total_truncated,
+        rendered_context_chars: output.rendered_context.chars().count(),
+        rendered_context_tokens: estimate_token_count(&output.rendered_context),
     }
 }
 
 pub fn render_context_diagnostics_fixture(report: &ContextDiagnosticsReport) -> String {
     let mut lines = vec![
         CONTEXT_DIAGNOSTICS_FIXTURE_HEADER.to_string(),
-        format!("rendered_context_chars={}", report.rendered_context_chars),
-        format!("total_truncated={}", report.total_truncated),
         format!(
-            "latest_checkpoint chars={} truncated={}",
-            report.latest_checkpoint_chars, report.latest_checkpoint_truncated
+            "rendered_context chars={} tokens={}",
+            report.rendered_context_chars, report.rendered_context_tokens
         ),
         format!(
-            "turn_input chars={} truncated={}",
-            report.turn_input_chars, report.turn_input_truncated
+            "latest_checkpoint tokens={} budget_tokens={}",
+            report.latest_checkpoint_tokens, report.latest_checkpoint_budget_tokens
         ),
         format!(
-            "dropped_memory_snippet_count={}",
-            report.dropped_memory_snippet_count
-        ),
-        format!(
-            "truncated_sections={}",
-            render_tokens(&report.truncated_sections)
-        ),
-        format!(
-            "truncated_memory_snippet_paths={}",
-            render_tokens(&report.truncated_memory_snippet_paths)
+            "turn_input tokens={} budget_tokens={}",
+            report.turn_input_tokens, report.turn_input_budget_tokens
         ),
         "injected_files:".to_string(),
     ];
 
     for file in &report.injected_files {
         lines.push(format!(
-            "- {} chars={} truncated={}",
-            file.file, file.chars, file.truncated
+            "- {} tokens={} budget_tokens={}",
+            file.file, file.estimated_tokens, file.budget_tokens
         ));
     }
 
@@ -155,13 +127,12 @@ pub fn render_context_diagnostics_fixture(report: &ContextDiagnosticsReport) -> 
     } else {
         for snippet in &report.memory_snippets {
             lines.push(format!(
-                "- {}:{}-{} chars={} truncated={} drop_marker={}",
+                "- {}:{}-{} tokens={} budget_tokens={}",
                 snippet.path,
                 snippet.start_line,
                 snippet.end_line,
-                snippet.chars,
-                snippet.truncated,
-                snippet.drop_marker
+                snippet.estimated_tokens,
+                snippet.budget_tokens
             ));
         }
     }
@@ -169,28 +140,36 @@ pub fn render_context_diagnostics_fixture(report: &ContextDiagnosticsReport) -> 
     lines.join("\n")
 }
 
+fn section_usage_by_name(
+    section_usage: &[ContextSectionTokenUsage],
+) -> BTreeMap<&str, &ContextSectionTokenUsage> {
+    section_usage
+        .iter()
+        .map(|usage| (usage.section.as_str(), usage))
+        .collect()
+}
+
+fn snippet_usage_by_path(
+    snippet_usage: &[ContextSnippetTokenUsage],
+) -> BTreeMap<&str, &ContextSnippetTokenUsage> {
+    snippet_usage
+        .iter()
+        .map(|usage| (usage.path.as_str(), usage))
+        .collect()
+}
+
 fn file_entry(
     name: &str,
-    value: &str,
-    truncated_sections: &BTreeSet<&str>,
+    section_usage: &BTreeMap<&str, &ContextSectionTokenUsage>,
 ) -> ContextDiagnosticsFileEntry {
+    let usage = section_usage
+        .get(name)
+        .expect("required injected section usage should exist");
     ContextDiagnosticsFileEntry {
         file: name.to_string(),
-        chars: text_char_count(value),
-        truncated: truncated_sections.contains(name),
+        estimated_tokens: usage.estimated_tokens,
+        budget_tokens: usage.budget_tokens,
     }
-}
-
-fn text_char_count(value: &str) -> usize {
-    value.chars().count()
-}
-
-fn render_tokens(values: &[String]) -> String {
-    if values.is_empty() {
-        return "(none)".to_string();
-    }
-
-    values.join(",")
 }
 
 #[cfg(test)]
@@ -206,104 +185,67 @@ mod tests {
     };
 
     fn base_input() -> ContextAssemblyInput {
-        let seeds = [
-            "soul",
-            "identity",
-            "agents",
-            "user",
-            "memory",
-            "checkpoint",
-            "turn",
-        ];
         ContextAssemblyInput {
-            soul_document: format!("{}-section", seeds[0]),
-            identity_document: format!("{}-section", seeds[1]),
-            agents_document: format!("{}-section", seeds[2]),
-            user_document: format!("{}-section", seeds[3]),
-            memory_document: format!("{}-section", seeds[4]),
+            soul_document: "soul section".to_string(),
+            identity_document: "identity section".to_string(),
+            user_document: "user section".to_string(),
+            memory_document: "memory section".to_string(),
             memory_snippets: vec![],
-            latest_checkpoint_summary: Some(format!("{}-summary", seeds[5])),
-            turn_input: format!("{}-input", seeds[6]),
+            latest_checkpoint_summary: Some("checkpoint summary".to_string()),
+            prompt_contract: "prompt contract".to_string(),
+            turn_input: "turn input".to_string(),
         }
     }
 
     fn roomy_policy() -> ContextBudgetPolicy {
         ContextBudgetPolicy {
-            max_total_chars: 12_000,
-            max_section_chars: 2_500,
-            max_turn_input_chars: 2_500,
-            max_memory_snippet_chars: 2_500,
+            max_soul_tokens: 2_500,
+            max_identity_tokens: 2_500,
+            max_user_tokens: 2_500,
+            max_memory_tokens: 2_500,
+            max_prompt_contract_tokens: 2_500,
+            max_latest_checkpoint_tokens: 2_500,
+            max_turn_input_tokens: 2_500,
+            max_memory_snippet_tokens: 2_500,
             ..ContextBudgetPolicy::default()
         }
     }
 
     #[test]
-    fn report_tracks_sizes_and_truncation_decisions() {
+    fn report_tracks_token_usage_for_sections_and_snippets() {
         let mut input = base_input();
-        input.soul_document = "s".repeat(70);
-        input.turn_input = "t".repeat(80);
-        input.latest_checkpoint_summary = Some("c".repeat(60));
         input.memory_snippets = vec![
-            ContextMemorySnippet {
-                path: "memory/users/42/2026-02-08.md".to_string(),
-                start_line: 1,
-                end_line: 1,
-                content: "x".repeat(50),
-            },
             ContextMemorySnippet {
                 path: "memory/users/42/2026-02-09.md".to_string(),
                 start_line: 1,
                 end_line: 1,
-                content: "short".to_string(),
+                content: "alpha beta".to_string(),
             },
             ContextMemorySnippet {
                 path: "memory/users/42/2026-02-10.md".to_string(),
-                start_line: 1,
-                end_line: 1,
-                content: "shorter".to_string(),
+                start_line: 2,
+                end_line: 2,
+                content: "gamma".to_string(),
             },
         ];
 
-        let mut policy = roomy_policy();
-        policy.max_section_chars = 40;
-        policy.max_turn_input_chars = 30;
-        policy.max_memory_snippet_chars = 20;
-        policy.max_memory_snippet_count = 2;
-
-        let output =
-            render_budgeted_turn_context(&input, &policy).expect("context budgeting should work");
+        let output = render_budgeted_turn_context(&input, &roomy_policy())
+            .expect("context budgeting should work");
         let report = build_context_diagnostics_report(&output);
 
         assert_eq!(report.injected_files.len(), 5);
         assert!(report
             .injected_files
             .iter()
-            .any(|entry| entry.file == "SOUL.md" && entry.truncated));
-        assert!(report.latest_checkpoint_truncated);
-        assert!(report.turn_input_truncated);
-
-        assert_eq!(report.dropped_memory_snippet_count, 2);
+            .any(|entry| entry.file == "PROMPT_CONTRACT"));
         assert_eq!(report.memory_snippets.len(), 2);
-        assert!(report
-            .memory_snippets
-            .iter()
-            .any(|entry| { entry.path == "memory/users/42/2026-02-08.md" && entry.truncated }));
-        assert!(report.memory_snippets.iter().any(|entry| entry.drop_marker));
-
-        assert_eq!(
-            report.rendered_context_chars,
-            output.rendered_context.chars().count()
-        );
-        assert_eq!(report.truncated_sections, output.report.truncated_sections);
-        assert_eq!(
-            report.truncated_memory_snippet_paths,
-            output.report.truncated_memory_snippet_paths
-        );
-        assert_eq!(report.total_truncated, output.report.total_truncated);
+        assert!(report.rendered_context_chars > 0);
+        assert!(report.rendered_context_tokens > 0);
 
         let fixture = render_context_diagnostics_fixture(&report);
-        assert!(fixture.contains("truncated_sections=SOUL.md,LATEST_CHECKPOINT,TURN_INPUT"));
-        assert!(fixture.contains("truncated_memory_snippet_paths=memory/users/42/2026-02-08.md"));
+        assert!(fixture.contains("rendered_context chars="));
+        assert!(fixture.contains("latest_checkpoint tokens="));
+        assert!(fixture.contains("turn_input tokens="));
     }
 
     #[test]
@@ -326,8 +268,7 @@ mod tests {
 
         assert_eq!(first, second);
         assert!(first.starts_with(CONTEXT_DIAGNOSTICS_FIXTURE_HEADER));
-        assert!(first.contains("truncated_sections=(none)"));
-        assert!(first.contains("truncated_memory_snippet_paths=(none)"));
+        assert!(first.contains("injected_files:"));
         assert!(first.contains("memory_snippets:"));
         assert!(first.contains("memory/users/42/2026-02-10.md:3-4"));
     }

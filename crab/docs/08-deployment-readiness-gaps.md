@@ -40,8 +40,9 @@ Implemented and validated in repository code/tests:
   - `run_heartbeat_if_due`
 - Runtime turn-context assembly is wired end-to-end in daemon execution:
   - prompt contract compilation per run profile/surface
-  - workspace document injection (`SOUL.md`, `IDENTITY.md`, `AGENTS.md`, `USER.md`, `MEMORY.md`)
-  - scoped memory snippet injection + budgeting + diagnostics
+  - bootstrap workspace document injection (`SOUL.md`, `IDENTITY.md`, `USER.md`, `MEMORY.md`, `PROMPT_CONTRACT`)
+  - reused physical sessions receive raw turn input only
+  - scoped memory snippet injection + token-budget validation + diagnostics
   - latest checkpoint summary injection from persistent store
 - Production daemon binary exists: `crabd` (`crates/crab-app/src/bin/crabd.rs`) with:
   - startup boot + reconciliation

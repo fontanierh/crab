@@ -69,6 +69,7 @@ pub trait TurnExecutorRuntime {
         run: &Run,
         logical_session: &LogicalSession,
         physical_session: &PhysicalSession,
+        inject_bootstrap_context: bool,
     ) -> CrabResult<String>;
 
     fn execute_backend_turn(
@@ -389,9 +390,13 @@ where
                 .session_store
                 .upsert_session(&session)?;
 
-            let turn_context =
-                self.runtime
-                    .build_turn_context(&run, &session, &physical_session)?;
+            let inject_bootstrap_context = physical_session.last_turn_id.is_none();
+            let turn_context = self.runtime.build_turn_context(
+                &run,
+                &session,
+                &physical_session,
+                inject_bootstrap_context,
+            )?;
             backend_events = self.runtime.execute_backend_turn(
                 &mut self.composition.backends.codex,
                 &mut physical_session,
@@ -1790,6 +1795,7 @@ mod tests {
         now_epoch_call_count: usize,
         delivered_outputs: Vec<(String, String, String, u32, String)>,
         executed_turn_contexts: Vec<(String, String)>,
+        build_context_bootstrap_flags: Vec<bool>,
         steps: Vec<String>,
     }
 
@@ -1812,6 +1818,7 @@ mod tests {
                 now_epoch_call_count: 0,
                 delivered_outputs: Vec::new(),
                 executed_turn_contexts: Vec::new(),
+                build_context_bootstrap_flags: Vec::new(),
                 steps: Vec::new(),
             }
         }
@@ -1898,11 +1905,17 @@ mod tests {
 
         fn build_turn_context(
             &mut self,
-            _run: &crab_core::Run,
+            run: &crab_core::Run,
             _logical_session: &crab_core::LogicalSession,
             _physical_session: &crab_core::PhysicalSession,
+            inject_bootstrap_context: bool,
         ) -> CrabResult<String> {
             self.steps.push("build_turn_context".to_string());
+            self.build_context_bootstrap_flags
+                .push(inject_bootstrap_context);
+            if !inject_bootstrap_context {
+                return Ok(run.user_input.clone());
+            }
             Self::pop_result(
                 &mut self.build_context_results,
                 "turn_executor_test_build_context",
@@ -2658,11 +2671,10 @@ mod tests {
                 backend: BackendKind::Codex,
                 backend_session_id: "thread-abc".to_string(),
                 created_at_epoch_ms: 1_739_173_200_000,
-                last_turn_id: None,
+                last_turn_id: Some("turn-previous".to_string()),
             }),
         ]);
-        runtime.build_context_results =
-            VecDeque::from(vec![Ok("context".to_string()), Ok("context".to_string())]);
+        runtime.build_context_results = VecDeque::from(vec![Ok("context".to_string())]);
         let mut executor = build_executor(&workspace, runtime, 8);
 
         executor
@@ -2684,6 +2696,23 @@ mod tests {
         assert_eq!(session.token_accounting.input_tokens, 10);
         assert_eq!(session.token_accounting.output_tokens, 9);
         assert_eq!(session.token_accounting.total_tokens, 21);
+        assert_eq!(
+            executor.runtime_mut().build_context_bootstrap_flags,
+            vec![true, false]
+        );
+        assert_eq!(
+            executor.runtime_mut().executed_turn_contexts,
+            vec![
+                (
+                    "turn:run:discord:channel:777:m-usage-1".to_string(),
+                    "context".to_string()
+                ),
+                (
+                    "turn:run:discord:channel:777:m-usage-2".to_string(),
+                    "ship ws15-t2".to_string()
+                ),
+            ]
+        );
     }
 
     #[test]

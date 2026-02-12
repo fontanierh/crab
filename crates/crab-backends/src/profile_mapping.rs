@@ -16,17 +16,10 @@ pub struct ClaudeInferenceConfig {
     pub thinking_mode: ClaudeThinkingMode,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum OpenCodeReasoningMode {
-    Native,
-    BestEffort,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OpenCodeInferenceMapping {
     pub session_config: OpenCodeSessionConfig,
     pub turn_config: OpenCodeTurnConfig,
-    pub guidance_note: Option<String>,
 }
 
 pub fn map_claude_inference_profile(profile: &InferenceProfile) -> ClaudeInferenceConfig {
@@ -50,23 +43,9 @@ pub fn map_codex_turn_config(profile: &InferenceProfile) -> CodexTurnConfig {
     }
 }
 
-pub fn map_opencode_inference_profile(
-    profile: &InferenceProfile,
-    reasoning_mode: OpenCodeReasoningMode,
-) -> OpenCodeInferenceMapping {
+pub fn map_opencode_inference_profile(profile: &InferenceProfile) -> OpenCodeInferenceMapping {
     let model = model_override(profile);
-    let reasoning_token = profile.reasoning_level.as_token();
-
-    let (reasoning_level, guidance_note) = match reasoning_mode {
-        OpenCodeReasoningMode::Native => (Some(reasoning_token.to_string()), None),
-        OpenCodeReasoningMode::BestEffort => (
-            None,
-            Some(format!(
-                "Prefer {} reasoning level for this turn.",
-                reasoning_token
-            )),
-        ),
-    };
+    let reasoning_level = Some(profile.reasoning_level.as_token().to_string());
 
     OpenCodeInferenceMapping {
         session_config: OpenCodeSessionConfig {
@@ -77,7 +56,6 @@ pub fn map_opencode_inference_profile(
             model,
             reasoning_level,
         },
-        guidance_note,
     }
 }
 
@@ -94,7 +72,7 @@ mod tests {
 
     use super::{
         map_claude_inference_profile, map_codex_turn_config, map_opencode_inference_profile,
-        ClaudeThinkingMode, OpenCodeReasoningMode,
+        ClaudeThinkingMode,
     };
 
     fn profile(
@@ -156,7 +134,7 @@ mod tests {
     #[test]
     fn opencode_native_mapping_sets_reasoning_level_directly() {
         let input = profile(BackendKind::OpenCode, "o4-mini", ReasoningLevel::Medium);
-        let mapped = map_opencode_inference_profile(&input, OpenCodeReasoningMode::Native);
+        let mapped = map_opencode_inference_profile(&input);
         assert_eq!(mapped.session_config.model, Some("o4-mini".to_string()));
         assert_eq!(
             mapped.session_config.reasoning_level,
@@ -167,24 +145,25 @@ mod tests {
             mapped.turn_config.reasoning_level,
             Some("medium".to_string())
         );
-        assert_eq!(mapped.guidance_note, None);
     }
 
     #[test]
-    fn opencode_best_effort_mapping_emits_guidance_note() {
+    fn opencode_mapping_uses_native_reasoning_even_for_auto_model() {
         let input = profile(
             BackendKind::OpenCode,
             AUTO_MODEL_ALIAS,
             ReasoningLevel::XHigh,
         );
-        let mapped = map_opencode_inference_profile(&input, OpenCodeReasoningMode::BestEffort);
+        let mapped = map_opencode_inference_profile(&input);
         assert_eq!(mapped.session_config.model, None);
-        assert_eq!(mapped.session_config.reasoning_level, None);
-        assert_eq!(mapped.turn_config.model, None);
-        assert_eq!(mapped.turn_config.reasoning_level, None);
         assert_eq!(
-            mapped.guidance_note,
-            Some("Prefer xhigh reasoning level for this turn.".to_string())
+            mapped.session_config.reasoning_level,
+            Some("xhigh".to_string())
+        );
+        assert_eq!(mapped.turn_config.model, None);
+        assert_eq!(
+            mapped.turn_config.reasoning_level,
+            Some("xhigh".to_string())
         );
     }
 }

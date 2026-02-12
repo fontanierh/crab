@@ -9,11 +9,11 @@ const EMPTY_CHECKPOINT_MARKER: &str = "(none)";
 pub const CONTEXT_INJECTION_ORDER: [&str; 8] = [
     "SOUL.md",
     "IDENTITY.md",
-    "AGENTS.md",
     "USER.md",
     "MEMORY.md",
     "MEMORY_SNIPPETS",
     "LATEST_CHECKPOINT",
+    "PROMPT_CONTRACT",
     "TURN_INPUT",
 ];
 
@@ -29,11 +29,11 @@ pub struct ContextMemorySnippet {
 pub struct ContextAssemblyInput {
     pub soul_document: String,
     pub identity_document: String,
-    pub agents_document: String,
     pub user_document: String,
     pub memory_document: String,
     pub memory_snippets: Vec<ContextMemorySnippet>,
     pub latest_checkpoint_summary: Option<String>,
+    pub prompt_contract: String,
     pub turn_input: String,
 }
 
@@ -52,14 +52,10 @@ pub fn assemble_turn_context(input: &ContextAssemblyInput) -> CrabResult<String>
     ));
     sections.push(render_section(
         CONTEXT_INJECTION_ORDER[2],
-        &input.agents_document,
-    ));
-    sections.push(render_section(
-        CONTEXT_INJECTION_ORDER[3],
         &input.user_document,
     ));
     sections.push(render_section(
-        CONTEXT_INJECTION_ORDER[4],
+        CONTEXT_INJECTION_ORDER[3],
         &input.memory_document,
     ));
     sections.push(render_memory_snippets_section(&input.memory_snippets));
@@ -70,7 +66,11 @@ pub fn assemble_turn_context(input: &ContextAssemblyInput) -> CrabResult<String>
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .unwrap_or(EMPTY_CHECKPOINT_MARKER);
-    sections.push(render_section(CONTEXT_INJECTION_ORDER[6], checkpoint));
+    sections.push(render_section(CONTEXT_INJECTION_ORDER[5], checkpoint));
+    sections.push(render_section(
+        CONTEXT_INJECTION_ORDER[6],
+        &input.prompt_contract,
+    ));
     sections.push(render_section(
         CONTEXT_INJECTION_ORDER[7],
         &input.turn_input,
@@ -79,7 +79,7 @@ pub fn assemble_turn_context(input: &ContextAssemblyInput) -> CrabResult<String>
     Ok(sections.join("\n\n"))
 }
 
-pub fn sort_memory_snippets(snippets: &mut [ContextMemorySnippet]) {
+fn sort_memory_snippets(snippets: &mut [ContextMemorySnippet]) {
     snippets.sort_by(|left, right| {
         (
             left.path.as_str(),
@@ -126,7 +126,7 @@ fn validate_memory_snippets(snippets: &[ContextMemorySnippet]) -> CrabResult<()>
 
 fn render_memory_snippets_section(snippets: &[ContextMemorySnippet]) -> String {
     if snippets.is_empty() {
-        return render_section(CONTEXT_INJECTION_ORDER[5], EMPTY_SNIPPETS_MARKER);
+        return render_section(CONTEXT_INJECTION_ORDER[4], EMPTY_SNIPPETS_MARKER);
     }
 
     let mut normalized = snippets.to_vec();
@@ -144,7 +144,7 @@ fn render_memory_snippets_section(snippets: &[ContextMemorySnippet]) -> String {
         lines.push(normalize_section_body(&snippet.content));
     }
 
-    render_section(CONTEXT_INJECTION_ORDER[5], &lines.join("\n"))
+    render_section(CONTEXT_INJECTION_ORDER[4], &lines.join("\n"))
 }
 
 fn render_section(name: &str, body: &str) -> String {
@@ -170,7 +170,6 @@ mod tests {
         ContextAssemblyInput {
             soul_document: "Soul section".to_string(),
             identity_document: "Identity section".to_string(),
-            agents_document: "Agents section".to_string(),
             user_document: "User section".to_string(),
             memory_document: "Memory section".to_string(),
             memory_snippets: vec![
@@ -188,6 +187,7 @@ mod tests {
                 },
             ],
             latest_checkpoint_summary: Some("Checkpoint summary".to_string()),
+            prompt_contract: "Prompt contract section".to_string(),
             turn_input: "Current user message".to_string(),
         }
     }
@@ -199,11 +199,11 @@ mod tests {
             [
                 "SOUL.md",
                 "IDENTITY.md",
-                "AGENTS.md",
                 "USER.md",
                 "MEMORY.md",
                 "MEMORY_SNIPPETS",
                 "LATEST_CHECKPOINT",
+                "PROMPT_CONTRACT",
                 "TURN_INPUT",
             ]
         );
@@ -216,11 +216,11 @@ mod tests {
         let expected_sections = [
             "## SOUL.md",
             "## IDENTITY.md",
-            "## AGENTS.md",
             "## USER.md",
             "## MEMORY.md",
             "## MEMORY_SNIPPETS",
             "## LATEST_CHECKPOINT",
+            "## PROMPT_CONTRACT",
             "## TURN_INPUT",
         ];
 
@@ -234,6 +234,7 @@ mod tests {
 
         assert!(rendered.contains("Soul section"));
         assert!(rendered.contains("Checkpoint summary"));
+        assert!(rendered.contains("Prompt contract section"));
         assert!(rendered.contains("Current user message"));
     }
 

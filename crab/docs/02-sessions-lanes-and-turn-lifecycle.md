@@ -69,7 +69,9 @@ Current orchestration path in `crates/crab-app/src/turn_executor.rs`:
 6. Dispatch when lane is eligible
 7. Resolve run profile (backend/model/reasoning)
 8. Ensure physical session
-9. Build turn context
+9. Build turn context:
+   - bootstrap context only when the physical session is new (`last_turn_id` absent)
+   - raw user input when reusing an existing physical session
 10. Execute backend turn
 11. Normalize + persist events
 12. Stream accumulated assistant output via delivery ledger

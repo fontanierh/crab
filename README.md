@@ -44,6 +44,12 @@ Crab is a Rust harness for running coding agents (Claude Code, Codex CLI, OpenCo
   - `WS22-T3` complete: migration fixture coverage exists for initial `v0 -> v1`, no-op rerun, stale-lock recovery, active-lock blocking, and corrupt-marker handling.
   - `WS22-T4` complete: schema evolution governance is documented in contributor policy/docs.
   - `WS22-T5` complete as design scope: snapshot/restore command-path design note is documented and command implementation remains intentionally deferred.
+- `WS23` complete:
+  - `WS23-T1` complete: runtime no longer inline-injects `AGENTS.md`; prompt contract is injected as its own context section.
+  - `WS23-T2` complete: bootstrap context is injected once per physical session; reused sessions receive raw user input only.
+  - `WS23-T3` complete: char-truncation path removed; managed docs now use strict token budgets with explicit overflow errors.
+  - `WS23-T4` complete: OpenCode uses native reasoning mapping without synthetic prompt guidance suffix.
+  - `WS23-T5` complete: docs and tests are aligned with the new context lifecycle semantics.
 
 ## Docs
 

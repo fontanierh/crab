@@ -52,7 +52,7 @@ pub use opencode_recovery::{
 };
 pub use profile_mapping::{
     map_claude_inference_profile, map_codex_turn_config, map_opencode_inference_profile,
-    ClaudeInferenceConfig, ClaudeThinkingMode, OpenCodeInferenceMapping, OpenCodeReasoningMode,
+    ClaudeInferenceConfig, ClaudeThinkingMode, OpenCodeInferenceMapping,
 };
 
 pub type BackendEventStream = Pin<Box<dyn Stream<Item = BackendEvent> + Send>>;

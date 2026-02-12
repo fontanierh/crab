@@ -17,6 +17,8 @@ core modules are actually exercised in production flow.
   - Core: `prompt_contract`, `memory_snippets`, `context_assembly`, `context_budget`,
     `context_diagnostics`
   - Runtime: `crates/crab-app/src/daemon.rs` (`build_turn_context`)
+  - Behavior: bootstrap context injected once per physical session; reused sessions send raw user input only
+  - Guardrails: token-capped managed docs with explicit failure on budget overflow (no truncation)
   - Coverage: daemon context wiring tests + full workspace integration tests
 - Rotation trigger + checkpoint persistence:
   - Core: `rotation`, `rotation_sequence`, `checkpoint_fallback`

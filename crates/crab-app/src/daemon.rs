@@ -12,9 +12,9 @@ use crab_backends::{
     claude::ClaudeRawEvent, map_opencode_inference_profile, normalize_opencode_events,
     recover_opencode_session, BackendEvent, BackendHarness, ClaudeBackend, ClaudeProcess,
     CodexAppServerProcess, CodexLifecycleManager, OpenCodeManager, OpenCodeRawEvent,
-    OpenCodeReasoningMode, OpenCodeRecoveryPlan, OpenCodeRecoveryRuntime, OpenCodeServerHandle,
-    OpenCodeServerProcess, OpenCodeSessionConfig, OpenCodeTokenUsage, OpenCodeTurnConfig,
-    OpenCodeTurnState, SessionContext, TurnInput,
+    OpenCodeRecoveryPlan, OpenCodeRecoveryRuntime, OpenCodeServerHandle, OpenCodeServerProcess,
+    OpenCodeSessionConfig, OpenCodeTokenUsage, OpenCodeTurnConfig, OpenCodeTurnState,
+    SessionContext, TurnInput,
 };
 #[cfg(not(any(test, coverage)))]
 use crab_backends::{map_claude_inference_profile, ClaudeThinkingMode};
@@ -27,8 +27,8 @@ use crab_core::{
     CrabError, CrabResult, InferenceProfile, InferenceProfileResolutionInput, MemoryCitationMode,
     OwnerConfig, PromptContractInput, ReasoningLevel, Run, RunProfileTelemetry, RuntimeConfig,
     ScopedMemorySnippetResolverInput, SenderConversationKind, SenderIdentityInput, TrustSurface,
-    AGENTS_FILE_NAME, IDENTITY_FILE_NAME, MEMORY_FILE_NAME, OWNER_MEMORY_SCOPE_DIRECTORY,
-    SOUL_FILE_NAME, USER_FILE_NAME,
+    IDENTITY_FILE_NAME, MEMORY_FILE_NAME, OWNER_MEMORY_SCOPE_DIRECTORY, SOUL_FILE_NAME,
+    USER_FILE_NAME,
 };
 use crab_discord::GatewayMessage;
 use crab_store::CheckpointStore;
@@ -1220,7 +1220,6 @@ impl OpenCodeRecoveryRuntime for OpenCodeRecoveryBridgeRuntimeAdapter<'_> {
 struct OpenCodeExecutionBridge {
     server_base_url: String,
     runtime: Box<dyn OpenCodeBridgeRuntime>,
-    reasoning_mode: OpenCodeReasoningMode,
 }
 
 impl OpenCodeExecutionBridge {
@@ -1235,7 +1234,6 @@ impl OpenCodeExecutionBridge {
         Ok(Self {
             server_base_url,
             runtime,
-            reasoning_mode: OpenCodeReasoningMode::BestEffort,
         })
     }
 
@@ -1245,9 +1243,8 @@ impl OpenCodeExecutionBridge {
         run: &Run,
         turn_context: &str,
     ) -> CrabResult<Vec<BackendEvent>> {
-        let mapping =
-            map_opencode_inference_profile(&run.profile.resolved_profile, self.reasoning_mode);
-        let prompt = build_opencode_prompt(turn_context, mapping.guidance_note.as_deref());
+        let mapping = map_opencode_inference_profile(&run.profile.resolved_profile);
+        let prompt = turn_context.to_string();
         if should_materialize_opencode_session(physical_session) {
             let recovery_result = self.recover_session_with_helper(
                 None,
@@ -1338,16 +1335,6 @@ fn should_retry_opencode_session_recovery(error: &CrabError) -> bool {
     }
 }
 
-fn build_opencode_prompt(turn_context: &str, guidance_note: Option<&str>) -> String {
-    match guidance_note {
-        Some(note) if !note.trim().is_empty() => {
-            let trimmed_note = note.trim();
-            format!("{turn_context}\n\n[opencode_reasoning_guidance]\n{trimmed_note}")
-        }
-        _ => turn_context.to_string(),
-    }
-}
-
 #[derive(Debug)]
 struct DaemonBackendBridge {
     codex: Box<dyn CodexBackendDebugBridge>,
@@ -1414,7 +1401,6 @@ impl DaemonBackendBridge {
         self.opencode = Some(OpenCodeExecutionBridge {
             server_base_url,
             runtime,
-            reasoning_mode: OpenCodeReasoningMode::BestEffort,
         });
     }
 
@@ -1761,10 +1747,14 @@ impl<D: DaemonDiscordIo> DaemonTurnRuntime<D> {
         &mut self,
         run: &Run,
         logical_session: &crab_core::LogicalSession,
+        inject_bootstrap_context: bool,
     ) -> CrabResult<String> {
         let Some(runtime) = self.turn_context_runtime.clone() else {
             return Ok(run.user_input.clone());
         };
+        if !inject_bootstrap_context {
+            return Ok(run.user_input.clone());
+        }
 
         let reference_date = epoch_ms_to_yyyy_mm_dd(self.now_epoch_ms()?)?;
         let memory_scope_directory = memory_scope_directory_for_run(run);
@@ -1789,7 +1779,6 @@ impl<D: DaemonDiscordIo> DaemonTurnRuntime<D> {
             memory_recall_surface,
         })?;
 
-        let agents_document = read_workspace_markdown(&runtime.workspace_root, AGENTS_FILE_NAME)?;
         let checkpoint_summary =
             load_latest_checkpoint_summary(logical_session, &runtime.checkpoint_store)?;
         let context_input = ContextAssemblyInput {
@@ -1798,11 +1787,11 @@ impl<D: DaemonDiscordIo> DaemonTurnRuntime<D> {
                 &runtime.workspace_root,
                 IDENTITY_FILE_NAME,
             )?,
-            agents_document: render_agents_with_prompt_contract(&agents_document, &prompt_contract),
             user_document: read_workspace_markdown(&runtime.workspace_root, USER_FILE_NAME)?,
             memory_document: read_workspace_markdown(&runtime.workspace_root, MEMORY_FILE_NAME)?,
             memory_snippets,
             latest_checkpoint_summary: checkpoint_summary,
+            prompt_contract,
             turn_input: run.user_input.clone(),
         };
         let budgeted =
@@ -1968,8 +1957,9 @@ impl<D: DaemonDiscordIo> TurnExecutorRuntime for DaemonTurnRuntime<D> {
         run: &Run,
         logical_session: &crab_core::LogicalSession,
         _physical_session: &crab_core::PhysicalSession,
+        inject_bootstrap_context: bool,
     ) -> CrabResult<String> {
-        self.build_runtime_turn_context(run, logical_session)
+        self.build_runtime_turn_context(run, logical_session, inject_bootstrap_context)
     }
 
     fn execute_backend_turn(
@@ -2267,15 +2257,6 @@ fn epoch_ms_from_duration(duration: Duration) -> CrabResult<u64> {
     })
 }
 
-fn render_agents_with_prompt_contract(agents_document: &str, prompt_contract: &str) -> String {
-    let normalized_agents = agents_document.trim();
-    if normalized_agents.is_empty() {
-        return prompt_contract.to_string();
-    }
-
-    format!("{normalized_agents}\n\n{prompt_contract}")
-}
-
 fn read_workspace_markdown(workspace_root: &Path, file_name: &str) -> CrabResult<String> {
     let path = workspace_root.join(file_name);
     match fs::read_to_string(&path) {
@@ -2366,8 +2347,7 @@ mod tests {
     use super::{
         conversation_kind_for_logical_session_id, epoch_ms_from_duration,
         epoch_ms_from_system_time, epoch_ms_to_yyyy_mm_dd, load_latest_checkpoint_summary,
-        memory_scope_directory_for_run, read_workspace_markdown,
-        render_agents_with_prompt_contract, run_daemon_loop_with_transport,
+        memory_scope_directory_for_run, read_workspace_markdown, run_daemon_loop_with_transport,
         run_daemon_loop_with_transport_and_runtime_builder, trust_surface_for_logical_session_id,
         DaemonBackendExecutionBridge, DaemonClaudeProcess, DaemonConfig, DaemonDiscordIo,
         DaemonLoopControl, DaemonLoopStats, DaemonTurnRuntime, OpenCodeBridgeRuntime,
@@ -3980,23 +3960,6 @@ mod tests {
     }
 
     #[test]
-    fn helper_build_opencode_prompt_covers_guidance_and_fallback_paths() {
-        let turn_context = "primary context";
-        assert_eq!(
-            super::build_opencode_prompt(turn_context, None),
-            turn_context.to_string()
-        );
-        assert_eq!(
-            super::build_opencode_prompt(turn_context, Some("   ")),
-            turn_context.to_string()
-        );
-        assert_eq!(
-            super::build_opencode_prompt(turn_context, Some("  use high effort  ")),
-            "primary context\n\n[opencode_reasoning_guidance]\nuse high effort".to_string()
-        );
-    }
-
-    #[test]
     fn opencode_execution_bridge_rejects_blank_server_base_url() {
         let runtime = ScriptedOpenCodeBridgeRuntime::with_results(Vec::new(), Vec::new());
         let error = super::OpenCodeExecutionBridge::new("   ".to_string(), Box::new(runtime))
@@ -4102,9 +4065,9 @@ mod tests {
             bridge_stats.seen_ended_session_ids,
             vec!["opencode-session-initial".to_string()]
         );
-        assert!(
-            bridge_stats.seen_prompts[0].contains("[opencode_reasoning_guidance]"),
-            "bridge prompt should include mapped guidance"
+        assert_eq!(
+            bridge_stats.seen_prompts[0],
+            "runtime turn context".to_string()
         );
         assert_eq!(
             physical_session.backend_session_id,
@@ -6295,8 +6258,39 @@ mod tests {
             )
             .expect("physical session should resolve");
         let context = runtime
-            .build_turn_context(&run, &session, &physical)
+            .build_turn_context(&run, &session, &physical, true)
             .expect("context build should succeed");
+        assert_eq!(context, run.user_input);
+    }
+
+    #[test]
+    fn daemon_runtime_build_turn_context_skips_bootstrap_injection_when_not_requested() {
+        let workspace = TempWorkspace::new("daemon", "context-non-bootstrap");
+        let config = runtime_config_for_workspace_with_lanes(&workspace.path, 1);
+        std::fs::create_dir_all(&workspace.path).expect("workspace root should be creatable");
+        std::fs::create_dir_all(workspace.path.join("IDENTITY.md"))
+            .expect("IDENTITY.md directory should be creatable");
+        let state_root = workspace.path.join("state");
+        std::fs::create_dir_all(&state_root).expect("state root should be creatable");
+        let checkpoint_store = CheckpointStore::new(&state_root);
+
+        let discord = ScriptedDiscordIo::with_state(DiscordIoState::default());
+        let mut runtime =
+            DaemonTurnRuntime::new(config.owner.clone(), discord).expect("runtime builds");
+        runtime.configure_turn_context_runtime(workspace.path.clone(), checkpoint_store);
+
+        let run = sample_run("123");
+        let session = sample_session(LaneState::Idle, None);
+        let physical = runtime
+            .ensure_physical_session(
+                &run.logical_session_id,
+                &run.profile.resolved_profile,
+                session.active_physical_session_id.as_deref(),
+            )
+            .expect("physical session should resolve");
+        let context = runtime
+            .build_turn_context(&run, &session, &physical, false)
+            .expect("non-bootstrap context build should bypass workspace reads");
         assert_eq!(context, run.user_input);
     }
 
@@ -6311,8 +6305,6 @@ mod tests {
             .expect("SOUL.md should be writable");
         std::fs::write(workspace.path.join("IDENTITY.md"), "Identity profile")
             .expect("IDENTITY.md should be writable");
-        std::fs::write(workspace.path.join("AGENTS.md"), "Agent operating rules")
-            .expect("AGENTS.md should be writable");
         std::fs::write(workspace.path.join("USER.md"), "Owner profile")
             .expect("USER.md should be writable");
         std::fs::write(workspace.path.join("MEMORY.md"), "Curated memory")
@@ -6355,13 +6347,13 @@ mod tests {
             )
             .expect("physical session should resolve");
         let context = runtime
-            .build_turn_context(&run, &session, &physical)
+            .build_turn_context(&run, &session, &physical, true)
             .expect("context should render");
 
         assert!(context.contains("## SOUL.md"));
         assert!(context.contains("Soul profile"));
-        assert!(context.contains("## AGENTS.md"));
         assert!(context.contains("## RUNTIME_PROFILE"));
+        assert!(context.contains("## PROMPT_CONTRACT"));
         assert!(context.contains("memory/users/123/2026-02-10.md"));
         assert!(context.contains("checkpoint_id: ckpt-1"));
         assert!(context.contains("## TURN_INPUT"));
@@ -6379,8 +6371,6 @@ mod tests {
             .expect("SOUL.md should be writable");
         std::fs::create_dir_all(workspace.path.join("IDENTITY.md"))
             .expect("IDENTITY.md directory should be creatable");
-        std::fs::write(workspace.path.join("AGENTS.md"), "Agent operating rules")
-            .expect("AGENTS.md should be writable");
         std::fs::write(workspace.path.join("USER.md"), "Owner profile")
             .expect("USER.md should be writable");
         std::fs::write(workspace.path.join("MEMORY.md"), "Curated memory")
@@ -6410,7 +6400,7 @@ mod tests {
             )
             .expect("physical session should resolve");
         let error = runtime
-            .build_turn_context(&run, &session, &physical)
+            .build_turn_context(&run, &session, &physical, true)
             .expect_err("IDENTITY.md read failures should propagate");
         assert!(matches!(
             error,
@@ -6419,18 +6409,6 @@ mod tests {
                 ..
             }
         ));
-    }
-
-    #[test]
-    fn helper_render_agents_with_prompt_contract_covers_empty_and_non_empty_inputs() {
-        assert_eq!(
-            render_agents_with_prompt_contract("   ", "prompt contract"),
-            "prompt contract".to_string()
-        );
-        assert_eq!(
-            render_agents_with_prompt_contract("agents", "prompt contract"),
-            "agents\n\nprompt contract".to_string()
-        );
     }
 
     #[test]

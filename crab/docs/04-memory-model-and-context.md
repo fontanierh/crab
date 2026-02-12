@@ -95,24 +95,35 @@ Context assembly order (`crates/crab-core/src/context_assembly.rs`):
 
 1. `SOUL.md`
 2. `IDENTITY.md`
-3. `AGENTS.md`
-4. `USER.md`
-5. `MEMORY.md`
-6. memory snippets
-7. latest checkpoint summary
+3. `USER.md`
+4. `MEMORY.md`
+5. memory snippets
+6. latest checkpoint summary
+7. `PROMPT_CONTRACT`
 8. turn input
 
-## Context Budgeting And Truncation
+Runtime semantics:
 
-`render_budgeted_turn_context` (`crates/crab-core/src/context_budget.rs`) applies:
+- Bootstrap context is injected only for new physical sessions (when `last_turn_id` is absent).
+- Reused physical sessions receive only raw turn input.
+- `AGENTS.md` is not inline-injected in context; backend runtimes load it natively.
 
-- per-section char budget
-- turn-input budget
-- per-snippet budget
-- max snippet count
-- total context budget
+## Context Budgeting (Token-Capped, No Truncation)
 
-Truncation markers are explicit and persisted in diagnostics-friendly form.
+`render_budgeted_turn_context` (`crates/crab-core/src/context_budget.rs`) enforces strict token budgets:
+
+- `SOUL.md`: 2048
+- `IDENTITY.md`: 2048
+- `USER.md`: 2048
+- `MEMORY.md`: 16000
+- `PROMPT_CONTRACT`: 4096
+- `LATEST_CHECKPOINT`: 4096
+- `TURN_INPUT`: 4096
+- memory snippet max tokens: 2048 each
+- memory snippet max count: 8
+
+When a budget is exceeded, context assembly fails with an explicit invariant error. Crab does not
+truncate injected content.
 
 ## Citation And Disclosure Policy
 
@@ -139,9 +150,10 @@ Implemented:
 - citation/disclosure prompt policy
 - runtime context wiring in `DaemonTurnRuntime::build_turn_context`:
   - compiles prompt contract per run profile/surface
-  - injects `SOUL.md`/`IDENTITY.md`/`AGENTS.md`/`USER.md`/`MEMORY.md`
+  - injects `SOUL.md`/`IDENTITY.md`/`USER.md`/`MEMORY.md` + `PROMPT_CONTRACT`
   - resolves scoped memory snippets (`memory/users/<scope>` + recent global)
   - injects latest checkpoint summary from persistent checkpoint store
+  - injects full bootstrap context once per physical session and raw turn input on reused sessions
   - emits deterministic context diagnostics fixture to tracing
 
 Deferred:

@@ -40,6 +40,7 @@ This document breaks the Crab implementation into execution workstreams and issu
 | WS20 | Skills compatibility and governance | Canonical `.agents/skills` layout, Claude compatibility symlink, built-in skill authoring policy |
 | WS21 | Workspace private Git persistence | Durable workspace history in private repo with safe async push/retry |
 | WS22 | Runtime state evolution and migration safety | Versioned state marker, startup migrator, actionable compatibility preflight, migration governance |
+| WS23 | Session context lifecycle hardening | Bootstrap-only context injection, token-capped managed docs, native backend reasoning mapping |
 
 ## 3) Detailed Workstreams and Tasks
 
@@ -759,6 +760,52 @@ Status (as of 2026-02-12): scoped deliverables complete (`WS22-T1` to `WS22-T4` 
    - recommendation captured: implement minimal local snapshot/restore in next hardening wave after deployment acceptance
    - trigger conditions defined for promoting this deferred work to active implementation
 
+### WS23 - Session Context Lifecycle Hardening
+
+### WS23-T1 - Stop inline `AGENTS.md` injection in runtime turn context
+- Remove `AGENTS.md` from inline context assembly payload.
+- Keep `AGENTS.md` as workspace policy file and `CLAUDE.md -> AGENTS.md` compatibility link.
+- Ensure prompt contract remains explicit as its own context section.
+- Done criteria: runtime context no longer contains an `AGENTS.md` section.
+ - Implemented:
+   - `ContextAssemblyInput` no longer carries `agents_document`; replaced with explicit `prompt_contract`.
+   - daemon context assembly no longer reads/inlines `AGENTS.md`.
+
+### WS23-T2 - Inject full bootstrap context once per physical session
+- Inject full context only when physical session is newly materialized.
+- Reused physical sessions should receive only raw turn input.
+- Preserve checkpoint/bootstrap continuity for newly created sessions.
+- Done criteria: repeated turns in same physical session do not replay large static context.
+ - Implemented:
+   - `TurnExecutor` now passes `inject_bootstrap_context` based on `physical_session.last_turn_id`.
+   - daemon runtime returns raw `run.user_input` when bootstrap injection is not requested.
+
+### WS23-T3 - Replace char truncation with token-capped managed docs and full injection
+- Remove character-based truncation and truncation markers.
+- Enforce strict token budgets for managed docs and bootstrap sections.
+- Fail fast with explicit invariant errors on overflow.
+- Done criteria: no silent context truncation paths remain.
+ - Implemented:
+   - `context_budget` now enforces token budgets (`SOUL`/`IDENTITY`/`USER` 2048, `MEMORY` 16000, `PROMPT_CONTRACT` 4096, checkpoint/turn input 4096).
+   - budget overflow is explicit error; no truncation/drop markers are produced.
+
+### WS23-T4 - Remove synthetic OpenCode reasoning suffix
+- Stop appending synthetic `[opencode_reasoning_guidance]` prompt suffix.
+- Map reasoning to native OpenCode session/turn controls directly.
+- Done criteria: OpenCode prompts are unmodified turn context and reasoning is carried by config.
+ - Implemented:
+   - `map_opencode_inference_profile` now always maps native reasoning level directly.
+   - daemon OpenCode bridge now sends turn context as-is with no guidance suffix path.
+
+### WS23-T5 - Context lifecycle docs and coverage hardening
+- Update architecture docs to reflect bootstrap-only injection and token-cap policy.
+- Add/adjust tests across core/runtime to lock semantics.
+- Done criteria: docs and tests are aligned with runtime behavior.
+ - Implemented:
+   - context assembly/budget/diagnostics tests updated for new schema and policy.
+   - daemon and turn-executor tests assert bootstrap-only context injection behavior.
+   - design + handbook docs updated (`DESIGN.md`, `02`, `04`, `06`, `08`, `11`).
+
 ## 4) Dependency Order and Critical Path
 
 Execution order:
@@ -780,10 +827,11 @@ Execution order:
 15. WS21 after WS15 and WS17; required before deployment evidence is finalized
 16. WS19 after WS18, WS20, and WS21; final installation/provisioning cutover on target macOS/Linux hosts
 17. WS22 after WS1, WS10, and WS19; required before declaring deployment-readiness closure for in-place upgrades
+18. WS23 after WS13 and WS15; required before deployment to avoid duplicate context replay and silent truncation behavior
 
 Critical path to MVP:
 
-- WS0, WS1, WS2, WS3, WS4, WS7, WS8, WS9, WS10, WS11, WS12, WS13, WS14, WS15, WS16, WS17, WS18, WS20, WS21, WS19, WS22
+- WS0, WS1, WS2, WS3, WS4, WS7, WS8, WS9, WS10, WS11, WS12, WS13, WS14, WS15, WS16, WS17, WS18, WS20, WS21, WS19, WS22, WS23
 
 Codex/OpenCode parity path:
 
@@ -824,8 +872,8 @@ Codex/OpenCode parity path:
 - Exit criteria: canonical skills policy is enforced across backends, workspace state is durably persisted to private git, and installer-based deployment on macOS/Linux is reproducible and idempotent.
 
 ### Milestone M9 - Runtime Evolution Safety
-- Scope: WS22.
-- Exit criteria: runtime state is versioned, startup migration is deterministic/idempotent, and upgrade preflight blocks unsafe transitions with actionable remediation steps.
+- Scope: WS22, WS23.
+- Exit criteria: runtime state upgrades are safe/actionable, and context lifecycle semantics are deterministic (bootstrap-only injection, token-capped no-truncation policy, native backend reasoning mapping).
 
 ## 6) Issue Template for Task Tickets
 

@@ -1,45 +1,65 @@
-use crate::context_assembly::{
-    assemble_turn_context, sort_memory_snippets, ContextAssemblyInput, ContextMemorySnippet,
-};
+use crate::context_assembly::{assemble_turn_context, ContextAssemblyInput};
 use crate::{CrabError, CrabResult};
 
 const CONTEXT_BUDGET_CONTEXT: &str = "context_budget";
-pub const TOTAL_CONTEXT_TRUNCATION_MARKER: &str = "[CONTEXT_TRUNCATED]";
-pub const MEMORY_SNIPPET_DROP_MARKER_PATH: &str = "memory/_context_budget.md";
 
-pub const DEFAULT_CONTEXT_MAX_TOTAL_CHARS: usize = 16_000;
-pub const DEFAULT_CONTEXT_MAX_SECTION_CHARS: usize = 2_000;
-pub const DEFAULT_CONTEXT_MAX_TURN_INPUT_CHARS: usize = 3_000;
-pub const DEFAULT_CONTEXT_MAX_MEMORY_SNIPPET_CHARS: usize = 600;
+pub const DEFAULT_CONTEXT_MAX_SOUL_TOKENS: usize = 2_048;
+pub const DEFAULT_CONTEXT_MAX_IDENTITY_TOKENS: usize = 2_048;
+pub const DEFAULT_CONTEXT_MAX_USER_TOKENS: usize = 2_048;
+pub const DEFAULT_CONTEXT_MAX_MEMORY_TOKENS: usize = 16_000;
+pub const DEFAULT_CONTEXT_MAX_PROMPT_CONTRACT_TOKENS: usize = 4_096;
+pub const DEFAULT_CONTEXT_MAX_LATEST_CHECKPOINT_TOKENS: usize = 4_096;
+pub const DEFAULT_CONTEXT_MAX_TURN_INPUT_TOKENS: usize = 4_096;
+pub const DEFAULT_CONTEXT_MAX_MEMORY_SNIPPET_TOKENS: usize = 2_048;
 pub const DEFAULT_CONTEXT_MAX_MEMORY_SNIPPET_COUNT: usize = 8;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ContextBudgetPolicy {
-    pub max_total_chars: usize,
-    pub max_section_chars: usize,
-    pub max_turn_input_chars: usize,
-    pub max_memory_snippet_chars: usize,
+    pub max_soul_tokens: usize,
+    pub max_identity_tokens: usize,
+    pub max_user_tokens: usize,
+    pub max_memory_tokens: usize,
+    pub max_prompt_contract_tokens: usize,
+    pub max_latest_checkpoint_tokens: usize,
+    pub max_turn_input_tokens: usize,
+    pub max_memory_snippet_tokens: usize,
     pub max_memory_snippet_count: usize,
 }
 
 impl Default for ContextBudgetPolicy {
     fn default() -> Self {
         Self {
-            max_total_chars: DEFAULT_CONTEXT_MAX_TOTAL_CHARS,
-            max_section_chars: DEFAULT_CONTEXT_MAX_SECTION_CHARS,
-            max_turn_input_chars: DEFAULT_CONTEXT_MAX_TURN_INPUT_CHARS,
-            max_memory_snippet_chars: DEFAULT_CONTEXT_MAX_MEMORY_SNIPPET_CHARS,
+            max_soul_tokens: DEFAULT_CONTEXT_MAX_SOUL_TOKENS,
+            max_identity_tokens: DEFAULT_CONTEXT_MAX_IDENTITY_TOKENS,
+            max_user_tokens: DEFAULT_CONTEXT_MAX_USER_TOKENS,
+            max_memory_tokens: DEFAULT_CONTEXT_MAX_MEMORY_TOKENS,
+            max_prompt_contract_tokens: DEFAULT_CONTEXT_MAX_PROMPT_CONTRACT_TOKENS,
+            max_latest_checkpoint_tokens: DEFAULT_CONTEXT_MAX_LATEST_CHECKPOINT_TOKENS,
+            max_turn_input_tokens: DEFAULT_CONTEXT_MAX_TURN_INPUT_TOKENS,
+            max_memory_snippet_tokens: DEFAULT_CONTEXT_MAX_MEMORY_SNIPPET_TOKENS,
             max_memory_snippet_count: DEFAULT_CONTEXT_MAX_MEMORY_SNIPPET_COUNT,
         }
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ContextSectionTokenUsage {
+    pub section: String,
+    pub estimated_tokens: usize,
+    pub budget_tokens: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ContextSnippetTokenUsage {
+    pub path: String,
+    pub estimated_tokens: usize,
+    pub budget_tokens: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ContextBudgetReport {
-    pub truncated_sections: Vec<String>,
-    pub truncated_memory_snippet_paths: Vec<String>,
-    pub dropped_memory_snippet_count: usize,
-    pub total_truncated: bool,
+    pub section_usage: Vec<ContextSectionTokenUsage>,
+    pub snippet_usage: Vec<ContextSnippetTokenUsage>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -55,89 +75,92 @@ pub fn render_budgeted_turn_context(
 ) -> CrabResult<BudgetedContextOutput> {
     validate_policy(policy)?;
 
-    let mut truncated_sections = Vec::new();
-    let mut budgeted_input = input.clone();
+    let mut section_usage = Vec::new();
+    for (section, value, budget_tokens) in [
+        (
+            "SOUL.md",
+            input.soul_document.as_str(),
+            policy.max_soul_tokens,
+        ),
+        (
+            "IDENTITY.md",
+            input.identity_document.as_str(),
+            policy.max_identity_tokens,
+        ),
+        (
+            "USER.md",
+            input.user_document.as_str(),
+            policy.max_user_tokens,
+        ),
+        (
+            "MEMORY.md",
+            input.memory_document.as_str(),
+            policy.max_memory_tokens,
+        ),
+        (
+            "PROMPT_CONTRACT",
+            input.prompt_contract.as_str(),
+            policy.max_prompt_contract_tokens,
+        ),
+        (
+            "LATEST_CHECKPOINT",
+            input.latest_checkpoint_summary.as_deref().unwrap_or(""),
+            policy.max_latest_checkpoint_tokens,
+        ),
+        (
+            "TURN_INPUT",
+            input.turn_input.as_str(),
+            policy.max_turn_input_tokens,
+        ),
+    ] {
+        validate_section_budget(section, value, budget_tokens, &mut section_usage)?;
+    }
 
-    budgeted_input.soul_document = apply_text_budget(
-        &budgeted_input.soul_document,
-        policy.max_section_chars,
-        "SOUL.md",
-        &mut truncated_sections,
-    );
-    budgeted_input.identity_document = apply_text_budget(
-        &budgeted_input.identity_document,
-        policy.max_section_chars,
-        "IDENTITY.md",
-        &mut truncated_sections,
-    );
-    budgeted_input.agents_document = apply_text_budget(
-        &budgeted_input.agents_document,
-        policy.max_section_chars,
-        "AGENTS.md",
-        &mut truncated_sections,
-    );
-    budgeted_input.user_document = apply_text_budget(
-        &budgeted_input.user_document,
-        policy.max_section_chars,
-        "USER.md",
-        &mut truncated_sections,
-    );
-    budgeted_input.memory_document = apply_text_budget(
-        &budgeted_input.memory_document,
-        policy.max_section_chars,
-        "MEMORY.md",
-        &mut truncated_sections,
-    );
+    validate_memory_snippet_count(input, policy)?;
+    let snippet_usage = validate_memory_snippet_budgets(input, policy)?;
 
-    budgeted_input.latest_checkpoint_summary = budgeted_input
-        .latest_checkpoint_summary
-        .as_ref()
-        .map(|value| {
-            apply_text_budget(
-                value,
-                policy.max_section_chars,
-                "LATEST_CHECKPOINT",
-                &mut truncated_sections,
-            )
-        });
-
-    budgeted_input.turn_input = apply_text_budget(
-        &budgeted_input.turn_input,
-        policy.max_turn_input_chars,
-        "TURN_INPUT",
-        &mut truncated_sections,
-    );
-
-    let (budgeted_snippets, truncated_memory_snippet_paths, dropped_memory_snippet_count) =
-        apply_memory_snippet_budget(
-            &budgeted_input.memory_snippets,
-            policy.max_memory_snippet_count,
-            policy.max_memory_snippet_chars,
-        );
-    budgeted_input.memory_snippets = budgeted_snippets;
-
-    let rendered_context = assemble_turn_context(&budgeted_input)?;
-    let (rendered_context, total_truncated) =
-        apply_total_budget(&rendered_context, policy.max_total_chars);
+    let rendered_context = assemble_turn_context(input)?;
 
     Ok(BudgetedContextOutput {
         rendered_context,
-        budgeted_input,
+        budgeted_input: input.clone(),
         report: ContextBudgetReport {
-            truncated_sections,
-            truncated_memory_snippet_paths,
-            dropped_memory_snippet_count,
-            total_truncated,
+            section_usage,
+            snippet_usage,
         },
     })
 }
 
+pub fn estimate_token_count(value: &str) -> usize {
+    let normalized = value.trim();
+    if normalized.is_empty() {
+        return 0;
+    }
+
+    let word_tokens = normalized.split_whitespace().count();
+    let char_tokens = normalized.chars().count().saturating_add(3) / 4;
+    word_tokens.max(char_tokens)
+}
+
 fn validate_policy(policy: &ContextBudgetPolicy) -> CrabResult<()> {
     for (field, value) in [
-        ("max_total_chars", policy.max_total_chars),
-        ("max_section_chars", policy.max_section_chars),
-        ("max_turn_input_chars", policy.max_turn_input_chars),
-        ("max_memory_snippet_chars", policy.max_memory_snippet_chars),
+        ("max_soul_tokens", policy.max_soul_tokens),
+        ("max_identity_tokens", policy.max_identity_tokens),
+        ("max_user_tokens", policy.max_user_tokens),
+        ("max_memory_tokens", policy.max_memory_tokens),
+        (
+            "max_prompt_contract_tokens",
+            policy.max_prompt_contract_tokens,
+        ),
+        (
+            "max_latest_checkpoint_tokens",
+            policy.max_latest_checkpoint_tokens,
+        ),
+        ("max_turn_input_tokens", policy.max_turn_input_tokens),
+        (
+            "max_memory_snippet_tokens",
+            policy.max_memory_snippet_tokens,
+        ),
         ("max_memory_snippet_count", policy.max_memory_snippet_count),
     ] {
         if value == 0 {
@@ -151,82 +174,74 @@ fn validate_policy(policy: &ContextBudgetPolicy) -> CrabResult<()> {
     Ok(())
 }
 
-fn apply_text_budget(
+fn validate_section_budget(
+    section: &str,
     value: &str,
-    max_chars: usize,
-    label: &str,
-    truncated_sections: &mut Vec<String>,
-) -> String {
-    let char_count = value.chars().count();
-    if char_count <= max_chars {
-        return value.to_string();
+    budget_tokens: usize,
+    section_usage: &mut Vec<ContextSectionTokenUsage>,
+) -> CrabResult<()> {
+    let estimated_tokens = estimate_token_count(value);
+    section_usage.push(ContextSectionTokenUsage {
+        section: section.to_string(),
+        estimated_tokens,
+        budget_tokens,
+    });
+
+    if estimated_tokens > budget_tokens {
+        return Err(CrabError::InvariantViolation {
+            context: CONTEXT_BUDGET_CONTEXT,
+            message: format!(
+                "{section} exceeds token budget: estimated_tokens={estimated_tokens} max_tokens={budget_tokens}"
+            ),
+        });
     }
 
-    truncated_sections.push(label.to_string());
-    let marker = format!("\n[TRUNCATED:{label}: kept {max_chars} of {char_count} chars]");
-    truncate_with_marker(value, max_chars, &marker)
+    Ok(())
 }
 
-fn apply_memory_snippet_budget(
-    snippets: &[ContextMemorySnippet],
-    max_snippet_count: usize,
-    max_snippet_chars: usize,
-) -> (Vec<ContextMemorySnippet>, Vec<String>, usize) {
-    let mut normalized = snippets.to_vec();
-    sort_memory_snippets(&mut normalized);
+fn validate_memory_snippet_count(
+    input: &ContextAssemblyInput,
+    policy: &ContextBudgetPolicy,
+) -> CrabResult<()> {
+    if input.memory_snippets.len() <= policy.max_memory_snippet_count {
+        return Ok(());
+    }
 
-    let mut truncated_paths = Vec::new();
-    for snippet in &mut normalized {
-        let char_count = snippet.content.chars().count();
-        if char_count > max_snippet_chars {
-            let marker = format!(
-                "\n[TRUNCATED:MEMORY_SNIPPET:{}: kept {} of {} chars]",
-                snippet.path, max_snippet_chars, char_count
-            );
-            snippet.content = truncate_with_marker(&snippet.content, max_snippet_chars, &marker);
-            truncated_paths.push(snippet.path.clone());
+    Err(CrabError::InvariantViolation {
+        context: CONTEXT_BUDGET_CONTEXT,
+        message: format!(
+            "memory_snippets count {} exceeds max_memory_snippet_count {}",
+            input.memory_snippets.len(),
+            policy.max_memory_snippet_count
+        ),
+    })
+}
+
+fn validate_memory_snippet_budgets(
+    input: &ContextAssemblyInput,
+    policy: &ContextBudgetPolicy,
+) -> CrabResult<Vec<ContextSnippetTokenUsage>> {
+    let mut usage = Vec::with_capacity(input.memory_snippets.len());
+    for snippet in &input.memory_snippets {
+        let estimated_tokens = estimate_token_count(&snippet.content);
+        usage.push(ContextSnippetTokenUsage {
+            path: snippet.path.clone(),
+            estimated_tokens,
+            budget_tokens: policy.max_memory_snippet_tokens,
+        });
+
+        if estimated_tokens > policy.max_memory_snippet_tokens {
+            return Err(CrabError::InvariantViolation {
+                context: CONTEXT_BUDGET_CONTEXT,
+                message: format!(
+                    "memory snippet {} exceeds token budget: estimated_tokens={} max_tokens={}",
+                    snippet.path, estimated_tokens, policy.max_memory_snippet_tokens
+                ),
+            });
         }
     }
 
-    if normalized.len() <= max_snippet_count {
-        return (normalized, truncated_paths, 0);
-    }
-
-    let keep_count = max_snippet_count.saturating_sub(1);
-    let dropped_count = normalized.len().saturating_sub(keep_count);
-    normalized.truncate(keep_count);
-    normalized.push(ContextMemorySnippet {
-        path: MEMORY_SNIPPET_DROP_MARKER_PATH.to_string(),
-        start_line: 1,
-        end_line: 1,
-        content: format!(
-            "[TRUNCATED_SNIPPETS: dropped {dropped_count} snippets due max_memory_snippet_count={max_snippet_count}]"
-        ),
-    });
-
-    (normalized, truncated_paths, dropped_count)
-}
-
-fn apply_total_budget(value: &str, max_chars: usize) -> (String, bool) {
-    let char_count = value.chars().count();
-    if char_count <= max_chars {
-        return (value.to_string(), false);
-    }
-
-    let marker =
-        format!("\n{TOTAL_CONTEXT_TRUNCATION_MARKER} kept {max_chars} of {char_count} chars");
-    (truncate_with_marker(value, max_chars, &marker), true)
-}
-
-fn truncate_with_marker(value: &str, max_chars: usize, marker: &str) -> String {
-    let marker_chars = marker.chars().count();
-    if max_chars <= marker_chars {
-        return marker.chars().take(max_chars).collect();
-    }
-
-    let keep_chars = max_chars - marker_chars;
-    let prefix: String = value.chars().take(keep_chars).collect();
-    format!("{prefix}{marker}")
+    Ok(usage)
 }
 
 #[cfg(test)]
@@ -235,29 +250,33 @@ mod tests {
     use crate::CrabError;
 
     use super::{
-        render_budgeted_turn_context, BudgetedContextOutput, ContextBudgetPolicy,
-        MEMORY_SNIPPET_DROP_MARKER_PATH, TOTAL_CONTEXT_TRUNCATION_MARKER,
+        estimate_token_count, render_budgeted_turn_context, BudgetedContextOutput,
+        ContextBudgetPolicy,
     };
 
     fn sample_input() -> ContextAssemblyInput {
         ContextAssemblyInput {
             soul_document: "soul".to_string(),
             identity_document: "identity".to_string(),
-            agents_document: "agents".to_string(),
             user_document: "user".to_string(),
             memory_document: "memory".to_string(),
             memory_snippets: vec![],
             latest_checkpoint_summary: Some("checkpoint".to_string()),
+            prompt_contract: "prompt contract".to_string(),
             turn_input: "turn".to_string(),
         }
     }
 
     fn generous_policy() -> ContextBudgetPolicy {
         ContextBudgetPolicy {
-            max_total_chars: 10_000,
-            max_section_chars: 200,
-            max_turn_input_chars: 200,
-            max_memory_snippet_chars: 200,
+            max_soul_tokens: 10_000,
+            max_identity_tokens: 10_000,
+            max_user_tokens: 10_000,
+            max_memory_tokens: 10_000,
+            max_prompt_contract_tokens: 10_000,
+            max_latest_checkpoint_tokens: 10_000,
+            max_turn_input_tokens: 10_000,
+            max_memory_snippet_tokens: 10_000,
             max_memory_snippet_count: 8,
         }
     }
@@ -269,10 +288,14 @@ mod tests {
     #[test]
     fn default_policy_constants_are_stable() {
         let default_policy = ContextBudgetPolicy::default();
-        assert_eq!(default_policy.max_total_chars, 16_000);
-        assert_eq!(default_policy.max_section_chars, 2_000);
-        assert_eq!(default_policy.max_turn_input_chars, 3_000);
-        assert_eq!(default_policy.max_memory_snippet_chars, 600);
+        assert_eq!(default_policy.max_soul_tokens, 2_048);
+        assert_eq!(default_policy.max_identity_tokens, 2_048);
+        assert_eq!(default_policy.max_user_tokens, 2_048);
+        assert_eq!(default_policy.max_memory_tokens, 16_000);
+        assert_eq!(default_policy.max_prompt_contract_tokens, 4_096);
+        assert_eq!(default_policy.max_latest_checkpoint_tokens, 4_096);
+        assert_eq!(default_policy.max_turn_input_tokens, 4_096);
+        assert_eq!(default_policy.max_memory_snippet_tokens, 2_048);
         assert_eq!(default_policy.max_memory_snippet_count, 8);
     }
 
@@ -281,232 +304,124 @@ mod tests {
         let input = sample_input();
         let output = render(&input, &generous_policy());
 
-        assert!(output.report.truncated_sections.is_empty());
-        assert!(output.report.truncated_memory_snippet_paths.is_empty());
-        assert_eq!(output.report.dropped_memory_snippet_count, 0);
-        assert!(!output.report.total_truncated);
+        assert_eq!(output.budgeted_input, input);
         assert!(output.rendered_context.contains("## SOUL.md\nsoul"));
-        assert!(output.rendered_context.contains("## TURN_INPUT\nturn"));
+        assert!(output
+            .rendered_context
+            .contains("## PROMPT_CONTRACT\nprompt contract"));
+        assert_eq!(output.report.section_usage.len(), 7);
+        assert!(output.report.snippet_usage.is_empty());
     }
 
     #[test]
-    fn truncates_long_sections_and_turn_input_with_explicit_markers() {
+    fn token_estimator_prefers_more_conservative_word_or_char_estimate() {
+        assert_eq!(estimate_token_count(""), 0);
+        assert_eq!(estimate_token_count("a"), 1);
+        assert_eq!(estimate_token_count("abcd"), 1);
+        assert_eq!(estimate_token_count("abcde"), 2);
+        assert_eq!(estimate_token_count("one two three"), 4);
+    }
+
+    #[test]
+    fn rejects_when_section_exceeds_budget() {
         let mut input = sample_input();
-        input.soul_document = "a".repeat(120);
-        input.turn_input = "b".repeat(120);
+        input.memory_document = "m ".repeat(20);
 
         let mut policy = generous_policy();
-        policy.max_section_chars = 80;
-        policy.max_turn_input_chars = 90;
+        policy.max_memory_tokens = 5;
 
-        let output = render(&input, &policy);
-        assert!(output
-            .report
-            .truncated_sections
-            .contains(&"SOUL.md".to_string()));
-        assert!(output
-            .report
-            .truncated_sections
-            .contains(&"TURN_INPUT".to_string()));
-        assert!(output
-            .rendered_context
-            .contains("[TRUNCATED:SOUL.md: kept 80 of 120 chars]"));
-        assert!(output
-            .rendered_context
-            .contains("[TRUNCATED:TURN_INPUT: kept 90 of 120 chars]"));
-    }
-
-    #[test]
-    fn truncates_checkpoint_summary_when_present() {
-        let mut input = sample_input();
-        input.latest_checkpoint_summary = Some("c".repeat(140));
-
-        let mut policy = generous_policy();
-        policy.max_section_chars = 100;
-
-        let output = render(&input, &policy);
-        assert!(output
-            .report
-            .truncated_sections
-            .contains(&"LATEST_CHECKPOINT".to_string()));
-        assert!(output
-            .rendered_context
-            .contains("[TRUNCATED:LATEST_CHECKPOINT: kept 100 of 140 chars]"));
-    }
-
-    #[test]
-    fn truncates_memory_snippet_content_and_reports_paths() {
-        let mut input = sample_input();
-        input.memory_snippets = vec![ContextMemorySnippet {
-            path: "memory/users/42/2026-02-10.md".to_string(),
-            start_line: 1,
-            end_line: 1,
-            content: "x".repeat(180),
-        }];
-
-        let mut policy = generous_policy();
-        policy.max_memory_snippet_chars = 120;
-
-        let output = render(&input, &policy);
-        assert_eq!(
-            output.report.truncated_memory_snippet_paths,
-            vec!["memory/users/42/2026-02-10.md".to_string()]
-        );
-        assert!(output.rendered_context.contains(
-            "[TRUNCATED:MEMORY_SNIPPET:memory/users/42/2026-02-10.md: kept 120 of 180 chars]"
-        ));
-    }
-
-    #[test]
-    fn caps_memory_snippet_count_and_adds_drop_marker() {
-        let mut input = sample_input();
-        input.memory_snippets = vec![
-            ContextMemorySnippet {
-                path: "memory/users/42/2026-02-08.md".to_string(),
-                start_line: 1,
-                end_line: 1,
-                content: "a".to_string(),
-            },
-            ContextMemorySnippet {
-                path: "memory/users/42/2026-02-09.md".to_string(),
-                start_line: 1,
-                end_line: 1,
-                content: "b".to_string(),
-            },
-            ContextMemorySnippet {
-                path: "memory/users/42/2026-02-10.md".to_string(),
-                start_line: 1,
-                end_line: 1,
-                content: "c".to_string(),
-            },
-        ];
-
-        let mut policy = generous_policy();
-        policy.max_memory_snippet_count = 2;
-
-        let output = render(&input, &policy);
-        assert_eq!(output.report.dropped_memory_snippet_count, 2);
-        assert!(output
-            .rendered_context
-            .contains(MEMORY_SNIPPET_DROP_MARKER_PATH));
-        assert!(output
-            .rendered_context
-            .contains("[TRUNCATED_SNIPPETS: dropped 2 snippets due max_memory_snippet_count=2]"));
-    }
-
-    #[test]
-    fn applies_total_context_budget_with_explicit_marker() {
-        let mut input = sample_input();
-        input.agents_document =
-            "A very long section that pushes total output over budget.".to_string();
-
-        let mut policy = generous_policy();
-        policy.max_total_chars = 60;
-
-        let output = render(&input, &policy);
-        assert!(output.report.total_truncated);
-        assert!(output
-            .rendered_context
-            .contains(TOTAL_CONTEXT_TRUNCATION_MARKER));
-        assert_eq!(output.rendered_context.chars().count(), 60);
-    }
-
-    #[test]
-    fn tiny_budget_still_renders_marker_deterministically() {
-        let mut input = sample_input();
-        input.soul_document = "abcdef".to_string();
-
-        let mut policy = generous_policy();
-        policy.max_section_chars = 3;
-
-        let output = render(&input, &policy);
-        assert!(output
-            .report
-            .truncated_sections
-            .contains(&"SOUL.md".to_string()));
-        let soul_section = output
-            .rendered_context
-            .split("## IDENTITY.md")
-            .next()
-            .expect("soul section should exist");
-        assert!(soul_section.contains('['));
-    }
-
-    #[test]
-    fn policy_validation_rejects_zero_values() {
-        let assert_zero_field_error = |field: &str, apply_zero: fn(&mut ContextBudgetPolicy)| {
-            let mut policy = generous_policy();
-            apply_zero(&mut policy);
-
-            let error = render_budgeted_turn_context(&sample_input(), &policy)
-                .expect_err("zero policy values should fail");
-            assert_eq!(
-                error,
-                CrabError::InvariantViolation {
-                    context: "context_budget",
-                    message: format!("{field} must be greater than 0"),
-                }
-            );
-        };
-
-        assert_zero_field_error("max_total_chars", |policy| policy.max_total_chars = 0);
-        assert_zero_field_error("max_section_chars", |policy| policy.max_section_chars = 0);
-        assert_zero_field_error("max_turn_input_chars", |policy| {
-            policy.max_turn_input_chars = 0
-        });
-        assert_zero_field_error("max_memory_snippet_chars", |policy| {
-            policy.max_memory_snippet_chars = 0
-        });
-        assert_zero_field_error("max_memory_snippet_count", |policy| {
-            policy.max_memory_snippet_count = 0
-        });
-    }
-
-    #[test]
-    fn propagates_context_assembly_validation_errors() {
-        let mut input = sample_input();
-        input.memory_snippets = vec![ContextMemorySnippet {
-            path: " ".to_string(),
-            start_line: 1,
-            end_line: 1,
-            content: "snippet".to_string(),
-        }];
-
-        let error = render_budgeted_turn_context(&input, &generous_policy())
-            .expect_err("invalid snippet should fail context assembly");
+        let error = render_budgeted_turn_context(&input, &policy)
+            .expect_err("over-budget memory document should fail");
         assert_eq!(
             error,
             CrabError::InvariantViolation {
-                context: "context_assembly",
-                message: "memory_snippets[].path must not be empty".to_string(),
+                context: "context_budget",
+                message: "MEMORY.md exceeds token budget: estimated_tokens=20 max_tokens=5"
+                    .to_string(),
             }
         );
     }
 
     #[test]
-    fn output_is_deterministic_for_same_input_and_policy() {
+    fn rejects_when_memory_snippet_count_exceeds_policy() {
         let mut input = sample_input();
         input.memory_snippets = vec![
             ContextMemorySnippet {
-                path: "memory/users/42/2026-02-10.md".to_string(),
+                path: "memory/users/42/2026-02-01.md".to_string(),
                 start_line: 1,
                 end_line: 1,
-                content: "snippet-A".to_string(),
+                content: "a".to_string(),
             },
             ContextMemorySnippet {
-                path: "memory/global/2026-02-10.md".to_string(),
+                path: "memory/users/42/2026-02-02.md".to_string(),
                 start_line: 1,
                 end_line: 1,
-                content: "snippet-B".to_string(),
+                content: "b".to_string(),
             },
         ];
 
         let mut policy = generous_policy();
-        policy.max_memory_snippet_chars = 6;
-        policy.max_total_chars = 500;
+        policy.max_memory_snippet_count = 1;
 
-        let first = render(&input, &policy);
-        let second = render(&input, &policy);
-        assert_eq!(first, second);
+        let error = render_budgeted_turn_context(&input, &policy)
+            .expect_err("snippet count over budget should fail");
+        assert_eq!(
+            error,
+            CrabError::InvariantViolation {
+                context: "context_budget",
+                message: "memory_snippets count 2 exceeds max_memory_snippet_count 1".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn rejects_when_memory_snippet_exceeds_budget() {
+        let mut input = sample_input();
+        input.memory_snippets = vec![ContextMemorySnippet {
+            path: "memory/users/42/2026-02-01.md".to_string(),
+            start_line: 1,
+            end_line: 1,
+            content: "word ".repeat(15),
+        }];
+
+        let mut policy = generous_policy();
+        policy.max_memory_snippet_tokens = 5;
+
+        let error = render_budgeted_turn_context(&input, &policy)
+            .expect_err("snippet token budget should be enforced");
+        assert_eq!(
+            error,
+            CrabError::InvariantViolation {
+                context: "context_budget",
+                message: "memory snippet memory/users/42/2026-02-01.md exceeds token budget: estimated_tokens=19 max_tokens=5".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn rejects_zero_policy_values() {
+        for mutate in [
+            |policy: &mut ContextBudgetPolicy| policy.max_soul_tokens = 0,
+            |policy: &mut ContextBudgetPolicy| policy.max_identity_tokens = 0,
+            |policy: &mut ContextBudgetPolicy| policy.max_user_tokens = 0,
+            |policy: &mut ContextBudgetPolicy| policy.max_memory_tokens = 0,
+            |policy: &mut ContextBudgetPolicy| policy.max_prompt_contract_tokens = 0,
+            |policy: &mut ContextBudgetPolicy| policy.max_latest_checkpoint_tokens = 0,
+            |policy: &mut ContextBudgetPolicy| policy.max_turn_input_tokens = 0,
+            |policy: &mut ContextBudgetPolicy| policy.max_memory_snippet_tokens = 0,
+            |policy: &mut ContextBudgetPolicy| policy.max_memory_snippet_count = 0,
+        ] {
+            let mut policy = generous_policy();
+            mutate(&mut policy);
+            let error = render_budgeted_turn_context(&sample_input(), &policy)
+                .expect_err("zero policy values should fail validation");
+            assert!(matches!(
+                error,
+                CrabError::InvariantViolation {
+                    context: "context_budget",
+                    ..
+                }
+            ));
+        }
     }
 }

@@ -54,11 +54,13 @@ pub use context_assembly::{
     assemble_turn_context, ContextAssemblyInput, ContextMemorySnippet, CONTEXT_INJECTION_ORDER,
 };
 pub use context_budget::{
-    render_budgeted_turn_context, BudgetedContextOutput, ContextBudgetPolicy, ContextBudgetReport,
-    DEFAULT_CONTEXT_MAX_MEMORY_SNIPPET_CHARS, DEFAULT_CONTEXT_MAX_MEMORY_SNIPPET_COUNT,
-    DEFAULT_CONTEXT_MAX_SECTION_CHARS, DEFAULT_CONTEXT_MAX_TOTAL_CHARS,
-    DEFAULT_CONTEXT_MAX_TURN_INPUT_CHARS, MEMORY_SNIPPET_DROP_MARKER_PATH,
-    TOTAL_CONTEXT_TRUNCATION_MARKER,
+    estimate_token_count, render_budgeted_turn_context, BudgetedContextOutput, ContextBudgetPolicy,
+    ContextBudgetReport, ContextSectionTokenUsage, ContextSnippetTokenUsage,
+    DEFAULT_CONTEXT_MAX_IDENTITY_TOKENS, DEFAULT_CONTEXT_MAX_LATEST_CHECKPOINT_TOKENS,
+    DEFAULT_CONTEXT_MAX_MEMORY_SNIPPET_COUNT, DEFAULT_CONTEXT_MAX_MEMORY_SNIPPET_TOKENS,
+    DEFAULT_CONTEXT_MAX_MEMORY_TOKENS, DEFAULT_CONTEXT_MAX_PROMPT_CONTRACT_TOKENS,
+    DEFAULT_CONTEXT_MAX_SOUL_TOKENS, DEFAULT_CONTEXT_MAX_TURN_INPUT_TOKENS,
+    DEFAULT_CONTEXT_MAX_USER_TOKENS,
 };
 pub use context_diagnostics::{
     build_context_diagnostics_report, render_context_diagnostics_fixture,

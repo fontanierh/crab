@@ -99,8 +99,8 @@ Compatibility policy (`strict` vs `compatible`) is enforced in core fallback log
 - Claude: map canonical reasoning levels to Claude thinking bands
 - Codex: map reasoning directly to `effort`
 - OpenCode:
-  - native mode maps reasoning directly
-  - best-effort mode omits native reasoning and injects guidance note
+  - reasoning maps directly to native OpenCode session/turn controls
+  - no synthetic reasoning guidance suffix is appended to prompt text
 
 ## Operator Controls
 
