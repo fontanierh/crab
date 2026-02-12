@@ -32,6 +32,9 @@ jobs:
         with:
           tool: cargo-llvm-cov@0.6.21
 
+      - name: Install ripgrep
+        run: sudo apt-get update && sudo apt-get install -y ripgrep
+
       - name: Format check
         run: make fmt-check
 
