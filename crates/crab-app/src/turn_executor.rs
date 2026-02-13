@@ -270,6 +270,21 @@ where
         let mut delivered_count = 0_usize;
 
         for event in events {
+            if event.kind == crab_core::EventKind::ToolCall {
+                for op in delivery.notify_tool_boundary() {
+                    let msg_id = delivery_message_id(&run.id, op.chunk_index);
+                    let result = self.deliver_rendered_assistant_output(
+                        &run,
+                        &msg_id,
+                        &op.content,
+                        op.edit_generation,
+                        event.emitted_at_epoch_ms,
+                    );
+                    if result? {
+                        delivered_count += 1;
+                    }
+                }
+            }
             if let Some(delta_text) = extract_event_text_delta(&event) {
                 let planned = delivery.push_delta(delta_text);
                 for op in planned {
@@ -509,6 +524,17 @@ where
                 if let Some(backend_event) = maybe_event {
                     let emitted_at_epoch_ms = self.runtime.now_epoch_ms()?;
                     self.append_backend_event(&run, &backend_event, emitted_at_epoch_ms)?;
+                    if backend_event.kind == BackendEventKind::ToolCall {
+                        for op in delivery.notify_tool_boundary() {
+                            let _ = self.deliver_rendered_assistant_output(
+                                &run,
+                                &delivery_message_id(&run.id, op.chunk_index),
+                                &op.content,
+                                op.edit_generation,
+                                emitted_at_epoch_ms,
+                            )?;
+                        }
+                    }
                     if let Some(delta_text) = extract_backend_text_delta(&backend_event) {
                         let planned = delivery.push_delta(delta_text);
                         for op in planned {
@@ -2276,6 +2302,28 @@ impl DiscordAssistantDelivery {
         true
     }
 
+    fn notify_tool_boundary(&mut self) -> Vec<PlannedAssistantDelivery> {
+        if self.active_content.trim().is_empty() {
+            return Vec::new();
+        }
+
+        let trimmed = self.active_content.trim_end_matches('\n').to_string();
+        if trimmed == self.active_last_delivered {
+            self.advance_chunk();
+            return Vec::new();
+        }
+
+        let planned = vec![PlannedAssistantDelivery {
+            chunk_index: self.next_chunk_index,
+            edit_generation: self.active_edit_generation,
+            content: trimmed.clone(),
+        }];
+        self.active_last_delivered = trimmed;
+        self.active_edit_generation = self.active_edit_generation.saturating_add(1);
+        self.advance_chunk();
+        planned
+    }
+
     fn advance_chunk(&mut self) {
         self.next_chunk_index = self.next_chunk_index.saturating_add(1);
         self.active_content.clear();
@@ -3011,6 +3059,35 @@ mod tests {
                 "hello".to_string(),
             )]
         );
+    }
+
+    #[test]
+    fn tool_boundary_splits_delivery_in_streaming_loop() {
+        let runtime = FakeRuntime::with_backend_events(
+            vec![
+                backend_event(1, BackendEventKind::TextDelta, &[("text", "before\n")]),
+                backend_event(2, BackendEventKind::ToolCall, &[("tool", "shell")]),
+                backend_event(3, BackendEventKind::ToolResult, &[("status", "ok")]),
+                backend_event(4, BackendEventKind::TextDelta, &[("text", "after")]),
+                backend_event(5, BackendEventKind::TurnCompleted, &[("finish", "done")]),
+            ],
+            &[1, 2, 3, 4, 5, 6, 7, 8, 9],
+        );
+        let (_workspace, mut executor) = build_executor_scenario("tool-boundary-split", runtime, 8);
+
+        let dispatch = executor
+            .process_gateway_message(gateway_message("m-tb"))
+            .expect("pipeline should succeed")
+            .expect("message should dispatch");
+        assert_eq!(dispatch.status, RunStatus::Succeeded);
+
+        let delivered = &executor.runtime_mut().delivered_outputs;
+        // First delivery: "before\n" via push_delta (chunk:0)
+        // Second delivery: tool boundary trims trailing \n → delivers "before" on chunk:0
+        // Third delivery: "after" via push_delta (chunk:1)
+        assert!(delivered.len() >= 2);
+        let last = delivered.last().unwrap();
+        assert_eq!(last.4, "after");
     }
 
     #[test]
@@ -6343,6 +6420,60 @@ mod tests {
     }
 
     #[test]
+    fn assistant_delivery_splits_on_tool_boundary() {
+        let mut delivery = super::DiscordAssistantDelivery::new();
+
+        // Push pre-tool text.
+        let planned = delivery.push_delta("before tool");
+        assert_eq!(planned.len(), 1);
+        assert_eq!(planned[0].chunk_index, 0);
+
+        // Tool boundary finalizes the chunk.
+        let boundary_ops = delivery.notify_tool_boundary();
+        assert_eq!(boundary_ops.len(), 0); // already delivered identical content
+        assert_eq!(delivery.next_chunk_index, 1);
+
+        // Post-tool text starts a new chunk.
+        let post_ops = delivery.push_delta("after tool");
+        assert_eq!(post_ops.len(), 1);
+        assert_eq!(post_ops[0].chunk_index, 1);
+    }
+
+    #[test]
+    fn assistant_delivery_tool_boundary_with_empty_buffer_is_noop() {
+        let mut delivery = super::DiscordAssistantDelivery::new();
+
+        let ops = delivery.notify_tool_boundary();
+        assert!(ops.is_empty());
+        assert_eq!(delivery.next_chunk_index, 0);
+
+        // Whitespace-only buffer is also a no-op.
+        delivery.push_delta("   ");
+        let ops = delivery.notify_tool_boundary();
+        assert!(ops.is_empty());
+        assert_eq!(delivery.next_chunk_index, 0);
+    }
+
+    #[test]
+    fn assistant_delivery_tool_boundary_emits_trimmed_content_when_trailing_newlines() {
+        let mut delivery = super::DiscordAssistantDelivery::new();
+
+        // Push text ending with a single newline (not \n\n which would trigger section split).
+        // push_delta delivers "hello\n" but notify_tool_boundary trims trailing newlines.
+        let _ = delivery.push_delta("hello\n");
+
+        let boundary_ops = delivery.notify_tool_boundary();
+        assert_eq!(boundary_ops.len(), 1);
+        assert_eq!(boundary_ops[0].chunk_index, 0);
+        assert_eq!(boundary_ops[0].content, "hello");
+
+        // After boundary, new content goes to chunk 1.
+        let post_ops = delivery.push_delta("new chunk");
+        assert_eq!(post_ops.len(), 1);
+        assert_eq!(post_ops[0].chunk_index, 1);
+    }
+
+    #[test]
     fn deliver_rendered_assistant_output_skips_empty_or_duplicate_attempts() {
         let workspace = TempWorkspace::new("turn-executor", "delivery-skip-cases");
         let runtime = FakeRuntime::with_backend_events(Vec::new(), &[]);
@@ -6491,6 +6622,51 @@ mod tests {
             .expect("replay should succeed");
         assert_eq!(delivered, 0);
         assert!(replay_executor.runtime_mut().delivered_outputs.is_empty());
+    }
+
+    #[test]
+    fn replay_delivery_for_run_splits_on_tool_boundary() {
+        // Initial run: TextDelta("pre\n") + ToolCall. The first push_delta delivery succeeds
+        // but the tool boundary delivery (trimmed "pre") fails. Events are still stored.
+        let workspace = TempWorkspace::new("turn-executor", "replay-delivery-tool-boundary");
+        let mut runtime = FakeRuntime::with_backend_events(
+            vec![
+                backend_event(1, BackendEventKind::TextDelta, &[("text", "pre\n")]),
+                backend_event(2, BackendEventKind::ToolCall, &[("tool", "shell")]),
+            ],
+            &[1, 2, 3, 4, 5],
+        )
+        .with_delivery_results(vec![
+            Ok(()),
+            Err(CrabError::InvariantViolation {
+                context: "deliver",
+                message: "tool-boundary delivery failed".to_string(),
+            }),
+        ]);
+        let mut executor = build_executor(&workspace, runtime.clone(), 8);
+        let error = executor
+            .process_gateway_message(gateway_message("m-replay-tb"))
+            .expect_err("tool boundary delivery failure should propagate");
+        assert_eq!(
+            error,
+            CrabError::InvariantViolation {
+                context: "deliver",
+                message: "tool-boundary delivery failed".to_string(),
+            }
+        );
+
+        // Replay: outbound store has the push_delta delivery (chunk:0, gen:0, "pre\n") but
+        // NOT the tool boundary delivery (chunk:0, gen:1, "pre"). Replay delivers the missing one.
+        runtime.deliver_results = VecDeque::new();
+        runtime.delivered_outputs.clear();
+        let mut replay_executor = build_executor(&workspace, runtime, 8);
+        let delivered = replay_executor
+            .replay_delivery_for_run("discord:channel:777", "run:discord:channel:777:m-replay-tb")
+            .expect("replay should succeed");
+        // The tool boundary delivery (chunk:0, gen:1) was missing → replay delivers it.
+        assert!(delivered >= 1);
+        let replay_delivered = &replay_executor.runtime_mut().delivered_outputs;
+        assert!(!replay_delivered.is_empty());
     }
 
     #[test]

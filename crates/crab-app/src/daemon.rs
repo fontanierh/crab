@@ -79,8 +79,9 @@ Workspace + memory:\n\
   unless Crab-managed files explicitly say otherwise.\n\
 \n\
 Discord message formatting:\n\
-- Crab may stream your output by editing the active message while you generate text.\n\
-- If you want distinct consecutive Discord messages, separate sections with a blank line.\n\
+- Crab splits your output into separate Discord messages at blank lines.\n\
+- Always place a blank line between distinct thoughts, answers, or actions.\n\
+- Each blank-line-separated section becomes its own Discord message.\n\
 \n\
 Operating constraints:\n\
 - Keep responses actionable and concise.\n\
