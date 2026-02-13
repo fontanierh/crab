@@ -14,6 +14,13 @@ pub struct StartupReconciliationRecoveredRun {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StartupReconciliationRepairedPhysicalSession {
+    pub logical_session_id: String,
+    pub previous_physical_session_id: String,
+    pub repaired_physical_session_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StartupReconciliationOutcome {
     pub recovered_runs: Vec<StartupReconciliationRecoveredRun>,
     /// Sessions whose lane state was repaired to `Idle` on startup so new work can be dispatched.
@@ -21,6 +28,14 @@ pub struct StartupReconciliationOutcome {
     /// Important: this does **not** clear `active_physical_session_id`. Physical sessions are
     /// valuable continuity handles and should be preserved across restarts whenever possible.
     pub repaired_session_ids: Vec<String>,
+    /// Sessions whose `active_physical_session_id` was updated to a previous successful physical
+    /// session on startup.
+    ///
+    /// This is intentionally conservative: we only repair when the currently active physical
+    /// session has never produced a successful run in the local persisted run history. That keeps
+    /// us from regressing legitimate active sessions while still recovering from "orphan" IDs
+    /// created during crashes/restarts.
+    pub repaired_physical_sessions: Vec<StartupReconciliationRepairedPhysicalSession>,
 }
 
 pub trait StartupReconciliationRuntime {
@@ -39,6 +54,12 @@ pub trait StartupReconciliationRuntime {
     /// Must NOT:
     /// - clear `active_physical_session_id`
     fn repair_session_lane_state(&mut self, logical_session_id: &str) -> CrabResult<()>;
+    /// Repairs `active_physical_session_id` to the provided value.
+    fn repair_active_physical_session_id(
+        &mut self,
+        logical_session_id: &str,
+        physical_session_id: &str,
+    ) -> CrabResult<()>;
 }
 
 pub fn execute_startup_reconciliation<R: StartupReconciliationRuntime>(
@@ -54,6 +75,7 @@ pub fn execute_startup_reconciliation<R: StartupReconciliationRuntime>(
 
     let mut recovered_runs = Vec::new();
     let mut repaired_session_ids = Vec::new();
+    let mut repaired_physical_sessions = Vec::new();
 
     for session in sessions {
         let mut runs = runtime.list_runs_for_session(&session.id)?;
@@ -61,6 +83,11 @@ pub fn execute_startup_reconciliation<R: StartupReconciliationRuntime>(
 
         let mut session_has_recovered_run = false;
         let mut has_non_stale_inflight_run = false;
+        let mut active_physical_has_succeeded = false;
+        let mut active_physical_has_failed = false;
+        let mut latest_successful_physical_session: Option<(u64, String)> = None;
+
+        let active_physical_session_id = session.active_physical_session_id.as_deref();
         for run in runs {
             if run.logical_session_id != session.id {
                 return Err(CrabError::InvariantViolation {
@@ -70,6 +97,34 @@ pub fn execute_startup_reconciliation<R: StartupReconciliationRuntime>(
                         run.id, run.logical_session_id, session.id
                     ),
                 });
+            }
+
+            if run.status == RunStatus::Succeeded {
+                if active_physical_session_id
+                    .is_some_and(|active_id| run.physical_session_id.as_deref() == Some(active_id))
+                {
+                    active_physical_has_succeeded = true;
+                }
+                if let (Some(completed_at_epoch_ms), Some(physical_session_id)) = (
+                    run.completed_at_epoch_ms,
+                    run.physical_session_id.as_deref(),
+                ) {
+                    match &latest_successful_physical_session {
+                        Some((latest_completed_at, _))
+                            if completed_at_epoch_ms <= *latest_completed_at => {}
+                        _ => {
+                            latest_successful_physical_session =
+                                Some((completed_at_epoch_ms, physical_session_id.to_string()));
+                        }
+                    }
+                }
+            }
+
+            if run.status == RunStatus::Failed
+                && active_physical_session_id
+                    .is_some_and(|active_id| run.physical_session_id.as_deref() == Some(active_id))
+            {
+                active_physical_has_failed = true;
             }
 
             if run.status != RunStatus::Running || run.completed_at_epoch_ms.is_some() {
@@ -113,6 +168,22 @@ pub fn execute_startup_reconciliation<R: StartupReconciliationRuntime>(
             session_has_recovered_run = true;
         }
 
+        if !has_non_stale_inflight_run && session.lane_state == LaneState::Idle {
+            if let (Some(active_id), true, false, Some((_, repaired_id))) = (
+                active_physical_session_id,
+                active_physical_has_failed,
+                active_physical_has_succeeded,
+                latest_successful_physical_session.as_ref(),
+            ) {
+                runtime.repair_active_physical_session_id(&session.id, repaired_id)?;
+                repaired_physical_sessions.push(StartupReconciliationRepairedPhysicalSession {
+                    logical_session_id: session.id.clone(),
+                    previous_physical_session_id: active_id.to_string(),
+                    repaired_physical_session_id: repaired_id.clone(),
+                });
+            }
+        }
+
         if should_repair_lane_state(
             &session,
             session_has_recovered_run,
@@ -126,6 +197,7 @@ pub fn execute_startup_reconciliation<R: StartupReconciliationRuntime>(
     Ok(StartupReconciliationOutcome {
         recovered_runs,
         repaired_session_ids,
+        repaired_physical_sessions,
     })
 }
 
@@ -238,7 +310,7 @@ mod tests {
     use super::{
         execute_startup_reconciliation, EventEnvelope, LogicalSession, Run, RunStatus,
         StartupReconciliationOutcome, StartupReconciliationRecoveredRun,
-        StartupReconciliationRuntime,
+        StartupReconciliationRepairedPhysicalSession, StartupReconciliationRuntime,
     };
     use crate::LaneState;
 
@@ -254,9 +326,11 @@ mod tests {
         persist_run_result: CrabResult<()>,
         append_event_result: CrabResult<()>,
         repair_session_result: CrabResult<()>,
+        repair_active_physical_session_result: CrabResult<()>,
         persisted_runs: Vec<Run>,
         appended_events: Vec<EventEnvelope>,
         repaired_sessions: Vec<String>,
+        repaired_active_physical_sessions: Vec<(String, String)>,
         calls: Vec<String>,
     }
 
@@ -273,9 +347,11 @@ mod tests {
                 persist_run_result: Ok(()),
                 append_event_result: Ok(()),
                 repair_session_result: Ok(()),
+                repair_active_physical_session_result: Ok(()),
                 persisted_runs: Vec::new(),
                 appended_events: Vec::new(),
                 repaired_sessions: Vec::new(),
+                repaired_active_physical_sessions: Vec::new(),
                 calls: Vec::new(),
             }
         }
@@ -330,6 +406,21 @@ mod tests {
                 .push(format!("repair_session:{logical_session_id}"));
             self.repaired_sessions.push(logical_session_id.to_string());
             self.repair_session_result.clone()
+        }
+
+        fn repair_active_physical_session_id(
+            &mut self,
+            logical_session_id: &str,
+            physical_session_id: &str,
+        ) -> CrabResult<()> {
+            self.calls.push(format!(
+                "repair_active_physical_session:{logical_session_id}:{physical_session_id}"
+            ));
+            self.repaired_active_physical_sessions.push((
+                logical_session_id.to_string(),
+                physical_session_id.to_string(),
+            ));
+            self.repair_active_physical_session_result.clone()
         }
     }
 
@@ -386,10 +477,30 @@ mod tests {
         started_at_epoch_ms: Option<u64>,
         completed_at_epoch_ms: Option<u64>,
     ) -> Run {
+        run_with_physical(
+            logical_session_id,
+            id,
+            "phys-1",
+            status,
+            queued_at_epoch_ms,
+            started_at_epoch_ms,
+            completed_at_epoch_ms,
+        )
+    }
+
+    fn run_with_physical(
+        logical_session_id: &str,
+        id: &str,
+        physical_session_id: &str,
+        status: RunStatus,
+        queued_at_epoch_ms: u64,
+        started_at_epoch_ms: Option<u64>,
+        completed_at_epoch_ms: Option<u64>,
+    ) -> Run {
         Run {
             id: id.to_string(),
             logical_session_id: logical_session_id.to_string(),
-            physical_session_id: Some("phys-1".to_string()),
+            physical_session_id: Some(physical_session_id.to_string()),
             status,
             user_input: "hello".to_string(),
             delivery_channel_id: None,
@@ -463,6 +574,7 @@ mod tests {
                     recovered_status: RunStatus::Cancelled,
                 }],
                 repaired_session_ids: vec!["discord:channel:a".to_string()],
+                repaired_physical_sessions: Vec::new(),
             }
         );
         assert_eq!(runtime.persisted_runs.len(), 1);
@@ -661,10 +773,170 @@ mod tests {
             outcome.repaired_session_ids,
             vec!["discord:channel:cancelling".to_string()]
         );
+        assert!(outcome.repaired_physical_sessions.is_empty());
         assert_eq!(
             runtime.repaired_sessions,
             vec!["discord:channel:cancelling".to_string()]
         );
+    }
+
+    #[test]
+    fn repairs_orphan_active_physical_session_id_to_latest_successful_run() {
+        let mut runtime = FakeRuntime::new();
+        runtime.sessions.push(session(
+            "discord:channel:orphan",
+            LaneState::Idle,
+            Some("phys-orphan"),
+        ));
+        runtime.runs_by_session.insert(
+            "discord:channel:orphan".to_string(),
+            vec![
+                run_with_physical(
+                    "discord:channel:orphan",
+                    "run-older-success",
+                    "phys-good",
+                    RunStatus::Succeeded,
+                    1_739_173_000_000,
+                    Some(1_739_173_000_010),
+                    Some(1_739_173_000_020),
+                ),
+                run_with_physical(
+                    "discord:channel:orphan",
+                    "run-latest-fail",
+                    "phys-orphan",
+                    RunStatus::Failed,
+                    1_739_173_100_000,
+                    Some(1_739_173_100_010),
+                    Some(1_739_173_100_020),
+                ),
+            ],
+        );
+
+        let outcome = execute_startup_reconciliation(&mut runtime, 1_739_173_300_000, 60_000)
+            .expect("orphan physical session repair should succeed");
+
+        assert!(outcome.recovered_runs.is_empty());
+        assert!(outcome.repaired_session_ids.is_empty());
+        assert_eq!(
+            outcome.repaired_physical_sessions,
+            vec![StartupReconciliationRepairedPhysicalSession {
+                logical_session_id: "discord:channel:orphan".to_string(),
+                previous_physical_session_id: "phys-orphan".to_string(),
+                repaired_physical_session_id: "phys-good".to_string(),
+            }]
+        );
+        assert_eq!(
+            runtime.repaired_active_physical_sessions,
+            vec![(
+                "discord:channel:orphan".to_string(),
+                "phys-good".to_string()
+            )]
+        );
+    }
+
+    #[test]
+    fn does_not_repair_active_physical_session_id_when_it_has_succeeded_before() {
+        let mut runtime = FakeRuntime::new();
+        runtime.sessions.push(session(
+            "discord:channel:active-success",
+            LaneState::Idle,
+            Some("phys-same"),
+        ));
+        runtime.runs_by_session.insert(
+            "discord:channel:active-success".to_string(),
+            vec![
+                run_with_physical(
+                    "discord:channel:active-success",
+                    "run-1",
+                    "phys-same",
+                    RunStatus::Succeeded,
+                    1_739_173_000_000,
+                    Some(1_739_173_000_010),
+                    Some(1_739_173_000_200),
+                ),
+                // Older completion timestamp than the first successful run, so it should not win
+                // the "latest successful" selection.
+                run_with_physical(
+                    "discord:channel:active-success",
+                    "run-2",
+                    "phys-same",
+                    RunStatus::Succeeded,
+                    1_739_172_900_000,
+                    Some(1_739_172_900_010),
+                    Some(1_739_172_900_020),
+                ),
+                run_with_physical(
+                    "discord:channel:active-success",
+                    "run-3",
+                    "phys-same",
+                    RunStatus::Failed,
+                    1_739_173_100_000,
+                    Some(1_739_173_100_010),
+                    Some(1_739_173_100_020),
+                ),
+            ],
+        );
+
+        let outcome = execute_startup_reconciliation(&mut runtime, 1_739_173_300_000, 60_000)
+            .expect("reconciliation should succeed");
+
+        assert!(outcome.recovered_runs.is_empty());
+        assert!(outcome.repaired_session_ids.is_empty());
+        assert!(outcome.repaired_physical_sessions.is_empty());
+        assert!(runtime.repaired_active_physical_sessions.is_empty());
+    }
+
+    #[test]
+    fn success_and_failure_tracking_ignores_mismatched_or_missing_physical_session_ids() {
+        let mut runtime = FakeRuntime::new();
+        runtime.sessions.push(session(
+            "discord:channel:tracking",
+            LaneState::Idle,
+            Some("phys-active"),
+        ));
+
+        let mut missing_physical = run(
+            "discord:channel:tracking",
+            "run-0",
+            RunStatus::Succeeded,
+            1_739_173_000_000,
+            Some(1_739_173_000_010),
+            Some(1_739_173_000_020),
+        );
+        missing_physical.physical_session_id = None;
+
+        runtime.runs_by_session.insert(
+            "discord:channel:tracking".to_string(),
+            vec![
+                missing_physical,
+                run_with_physical(
+                    "discord:channel:tracking",
+                    "run-1",
+                    "phys-other",
+                    RunStatus::Succeeded,
+                    1_739_173_100_000,
+                    Some(1_739_173_100_010),
+                    Some(1_739_173_100_020),
+                ),
+                run_with_physical(
+                    "discord:channel:tracking",
+                    "run-2",
+                    "phys-other",
+                    RunStatus::Failed,
+                    1_739_173_200_000,
+                    Some(1_739_173_200_010),
+                    Some(1_739_173_200_020),
+                ),
+            ],
+        );
+
+        let outcome = execute_startup_reconciliation(&mut runtime, 1_739_173_300_000, 60_000)
+            .expect("reconciliation should succeed");
+
+        assert!(outcome.recovered_runs.is_empty());
+        assert!(outcome.repaired_session_ids.is_empty());
+        assert!(outcome.repaired_physical_sessions.is_empty());
+        assert!(runtime.repaired_active_physical_sessions.is_empty());
     }
 
     #[test]

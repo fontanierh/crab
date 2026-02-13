@@ -149,7 +149,8 @@ pub use sender_identity::{
 };
 pub use startup_reconciliation::{
     execute_startup_reconciliation, StartupReconciliationOutcome,
-    StartupReconciliationRecoveredRun, StartupReconciliationRuntime,
+    StartupReconciliationRecoveredRun, StartupReconciliationRepairedPhysicalSession,
+    StartupReconciliationRuntime,
 };
 pub use state_schema::{
     ensure_state_schema_version, evaluate_state_schema_compatibility, state_schema_marker_path,

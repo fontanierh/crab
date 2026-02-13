@@ -274,6 +274,30 @@ where
             .session_store
             .upsert_session(&session)
     }
+
+    fn repair_active_physical_session_id(
+        &mut self,
+        logical_session_id: &str,
+        physical_session_id: &str,
+    ) -> CrabResult<()> {
+        let Some(mut session) = self
+            .composition
+            .state_stores
+            .session_store
+            .get_session(logical_session_id)?
+        else {
+            return Err(CrabError::InvariantViolation {
+                context: "startup_reconciliation_runtime",
+                message: format!("session {logical_session_id} not found"),
+            });
+        };
+
+        session.active_physical_session_id = Some(physical_session_id.to_string());
+        self.composition
+            .state_stores
+            .session_store
+            .upsert_session(&session)
+    }
 }
 
 struct HeartbeatRuntimeAdapter<'a, CP, OP>
@@ -1137,6 +1161,93 @@ mod tests {
     }
 
     #[test]
+    fn startup_reconciliation_repairs_orphan_active_physical_session_id_when_it_has_failed() {
+        let workspace = TempWorkspace::new("maintenance", "startup-repair-orphan-physical");
+        let config = runtime_config_for_workspace_with_lanes(&workspace.path, 1);
+        let mut composition =
+            compose_runtime_with_processes(&config, "999", FakeCodexProcess, FakeOpenCodeProcess)
+                .expect("composition should succeed");
+
+        let logical_session_id = "discord:channel:orphan";
+        let now_epoch_ms = 1_739_173_400_000;
+
+        composition
+            .state_stores
+            .session_store
+            .upsert_session(&crab_core::LogicalSession {
+                id: logical_session_id.to_string(),
+                active_backend: BackendKind::Codex,
+                active_profile: sample_profile(),
+                active_physical_session_id: Some("physical-orphan".to_string()),
+                last_successful_checkpoint_id: None,
+                lane_state: LaneState::Idle,
+                queued_run_count: 0,
+                last_activity_epoch_ms: now_epoch_ms,
+                token_accounting: sample_token_accounting(),
+            })
+            .expect("session should persist");
+
+        composition
+            .state_stores
+            .run_store
+            .upsert_run(&Run {
+                id: "run-success".to_string(),
+                logical_session_id: logical_session_id.to_string(),
+                physical_session_id: Some("physical-good".to_string()),
+                status: RunStatus::Succeeded,
+                user_input: "hello".to_string(),
+                delivery_channel_id: None,
+                profile: sample_telemetry("111111111111111111"),
+                queued_at_epoch_ms: now_epoch_ms - 20_000,
+                started_at_epoch_ms: Some(now_epoch_ms - 19_000),
+                completed_at_epoch_ms: Some(now_epoch_ms - 18_000),
+            })
+            .expect("successful run should persist");
+
+        composition
+            .state_stores
+            .run_store
+            .upsert_run(&Run {
+                id: "run-failed".to_string(),
+                logical_session_id: logical_session_id.to_string(),
+                physical_session_id: Some("physical-orphan".to_string()),
+                status: RunStatus::Failed,
+                user_input: "hello".to_string(),
+                delivery_channel_id: None,
+                profile: sample_telemetry("111111111111111111"),
+                queued_at_epoch_ms: now_epoch_ms - 10_000,
+                started_at_epoch_ms: Some(now_epoch_ms - 9_000),
+                completed_at_epoch_ms: Some(now_epoch_ms - 8_000),
+            })
+            .expect("failed run should persist");
+
+        let outcome = run_startup_reconciliation_on_boot(&mut composition, now_epoch_ms)
+            .expect("reconciliation should succeed");
+
+        assert!(outcome.recovered_runs.is_empty());
+        assert!(outcome.repaired_session_ids.is_empty());
+        assert_eq!(
+            outcome.repaired_physical_sessions,
+            vec![crab_core::StartupReconciliationRepairedPhysicalSession {
+                logical_session_id: logical_session_id.to_string(),
+                previous_physical_session_id: "physical-orphan".to_string(),
+                repaired_physical_session_id: "physical-good".to_string(),
+            }]
+        );
+
+        let session = composition
+            .state_stores
+            .session_store
+            .get_session(logical_session_id)
+            .expect("session lookup should succeed")
+            .expect("session should exist");
+        assert_eq!(
+            session.active_physical_session_id,
+            Some("physical-good".to_string())
+        );
+    }
+
+    #[test]
     fn startup_reconciliation_reports_grace_period_overflow() {
         let workspace = TempWorkspace::new("maintenance", "startup-overflow");
         let config = runtime_config_for_workspace_with_lanes(&workspace.path, 1);
@@ -1376,6 +1487,28 @@ mod tests {
         };
         let error = runtime
             .repair_session_lane_state("discord:channel:missing")
+            .expect_err("missing session should fail");
+        assert_eq!(
+            error,
+            CrabError::InvariantViolation {
+                context: "startup_reconciliation_runtime",
+                message: "session discord:channel:missing not found".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn startup_runtime_repair_active_physical_session_id_requires_existing_session() {
+        let workspace = TempWorkspace::new("maintenance", "startup-repair-active-missing");
+        let config = runtime_config_for_workspace_with_lanes(&workspace.path, 1);
+        let mut composition =
+            compose_runtime_with_processes(&config, "999", FakeCodexProcess, FakeOpenCodeProcess)
+                .expect("composition should succeed");
+        let mut runtime = super::StartupRuntimeAdapter {
+            composition: &mut composition,
+        };
+        let error = runtime
+            .repair_active_physical_session_id("discord:channel:missing", "physical-any")
             .expect_err("missing session should fail");
         assert_eq!(
             error,

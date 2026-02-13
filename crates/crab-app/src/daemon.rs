@@ -2355,6 +2355,10 @@ where
     }
     if !boot.startup_reconciliation.recovered_runs.is_empty()
         || !boot.startup_reconciliation.repaired_session_ids.is_empty()
+        || !boot
+            .startup_reconciliation
+            .repaired_physical_sessions
+            .is_empty()
     {
         // `tracing` macros can produce stubborn per-line coverage gaps under `cargo llvm-cov`
         // (cfg(coverage)), even when the behavior is exercised. Keep runtime logs, but exclude
@@ -2363,12 +2367,15 @@ where
         tracing::warn!(
             recovered_runs = boot.startup_reconciliation.recovered_runs.len(),
             repaired_sessions = boot.startup_reconciliation.repaired_session_ids.len(),
+            repaired_physical_sessions =
+                boot.startup_reconciliation.repaired_physical_sessions.len(),
             "startup reconciliation recovered in-flight work"
         );
         #[cfg(not(coverage))]
         tracing::debug!(
             recovered = ?boot.startup_reconciliation.recovered_runs,
             repaired = ?boot.startup_reconciliation.repaired_session_ids,
+            repaired_physical = ?boot.startup_reconciliation.repaired_physical_sessions,
             "startup reconciliation details"
         );
     } else {
