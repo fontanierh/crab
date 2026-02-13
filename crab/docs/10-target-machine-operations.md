@@ -256,6 +256,19 @@ State-schema compatibility preflight (`crabctl doctor` + `crabctl upgrade`):
   - `RUST_LOG=info,crab_app=debug,crab_discord_connector=debug` (runtime flow + connector ops)
   - `RUST_LOG=info,crab_backends=debug` (backend protocol/recovery)
 
+## macOS Binary Code Signing (Execution SIGKILL)
+
+On newer macOS builds (observed on macOS 26.2), freshly built Rust binaries that rely on the
+linker-produced ad-hoc signature may be killed immediately by the OS when executed after being
+copied in (for example via `scp`). The runtime can surface this as the connector reporting
+`crabd exited with status signal: 9 (SIGKILL)`.
+
+Remediation on the target machine (re-sign locally):
+
+- `codesign --force --sign - ~/crab-bin/crabd`
+- `codesign --force --sign - ~/crab-bin/crab-discord-connector`
+- `codesign --force --sign - ~/crab-bin/crabctl`
+
 ## Reset (Blank Slate / Re-Onboarding)
 
 If you need to restart from a clean slate (for example to redo owner onboarding), you can wipe the

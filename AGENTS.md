@@ -273,6 +273,20 @@ The repository now enforces quality with executable gates and CI automation.
 7. Reattach later on target:
    `tmux attach -t crab-main`
 
+### macOS Code Signing Note (Target Machine)
+
+On newer macOS builds (observed on macOS 26.2), Rust binaries that ship with a linker-produced
+ad-hoc signature (`linker-signed`) may be killed immediately by the OS when executed after being
+copied in (for example via `scp`), showing up as `SIGKILL` in the connector logs.
+
+Remediation on the target machine: re-sign the executables locally with `codesign`:
+
+- `codesign --force --sign - ~/crab-bin/crabd`
+- `codesign --force --sign - ~/crab-bin/crab-discord-connector`
+- `codesign --force --sign - ~/crab-bin/crabctl`
+
+Track upstream fix work in GitHub issue `#151`.
+
 ### Non-interactive command execution (remote tmux)
 
 - For automation, remote commands should create/use tmux on the target machine:
