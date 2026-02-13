@@ -2,8 +2,8 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use crab_backends::{
-    BackendEvent, BackendEventKind, CodexAppServerProcess, CodexLifecycleManager,
-    OpenCodeServerProcess,
+    BackendEvent, BackendEventKind, BackendEventStream, CodexAppServerProcess,
+    CodexLifecycleManager, OpenCodeServerProcess,
 };
 use crab_core::{
     apply_operator_command, build_checkpoint_prompt, build_fallback_checkpoint_document,
@@ -25,6 +25,8 @@ use crab_core::{
 use crab_discord::{DeliveryAttempt, GatewayMessage, RoutingKey, ShouldSendDecision};
 use crab_scheduler::QueuedRun;
 use crab_store::{CheckpointStore, EventStore};
+use futures::executor::block_on;
+use futures::future::poll_fn;
 
 use crate::AppComposition;
 
@@ -79,7 +81,7 @@ pub trait TurnExecutorRuntime {
         run: &Run,
         turn_id: &str,
         turn_context: &str,
-    ) -> CrabResult<Vec<BackendEvent>>;
+    ) -> CrabResult<BackendEventStream>;
 
     fn deliver_assistant_output(
         &mut self,
@@ -347,6 +349,7 @@ where
 
         let turn_id = build_turn_id(&run.id);
         let mut backend_events = Vec::new();
+        let mut delivery = DiscordAssistantDelivery::new();
         let mut onboarding_gate_resolution =
             self.resolve_pending_onboarding_gate(&run, started_at_epoch_ms)?;
         let mut manual_command_resolution = if onboarding_gate_resolution.is_some() {
@@ -412,33 +415,37 @@ where
                 &physical_session,
                 inject_bootstrap_context,
             )?;
-            backend_events = self.runtime.execute_backend_turn(
+            let mut backend_event_stream = self.runtime.execute_backend_turn(
                 &mut self.composition.backends.codex,
                 &mut physical_session,
                 &run,
                 &turn_id,
                 &turn_context,
             )?;
+
+            loop {
+                let next = block_on(poll_fn(|cx| backend_event_stream.as_mut().poll_next(cx)));
+                let Some(backend_event) = next else {
+                    break;
+                };
+                let emitted_at_epoch_ms = self.runtime.now_epoch_ms()?;
+                self.append_backend_event(&run, &backend_event, emitted_at_epoch_ms)?;
+                if let Some(delta_text) = extract_backend_text_delta(&backend_event) {
+                    let planned = delivery.push_delta(delta_text);
+                    for op in planned {
+                        let _ = self.deliver_rendered_assistant_output(
+                            &run,
+                            &delivery_message_id(&run.id, op.chunk_index),
+                            &op.content,
+                            op.edit_generation,
+                            emitted_at_epoch_ms,
+                        )?;
+                    }
+                }
+                backend_events.push(backend_event);
+            }
         } else {
             run.physical_session_id = session.active_physical_session_id.clone();
-        }
-
-        let mut delivery = DiscordAssistantDelivery::new();
-        for backend_event in &backend_events {
-            let emitted_at_epoch_ms = self.runtime.now_epoch_ms()?;
-            self.append_backend_event(&run, backend_event, emitted_at_epoch_ms)?;
-            if let Some(delta_text) = extract_backend_text_delta(backend_event) {
-                let planned = delivery.push_delta(delta_text);
-                for op in planned {
-                    let _ = self.deliver_rendered_assistant_output(
-                        &run,
-                        &delivery_message_id(&run.id, op.chunk_index),
-                        &op.content,
-                        op.edit_generation,
-                        emitted_at_epoch_ms,
-                    )?;
-                }
-            }
         }
 
         let final_status = if manual_command_resolution.is_some()
@@ -692,18 +699,23 @@ where
         hidden_onboarding_run.user_input = extraction_prompt.clone();
         hidden_onboarding_run.physical_session_id = Some(physical_session.id.clone());
         let hidden_turn_id = format!("turn:{}:hidden-onboarding-capture", run.id);
-        let backend_events_result = self.runtime.execute_backend_turn(
+        let mut backend_event_stream = self.runtime.execute_backend_turn(
             &mut self.composition.backends.codex,
             &mut physical_session,
             &hidden_onboarding_run,
             &hidden_turn_id,
             &extraction_prompt,
-        );
-        let backend_events = backend_events_result?;
-        let raw_output = backend_events
-            .iter()
-            .filter_map(extract_backend_text_delta)
-            .collect::<String>();
+        )?;
+        let mut raw_output = String::new();
+        loop {
+            let next = block_on(poll_fn(|cx| backend_event_stream.as_mut().poll_next(cx)));
+            let Some(backend_event) = next else {
+                break;
+            };
+            if let Some(delta) = extract_backend_text_delta(&backend_event) {
+                raw_output.push_str(delta);
+            }
+        }
 
         if raw_output.trim() == ONBOARDING_CAPTURE_INCOMPLETE_TOKEN {
             let mut payload = BTreeMap::new();
@@ -1455,17 +1467,23 @@ where
             hidden_checkpoint_run.physical_session_id = Some(physical_session.id.clone());
 
             let hidden_turn_id = format!("turn:{}:hidden-checkpoint:{attempt}", self.run.id);
-            let backend_events = self.runtime.execute_backend_turn(
+            let mut backend_event_stream = self.runtime.execute_backend_turn(
                 self.codex_lifecycle,
                 &mut physical_session,
                 &hidden_checkpoint_run,
                 &hidden_turn_id,
                 &prompt,
             )?;
-            let raw_output = backend_events
-                .iter()
-                .filter_map(extract_backend_text_delta)
-                .collect::<String>();
+            let mut raw_output = String::new();
+            loop {
+                let next = block_on(poll_fn(|cx| backend_event_stream.as_mut().poll_next(cx)));
+                let Some(backend_event) = next else {
+                    break;
+                };
+                if let Some(delta) = extract_backend_text_delta(&backend_event) {
+                    raw_output.push_str(delta);
+                }
+            }
 
             let resolution = resolve_checkpoint_turn_output(&raw_output, attempt, max_attempts)?;
             match resolution {
@@ -2163,6 +2181,7 @@ mod tests {
         RunStatus, WorkspaceGitPushPolicy, ONBOARDING_CAPTURE_INCOMPLETE_TOKEN,
     };
     use crab_discord::{GatewayConversationKind, GatewayMessage};
+    use futures::stream;
 
     use super::{DispatchedTurn, QueuedTurn, TurnExecutor, TurnExecutorRuntime};
     use crate::composition::compose_runtime_with_processes_and_queue_limit;
@@ -2319,14 +2338,15 @@ mod tests {
             _run: &crab_core::Run,
             turn_id: &str,
             turn_context: &str,
-        ) -> CrabResult<Vec<crab_backends::BackendEvent>> {
+        ) -> CrabResult<crab_backends::BackendEventStream> {
             self.steps.push("execute_backend_turn".to_string());
             self.executed_turn_contexts
                 .push((turn_id.to_string(), turn_context.to_string()));
-            Self::pop_result(
+            let events = Self::pop_result(
                 &mut self.execute_turn_results,
                 "turn_executor_test_execute_turn",
-            )
+            )?;
+            Ok(Box::pin(stream::iter(events)))
         }
 
         fn deliver_assistant_output(
@@ -4343,6 +4363,45 @@ mod tests {
             runtime.executed_turn_contexts[0].1,
             build_checkpoint_prompt()
         );
+    }
+
+    #[test]
+    fn onboarding_rotation_extraction_propagates_backend_execution_errors() {
+        let workspace = TempWorkspace::new("turn-executor", "rotation-onboarding-exec-error");
+        fs::create_dir_all(&workspace.path).expect("workspace root should be creatable");
+        fs::write(
+            workspace.path.join("BOOTSTRAP.md"),
+            "Bootstrap remains pending until owner onboarding capture is applied.",
+        )
+        .expect("bootstrap marker should be writable");
+
+        let logical_session_id = "discord:dm:424242424242424242";
+        let mut runtime = FakeRuntime::with_backend_events(Vec::new(), &[]);
+        let expected = CrabError::InvariantViolation {
+            context: "turn_executor_test_execute_turn",
+            message: "forced backend execution error".to_string(),
+        };
+        runtime.execute_turn_results = VecDeque::from(vec![Err(expected.clone())]);
+        runtime.ensure_session_results =
+            VecDeque::from(vec![Ok(physical_session_fixture_for(logical_session_id))]);
+
+        let mut executor = build_executor(&workspace, runtime, 8);
+        fs::write(
+            workspace.path.join("BOOTSTRAP.md"),
+            "Bootstrap remains pending until owner onboarding capture is applied.",
+        )
+        .expect("bootstrap marker should be writable");
+
+        let run = rotation_test_run(
+            logical_session_id,
+            "run:discord:dm:424242424242424242:rotation-onboarding-exec-error",
+            "/compact confirm",
+        );
+        let mut session = rotation_test_session(logical_session_id, &run.profile.resolved_profile);
+        let error = executor
+            .maybe_complete_pending_onboarding_from_rotation(&run, &mut session, 4)
+            .expect_err("backend execution error should propagate");
+        assert_eq!(error, expected);
     }
 
     #[test]

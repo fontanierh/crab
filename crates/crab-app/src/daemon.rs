@@ -9,12 +9,12 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use std::{cell::RefCell, thread_local};
 
 use crab_backends::{
-    claude::ClaudeRawEvent, map_opencode_inference_profile, normalize_opencode_events,
-    recover_opencode_session, BackendEvent, BackendHarness, ClaudeBackend, ClaudeProcess,
-    CodexAppServerProcess, CodexLifecycleManager, OpenCodeManager, OpenCodeRawEvent,
-    OpenCodeRecoveryPlan, OpenCodeRecoveryRuntime, OpenCodeServerHandle, OpenCodeServerProcess,
-    OpenCodeSessionConfig, OpenCodeTokenUsage, OpenCodeTurnConfig, OpenCodeTurnState,
-    SessionContext, TurnInput,
+    claude::{ClaudeRawEvent, ClaudeRawEventStream},
+    map_opencode_inference_profile, normalize_opencode_events, recover_opencode_session,
+    BackendEvent, BackendHarness, ClaudeBackend, ClaudeProcess, CodexAppServerProcess,
+    CodexLifecycleManager, OpenCodeManager, OpenCodeRawEvent, OpenCodeRecoveryPlan,
+    OpenCodeRecoveryRuntime, OpenCodeServerHandle, OpenCodeServerProcess, OpenCodeSessionConfig,
+    OpenCodeTokenUsage, OpenCodeTurnConfig, OpenCodeTurnState, SessionContext, TurnInput,
 };
 #[cfg(not(any(test, coverage)))]
 use crab_backends::{map_claude_inference_profile, ClaudeThinkingMode};
@@ -32,7 +32,9 @@ use crab_core::{
 };
 use crab_discord::GatewayMessage;
 use crab_store::CheckpointStore;
-use futures::{executor::block_on, StreamExt};
+#[cfg(not(any(test, coverage)))]
+use futures::channel::mpsc;
+use futures::{executor::block_on, stream};
 
 #[cfg(not(any(test, coverage)))]
 use crate::daemon_backend_bridge::CodexAppServerTransport;
@@ -115,7 +117,7 @@ impl Default for ClaudeSessionExecutionConfig {
     }
 }
 
-#[cfg(any(test, not(coverage)))]
+#[cfg(test)]
 fn parse_claude_stream_lines(stdout: &str) -> CrabResult<Vec<ClaudeRawEvent>> {
     let mut events = Vec::new();
     for line in stdout.lines() {
@@ -123,13 +125,7 @@ fn parse_claude_stream_lines(stdout: &str) -> CrabResult<Vec<ClaudeRawEvent>> {
         if trimmed.is_empty() {
             continue;
         }
-        let payload: serde_json::Value =
-            serde_json::from_str(trimmed).map_err(|error| CrabError::Serialization {
-                context: DAEMON_CLAUDE_STREAM_CONTEXT,
-                path: None,
-                message: format!("invalid stream-json event: {error}"),
-            })?;
-        append_claude_events_from_stream_value(&payload, &mut events)?;
+        events.extend(parse_claude_stream_line(trimmed)?);
     }
     if events.is_empty() {
         return Err(CrabError::InvariantViolation {
@@ -145,6 +141,19 @@ fn parse_claude_stream_lines(stdout: &str) -> CrabResult<Vec<ClaudeRawEvent>> {
             stop_reason: "completed".to_string(),
         });
     }
+    Ok(events)
+}
+
+#[cfg(any(test, not(coverage)))]
+fn parse_claude_stream_line(line: &str) -> CrabResult<Vec<ClaudeRawEvent>> {
+    let payload: serde_json::Value =
+        serde_json::from_str(line).map_err(|error| CrabError::Serialization {
+            context: DAEMON_CLAUDE_STREAM_CONTEXT,
+            path: None,
+            message: format!("invalid stream-json event: {error}"),
+        })?;
+    let mut events = Vec::new();
+    append_claude_events_from_stream_value(&payload, &mut events)?;
     Ok(events)
 }
 
@@ -378,8 +387,9 @@ impl ClaudeProcess for DaemonClaudeProcess {
         &self,
         _backend_session_id: &str,
         input: &TurnInput,
-    ) -> CrabResult<Vec<ClaudeRawEvent>> {
-        deterministic_claude_send_turn(input)
+    ) -> CrabResult<ClaudeRawEventStream> {
+        let events = deterministic_claude_send_turn(input)?;
+        Ok(Box::pin(stream::iter(events)))
     }
 
     fn interrupt_turn(&self, _backend_session_id: &str, _turn_id: &str) -> CrabResult<()> {
@@ -435,9 +445,10 @@ impl ClaudeProcess for DaemonClaudeProcess {
         &self,
         backend_session_id: &str,
         input: &TurnInput,
-    ) -> CrabResult<Vec<ClaudeRawEvent>> {
+    ) -> CrabResult<ClaudeRawEventStream> {
         if use_deterministic_claude_process_override() {
-            return deterministic_claude_send_turn(input);
+            let events = deterministic_claude_send_turn(input)?;
+            return Ok(Box::pin(stream::iter(events)));
         }
 
         let (config, mode) = {
@@ -452,36 +463,65 @@ impl ClaudeProcess for DaemonClaudeProcess {
             }
         };
 
-        let result = run_claude_turn(backend_session_id, input, &config, mode);
-        let events = match result {
-            Ok(events) => events,
-            Err(error) if mode == ClaudeSessionMode::Start && is_session_in_use_error(&error) => {
-                run_claude_turn(
-                    backend_session_id,
-                    input,
-                    &config,
-                    ClaudeSessionMode::Resume,
-                )?
-            }
-            Err(error)
-                if mode == ClaudeSessionMode::Resume && is_unknown_session_resume_error(&error) =>
-            {
-                run_claude_turn(backend_session_id, input, &config, ClaudeSessionMode::Start)?
-            }
-            Err(error) => return Err(error),
-        };
+        let backend_session_id = backend_session_id.to_string();
+        let input = input.clone();
+        let state = Arc::clone(&self.state);
+        let (sender, receiver) = mpsc::unbounded::<ClaudeRawEvent>();
 
-        let mut state = self.state.lock().expect("lock should succeed");
-        state
-            .sessions
-            .entry(backend_session_id.to_string())
-            .and_modify(|entry| entry.initialized = true)
-            .or_insert_with(|| ClaudeSessionExecutionConfig {
-                initialized: true,
-                ..config
-            });
+        thread::spawn(move || {
+            let mut attempts = Vec::new();
+            attempts.push(mode);
+            if mode == ClaudeSessionMode::Start {
+                attempts.push(ClaudeSessionMode::Resume);
+            } else {
+                attempts.push(ClaudeSessionMode::Start);
+            }
 
-        Ok(events)
+            let mut succeeded = false;
+            for attempt_mode in attempts {
+                let result =
+                    run_claude_turn(&backend_session_id, &input, &config, attempt_mode, &sender);
+                match result {
+                    Ok(()) => {
+                        succeeded = true;
+                        break;
+                    }
+                    Err(error)
+                        if attempt_mode == ClaudeSessionMode::Start
+                            && is_session_in_use_error(&error) =>
+                    {
+                        continue;
+                    }
+                    Err(error)
+                        if attempt_mode == ClaudeSessionMode::Resume
+                            && is_unknown_session_resume_error(&error) =>
+                    {
+                        continue;
+                    }
+                    Err(error) => {
+                        let _ = sender.unbounded_send(ClaudeRawEvent::Error {
+                            message: error.to_string(),
+                        });
+                        break;
+                    }
+                }
+            }
+
+            if succeeded {
+                let mut locked = state.lock().expect("lock should succeed");
+                locked
+                    .sessions
+                    .entry(backend_session_id.clone())
+                    .and_modify(|entry| entry.initialized = true)
+                    .or_insert_with(|| ClaudeSessionExecutionConfig {
+                        initialized: true,
+                        ..config
+                    });
+            }
+            drop(sender);
+        });
+
+        Ok(Box::pin(receiver))
     }
 
     fn interrupt_turn(&self, _backend_session_id: &str, _turn_id: &str) -> CrabResult<()> {
@@ -549,7 +589,11 @@ fn run_claude_turn(
     input: &TurnInput,
     config: &ClaudeSessionExecutionConfig,
     mode: ClaudeSessionMode,
-) -> CrabResult<Vec<ClaudeRawEvent>> {
+    sender: &mpsc::UnboundedSender<ClaudeRawEvent>,
+) -> CrabResult<()> {
+    use std::io::{BufRead, BufReader, Read};
+    use std::process::Stdio;
+
     let mut command = std::process::Command::new("claude");
     command
         .arg("--print")
@@ -587,32 +631,104 @@ fn run_claude_turn(
     }
     command.arg(&input.user_input);
 
-    let output = command.output().map_err(|error| CrabError::Io {
+    command.stdout(Stdio::piped()).stderr(Stdio::piped());
+
+    let mut child = command.spawn().map_err(|error| CrabError::Io {
         context: DAEMON_CLAUDE_TRANSPORT_CONTEXT,
         path: None,
         message: format!("failed to spawn claude process: {error}"),
     })?;
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    if !output.status.success() {
-        let stderr_trimmed = stderr.trim();
-        let stdout_trimmed = stdout.trim();
-        let detail = if !stderr_trimmed.is_empty() {
-            stderr_trimmed.to_string()
-        } else if !stdout_trimmed.is_empty() {
-            stdout_trimmed.to_string()
+
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| CrabError::InvariantViolation {
+            context: DAEMON_CLAUDE_TRANSPORT_CONTEXT,
+            message: "claude stdout pipe is missing".to_string(),
+        })?;
+    let mut stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| CrabError::InvariantViolation {
+            context: DAEMON_CLAUDE_TRANSPORT_CONTEXT,
+            message: "claude stderr pipe is missing".to_string(),
+        })?;
+
+    let stderr_handle = thread::spawn(move || {
+        let mut buffer = String::new();
+        let _ = stderr.read_to_string(&mut buffer);
+        buffer
+    });
+
+    let mut emitted_any = false;
+    let mut saw_terminal = false;
+
+    let reader = BufReader::new(stdout);
+    for line in reader.lines() {
+        let line = line.map_err(|error| CrabError::Io {
+            context: DAEMON_CLAUDE_TRANSPORT_CONTEXT,
+            path: None,
+            message: format!("failed reading claude stdout: {error}"),
+        })?;
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let parsed = parse_claude_stream_line(trimmed)?;
+        for event in parsed {
+            emitted_any = true;
+            if matches!(
+                event,
+                ClaudeRawEvent::TurnCompleted { .. }
+                    | ClaudeRawEvent::TurnInterrupted { .. }
+                    | ClaudeRawEvent::Error { .. }
+            ) {
+                saw_terminal = true;
+            }
+            let _ = sender.unbounded_send(event);
+        }
+    }
+
+    let status = child.wait().map_err(|error| CrabError::Io {
+        context: DAEMON_CLAUDE_TRANSPORT_CONTEXT,
+        path: None,
+        message: format!("failed waiting for claude process: {error}"),
+    })?;
+    let stderr_output = stderr_handle.join().unwrap_or_default();
+
+    if !status.success() {
+        let detail = if !stderr_output.trim().is_empty() {
+            stderr_output.trim().to_string()
         } else {
             "claude process exited without error output".to_string()
         };
+        if !emitted_any {
+            return Err(CrabError::InvariantViolation {
+                context: DAEMON_CLAUDE_TRANSPORT_CONTEXT,
+                message: format!(
+                    "claude process failed for run {} turn {}: {}",
+                    input.run_id, input.turn_id, detail
+                ),
+            });
+        }
+        let _ = sender.unbounded_send(ClaudeRawEvent::Error { message: detail });
+        return Ok(());
+    }
+
+    if !emitted_any {
         return Err(CrabError::InvariantViolation {
-            context: DAEMON_CLAUDE_TRANSPORT_CONTEXT,
-            message: format!(
-                "claude process failed for run {} turn {}: {}",
-                input.run_id, input.turn_id, detail
-            ),
+            context: DAEMON_CLAUDE_STREAM_CONTEXT,
+            message: "claude stream produced no assistant/result events".to_string(),
         });
     }
-    parse_claude_stream_lines(stdout.as_ref())
+
+    if !saw_terminal {
+        let _ = sender.unbounded_send(ClaudeRawEvent::TurnCompleted {
+            stop_reason: "completed".to_string(),
+        });
+    }
+
+    Ok(())
 }
 
 #[cfg(not(any(test, coverage)))]
@@ -657,7 +773,7 @@ impl ClaudeProcess for SharedClaudeProcess {
         &self,
         backend_session_id: &str,
         input: &TurnInput,
-    ) -> CrabResult<Vec<ClaudeRawEvent>> {
+    ) -> CrabResult<ClaudeRawEventStream> {
         self.inner.send_turn(backend_session_id, input)
     }
 
@@ -2041,7 +2157,7 @@ impl<D: DaemonDiscordIo> TurnExecutorRuntime for DaemonTurnRuntime<D> {
         run: &Run,
         turn_id: &str,
         turn_context: &str,
-    ) -> CrabResult<Vec<BackendEvent>> {
+    ) -> CrabResult<crab_backends::BackendEventStream> {
         let cache_key = physical_session.id.clone();
         if run.profile.resolved_profile.backend == BackendKind::Claude {
             let input = TurnInput {
@@ -2054,10 +2170,9 @@ impl<D: DaemonDiscordIo> TurnExecutorRuntime for DaemonTurnRuntime<D> {
                     .harness
                     .send_turn(physical_session, input),
             )?;
-            let events = block_on(stream.collect());
             self.physical_sessions
                 .insert(cache_key, physical_session.clone());
-            return Ok(events);
+            return Ok(stream);
         }
 
         let backend_events = self
@@ -2081,7 +2196,7 @@ impl<D: DaemonDiscordIo> TurnExecutorRuntime for DaemonTurnRuntime<D> {
         }
         self.physical_sessions
             .insert(cache_key, physical_session.clone());
-        Ok(backend_events)
+        Ok(Box::pin(stream::iter(backend_events)))
     }
 
     fn deliver_assistant_output(
@@ -2432,10 +2547,11 @@ mod tests {
     use crate::test_support::{runtime_config_for_workspace_with_lanes, TempWorkspace};
     use crate::TurnExecutorRuntime;
     use crab_backends::{
-        claude::ClaudeRawEvent, BackendEvent, BackendEventKind, ClaudeProcess,
-        CodexAppServerProcess, CodexLifecycleManager, CodexProcessHandle, OpenCodeRawEvent,
-        OpenCodeServerHandle, OpenCodeServerProcess, OpenCodeSessionConfig, OpenCodeTokenUsage,
-        OpenCodeTurnConfig, OpenCodeTurnState, SessionContext, TurnInput,
+        claude::{ClaudeRawEvent, ClaudeRawEventStream},
+        BackendEvent, BackendEventKind, ClaudeProcess, CodexAppServerProcess,
+        CodexLifecycleManager, CodexProcessHandle, OpenCodeRawEvent, OpenCodeServerHandle,
+        OpenCodeServerProcess, OpenCodeSessionConfig, OpenCodeTokenUsage, OpenCodeTurnConfig,
+        OpenCodeTurnState, SessionContext, TurnInput,
     };
     use crab_core::{
         BackendKind, Checkpoint, CrabError, CrabResult, InferenceProfile, LaneState,
@@ -2444,6 +2560,8 @@ mod tests {
     };
     use crab_discord::{GatewayConversationKind, GatewayMessage};
     use crab_store::{CheckpointStore, EventStore, RunStore, SessionStore};
+    use futures::executor::block_on;
+    use futures::StreamExt;
     use std::collections::VecDeque;
     use std::io::{BufRead, BufReader, Read, Write};
     use std::net::{TcpListener, TcpStream};
@@ -2691,17 +2809,18 @@ mod tests {
             &self,
             backend_session_id: &str,
             input: &TurnInput,
-        ) -> CrabResult<Vec<ClaudeRawEvent>> {
+        ) -> CrabResult<ClaudeRawEventStream> {
             let mut state = self.state.lock().expect("lock should succeed");
             state.stats.send_calls += 1;
             state.stats.last_backend_session_id = Some(backend_session_id.to_string());
             state.stats.last_turn_input = Some(input.clone());
-            state.send_results.pop_front().unwrap_or_else(|| {
+            let events = state.send_results.pop_front().unwrap_or_else(|| {
                 Err(CrabError::InvariantViolation {
                     context: "daemon_test_claude_send",
                     message: "missing scripted send result".to_string(),
                 })
-            })
+            })?;
+            Ok(Box::pin(futures::stream::iter(events)))
         }
 
         fn interrupt_turn(&self, backend_session_id: &str, turn_id: &str) -> CrabResult<()> {
@@ -3705,6 +3824,7 @@ mod tests {
         let events = process
             .send_turn(&backend_session_id, &turn_input)
             .expect("default process send_turn should succeed");
+        let events = block_on(events.collect::<Vec<_>>());
         assert_eq!(
             events,
             vec![
@@ -3729,7 +3849,8 @@ mod tests {
         };
         let error = process
             .send_turn(&backend_session_id, &forced_error_input)
-            .expect_err("forced error token should propagate");
+            .err()
+            .expect("forced error token should propagate");
         assert_eq!(
             error,
             CrabError::InvariantViolation {
@@ -3800,7 +3921,8 @@ mod tests {
                     user_input: "hello".to_string(),
                 },
             )
-            .expect_err("missing send script should return deterministic error");
+            .err()
+            .expect("missing send script should return deterministic error");
         assert_eq!(
             send_error,
             CrabError::InvariantViolation {
@@ -3883,6 +4005,7 @@ mod tests {
                 "compiled context",
             )
             .expect("claude bridge execution should succeed");
+        let events = block_on(events.collect::<Vec<_>>());
         assert_run_usage_note(&events, "5", "7", "12", "claude");
         assert_eq!(physical.last_turn_id.as_deref(), Some("turn-1"));
 
@@ -3955,6 +4078,7 @@ mod tests {
                 "context one",
             )
             .expect("interrupted stream should still surface events");
+        let interrupted = block_on(interrupted.collect::<Vec<_>>());
         assert!(interrupted
             .iter()
             .any(|event| event.kind == BackendEventKind::TurnInterrupted));
@@ -3969,6 +4093,7 @@ mod tests {
                 "context two",
             )
             .expect("error events should still be emitted as backend events");
+        let errored_event = block_on(errored_event.collect::<Vec<_>>());
         assert!(errored_event.iter().any(|event| {
             event.kind == BackendEventKind::Error
                 && event.payload.get("message") == Some(&"backend execution failed".to_string())
@@ -3983,7 +4108,8 @@ mod tests {
                 "turn-3",
                 "context three",
             )
-            .expect_err("send errors should propagate through execute_backend_turn");
+            .err()
+            .expect("send errors should propagate through execute_backend_turn");
         assert_eq!(
             send_error,
             CrabError::InvariantViolation {
@@ -4018,6 +4144,7 @@ mod tests {
                 "default context",
             )
             .expect("default Claude process should execute through bridge");
+        let events = block_on(events.collect::<Vec<_>>());
         assert_run_usage_note(&events, "2", "3", "5", "claude");
 
         let mut forced_error_run = sample_claude_run("123");
@@ -4030,7 +4157,8 @@ mod tests {
                 "turn-error",
                 "context",
             )
-            .expect_err("forced send failure should propagate");
+            .err()
+            .expect("forced send failure should propagate");
         assert_eq!(
             error,
             CrabError::InvariantViolation {
@@ -5966,6 +6094,7 @@ mod tests {
                 "turn context",
             )
             .expect("delegated backend turn should succeed");
+        let events = block_on(events.collect::<Vec<_>>());
         assert_eq!(events, expected_events);
         assert_eq!(physical.last_turn_id, Some("turn-1".to_string()));
         let cached = runtime
@@ -6020,7 +6149,8 @@ mod tests {
                 "turn-2",
                 "turn context",
             )
-            .expect_err("delegated backend failures should be mapped");
+            .err()
+            .expect("delegated backend failures should be mapped");
         assert!(matches!(
             error,
             CrabError::InvariantViolation {
@@ -6063,7 +6193,8 @@ mod tests {
                 "turn-3",
                 "turn context",
             )
-            .expect_err("depleted scripted bridge results should fail");
+            .err()
+            .expect("depleted scripted bridge results should fail");
         assert!(matches!(
             error,
             CrabError::InvariantViolation {
@@ -6095,7 +6226,7 @@ mod tests {
         let initial_backend_session_id = physical.backend_session_id.clone();
         let mut codex_lifecycle = NoopCodexLifecycle;
 
-        runtime
+        let events = runtime
             .execute_backend_turn(
                 &mut codex_lifecycle,
                 &mut physical,
@@ -6104,6 +6235,7 @@ mod tests {
                 "turn context",
             )
             .expect("mutating bridge turn should succeed");
+        let _ = block_on(events.collect::<Vec<_>>());
         assert_ne!(physical.backend_session_id, initial_backend_session_id);
         assert_eq!(physical.last_turn_id, Some("turn-4".to_string()));
 
@@ -6149,7 +6281,7 @@ mod tests {
         let active_id = physical.id.clone();
         let mut codex_lifecycle = NoopCodexLifecycle;
 
-        runtime
+        let events = runtime
             .execute_backend_turn(
                 &mut codex_lifecycle,
                 &mut physical,
@@ -6158,6 +6290,7 @@ mod tests {
                 "turn context",
             )
             .expect("turn execution should succeed");
+        let _ = block_on(events.collect::<Vec<_>>());
         assert_eq!(physical.last_turn_id, Some("backend-turn-id-9".to_string()));
 
         let cached = runtime
@@ -6685,7 +6818,7 @@ mod tests {
             .ensure_physical_session("discord:channel:777", &claude_profile(), None)
             .expect("claude session should be created");
         let mut codex_lifecycle = NoopCodexLifecycle;
-        runtime
+        let events = runtime
             .execute_backend_turn(
                 &mut codex_lifecycle,
                 &mut session,
@@ -6694,6 +6827,7 @@ mod tests {
                 "cleanup context",
             )
             .expect("claude turn should succeed before shutdown");
+        let _ = block_on(events.collect::<Vec<_>>());
         assert_eq!(session.last_turn_id.as_deref(), Some("turn-cleanup"));
 
         runtime
@@ -6740,7 +6874,7 @@ mod tests {
             .ensure_physical_session("discord:channel:777", &claude_profile(), None)
             .expect("claude session should be created");
         let mut codex_lifecycle = NoopCodexLifecycle;
-        runtime
+        let events = runtime
             .execute_backend_turn(
                 &mut codex_lifecycle,
                 &mut session,
@@ -6749,6 +6883,7 @@ mod tests {
                 "cleanup context",
             )
             .expect("claude turn should succeed before shutdown");
+        let _ = block_on(events.collect::<Vec<_>>());
 
         let error = runtime
             .shutdown_claude_sessions()
@@ -6789,7 +6924,7 @@ mod tests {
             .ensure_physical_session("discord:channel:777", &claude_profile(), None)
             .expect("claude session should be created");
         let mut codex_lifecycle = NoopCodexLifecycle;
-        runtime
+        let events = runtime
             .execute_backend_turn(
                 &mut codex_lifecycle,
                 &mut session,
@@ -6798,6 +6933,7 @@ mod tests {
                 "cleanup context",
             )
             .expect("claude turn should succeed before shutdown");
+        let _ = block_on(events.collect::<Vec<_>>());
 
         let error = runtime
             .shutdown_claude_sessions()

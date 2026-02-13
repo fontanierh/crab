@@ -1,14 +1,18 @@
 use std::collections::BTreeMap;
+use std::pin::Pin;
+use std::task::{Context, Poll};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
 use crab_core::{BackendKind, CrabError, CrabResult, PhysicalSession};
-use futures::stream;
+use futures_core::Stream;
 
 use crate::{
     ensure_non_empty_field, Backend, BackendEvent, BackendEventKind, BackendEventStream,
     SessionContext, TurnInput,
 };
+
+pub type ClaudeRawEventStream = Pin<Box<dyn Stream<Item = ClaudeRawEvent> + Send>>;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ClaudeRawEvent {
@@ -59,7 +63,7 @@ pub trait ClaudeProcess: Send + Sync {
         &self,
         backend_session_id: &str,
         input: &TurnInput,
-    ) -> CrabResult<Vec<ClaudeRawEvent>>;
+    ) -> CrabResult<ClaudeRawEventStream>;
 
     fn interrupt_turn(&self, backend_session_id: &str, turn_id: &str) -> CrabResult<()>;
 
@@ -107,13 +111,8 @@ impl<P: ClaudeProcess> Backend for ClaudeBackend<P> {
         let raw_events = self
             .process
             .send_turn(&session.backend_session_id, &input)?;
-        let usage = extract_usage_from_raw_events(&raw_events);
-        let mut events = normalize_claude_events(raw_events)?;
-        if let Some(usage) = usage {
-            append_run_usage_metadata(&mut events, usage);
-        }
         session.last_turn_id = Some(input.turn_id);
-        Ok(Box::pin(stream::iter(events)))
+        Ok(Box::pin(ClaudeNormalizeStream::new(raw_events)))
     }
 
     async fn interrupt_turn(&self, session: &PhysicalSession, turn_id: &str) -> CrabResult<()> {
@@ -126,57 +125,6 @@ impl<P: ClaudeProcess> Backend for ClaudeBackend<P> {
         ensure_claude_session("claude_backend_end_session", session)?;
         self.process.end_session(&session.backend_session_id)
     }
-}
-
-fn normalize_claude_events(raw_events: Vec<ClaudeRawEvent>) -> CrabResult<Vec<BackendEvent>> {
-    let mut normalized = Vec::with_capacity(raw_events.len());
-    for (index, raw_event) in raw_events.into_iter().enumerate() {
-        let sequence = sequence_number(index);
-        normalized.push(normalize_claude_event(sequence, raw_event)?);
-    }
-    Ok(normalized)
-}
-
-fn sequence_number(index: usize) -> u64 {
-    index.saturating_add(1) as u64
-}
-
-fn extract_usage_from_raw_events(raw_events: &[ClaudeRawEvent]) -> Option<UsageAccounting> {
-    raw_events.iter().fold(None, |current, event| match event {
-        ClaudeRawEvent::Usage {
-            input_tokens,
-            output_tokens,
-            total_tokens,
-        } => Some(UsageAccounting {
-            input_tokens: *input_tokens,
-            output_tokens: *output_tokens,
-            total_tokens: *total_tokens,
-        }),
-        _ => current,
-    })
-}
-
-fn append_run_usage_metadata(events: &mut Vec<BackendEvent>, usage: UsageAccounting) {
-    let next_sequence = events.last().map_or(1, |event| event.sequence + 1);
-    events.push(BackendEvent {
-        sequence: next_sequence,
-        kind: BackendEventKind::RunNote,
-        payload: BTreeMap::from([
-            (
-                "run_usage_input_tokens".to_string(),
-                usage.input_tokens.to_string(),
-            ),
-            (
-                "run_usage_output_tokens".to_string(),
-                usage.output_tokens.to_string(),
-            ),
-            (
-                "run_usage_total_tokens".to_string(),
-                usage.total_tokens.to_string(),
-            ),
-            ("run_usage_source".to_string(), "claude".to_string()),
-        ]),
-    });
 }
 
 fn normalize_claude_event(sequence: u64, raw_event: ClaudeRawEvent) -> CrabResult<BackendEvent> {
@@ -287,6 +235,175 @@ fn normalize_claude_event(sequence: u64, raw_event: ClaudeRawEvent) -> CrabResul
     })
 }
 
+struct ClaudeNormalizeStream {
+    inner: ClaudeRawEventStream,
+    next_sequence: u64,
+    usage: Option<UsageAccounting>,
+    emitted_any: bool,
+    saw_terminal: bool,
+    done: bool,
+}
+
+impl ClaudeNormalizeStream {
+    fn new(inner: ClaudeRawEventStream) -> Self {
+        Self {
+            inner,
+            next_sequence: 1,
+            usage: None,
+            emitted_any: false,
+            saw_terminal: false,
+            done: false,
+        }
+    }
+
+    fn make_event(
+        &mut self,
+        kind: BackendEventKind,
+        payload: BTreeMap<String, String>,
+    ) -> BackendEvent {
+        let event = BackendEvent {
+            sequence: self.next_sequence,
+            kind,
+            payload,
+        };
+        self.next_sequence = self.next_sequence.saturating_add(1);
+        event
+    }
+
+    fn make_error_event(&mut self, message: String) -> BackendEvent {
+        self.saw_terminal = true;
+        self.emitted_any = true;
+        self.make_event(
+            BackendEventKind::Error,
+            BTreeMap::from([("message".to_string(), message)]),
+        )
+    }
+
+    fn make_turn_completed_fallback(&mut self) -> BackendEvent {
+        self.saw_terminal = true;
+        self.emitted_any = true;
+        self.make_event(
+            BackendEventKind::TurnCompleted,
+            BTreeMap::from([("stop_reason".to_string(), "completed".to_string())]),
+        )
+    }
+
+    fn make_run_usage_note(&mut self, usage: UsageAccounting) -> BackendEvent {
+        self.make_event(BackendEventKind::RunNote, run_usage_payload(usage))
+    }
+}
+
+fn run_usage_payload(usage: UsageAccounting) -> BTreeMap<String, String> {
+    BTreeMap::from([
+        (
+            "run_usage_input_tokens".to_string(),
+            usage.input_tokens.to_string(),
+        ),
+        (
+            "run_usage_output_tokens".to_string(),
+            usage.output_tokens.to_string(),
+        ),
+        (
+            "run_usage_total_tokens".to_string(),
+            usage.total_tokens.to_string(),
+        ),
+        ("run_usage_source".to_string(), "claude".to_string()),
+    ])
+}
+
+impl Stream for ClaudeNormalizeStream {
+    type Item = BackendEvent;
+
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        loop {
+            if self.done {
+                if !self.emitted_any {
+                    return Poll::Ready(Some(self.make_error_event(
+                        "claude stream produced no assistant/result events".to_string(),
+                    )));
+                }
+                if !self.saw_terminal {
+                    return Poll::Ready(Some(self.make_turn_completed_fallback()));
+                }
+                if let Some(usage) = self.usage.take() {
+                    return Poll::Ready(Some(self.make_run_usage_note(usage)));
+                }
+                return Poll::Ready(None);
+            }
+
+            match self.inner.as_mut().poll_next(cx) {
+                Poll::Pending => return Poll::Pending,
+                Poll::Ready(None) => {
+                    self.done = true;
+                    continue;
+                }
+                Poll::Ready(Some(raw_event)) => match raw_event {
+                    ClaudeRawEvent::Usage {
+                        input_tokens,
+                        output_tokens,
+                        total_tokens,
+                    } => {
+                        let usage = UsageAccounting {
+                            input_tokens,
+                            output_tokens,
+                            total_tokens,
+                        };
+                        match normalize_claude_event(
+                            self.next_sequence,
+                            ClaudeRawEvent::Usage {
+                                input_tokens,
+                                output_tokens,
+                                total_tokens,
+                            },
+                        ) {
+                            Ok(event) => {
+                                self.usage = Some(usage);
+                                self.emitted_any = true;
+                                self.next_sequence = self.next_sequence.saturating_add(1);
+                                return Poll::Ready(Some(event));
+                            }
+                            Err(error) => {
+                                self.done = true;
+                                self.usage = None;
+                                return Poll::Ready(Some(self.make_error_event(error.to_string())));
+                            }
+                        }
+                    }
+                    ClaudeRawEvent::TurnCompleted { .. }
+                    | ClaudeRawEvent::TurnInterrupted { .. }
+                    | ClaudeRawEvent::Error { .. } => {
+                        self.saw_terminal = true;
+                        match normalize_claude_event(self.next_sequence, raw_event) {
+                            Ok(event) => {
+                                self.emitted_any = true;
+                                self.next_sequence = self.next_sequence.saturating_add(1);
+                                return Poll::Ready(Some(event));
+                            }
+                            Err(error) => {
+                                self.done = true;
+                                self.usage = None;
+                                return Poll::Ready(Some(self.make_error_event(error.to_string())));
+                            }
+                        }
+                    }
+                    other => match normalize_claude_event(self.next_sequence, other) {
+                        Ok(event) => {
+                            self.emitted_any = true;
+                            self.next_sequence = self.next_sequence.saturating_add(1);
+                            return Poll::Ready(Some(event));
+                        }
+                        Err(error) => {
+                            self.done = true;
+                            self.usage = None;
+                            return Poll::Ready(Some(self.make_error_event(error.to_string())));
+                        }
+                    },
+                },
+            }
+        }
+    }
+}
+
 fn ensure_claude_session(context: &'static str, session: &PhysicalSession) -> CrabResult<()> {
     if session.backend != BackendKind::Claude {
         return Err(CrabError::InvariantViolation {
@@ -307,15 +424,19 @@ fn unix_epoch_ms() -> u64 {
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
+    use std::pin::Pin;
     use std::sync::{Arc, Mutex};
+    use std::task::{Context, Poll};
 
     use crab_core::{
         BackendKind, CrabError, CrabResult, InferenceProfile, PhysicalSession, ReasoningLevel,
     };
     use futures::executor::block_on;
+    use futures::stream;
     use futures::StreamExt;
+    use futures_core::Stream;
 
-    use crate::claude::{ClaudeProcess, ClaudeRawEvent};
+    use crate::claude::{ClaudeProcess, ClaudeRawEvent, ClaudeRawEventStream};
     use crate::{Backend, BackendEvent, BackendEventKind, SessionContext, TurnInput};
 
     use super::ClaudeBackend;
@@ -400,11 +521,12 @@ mod tests {
             &self,
             backend_session_id: &str,
             _input: &TurnInput,
-        ) -> CrabResult<Vec<ClaudeRawEvent>> {
+        ) -> CrabResult<ClaudeRawEventStream> {
             let mut state = self.state.lock().expect("lock should succeed");
             state.stats.send_calls += 1;
             state.stats.last_send_session_id = Some(backend_session_id.to_string());
-            maybe_fail(&state.send_error, state.send_events.clone())
+            let events = maybe_fail(&state.send_error, state.send_events.clone())?;
+            Ok(Box::pin(stream::iter(events)))
         }
 
         fn interrupt_turn(&self, _backend_session_id: &str, turn_id: &str) -> CrabResult<()> {
@@ -545,13 +667,13 @@ mod tests {
     }
 
     fn assert_send_turn_error(raw_event: ClaudeRawEvent, expected_error: CrabError) {
-        let process = FakeProcess::new("resume-1", vec![raw_event]);
-        let backend = ClaudeBackend::new(process);
-        let mut session = claude_session();
-        let err = block_on(backend.send_turn(&mut session, turn_input()))
-            .err()
-            .expect("invalid claude raw event should fail normalization");
-        assert_eq!(err, expected_error);
+        let events = send_turn_events(vec![raw_event]);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].kind, BackendEventKind::Error);
+        assert_eq!(
+            events[0].payload.get("message"),
+            Some(&expected_error.to_string())
+        );
     }
 
     fn send_turn_events(raw_events: Vec<ClaudeRawEvent>) -> Vec<BackendEvent> {
@@ -678,9 +800,12 @@ mod tests {
             },
         ];
         let events = send_turn_events(raw_events);
-        assert_eq!(events.len(), 3);
-        assert_eq!(events[2].kind, BackendEventKind::RunNote);
-        assert_eq!(events[2].payload, run_usage_payload(10, 6, 16));
+        assert_eq!(events.len(), 4);
+        assert_eq!(events[0].kind, BackendEventKind::RunNote);
+        assert_eq!(events[1].kind, BackendEventKind::RunNote);
+        assert_eq!(events[2].kind, BackendEventKind::TurnCompleted);
+        assert_eq!(events[3].kind, BackendEventKind::RunNote);
+        assert_eq!(events[3].payload, run_usage_payload(10, 6, 16));
     }
 
     fn render_snapshot(events: &[BackendEvent]) -> String {
@@ -947,6 +1072,85 @@ mod tests {
                 message: "boom".to_string()
             }
         );
+    }
+
+    #[test]
+    fn claude_normalization_emits_error_when_stream_produces_no_events() {
+        let events = send_turn_events(vec![]);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].kind, BackendEventKind::Error);
+        assert_eq!(
+            events[0].payload.get("message"),
+            Some(&"claude stream produced no assistant/result events".to_string())
+        );
+    }
+
+    #[test]
+    fn claude_normalization_handles_pending_from_inner_stream() {
+        #[derive(Debug)]
+        struct PendingOnceRawStream {
+            polled: bool,
+        }
+
+        impl Stream for PendingOnceRawStream {
+            type Item = ClaudeRawEvent;
+
+            fn poll_next(
+                mut self: Pin<&mut Self>,
+                cx: &mut Context<'_>,
+            ) -> Poll<Option<Self::Item>> {
+                if !self.polled {
+                    self.polled = true;
+                    cx.waker().wake_by_ref();
+                    return Poll::Pending;
+                }
+                Poll::Ready(None)
+            }
+        }
+
+        #[derive(Debug)]
+        struct PendingProcess;
+
+        impl ClaudeProcess for PendingProcess {
+            fn create_session(&self, _context: &SessionContext) -> CrabResult<String> {
+                Ok("resume-1".to_string())
+            }
+
+            fn send_turn(
+                &self,
+                _backend_session_id: &str,
+                _input: &TurnInput,
+            ) -> CrabResult<ClaudeRawEventStream> {
+                Ok(Box::pin(PendingOnceRawStream { polled: false }))
+            }
+
+            fn interrupt_turn(&self, _backend_session_id: &str, _turn_id: &str) -> CrabResult<()> {
+                Ok(())
+            }
+
+            fn end_session(&self, _backend_session_id: &str) -> CrabResult<()> {
+                Ok(())
+            }
+        }
+
+        let process = PendingProcess;
+        let backend_session_id = process
+            .create_session(&session_context())
+            .expect("create session should succeed");
+        process
+            .interrupt_turn(&backend_session_id, "turn-1")
+            .expect("interrupt should succeed");
+        process
+            .end_session(&backend_session_id)
+            .expect("end should succeed");
+
+        let backend = ClaudeBackend::new(process);
+        let mut session = claude_session();
+        let stream =
+            block_on(backend.send_turn(&mut session, turn_input())).expect("send should succeed");
+        let events = block_on(stream.collect::<Vec<_>>());
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].kind, BackendEventKind::Error);
     }
 
     #[test]
