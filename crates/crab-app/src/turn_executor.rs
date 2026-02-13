@@ -569,6 +569,18 @@ where
             let _ = delivery_result?;
         }
 
+        if final_status == RunStatus::Failed && delivery.total_rendered_len == 0 {
+            #[allow(clippy::single_match)]
+            match Self::render_backend_failure_message(&backend_events, &run) {
+                Some(message) => {
+                    // Keep on one line: multi-line call sites can produce llvm-cov line-mapping gaps.
+                    #[rustfmt::skip]
+                    let _ = self.deliver_rendered_assistant_output(&run, &delivery_message_id(&run.id, 0), &message, 0, completed_at_epoch_ms)?;
+                }
+                None => {}
+            }
+        }
+
         self.composition
             .state_stores
             .session_store
@@ -587,6 +599,36 @@ where
             status: final_status,
             emitted_event_count: backend_events.len() + 2 + supplemental_emitted_event_count,
         })
+    }
+
+    fn render_backend_failure_message(
+        backend_events: &[BackendEvent],
+        run: &Run,
+    ) -> Option<String> {
+        let message = backend_events.iter().rev().find_map(|event| {
+            if event.kind != BackendEventKind::Error {
+                return None;
+            }
+            event
+                .payload
+                .get("message")
+                .map(|value| value.trim())
+                .filter(|value| !value.is_empty())
+                .map(|value| value.to_string())
+        })?;
+
+        // Keep message short enough to be Discord-safe and user-readable.
+        let truncated = if message.chars().count() > 1800 {
+            let prefix: String = message.chars().take(1800).collect();
+            format!("{prefix}...")
+        } else {
+            message
+        };
+
+        Some(format!(
+            "Crab: backend failed for this message (run_id: {}).\n{}\nPlease resend your last message.",
+            run.id, truncated
+        ))
     }
 
     fn maybe_complete_pending_onboarding_capture(
@@ -2809,6 +2851,105 @@ mod tests {
                 "hello".to_string(),
             )]
         );
+    }
+
+    #[test]
+    fn failed_backend_run_delivers_user_facing_failure_when_no_output_is_emitted() {
+        let runtime = FakeRuntime::with_backend_events(
+            vec![backend_event(
+                1,
+                BackendEventKind::Error,
+                &[("message", "backend exploded")],
+            )],
+            &[1, 2, 3, 4, 5, 6, 7, 8],
+        );
+        let (_workspace, mut executor) = build_executor_scenario("failure-note", runtime, 8);
+
+        let dispatch = executor
+            .process_gateway_message(gateway_message("m-1"))
+            .expect("pipeline should succeed")
+            .expect("message should dispatch");
+        assert_eq!(dispatch.status, RunStatus::Failed);
+
+        let runtime = executor.runtime_mut();
+        assert_eq!(runtime.delivered_outputs.len(), 1);
+        assert!(runtime.delivered_outputs[0]
+            .4
+            .contains("Crab: backend failed"));
+        assert!(runtime.delivered_outputs[0].4.contains("backend exploded"));
+        assert!(runtime.delivered_outputs[0].4.contains("Please resend"));
+    }
+
+    #[test]
+    fn failed_backend_run_reports_error_even_if_non_error_event_trails() {
+        let runtime = FakeRuntime::with_backend_events(
+            vec![
+                backend_event(1, BackendEventKind::Error, &[("message", "boom")]),
+                backend_event(2, BackendEventKind::TurnCompleted, &[("finish", "done")]),
+            ],
+            &[1, 2, 3, 4, 5, 6, 7, 8],
+        );
+        let (_workspace, mut executor) =
+            build_executor_scenario("failure-note-trailing", runtime, 8);
+
+        let dispatch = executor
+            .process_gateway_message(gateway_message("m-1"))
+            .expect("pipeline should succeed")
+            .expect("message should dispatch");
+        assert_eq!(dispatch.status, RunStatus::Failed);
+
+        let runtime = executor.runtime_mut();
+        assert_eq!(runtime.delivered_outputs.len(), 1);
+        assert!(runtime.delivered_outputs[0].4.contains("boom"));
+    }
+
+    #[test]
+    fn failed_backend_run_truncates_very_long_error_messages() {
+        let long_message = "x".repeat(2500);
+        let runtime = FakeRuntime::with_backend_events(
+            vec![
+                backend_event(1, BackendEventKind::Error, &[("message", &long_message)]),
+                backend_event(2, BackendEventKind::TurnCompleted, &[("finish", "done")]),
+            ],
+            &[1, 2, 3, 4, 5, 6, 7, 8],
+        );
+        let (_workspace, mut executor) =
+            build_executor_scenario("failure-note-truncate", runtime, 8);
+
+        let dispatch = executor
+            .process_gateway_message(gateway_message("m-1"))
+            .expect("pipeline should succeed")
+            .expect("message should dispatch");
+        assert_eq!(dispatch.status, RunStatus::Failed);
+
+        let runtime = executor.runtime_mut();
+        assert_eq!(runtime.delivered_outputs.len(), 1);
+        let delivered = &runtime.delivered_outputs[0].4;
+        assert!(delivered.contains("..."));
+        assert!(!delivered.contains(&long_message));
+    }
+
+    #[test]
+    fn failed_backend_run_skips_failure_note_when_backend_provides_no_message() {
+        let runtime = FakeRuntime::with_backend_events(
+            vec![backend_event(
+                1,
+                BackendEventKind::Error,
+                &[("detail", "missing message key")],
+            )],
+            &[1, 2, 3, 4, 5, 6, 7, 8],
+        );
+        let (_workspace, mut executor) =
+            build_executor_scenario("failure-note-missing", runtime, 8);
+
+        let dispatch = executor
+            .process_gateway_message(gateway_message("m-1"))
+            .expect("pipeline should succeed")
+            .expect("message should dispatch");
+        assert_eq!(dispatch.status, RunStatus::Failed);
+
+        let runtime = executor.runtime_mut();
+        assert!(runtime.delivered_outputs.is_empty());
     }
 
     #[test]

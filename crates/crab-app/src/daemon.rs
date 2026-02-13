@@ -478,6 +478,7 @@ impl ClaudeProcess for DaemonClaudeProcess {
             }
 
             let mut succeeded = false;
+            let mut last_error: Option<CrabError> = None;
             for attempt_mode in attempts {
                 let result =
                     run_claude_turn(&backend_session_id, &input, &config, attempt_mode, &sender);
@@ -490,19 +491,21 @@ impl ClaudeProcess for DaemonClaudeProcess {
                         if attempt_mode == ClaudeSessionMode::Start
                             && is_session_in_use_error(&error) =>
                     {
+                        last_error = Some(error);
                         continue;
                     }
                     Err(error)
                         if attempt_mode == ClaudeSessionMode::Resume
                             && is_unknown_session_resume_error(&error) =>
                     {
+                        last_error = Some(error);
                         continue;
                     }
                     Err(error) => {
-                        let _ = sender.unbounded_send(ClaudeRawEvent::Error {
-                            message: error.to_string(),
-                        });
-                        break;
+                        // Some Claude CLI failures are hard to pattern-match, so we always try both
+                        // start/resume modes once before giving up.
+                        last_error = Some(error);
+                        continue;
                     }
                 }
             }
@@ -517,6 +520,13 @@ impl ClaudeProcess for DaemonClaudeProcess {
                         initialized: true,
                         ..config
                     });
+            }
+            if !succeeded {
+                let _ = sender.unbounded_send(ClaudeRawEvent::Error {
+                    message: last_error
+                        .map(|error| error.to_string())
+                        .unwrap_or_else(|| "claude turn failed (unknown error)".to_string()),
+                });
             }
             drop(sender);
         });
@@ -704,14 +714,21 @@ fn run_claude_turn(
             Ok(result) => result?,
             Err(std_mpsc::RecvTimeoutError::Timeout) => {
                 let _ = child.kill();
-                let _ = child.wait();
-                let _ = stderr_handle.join();
+                let status = child.wait().ok();
+                let stderr_output = stderr_handle.join().unwrap_or_default();
                 let _ = stdout_handle.join();
+                let detail = if !stderr_output.trim().is_empty() {
+                    stderr_output.trim().to_string()
+                } else if let Some(status) = status {
+                    format!("claude exited after stall with status: {status}")
+                } else {
+                    "claude produced no stderr output".to_string()
+                };
                 return Err(CrabError::InvariantViolation {
                     context: DAEMON_CLAUDE_TRANSPORT_CONTEXT,
                     message: format!(
-                        "claude process stalled (no stdout for {stall_timeout_secs}s) for run {} turn {}",
-                        input.run_id, input.turn_id
+                        "claude process stalled (no stdout for {stall_timeout_secs}s) for run {} turn {}: {}",
+                        input.run_id, input.turn_id, detail
                     ),
                 });
             }
@@ -798,7 +815,8 @@ fn is_unknown_session_resume_error(error: &CrabError) -> bool {
         error,
         CrabError::InvariantViolation { context, message }
             if *context == DAEMON_CLAUDE_TRANSPORT_CONTEXT
-                && message.to_ascii_lowercase().contains("could not find session")
+                && (message.to_ascii_lowercase().contains("could not find session")
+                    || message.to_ascii_lowercase().contains("no conversation found"))
     )
 }
 
