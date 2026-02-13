@@ -287,6 +287,21 @@ Remediation on the target machine: re-sign the executables locally with `codesig
 
 Track upstream fix work in GitHub issue `#151`.
 
+### Avoiding Orphaned `crabd` Processes
+
+The runtime is a parent process (`crab-discord-connector`) that spawns a child process (`crabd`).
+If the parent is terminated abruptly, the child can remain alive and keep mutating Crab state.
+
+Current behavior:
+
+- `crab-discord-connector` handles `SIGTERM` and shuts down cleanly so its `crabd` child is not
+  orphaned (landed in main on 2026-02-13).
+
+Operator check (target machine):
+
+- `pgrep -x crab-discord-connector | wc -l` should be `1`
+- `pgrep -x crabd | wc -l` should be `1`
+
 ### Non-interactive command execution (remote tmux)
 
 - For automation, remote commands should create/use tmux on the target machine:

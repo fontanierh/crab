@@ -300,6 +300,25 @@ Typical workflow once you can SSH to the host over Tailscale:
    - Linux: `systemctl status crab` and `journalctl -u crab -f`
    - macOS: `launchctl print system/com.crab.runtime`
 
+## Avoiding Orphaned `crabd` Processes (macOS/Linux)
+
+The Discord runtime is typically a parent process (`crab-discord-connector`) that spawns a child
+process (`crabd`). If the parent is terminated without a graceful shutdown, the child can remain
+alive and continue mutating state, leading to confusing behavior (duplicate heartbeats, cancelled
+runs, backend session contention).
+
+Current behavior:
+
+- The connector handles `SIGTERM` and shuts down cleanly, ensuring its `crabd` child is terminated.
+
+Operational checks:
+
+- Ensure only one connector and one crabd are running:
+  - `pgrep -x crab-discord-connector | wc -l`
+  - `pgrep -x crabd | wc -l`
+- If you find orphaned `crabd` instances, stop them before continuing:
+  - `pkill -x crabd`
+
 ## Service Management
 
 ### Linux (systemd)
