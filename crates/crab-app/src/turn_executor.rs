@@ -461,6 +461,13 @@ where
         run.completed_at_epoch_ms = Some(completed_at_epoch_ms);
         self.composition.state_stores.run_store.upsert_run(&run)?;
 
+        if final_status == RunStatus::Failed {
+            // Backend sessions are managed out-of-process. If a turn fails, the session may be
+            // corrupt/locked/unrecoverable; clear it so the next message forces a fresh physical
+            // session.
+            session.active_physical_session_id = None;
+        }
+
         if let Some(run_usage) = resolve_backend_usage_accounting(&backend_events)? {
             session.token_accounting =
                 merge_token_accounting(session.token_accounting.clone(), run_usage)?;
@@ -2870,6 +2877,15 @@ mod tests {
             .expect("pipeline should succeed")
             .expect("message should dispatch");
         assert_eq!(dispatch.status, RunStatus::Failed);
+
+        let session = executor
+            .composition()
+            .state_stores
+            .session_store
+            .get_session("discord:channel:777")
+            .expect("session lookup should succeed")
+            .expect("session should exist");
+        assert_eq!(session.active_physical_session_id, None);
 
         let runtime = executor.runtime_mut();
         assert_eq!(runtime.delivered_outputs.len(), 1);
