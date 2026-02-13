@@ -158,8 +158,8 @@ CRAB_COMPACTION_TOKEN_THRESHOLD=120000
 CRAB_INACTIVITY_TIMEOUT_SECS=1800
 CRAB_STARTUP_RECONCILIATION_GRACE_PERIOD_SECS=90
 CRAB_HEARTBEAT_INTERVAL_SECS=10
-CRAB_RUN_STALL_TIMEOUT_SECS=90
-CRAB_BACKEND_STALL_TIMEOUT_SECS=180
+CRAB_RUN_STALL_TIMEOUT_SECS=600
+CRAB_BACKEND_STALL_TIMEOUT_SECS=600
 CRAB_DISPATCHER_STALL_TIMEOUT_SECS=20
 CRAB_WORKSPACE_GIT_PERSISTENCE_ENABLED=false
 CRAB_WORKSPACE_GIT_BRANCH=main
@@ -194,9 +194,12 @@ Timeout and heartbeat semantics:
 - `CRAB_HEARTBEAT_INTERVAL_SECS`:
   cadence for periodic health loop execution (run/backend/dispatcher heartbeat checks). Default `10`.
 - `CRAB_RUN_STALL_TIMEOUT_SECS`:
-  age threshold to classify an active run as stalled during heartbeat. Default `90`.
+  age threshold to classify an active run as stalled during heartbeat. Default `600`.
 - `CRAB_BACKEND_STALL_TIMEOUT_SECS`:
-  backend-manager heartbeat stall threshold before restart/escalation. Default `30`.
+  safety timeout used by:
+  1) the Claude CLI transport (kills the `claude` process if it emits no stdout for this long), and
+  2) the heartbeat backend-manager health check (restart persistent backend managers that remain unhealthy).
+  Default `600`.
 - `CRAB_DISPATCHER_STALL_TIMEOUT_SECS`:
   dispatcher heartbeat threshold for queued-work stall detection/nudge. Default `20`.
 

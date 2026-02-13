@@ -12,6 +12,7 @@ pub struct ActiveRunHeartbeat {
     pub logical_session_id: String,
     pub run_id: String,
     pub lane_state: LaneState,
+    pub backend: BackendKind,
     pub last_progress_at_epoch_ms: u64,
 }
 
@@ -126,6 +127,14 @@ pub fn execute_heartbeat_cycle<R: HeartbeatRuntime>(
 
         let elapsed_since_progress_ms = now_epoch_ms - run.last_progress_at_epoch_ms;
         if elapsed_since_progress_ms < run_stall_timeout_ms {
+            continue;
+        }
+
+        // Claude is invoked as a per-turn CLI and can be silent for long periods while thinking.
+        // Run cancellation here is both noisy and ineffective (we cannot reliably interrupt an
+        // in-flight Claude CLI turn). Claude turns are guarded by the transport-level stall
+        // timeout (`CRAB_BACKEND_STALL_TIMEOUT_SECS`).
+        if run.backend == BackendKind::Claude {
             continue;
         }
 
@@ -431,6 +440,23 @@ mod tests {
             logical_session_id: logical_session_id.to_string(),
             run_id: run_id.to_string(),
             lane_state,
+            backend: BackendKind::Codex,
+            last_progress_at_epoch_ms,
+        }
+    }
+
+    fn active_run_with_backend(
+        logical_session_id: &str,
+        run_id: &str,
+        lane_state: LaneState,
+        backend: BackendKind,
+        last_progress_at_epoch_ms: u64,
+    ) -> ActiveRunHeartbeat {
+        ActiveRunHeartbeat {
+            logical_session_id: logical_session_id.to_string(),
+            run_id: run_id.to_string(),
+            lane_state,
+            backend,
             last_progress_at_epoch_ms,
         }
     }
@@ -514,6 +540,24 @@ mod tests {
             outcome.events[0].action,
             "cancel_requested_due_to_stall".to_string()
         );
+    }
+
+    #[test]
+    fn skips_run_cancellation_for_claude_turns() {
+        let mut runtime = FakeRuntime::new();
+        runtime.list_active_runs_result = Ok(vec![active_run_with_backend(
+            "discord:dm:henry",
+            "run-claude",
+            LaneState::Running,
+            BackendKind::Claude,
+            1_000,
+        )]);
+
+        let outcome = execute_heartbeat_cycle(&mut runtime, &policy(), 100_000)
+            .expect("heartbeat cycle should succeed");
+
+        assert!(runtime.cancel_calls.is_empty());
+        assert_no_actions(&outcome);
     }
 
     #[test]

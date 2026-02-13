@@ -5707,8 +5707,8 @@ mod tests {
         let codex = TrackingCodexProcess::new();
         let opencode = TrackingOpenCodeProcess::new();
 
-        // Boot at 1s, then jump far enough ahead to exceed CRAB_RUN_STALL_TIMEOUT_SECS (default 90s).
-        let mut control = ScriptedControl::with_now(vec![1_000, 101_000]);
+        // Boot at 1s, then jump far enough ahead to exceed CRAB_RUN_STALL_TIMEOUT_SECS (default 600s).
+        let mut control = ScriptedControl::with_now(vec![1_000, 701_000]);
 
         run_daemon_loop_with_transport(
             &config,

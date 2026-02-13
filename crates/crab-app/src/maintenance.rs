@@ -334,6 +334,7 @@ where
                         logical_session_id: session.id,
                         run_id: run.id,
                         lane_state: session.lane_state,
+                        backend: run.profile.resolved_profile.backend,
                         last_progress_at_epoch_ms,
                     });
                 }
@@ -1361,7 +1362,7 @@ mod tests {
         let mut state = HeartbeatLoopState::new(1, 1_739_173_300_000)
             .expect("heartbeat state should initialize");
 
-        let first = run_heartbeat_if_due(&mut composition, &mut state, 1_739_173_400_000)
+        let first = run_heartbeat_if_due(&mut composition, &mut state, 1_739_173_700_000)
             .expect("first heartbeat should succeed")
             .expect("first heartbeat should run");
         assert_eq!(first.cancelled_runs.len(), 1);
@@ -1375,7 +1376,7 @@ mod tests {
             .expect("session should exist");
         assert_eq!(session_after_first.lane_state, LaneState::Cancelling);
 
-        let second = run_heartbeat_if_due(&mut composition, &mut state, 1_739_173_500_000)
+        let second = run_heartbeat_if_due(&mut composition, &mut state, 1_739_174_400_000)
             .expect("second heartbeat should succeed")
             .expect("second heartbeat should run");
         assert!(second.cancelled_runs.is_empty());
@@ -1390,7 +1391,7 @@ mod tests {
         assert_eq!(run_after_second.status, RunStatus::Cancelled);
         assert_eq!(
             run_after_second.completed_at_epoch_ms,
-            Some(1_739_173_500_000)
+            Some(1_739_174_400_000)
         );
 
         let session_after_second = composition
