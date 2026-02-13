@@ -768,6 +768,15 @@ impl SystemConnectorLoopControl {
             message: format!("failed to install Ctrl-C handler: {error}"),
         })?;
 
+        // `kill <pid>` sends SIGTERM. If we do not handle SIGTERM, the process will terminate
+        // immediately and will not run Drop handlers, leaving the `crabd` child orphaned.
+        #[cfg(unix)]
+        signal_hook::flag::register(signal_hook::consts::SIGTERM, Arc::clone(&shutdown_flag))
+            .map_err(|error| CrabError::InvariantViolation {
+                context: "connector_sigterm_install",
+                message: format!("failed to install SIGTERM handler: {error}"),
+            })?;
+
         Ok(Self { shutdown_flag })
     }
 }
