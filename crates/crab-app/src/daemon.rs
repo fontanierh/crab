@@ -415,6 +415,32 @@ enum ClaudeSessionMode {
 }
 
 #[cfg(not(any(test, coverage)))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ClaudeTurnFailureKind {
+    /// `claude --resume <id>` reported it cannot find the requested session.
+    UnknownSessionOnResume,
+    /// `claude --session-id <id>` reported that session ID is already in use.
+    SessionInUseOnStart,
+    Other,
+}
+
+#[cfg(not(any(test, coverage)))]
+fn claude_fallback_mode(
+    attempt_mode: ClaudeSessionMode,
+    failure_kind: ClaudeTurnFailureKind,
+) -> Option<ClaudeSessionMode> {
+    match (attempt_mode, failure_kind) {
+        (ClaudeSessionMode::Resume, ClaudeTurnFailureKind::UnknownSessionOnResume) => {
+            Some(ClaudeSessionMode::Start)
+        }
+        (ClaudeSessionMode::Start, ClaudeTurnFailureKind::SessionInUseOnStart) => {
+            Some(ClaudeSessionMode::Resume)
+        }
+        _ => None,
+    }
+}
+
+#[cfg(not(any(test, coverage)))]
 impl ClaudeProcess for DaemonClaudeProcess {
     fn create_session(&self, context: &SessionContext) -> CrabResult<String> {
         if use_deterministic_claude_process_override() {
@@ -469,17 +495,10 @@ impl ClaudeProcess for DaemonClaudeProcess {
         let (sender, receiver) = mpsc::unbounded::<ClaudeRawEvent>();
 
         thread::spawn(move || {
-            let mut attempts = Vec::new();
-            attempts.push(mode);
-            if mode == ClaudeSessionMode::Start {
-                attempts.push(ClaudeSessionMode::Resume);
-            } else {
-                attempts.push(ClaudeSessionMode::Start);
-            }
-
             let mut succeeded = false;
             let mut last_error: Option<CrabError> = None;
-            for attempt_mode in attempts {
+            let mut attempt_mode = mode;
+            loop {
                 let result =
                     run_claude_turn(&backend_session_id, &input, &config, attempt_mode, &sender);
                 match result {
@@ -487,25 +506,14 @@ impl ClaudeProcess for DaemonClaudeProcess {
                         succeeded = true;
                         break;
                     }
-                    Err(error)
-                        if attempt_mode == ClaudeSessionMode::Start
-                            && is_session_in_use_error(&error) =>
-                    {
-                        last_error = Some(error);
-                        continue;
-                    }
-                    Err(error)
-                        if attempt_mode == ClaudeSessionMode::Resume
-                            && is_unknown_session_resume_error(&error) =>
-                    {
-                        last_error = Some(error);
-                        continue;
-                    }
                     Err(error) => {
-                        // Some Claude CLI failures are hard to pattern-match, so we always try both
-                        // start/resume modes once before giving up.
+                        let failure_kind = classify_claude_turn_failure(&error);
                         last_error = Some(error);
-                        continue;
+                        let Some(next_mode) = claude_fallback_mode(attempt_mode, failure_kind)
+                        else {
+                            break;
+                        };
+                        attempt_mode = next_mode;
                     }
                 }
             }
@@ -818,6 +826,17 @@ fn is_unknown_session_resume_error(error: &CrabError) -> bool {
                 && (message.to_ascii_lowercase().contains("could not find session")
                     || message.to_ascii_lowercase().contains("no conversation found"))
     )
+}
+
+#[cfg(not(any(test, coverage)))]
+fn classify_claude_turn_failure(error: &CrabError) -> ClaudeTurnFailureKind {
+    if is_session_in_use_error(error) {
+        return ClaudeTurnFailureKind::SessionInUseOnStart;
+    }
+    if is_unknown_session_resume_error(error) {
+        return ClaudeTurnFailureKind::UnknownSessionOnResume;
+    }
+    ClaudeTurnFailureKind::Other
 }
 
 #[derive(Clone)]
