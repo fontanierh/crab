@@ -227,14 +227,21 @@ pub fn ensure_workspace_layout(workspace_root: &Path) -> CrabResult<WorkspaceEns
     let workspace_existed_before = workspace_root.exists();
     ensure_directory_exists(workspace_root, &mut created_paths, "workspace_layout")?;
 
+    let mut required_template_created = false;
     for template in REQUIRED_TEMPLATES {
         let template_path = workspace_root.join(template.file_name);
+        if !template_path.exists() {
+            required_template_created = true;
+        }
         ensure_template_file(&template_path, template.contents, &mut created_paths)?;
     }
 
     let bootstrap_path = workspace_root.join(BOOTSTRAP_FILE_NAME);
     let bootstrap_existed_before = bootstrap_path.exists();
-    if !workspace_existed_before || bootstrap_existed_before {
+    // A workspace directory may be pre-created by wrapper scripts or installers. If required
+    // template files were missing (created during this ensure), treat the workspace as pending
+    // onboarding by ensuring the bootstrap marker exists.
+    if !workspace_existed_before || bootstrap_existed_before || required_template_created {
         ensure_template_file(&bootstrap_path, BOOTSTRAP_TEMPLATE, &mut created_paths)?;
     }
 
@@ -722,6 +729,19 @@ mod tests {
         let target =
             fs::read_link(&claude_skills_link).expect("skills symlink target should be readable");
         assert_eq!(target, PathBuf::from("../.agents/skills"));
+    }
+
+    #[test]
+    fn ensure_workspace_creates_bootstrap_marker_when_directory_preexists_but_templates_missing() {
+        let workspace = TempWorkspace::new("layout-precreated-dir");
+        fs::create_dir_all(&workspace.path).expect("workspace root should be creatable");
+
+        let outcome = ensure_workspace_layout(&workspace.path).expect("layout should initialize");
+        assert_eq!(
+            outcome.bootstrap_state,
+            WorkspaceBootstrapState::PendingBootstrap
+        );
+        assert!(workspace.path.join(BOOTSTRAP_FILE_NAME).is_file());
     }
 
     #[test]

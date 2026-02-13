@@ -867,6 +867,27 @@ mod tests {
         root.to_string_lossy().into_owned()
     }
 
+    fn seed_ready_workspace(workspace_root: &str) {
+        let root = Path::new(workspace_root);
+        for file_name in [
+            "AGENTS.md",
+            "SOUL.md",
+            "IDENTITY.md",
+            "USER.md",
+            "MEMORY.md",
+        ] {
+            std::fs::write(root.join(file_name), "seed\n")
+                .expect("ready workspace seed file should be writable");
+        }
+        let _ = std::fs::remove_file(root.join("BOOTSTRAP.md"));
+    }
+
+    fn temp_ready_workspace_root(suffix: &str) -> String {
+        let root = temp_workspace_root(suffix);
+        seed_ready_workspace(&root);
+        root
+    }
+
     fn assert_run_event_stream_contains_delta(
         workspace_root: &str,
         run_id: &str,
@@ -1491,7 +1512,7 @@ mod tests {
 
     #[test]
     fn run_with_reader_and_control_processes_one_message() {
-        let workspace_root = temp_workspace_root("run-success");
+        let workspace_root = temp_ready_workspace_root("run-success");
         let values = runtime_values(&workspace_root);
         let run_id = "run:discord:channel:777:m-1";
         let input = format!(
@@ -1566,7 +1587,7 @@ mod tests {
 
     #[test]
     fn run_with_reader_and_control_processes_claude_owner_turns_across_restarts() {
-        let workspace_root = temp_workspace_root("run-claude-owner");
+        let workspace_root = temp_ready_workspace_root("run-claude-owner");
         let mut values = runtime_values(&workspace_root);
         let first_run_id = "run:discord:channel:777:m-claude-1";
         let second_run_id = "run:discord:channel:777:m-claude-2";
@@ -1647,7 +1668,7 @@ mod tests {
 
     #[test]
     fn run_with_reader_and_control_propagates_claude_send_turn_errors() {
-        let workspace_root = temp_workspace_root("run-claude-send-error");
+        let workspace_root = temp_ready_workspace_root("run-claude-send-error");
         let mut values = runtime_values(&workspace_root);
         values.insert("CRAB_OWNER_DISCORD_USER_IDS".to_string(), "111".to_string());
         values.insert(
