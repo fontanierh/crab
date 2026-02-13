@@ -684,7 +684,7 @@ fn run_claude_turn(
         .ok()
         .and_then(|raw| raw.trim().parse::<u64>().ok())
         .filter(|value| *value > 0)
-        .unwrap_or(30);
+        .unwrap_or(crab_core::config::DEFAULT_BACKEND_STALL_TIMEOUT_SECS);
     let stall_timeout = Duration::from_secs(stall_timeout_secs);
 
     let (line_tx, line_rx) = std_mpsc::channel::<CrabResult<Option<String>>>();
