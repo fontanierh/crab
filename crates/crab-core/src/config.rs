@@ -9,13 +9,8 @@ pub const DEFAULT_COMPACTION_TOKEN_THRESHOLD: u64 = 120_000;
 pub const DEFAULT_INACTIVITY_TIMEOUT_SECS: u64 = 1_800;
 pub const DEFAULT_STARTUP_RECONCILIATION_GRACE_PERIOD_SECS: u64 = 90;
 pub const DEFAULT_HEARTBEAT_INTERVAL_SECS: u64 = 10;
-// Run-level stall detection is a safety valve, not a performance SLA. Some backends can be quiet
-// for multiple minutes while thinking or waiting on network I/O.
-pub const DEFAULT_RUN_STALL_TIMEOUT_SECS: u64 = 600;
-// Default is intentionally generous: some backends may take >30s before emitting any stdout
-// (network latency, cold starts, long first-token times). This timeout is a safety valve to
-// prevent a single backend turn from hanging forever, not a performance SLA.
-pub const DEFAULT_BACKEND_STALL_TIMEOUT_SECS: u64 = 600;
+pub const DEFAULT_RUN_STALL_TIMEOUT_SECS: u64 = 90;
+pub const DEFAULT_BACKEND_STALL_TIMEOUT_SECS: u64 = 180;
 pub const DEFAULT_DISPATCHER_STALL_TIMEOUT_SECS: u64 = 20;
 pub const DEFAULT_WORKSPACE_GIT_ENABLED: bool = false;
 pub const DEFAULT_WORKSPACE_GIT_BRANCH: &str = "main";

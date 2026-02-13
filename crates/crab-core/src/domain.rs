@@ -176,6 +176,10 @@ pub struct LogicalSession {
     pub queued_run_count: u32,
     pub last_activity_epoch_ms: u64,
     pub token_accounting: TokenAccounting,
+    /// Tracks whether bootstrap context has been injected into the current physical session.
+    /// Reset to `false` on rotation (physical session teardown).
+    #[serde(default)]
+    pub has_injected_bootstrap: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -326,6 +330,7 @@ mod tests {
             queued_run_count: 2,
             last_activity_epoch_ms: 1_739_173_200_000,
             token_accounting: sample_token_accounting(),
+            has_injected_bootstrap: false,
         };
         assert_json_round_trip(&session);
     }

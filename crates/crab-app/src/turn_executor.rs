@@ -1,5 +1,7 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
+use std::sync::mpsc::RecvTimeoutError;
+use std::time::Duration;
 
 use crab_backends::{
     BackendEvent, BackendEventKind, BackendEventStream, CodexAppServerProcess,
@@ -27,6 +29,7 @@ use crab_scheduler::QueuedRun;
 use crab_store::{CheckpointStore, EventStore};
 use futures::executor::block_on;
 use futures::future::poll_fn;
+use futures::StreamExt;
 
 use crate::AppComposition;
 
@@ -90,6 +93,14 @@ pub trait TurnExecutorRuntime {
         message_id: &str,
         edit_generation: u32,
         content: &str,
+    ) -> CrabResult<()>;
+
+    fn next_gateway_message(&mut self) -> CrabResult<Option<GatewayMessage>>;
+
+    fn interrupt_backend_turn(
+        &mut self,
+        session: &PhysicalSession,
+        turn_id: &str,
     ) -> CrabResult<()>;
 }
 
@@ -200,6 +211,16 @@ where
         })
     }
 
+    fn check_for_steering_message(&mut self, current_logical_session_id: &str) -> CrabResult<bool> {
+        let Some(message) = self.runtime.next_gateway_message()? else {
+            return Ok(false);
+        };
+        let Some(queued) = self.enqueue_gateway_message(message)? else {
+            return Ok(false);
+        };
+        Ok(queued.logical_session_id == current_logical_session_id)
+    }
+
     pub fn dispatch_next_run(&mut self) -> CrabResult<Option<DispatchedTurn>> {
         let Some(dispatched) = self.composition.scheduler.try_dispatch_next() else {
             return Ok(None);
@@ -306,7 +327,9 @@ where
             .queued_count(logical_session_id)
             .expect("validated logical session id should always be queue-count addressable")
             as u32;
-        session.last_activity_epoch_ms = now_epoch_ms;
+        // Deliberately not updating last_activity_epoch_ms here: message enqueue is not
+        // backend activity. Inactivity timeout must measure the gap from the previous run's
+        // completion to the next run's start, so only execute_dispatched_run updates this field.
         self.composition
             .state_stores
             .session_store
@@ -332,6 +355,39 @@ where
             &run.profile.resolved_profile,
             started_at_epoch_ms,
         )?;
+
+        // Pre-run inactivity check: evaluate whether the gap between the previous run's
+        // completion and this run's start exceeds the inactivity timeout. This runs while
+        // the session is still in Idle state (from the previous run's completion) so that
+        // `maybe_execute_rotation` sees `lane_is_idle = true` and fires the trigger.
+        if session.active_physical_session_id.is_some()
+            && started_at_epoch_ms > session.last_activity_epoch_ms
+        {
+            let decision = evaluate_rotation_triggers(&RotationTriggerInput {
+                now_epoch_ms: started_at_epoch_ms,
+                last_activity_epoch_ms: session.last_activity_epoch_ms,
+                lane_is_idle: true,
+                token_usage_total: Some(session.token_accounting.total_tokens),
+                compaction_token_threshold: self
+                    .composition
+                    .rotation_policy
+                    .compaction_token_threshold,
+                inactivity_timeout_secs: self.composition.rotation_policy.inactivity_timeout_secs,
+                manual_request: None,
+            })?;
+            if decision
+                .triggers
+                .iter()
+                .any(|t| matches!(t, RotationTrigger::InactivityTimeout))
+            {
+                self.maybe_execute_rotation(&run, &mut session, started_at_epoch_ms, None)?;
+                self.composition
+                    .state_stores
+                    .session_store
+                    .upsert_session(&session)?;
+            }
+        }
+
         session.lane_state = LaneState::Running;
         session.queued_run_count = self
             .composition
@@ -388,6 +444,7 @@ where
             }
         }
 
+        let mut steered = false;
         if manual_command_resolution.is_none()
             && onboarding_completion_resolution.is_none()
             && onboarding_gate_resolution.is_none()
@@ -408,14 +465,21 @@ where
                 .session_store
                 .upsert_session(&session)?;
 
-            let inject_bootstrap_context = physical_session.last_turn_id.is_none();
+            let inject_bootstrap_context = !session.has_injected_bootstrap;
             let turn_context = self.runtime.build_turn_context(
                 &run,
                 &session,
                 &physical_session,
                 inject_bootstrap_context,
             )?;
-            let mut backend_event_stream = self.runtime.execute_backend_turn(
+            if inject_bootstrap_context {
+                session.has_injected_bootstrap = true;
+                self.composition
+                    .state_stores
+                    .session_store
+                    .upsert_session(&session)?;
+            }
+            let backend_event_stream = self.runtime.execute_backend_turn(
                 &mut self.composition.backends.codex,
                 &mut physical_session,
                 &run,
@@ -423,32 +487,68 @@ where
                 &turn_context,
             )?;
 
-            loop {
-                let next = block_on(poll_fn(|cx| backend_event_stream.as_mut().poll_next(cx)));
-                let Some(backend_event) = next else {
-                    break;
-                };
-                let emitted_at_epoch_ms = self.runtime.now_epoch_ms()?;
-                self.append_backend_event(&run, &backend_event, emitted_at_epoch_ms)?;
-                if let Some(delta_text) = extract_backend_text_delta(&backend_event) {
-                    let planned = delivery.push_delta(delta_text);
-                    for op in planned {
-                        let _ = self.deliver_rendered_assistant_output(
-                            &run,
-                            &delivery_message_id(&run.id, op.chunk_index),
-                            &op.content,
-                            op.edit_generation,
-                            emitted_at_epoch_ms,
-                        )?;
+            // Bridge the async event stream to a sync channel so we can interleave
+            // timeout-based polling with steering message checks.
+            let (event_tx, event_rx) = std::sync::mpsc::channel();
+            let bridge_handle = std::thread::spawn(move || {
+                let mut stream = backend_event_stream;
+                while let Some(event) = block_on(StreamExt::next(&mut stream)) {
+                    if event_tx.send(event).is_err() {
+                        break;
                     }
                 }
-                backend_events.push(backend_event);
+            });
+
+            let steering_poll_interval = Duration::from_millis(200);
+            loop {
+                let maybe_event = match event_rx.recv_timeout(steering_poll_interval) {
+                    Ok(event) => Some(event),
+                    Err(RecvTimeoutError::Timeout) => None,
+                    Err(RecvTimeoutError::Disconnected) => break,
+                };
+                if let Some(backend_event) = maybe_event {
+                    let emitted_at_epoch_ms = self.runtime.now_epoch_ms()?;
+                    self.append_backend_event(&run, &backend_event, emitted_at_epoch_ms)?;
+                    if let Some(delta_text) = extract_backend_text_delta(&backend_event) {
+                        let planned = delivery.push_delta(delta_text);
+                        for op in planned {
+                            let _ = self.deliver_rendered_assistant_output(
+                                &run,
+                                &delivery_message_id(&run.id, op.chunk_index),
+                                &op.content,
+                                op.edit_generation,
+                                emitted_at_epoch_ms,
+                            )?;
+                        }
+                    }
+                    backend_events.push(backend_event);
+                }
+                if self.check_for_steering_message(&run.logical_session_id)? {
+                    let _ = self
+                        .runtime
+                        .interrupt_backend_turn(&physical_session, &turn_id);
+                    steered = true;
+                    break;
+                }
+            }
+            drop(event_rx);
+            let _ = bridge_handle.join();
+
+            if steered {
+                let steered_at_epoch_ms = self.runtime.now_epoch_ms()?;
+                let mut payload = BTreeMap::new();
+                payload.insert("event".to_string(), "run_steered".to_string());
+                self.append_system_run_note(&run, payload, steered_at_epoch_ms)?;
+                supplemental_emitted_event_count =
+                    supplemental_emitted_event_count.saturating_add(1);
             }
         } else {
             run.physical_session_id = session.active_physical_session_id.clone();
         }
 
-        let final_status = if manual_command_resolution.is_some()
+        let final_status = if steered {
+            RunStatus::Cancelled
+        } else if manual_command_resolution.is_some()
             || onboarding_completion_resolution.is_some()
             || onboarding_gate_resolution.is_some()
         {
@@ -467,6 +567,15 @@ where
         if let Some(run_usage) = resolve_backend_usage_accounting(&backend_events)? {
             session.token_accounting =
                 merge_token_accounting(session.token_accounting.clone(), run_usage)?;
+        } else if !backend_events.is_empty() && final_status == RunStatus::Succeeded {
+            let mut payload = BTreeMap::new();
+            payload.insert("event".to_string(), "missing_usage_data".to_string());
+            payload.insert(
+                "backend_event_count".to_string(),
+                backend_events.len().to_string(),
+            );
+            self.append_system_run_note(&run, payload, completed_at_epoch_ms)?;
+            supplemental_emitted_event_count = supplemental_emitted_event_count.saturating_add(1);
         }
         let token_total_before_rotation = session.token_accounting.total_tokens;
         #[cfg(coverage)]
@@ -1277,6 +1386,7 @@ where
                 output_tokens: 0,
                 total_tokens: 0,
             },
+            has_injected_bootstrap: false,
         })
     }
 
@@ -1655,6 +1765,7 @@ where
             })?;
         }
         self.logical_session.active_physical_session_id = None;
+        self.logical_session.has_injected_bootstrap = false;
         // Token-triggered compaction should be based on tokens since last successful rotation.
         self.logical_session.token_accounting = TokenAccounting {
             input_tokens: 0,
@@ -2218,6 +2329,7 @@ mod tests {
     use std::collections::{BTreeMap, VecDeque};
     use std::fs;
     use std::path::{Path, PathBuf};
+    use std::time::Duration;
 
     use crab_backends::BackendEventKind;
     use crab_core::{
@@ -2251,6 +2363,9 @@ mod tests {
         executed_turn_contexts: Vec<(String, String)>,
         build_context_bootstrap_flags: Vec<bool>,
         steps: Vec<String>,
+        gateway_messages: VecDeque<Option<GatewayMessage>>,
+        interrupt_calls: Vec<String>,
+        event_stream_delay: Option<Duration>,
     }
 
     impl FakeRuntime {
@@ -2274,7 +2389,15 @@ mod tests {
                 executed_turn_contexts: Vec::new(),
                 build_context_bootstrap_flags: Vec::new(),
                 steps: Vec::new(),
+                gateway_messages: VecDeque::new(),
+                interrupt_calls: Vec::new(),
+                event_stream_delay: None,
             }
+        }
+
+        fn with_gateway_messages(mut self, messages: Vec<Option<GatewayMessage>>) -> Self {
+            self.gateway_messages = VecDeque::from(messages);
+            self
         }
 
         fn with_ensure_session_sabotage_path(mut self, path: PathBuf) -> Self {
@@ -2391,6 +2514,16 @@ mod tests {
                 &mut self.execute_turn_results,
                 "turn_executor_test_execute_turn",
             )?;
+            if let Some(delay) = self.event_stream_delay.take() {
+                let (tx, rx) = futures::channel::mpsc::unbounded();
+                std::thread::spawn(move || {
+                    std::thread::sleep(delay);
+                    for event in events {
+                        let _ = tx.unbounded_send(event);
+                    }
+                });
+                return Ok(Box::pin(rx));
+            }
             Ok(Box::pin(stream::iter(events)))
         }
 
@@ -2417,6 +2550,22 @@ mod tests {
                 Some(result) => result,
                 None => Ok(()),
             }
+        }
+
+        fn next_gateway_message(&mut self) -> CrabResult<Option<GatewayMessage>> {
+            match self.gateway_messages.pop_front() {
+                Some(value) => Ok(value),
+                None => Ok(None),
+            }
+        }
+
+        fn interrupt_backend_turn(
+            &mut self,
+            _session: &crab_core::PhysicalSession,
+            turn_id: &str,
+        ) -> CrabResult<()> {
+            self.interrupt_calls.push(turn_id.to_string());
+            Ok(())
         }
     }
 
@@ -2556,6 +2705,7 @@ mod tests {
                 output_tokens: 0,
                 total_tokens: 0,
             },
+            has_injected_bootstrap: false,
         }
     }
 
@@ -2743,7 +2893,7 @@ mod tests {
                 run_id: "run:discord:channel:777:m-1".to_string(),
                 turn_id: "turn:run:discord:channel:777:m-1".to_string(),
                 status: RunStatus::Succeeded,
-                emitted_event_count: 7,
+                emitted_event_count: 8,
             }
         );
 
@@ -2778,7 +2928,7 @@ mod tests {
             .event_store
             .replay_run("discord:channel:777", "run:discord:channel:777:m-1")
             .expect("event replay should succeed");
-        assert_eq!(events.len(), 8);
+        assert_eq!(events.len(), 9);
         assert_eq!(events[0].kind, EventKind::RunState);
         assert_eq!(events[0].payload.get("state"), Some(&"queued".to_string()));
         assert_eq!(events[1].kind, EventKind::RunState);
@@ -2787,14 +2937,21 @@ mod tests {
         assert_eq!(events[3].kind, EventKind::ToolCall);
         assert_eq!(events[4].kind, EventKind::ToolResult);
         assert_eq!(events[5].kind, EventKind::RunNote);
+        // Event 6: TurnCompleted maps to RunState(succeeded)
         assert_eq!(events[6].kind, EventKind::RunState);
         assert_eq!(
             events[6].payload.get("state"),
             Some(&"succeeded".to_string())
         );
-        assert_eq!(events[7].kind, EventKind::RunState);
+        // Event 7: missing_usage_data diagnostic (no usage triplet in backend events)
+        assert_eq!(events[7].kind, EventKind::RunNote);
         assert_eq!(
-            events[7].payload.get("state"),
+            events[7].payload.get("event"),
+            Some(&"missing_usage_data".to_string())
+        );
+        assert_eq!(events[8].kind, EventKind::RunState);
+        assert_eq!(
+            events[8].payload.get("state"),
             Some(&"succeeded".to_string())
         );
         for event in &events {
@@ -5044,6 +5201,7 @@ mod tests {
                     output_tokens: 0,
                     total_tokens: 0,
                 },
+                has_injected_bootstrap: false,
             })
             .expect("session seed should succeed");
 
@@ -6899,5 +7057,632 @@ mod tests {
 
         replace_path_with_directory(&target);
         assert!(target.is_dir());
+    }
+
+    #[test]
+    fn steering_message_for_same_lane_interrupts_run_and_marks_cancelled() {
+        let backend_events = vec![
+            backend_event(1, BackendEventKind::TextDelta, &[("text", "partial")]),
+            backend_event(2, BackendEventKind::TurnCompleted, &[("finish", "done")]),
+        ];
+        let steering_msg = gateway_message("m-steering");
+        // now_epoch_ms calls: enqueue(1), started(2), event1(3), enqueue_steering(4), steered(5),
+        // completed(6)
+        let mut runtime =
+            FakeRuntime::with_backend_events(backend_events, &[1, 2, 3, 4, 5, 6, 7, 8])
+                .with_gateway_messages(vec![Some(steering_msg)]);
+        runtime
+            .resolve_profile_results
+            .push_back(Ok(sample_profile_telemetry()));
+        let (_workspace, mut executor) = build_executor_scenario("steering-same-lane", runtime, 8);
+
+        let dispatch = executor
+            .process_gateway_message(gateway_message("m-1"))
+            .expect("pipeline should succeed")
+            .expect("message should dispatch");
+
+        assert_eq!(dispatch.status, RunStatus::Cancelled);
+        assert_eq!(
+            dispatch.logical_session_id,
+            "discord:channel:777".to_string()
+        );
+
+        let stored_run = executor
+            .composition()
+            .state_stores
+            .run_store
+            .get_run("discord:channel:777", "run:discord:channel:777:m-1")
+            .expect("run lookup should succeed")
+            .expect("run should exist");
+        assert_eq!(stored_run.status, RunStatus::Cancelled);
+
+        let events = executor
+            .composition()
+            .state_stores
+            .event_store
+            .replay_run("discord:channel:777", "run:discord:channel:777:m-1")
+            .expect("event replay should succeed");
+        let steered_notes: Vec<_> = events
+            .iter()
+            .filter(|e| {
+                e.kind == EventKind::RunNote
+                    && e.payload.get("event") == Some(&"run_steered".to_string())
+            })
+            .collect();
+        assert_eq!(steered_notes.len(), 1, "should emit a run_steered note");
+
+        let session = executor
+            .composition()
+            .state_stores
+            .session_store
+            .get_session("discord:channel:777")
+            .expect("session lookup should succeed")
+            .expect("session should exist");
+        assert_eq!(
+            session.active_physical_session_id,
+            Some("physical-1".to_string()),
+            "physical session should be preserved after steering"
+        );
+
+        let runtime = executor.runtime_mut();
+        assert_eq!(
+            runtime.interrupt_calls,
+            vec!["turn:run:discord:channel:777:m-1".to_string()],
+            "interrupt_backend_turn should be called once"
+        );
+    }
+
+    #[test]
+    fn steering_message_for_different_lane_does_not_interrupt_current_run() {
+        let backend_events = vec![
+            backend_event(1, BackendEventKind::TextDelta, &[("text", "hello")]),
+            backend_event(2, BackendEventKind::TurnCompleted, &[("finish", "done")]),
+        ];
+        let mut cross_lane_msg = gateway_message("m-cross");
+        cross_lane_msg.channel_id = "888".to_string();
+        // now_epoch_ms calls: enqueue(1), started(2), event1(3), enqueue_cross(4), event2(5),
+        // completed(6)
+        let mut runtime =
+            FakeRuntime::with_backend_events(backend_events, &[1, 2, 3, 4, 5, 6, 7, 8])
+                .with_gateway_messages(vec![Some(cross_lane_msg)]);
+        runtime
+            .resolve_profile_results
+            .push_back(Ok(sample_profile_telemetry()));
+        let (_workspace, mut executor) = build_executor_scenario("steering-cross-lane", runtime, 8);
+
+        let dispatch = executor
+            .process_gateway_message(gateway_message("m-1"))
+            .expect("pipeline should succeed")
+            .expect("message should dispatch");
+
+        assert_eq!(
+            dispatch.status,
+            RunStatus::Succeeded,
+            "cross-lane message should not interrupt the run"
+        );
+
+        let runtime = executor.runtime_mut();
+        assert!(
+            runtime.interrupt_calls.is_empty(),
+            "interrupt_backend_turn should not be called for cross-lane messages"
+        );
+    }
+
+    #[test]
+    fn steering_during_timeout_interrupts_run_via_delayed_stream() {
+        let backend_events = vec![backend_event(
+            1,
+            BackendEventKind::TextDelta,
+            &[("text", "delayed")],
+        )];
+        let steering_msg = gateway_message("m-steer-timeout");
+        // Events are delayed 300ms; steering poll is 200ms, so the first loop iteration
+        // hits the Timeout arm. The steering message is found and the run is interrupted.
+        let mut runtime =
+            FakeRuntime::with_backend_events(backend_events, &[1, 2, 3, 4, 5, 6, 7, 8])
+                .with_gateway_messages(vec![Some(steering_msg)]);
+        runtime
+            .resolve_profile_results
+            .push_back(Ok(sample_profile_telemetry()));
+        runtime.event_stream_delay = Some(Duration::from_millis(300));
+        let (_workspace, mut executor) = build_executor_scenario("steering-timeout", runtime, 8);
+
+        let dispatch = executor
+            .process_gateway_message(gateway_message("m-1"))
+            .expect("pipeline should succeed")
+            .expect("message should dispatch");
+
+        assert_eq!(dispatch.status, RunStatus::Cancelled);
+
+        let runtime = executor.runtime_mut();
+        assert_eq!(runtime.interrupt_calls.len(), 1);
+    }
+
+    #[test]
+    fn steering_bot_message_is_ignored_and_does_not_interrupt() {
+        let backend_events = vec![
+            backend_event(1, BackendEventKind::TextDelta, &[("text", "output")]),
+            backend_event(2, BackendEventKind::TurnCompleted, &[("finish", "done")]),
+        ];
+        let mut bot_msg = gateway_message("m-bot");
+        bot_msg.author_is_bot = true;
+        let runtime = FakeRuntime::with_backend_events(backend_events, &[1, 2, 3, 4, 5, 6, 7, 8])
+            .with_gateway_messages(vec![Some(bot_msg)]);
+        let (_workspace, mut executor) = build_executor_scenario("steering-bot-msg", runtime, 8);
+
+        let dispatch = executor
+            .process_gateway_message(gateway_message("m-1"))
+            .expect("pipeline should succeed")
+            .expect("message should dispatch");
+
+        assert_eq!(
+            dispatch.status,
+            RunStatus::Succeeded,
+            "bot messages should not trigger steering"
+        );
+    }
+
+    #[test]
+    fn check_for_steering_message_returns_false_when_no_message_available() {
+        let backend_events = vec![
+            backend_event(1, BackendEventKind::TextDelta, &[("text", "output")]),
+            backend_event(2, BackendEventKind::TurnCompleted, &[("finish", "done")]),
+        ];
+        let runtime = FakeRuntime::with_backend_events(backend_events, &[1, 2, 3, 4, 5, 6, 7, 8]);
+        let (_workspace, mut executor) = build_executor_scenario("steering-no-msg", runtime, 8);
+
+        let dispatch = executor
+            .process_gateway_message(gateway_message("m-1"))
+            .expect("pipeline should succeed")
+            .expect("message should dispatch");
+
+        assert_eq!(dispatch.status, RunStatus::Succeeded);
+    }
+
+    // ── Bug 2: Inactivity timeout triggers rotation at run start ───────
+
+    #[test]
+    fn inactivity_timeout_triggers_rotation_at_run_start() {
+        // First run completes at t=100. Second run starts at t=100 + 1_800_001ms (>30 min).
+        // Default inactivity_timeout_secs = 1800. The pre-run check should detect inactivity
+        // and rotate before the second run's backend turn.
+        let workspace = TempWorkspace::new("turn-executor", "inactivity-rotation");
+        let mut runtime = FakeRuntime::with_backend_events(
+            vec![
+                backend_event(1, BackendEventKind::TextDelta, &[("text", "first run")]),
+                backend_event(
+                    2,
+                    BackendEventKind::TurnCompleted,
+                    &[("stop_reason", "done")],
+                ),
+            ],
+            // Timestamps: enqueue1, started1, event1, event2, completed1,
+            //             enqueue2, started2, event1, event2, completed2
+            &[
+                1, 2, 3, 4, 100, 200, 1_800_101, 1_800_102, 1_800_103, 1_800_200,
+            ],
+        );
+        runtime.execute_turn_results = VecDeque::from(vec![
+            Ok(vec![
+                backend_event(1, BackendEventKind::TextDelta, &[("text", "first run")]),
+                backend_event(
+                    2,
+                    BackendEventKind::TurnCompleted,
+                    &[("stop_reason", "done")],
+                ),
+            ]),
+            // Hidden checkpoint turn during pre-run rotation
+            Ok(hidden_checkpoint_backend_events(&checkpoint_document_json(
+                "inactivity checkpoint",
+            ))),
+            // Second run's actual backend turn
+            Ok(vec![
+                backend_event(1, BackendEventKind::TextDelta, &[("text", "second run")]),
+                backend_event(
+                    2,
+                    BackendEventKind::TurnCompleted,
+                    &[("stop_reason", "done")],
+                ),
+            ]),
+        ]);
+        runtime.resolve_profile_results = VecDeque::from(vec![
+            Ok(sample_profile_telemetry()),
+            Ok(sample_profile_telemetry()),
+        ]);
+        runtime.ensure_session_results = VecDeque::from(vec![
+            Ok(physical_session_fixture()),
+            // ensure_physical_session for hidden checkpoint turn during rotation
+            Ok(physical_session_fixture()),
+            // ensure_physical_session for second run (new physical session after rotation)
+            Ok(crab_core::PhysicalSession {
+                id: "physical-2".to_string(),
+                logical_session_id: "discord:channel:777".to_string(),
+                backend: BackendKind::Codex,
+                backend_session_id: "thread-def".to_string(),
+                created_at_epoch_ms: 1_800_101,
+                last_turn_id: None,
+            }),
+        ]);
+        runtime.build_context_results = VecDeque::from(vec![
+            Ok("context-1".to_string()),
+            Ok("context-2".to_string()),
+        ]);
+        let mut executor = build_executor(&workspace, runtime, 8);
+
+        executor
+            .process_gateway_message(gateway_message("m-inactivity-1"))
+            .expect("first run should succeed")
+            .expect("first run should dispatch");
+
+        executor
+            .process_gateway_message(gateway_message("m-inactivity-2"))
+            .expect("second run should succeed")
+            .expect("second run should dispatch");
+
+        let logical_session_id = "discord:channel:777";
+        let session = executor
+            .composition()
+            .state_stores
+            .session_store
+            .get_session(logical_session_id)
+            .expect("session lookup should succeed")
+            .expect("session should exist");
+
+        // After rotation, token accounting should have been reset and a checkpoint persisted.
+        assert!(
+            session.last_successful_checkpoint_id.is_some(),
+            "inactivity rotation should produce a checkpoint"
+        );
+
+        // Verify the rotation event was emitted on the second run.
+        let run_id = "run:discord:channel:777:m-inactivity-2";
+        let events = executor
+            .composition()
+            .state_stores
+            .event_store
+            .replay_run(logical_session_id, run_id)
+            .expect("event replay should succeed");
+        assert!(
+            events.iter().any(|event| {
+                event.kind == EventKind::RunNote
+                    && event
+                        .payload
+                        .get("rotation_event")
+                        .is_some_and(|v| v == "completed")
+            }),
+            "inactivity rotation should emit a rotation completed event"
+        );
+    }
+
+    #[test]
+    fn no_inactivity_rotation_when_gap_is_below_threshold() {
+        // Second run starts 10 seconds after first run completes — well below 30 min threshold.
+        let workspace = TempWorkspace::new("turn-executor", "no-inactivity-rotation");
+        let mut runtime = FakeRuntime::with_backend_events(
+            vec![backend_event(
+                1,
+                BackendEventKind::TurnCompleted,
+                &[("stop_reason", "done")],
+            )],
+            // Timestamps: enqueue1, started1, event1, completed1,
+            //             enqueue2, started2, event1, completed2
+            &[1, 2, 3, 100, 200, 10_100, 10_101, 10_200],
+        );
+        runtime.execute_turn_results = VecDeque::from(vec![
+            Ok(vec![backend_event(
+                1,
+                BackendEventKind::TurnCompleted,
+                &[("stop_reason", "done")],
+            )]),
+            Ok(vec![backend_event(
+                1,
+                BackendEventKind::TurnCompleted,
+                &[("stop_reason", "done")],
+            )]),
+        ]);
+        runtime.resolve_profile_results = VecDeque::from(vec![
+            Ok(sample_profile_telemetry()),
+            Ok(sample_profile_telemetry()),
+        ]);
+        runtime.ensure_session_results = VecDeque::from(vec![
+            Ok(physical_session_fixture()),
+            Ok(crab_core::PhysicalSession {
+                last_turn_id: Some("turn-previous".to_string()),
+                ..physical_session_fixture()
+            }),
+        ]);
+        runtime.build_context_results = VecDeque::from(vec![Ok("context".to_string())]);
+        let mut executor = build_executor(&workspace, runtime, 8);
+
+        executor
+            .process_gateway_message(gateway_message("m-no-inact-1"))
+            .expect("first run should succeed")
+            .expect("first run should dispatch");
+
+        executor
+            .process_gateway_message(gateway_message("m-no-inact-2"))
+            .expect("second run should succeed")
+            .expect("second run should dispatch");
+
+        let session = executor
+            .composition()
+            .state_stores
+            .session_store
+            .get_session("discord:channel:777")
+            .expect("session lookup should succeed")
+            .expect("session should exist");
+
+        assert!(
+            session.last_successful_checkpoint_id.is_none(),
+            "no rotation should occur when inactivity gap is below threshold"
+        );
+    }
+
+    #[test]
+    fn no_inactivity_rotation_on_first_ever_run() {
+        // First run for a brand-new session — no prior activity, should not trigger rotation.
+        let backend_events = vec![backend_event(
+            1,
+            BackendEventKind::TurnCompleted,
+            &[("stop_reason", "done")],
+        )];
+        let runtime = FakeRuntime::with_backend_events(backend_events, &[1, 2, 3, 4]);
+        let (_workspace, mut executor) =
+            build_executor_scenario("no-inactivity-first-run", runtime, 8);
+
+        let dispatch = executor
+            .process_gateway_message(gateway_message("m-first"))
+            .expect("pipeline should succeed")
+            .expect("message should dispatch");
+
+        assert_eq!(dispatch.status, RunStatus::Succeeded);
+        let session = executor
+            .composition()
+            .state_stores
+            .session_store
+            .get_session("discord:channel:777")
+            .expect("session lookup should succeed")
+            .expect("session should exist");
+        assert!(
+            session.last_successful_checkpoint_id.is_none(),
+            "first-ever run should not trigger inactivity rotation"
+        );
+    }
+
+    // ── Bug 3: Bootstrap re-injection flag survives daemon restart ──────
+
+    #[test]
+    fn bootstrap_injection_flag_persists_across_simulated_daemon_restart() {
+        // First turn: bootstrap should be injected and flag set.
+        // Simulate daemon restart: create a new executor from the same workspace
+        // (session is persisted on disk). Second turn should NOT re-inject bootstrap.
+        let workspace = TempWorkspace::new("turn-executor", "bootstrap-flag-persist");
+        let mut runtime = FakeRuntime::with_backend_events(
+            vec![
+                backend_event(1, BackendEventKind::TextDelta, &[("text", "hello")]),
+                backend_event(
+                    2,
+                    BackendEventKind::TurnCompleted,
+                    &[("stop_reason", "done")],
+                ),
+            ],
+            &[1, 2, 3, 4, 5],
+        );
+        runtime.build_context_results = VecDeque::from(vec![Ok("bootstrap context".to_string())]);
+        let mut executor = build_executor(&workspace, runtime, 8);
+
+        executor
+            .process_gateway_message(gateway_message("m-bootstrap-1"))
+            .expect("first run should succeed")
+            .expect("first run should dispatch");
+
+        assert_eq!(
+            executor.runtime_mut().build_context_bootstrap_flags,
+            vec![true],
+            "first turn should inject bootstrap"
+        );
+
+        let session = executor
+            .composition()
+            .state_stores
+            .session_store
+            .get_session("discord:channel:777")
+            .expect("session lookup should succeed")
+            .expect("session should exist");
+        assert!(
+            session.has_injected_bootstrap,
+            "has_injected_bootstrap should be true after first turn"
+        );
+
+        // Simulate daemon restart: create a new executor using the same workspace state.
+        let mut runtime2 = FakeRuntime::with_backend_events(
+            vec![
+                backend_event(1, BackendEventKind::TextDelta, &[("text", "world")]),
+                backend_event(
+                    2,
+                    BackendEventKind::TurnCompleted,
+                    &[("stop_reason", "done")],
+                ),
+            ],
+            &[10, 11, 12, 13, 14],
+        );
+        runtime2.ensure_session_results = VecDeque::from(vec![Ok(crab_core::PhysicalSession {
+            last_turn_id: Some("turn-previous".to_string()),
+            ..physical_session_fixture()
+        })]);
+        let mut executor2 = build_executor(&workspace, runtime2, 8);
+
+        executor2
+            .process_gateway_message(gateway_message("m-bootstrap-2"))
+            .expect("second run should succeed")
+            .expect("second run should dispatch");
+
+        assert_eq!(
+            executor2.runtime_mut().build_context_bootstrap_flags,
+            vec![false],
+            "second turn after restart should NOT re-inject bootstrap"
+        );
+    }
+
+    #[test]
+    fn bootstrap_injection_flag_resets_after_rotation() {
+        // After rotation, has_injected_bootstrap should be false, so the next turn
+        // re-injects bootstrap into the new physical session.
+        let workspace = TempWorkspace::new("turn-executor", "bootstrap-flag-reset");
+        let mut runtime = FakeRuntime::with_backend_events(Vec::new(), &[1, 2, 3, 4]);
+        runtime.resolve_profile_results = VecDeque::from(vec![Ok(owner_profile_telemetry())]);
+        runtime.execute_turn_results = VecDeque::from(vec![Ok(hidden_checkpoint_backend_events(
+            &checkpoint_document_json("manual compact checkpoint"),
+        ))]);
+        let mut executor = build_executor(&workspace, runtime, 8);
+
+        executor
+            .process_gateway_message(gateway_message_with_content(
+                "m-bootstrap-reset",
+                "/compact confirm",
+            ))
+            .expect("manual compact should succeed")
+            .expect("manual compact should dispatch");
+
+        let session = executor
+            .composition()
+            .state_stores
+            .session_store
+            .get_session("discord:channel:777")
+            .expect("session lookup should succeed")
+            .expect("session should exist");
+        assert!(
+            !session.has_injected_bootstrap,
+            "has_injected_bootstrap should be false after rotation"
+        );
+    }
+
+    // ── Bug 1: Missing usage data diagnostic ───────────────────────────
+
+    #[test]
+    fn missing_usage_data_emits_diagnostic_run_note() {
+        // A successful turn with no usage event in backend_events should emit
+        // a missing_usage_data RunNote.
+        let backend_events = vec![
+            backend_event(1, BackendEventKind::TextDelta, &[("text", "output")]),
+            backend_event(
+                2,
+                BackendEventKind::TurnCompleted,
+                &[("stop_reason", "done")],
+            ),
+        ];
+        let runtime = FakeRuntime::with_backend_events(backend_events, &[1, 2, 3, 4, 5]);
+        let (_workspace, mut executor) = build_executor_scenario("missing-usage-diag", runtime, 8);
+
+        executor
+            .process_gateway_message(gateway_message("m-no-usage"))
+            .expect("pipeline should succeed")
+            .expect("message should dispatch");
+
+        let logical_session_id = "discord:channel:777";
+        let run_id = "run:discord:channel:777:m-no-usage";
+        let events = executor
+            .composition()
+            .state_stores
+            .event_store
+            .replay_run(logical_session_id, run_id)
+            .expect("event replay should succeed");
+        assert!(
+            events.iter().any(|event| {
+                event.kind == EventKind::RunNote
+                    && event
+                        .payload
+                        .get("event")
+                        .is_some_and(|v| v == "missing_usage_data")
+            }),
+            "missing usage data diagnostic should be emitted"
+        );
+    }
+
+    #[test]
+    fn no_missing_usage_diagnostic_when_usage_is_present() {
+        let backend_events = vec![
+            backend_event(1, BackendEventKind::TextDelta, &[("text", "output")]),
+            backend_event(
+                2,
+                BackendEventKind::RunNote,
+                &[
+                    ("usage_input_tokens", "100"),
+                    ("usage_output_tokens", "50"),
+                    ("usage_total_tokens", "150"),
+                ],
+            ),
+            backend_event(
+                3,
+                BackendEventKind::TurnCompleted,
+                &[("stop_reason", "done")],
+            ),
+        ];
+        let runtime = FakeRuntime::with_backend_events(backend_events, &[1, 2, 3, 4, 5, 6]);
+        let (_workspace, mut executor) = build_executor_scenario("usage-present", runtime, 8);
+
+        executor
+            .process_gateway_message(gateway_message("m-with-usage"))
+            .expect("pipeline should succeed")
+            .expect("message should dispatch");
+
+        let logical_session_id = "discord:channel:777";
+        let run_id = "run:discord:channel:777:m-with-usage";
+        let events = executor
+            .composition()
+            .state_stores
+            .event_store
+            .replay_run(logical_session_id, run_id)
+            .expect("event replay should succeed");
+        let missing_usage_count = events
+            .iter()
+            .filter(|e| e.kind == EventKind::RunNote)
+            .filter(|e| e.payload.get("event") == Some(&"missing_usage_data".to_string()))
+            .count();
+        assert_eq!(
+            missing_usage_count, 0,
+            "no missing usage diagnostic should be emitted when usage is present"
+        );
+    }
+
+    #[test]
+    fn no_missing_usage_diagnostic_when_run_fails() {
+        // Failed runs should not emit the diagnostic.
+        let backend_events = vec![backend_event(
+            1,
+            BackendEventKind::Error,
+            &[("message", "backend error")],
+        )];
+        let runtime = FakeRuntime::with_backend_events(backend_events, &[1, 2, 3, 4]);
+        let (_workspace, mut executor) =
+            build_executor_scenario("no-usage-diag-on-failure", runtime, 8);
+
+        let result = executor
+            .process_gateway_message(gateway_message("m-fail-usage"))
+            .expect("pipeline should succeed")
+            .expect("message should dispatch");
+
+        assert_eq!(result.status, RunStatus::Failed);
+        let logical_session_id = "discord:channel:777";
+        let run_id = "run:discord:channel:777:m-fail-usage";
+        let events = executor
+            .composition()
+            .state_stores
+            .event_store
+            .replay_run(logical_session_id, run_id)
+            .expect("event replay should succeed");
+        let missing_usage_count = events
+            .iter()
+            .filter(|e| {
+                let is_run_note = e.kind == EventKind::RunNote;
+                let has_missing_key =
+                    e.payload.get("event") == Some(&"missing_usage_data".to_string());
+                is_run_note && has_missing_key
+            })
+            .count();
+        assert_eq!(
+            missing_usage_count, 0,
+            "no missing usage diagnostic should be emitted on failed runs"
+        );
     }
 }

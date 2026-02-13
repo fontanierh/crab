@@ -466,6 +466,7 @@ mod tests {
             queued_run_count: 0,
             last_activity_epoch_ms: 1_739_173_200_000,
             token_accounting: sample_token_accounting(),
+            has_injected_bootstrap: false,
         }
     }
 

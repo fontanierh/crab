@@ -405,6 +405,7 @@ impl ClaudeProcess for DaemonClaudeProcess {
 #[derive(Debug, Default)]
 struct DaemonClaudeProcessState {
     sessions: BTreeMap<String, ClaudeSessionExecutionConfig>,
+    active_interrupt: Option<Arc<AtomicBool>>,
 }
 
 #[cfg(not(any(test, coverage)))]
@@ -489,18 +490,31 @@ impl ClaudeProcess for DaemonClaudeProcess {
             }
         };
 
+        let interrupt_flag = Arc::new(AtomicBool::new(false));
+        {
+            let mut locked = self.state.lock().expect("lock should succeed");
+            locked.active_interrupt = Some(Arc::clone(&interrupt_flag));
+        }
+
         let backend_session_id = backend_session_id.to_string();
         let input = input.clone();
         let state = Arc::clone(&self.state);
         let (sender, receiver) = mpsc::unbounded::<ClaudeRawEvent>();
+        let thread_interrupt = Arc::clone(&interrupt_flag);
 
         thread::spawn(move || {
             let mut succeeded = false;
             let mut last_error: Option<CrabError> = None;
             let mut attempt_mode = mode;
             loop {
-                let result =
-                    run_claude_turn(&backend_session_id, &input, &config, attempt_mode, &sender);
+                let result = run_claude_turn(
+                    &backend_session_id,
+                    &input,
+                    &config,
+                    attempt_mode,
+                    &sender,
+                    &thread_interrupt,
+                );
                 match result {
                     Ok(()) => {
                         succeeded = true;
@@ -536,6 +550,11 @@ impl ClaudeProcess for DaemonClaudeProcess {
                         .unwrap_or_else(|| "claude turn failed (unknown error)".to_string()),
                 });
             }
+            // Clear the interrupt flag on thread completion.
+            {
+                let mut locked = state.lock().expect("lock should succeed");
+                locked.active_interrupt = None;
+            }
             drop(sender);
         });
 
@@ -543,6 +562,10 @@ impl ClaudeProcess for DaemonClaudeProcess {
     }
 
     fn interrupt_turn(&self, _backend_session_id: &str, _turn_id: &str) -> CrabResult<()> {
+        let state = self.state.lock().expect("lock should succeed");
+        if let Some(flag) = state.active_interrupt.as_ref() {
+            flag.store(true, Ordering::SeqCst);
+        }
         Ok(())
     }
 
@@ -608,6 +631,7 @@ fn run_claude_turn(
     config: &ClaudeSessionExecutionConfig,
     mode: ClaudeSessionMode,
     sender: &mpsc::UnboundedSender<ClaudeRawEvent>,
+    interrupt_flag: &Arc<AtomicBool>,
 ) -> CrabResult<()> {
     use std::io::{BufRead, BufReader, Read};
     use std::process::Stdio;
@@ -686,17 +710,15 @@ fn run_claude_turn(
     let mut emitted_any = false;
     let mut saw_terminal = false;
 
-    // `claude` can hang (network, auth, internal crash) and this daemon loop is single-threaded.
-    // If we block forever waiting for stdout, we stop processing Discord ingress entirely.
-    //
-    // We avoid this by reading stdout on a helper thread and enforcing a hard "no output" stall
-    // timeout that kills the child process and fails the turn.
     let stall_timeout_secs = std::env::var("CRAB_BACKEND_STALL_TIMEOUT_SECS")
         .ok()
         .and_then(|raw| raw.trim().parse::<u64>().ok())
         .filter(|value| *value > 0)
         .unwrap_or(crab_core::config::DEFAULT_BACKEND_STALL_TIMEOUT_SECS);
     let stall_timeout = Duration::from_secs(stall_timeout_secs);
+
+    // Poll interval for checking the interrupt flag between stdout reads.
+    let poll_interval = Duration::from_millis(500);
 
     let (line_tx, line_rx) = std_mpsc::channel::<CrabResult<Option<String>>>();
     let stdout_handle = thread::spawn(move || {
@@ -720,28 +742,42 @@ fn run_claude_turn(
         let _ = line_tx.send(Ok(None));
     });
 
+    let mut idle_since = std::time::Instant::now();
+    let mut interrupted = false;
     loop {
-        let maybe_line = match line_rx.recv_timeout(stall_timeout) {
-            Ok(result) => result?,
+        // Check interrupt flag before waiting for the next line.
+        if interrupt_flag.load(Ordering::SeqCst) {
+            interrupted = true;
+            break;
+        }
+
+        let maybe_line = match line_rx.recv_timeout(poll_interval) {
+            Ok(result) => {
+                idle_since = std::time::Instant::now();
+                result?
+            }
             Err(std_mpsc::RecvTimeoutError::Timeout) => {
-                let _ = child.kill();
-                let status = child.wait().ok();
-                let stderr_output = stderr_handle.join().unwrap_or_default();
-                let _ = stdout_handle.join();
-                let detail = if !stderr_output.trim().is_empty() {
-                    stderr_output.trim().to_string()
-                } else if let Some(status) = status {
-                    format!("claude exited after stall with status: {status}")
-                } else {
-                    "claude produced no stderr output".to_string()
-                };
-                return Err(CrabError::InvariantViolation {
-                    context: DAEMON_CLAUDE_TRANSPORT_CONTEXT,
-                    message: format!(
-                        "claude process stalled (no stdout for {stall_timeout_secs}s) for run {} turn {}: {}",
-                        input.run_id, input.turn_id, detail
-                    ),
-                });
+                if idle_since.elapsed() >= stall_timeout {
+                    let _ = child.kill();
+                    let status = child.wait().ok();
+                    let stderr_output = stderr_handle.join().unwrap_or_default();
+                    let _ = stdout_handle.join();
+                    let detail = if !stderr_output.trim().is_empty() {
+                        stderr_output.trim().to_string()
+                    } else if let Some(status) = status {
+                        format!("claude exited after stall with status: {status}")
+                    } else {
+                        "claude produced no stderr output".to_string()
+                    };
+                    return Err(CrabError::InvariantViolation {
+                        context: DAEMON_CLAUDE_TRANSPORT_CONTEXT,
+                        message: format!(
+                            "claude process stalled (no stdout for {stall_timeout_secs}s) for run {} turn {}: {}",
+                            input.run_id, input.turn_id, detail
+                        ),
+                    });
+                }
+                continue;
             }
             Err(std_mpsc::RecvTimeoutError::Disconnected) => break,
         };
@@ -765,6 +801,17 @@ fn run_claude_turn(
             }
             let _ = sender.unbounded_send(event);
         }
+    }
+
+    if interrupted {
+        let _ = child.kill();
+        let _ = child.wait();
+        let _ = stderr_handle.join();
+        let _ = stdout_handle.join();
+        let _ = sender.unbounded_send(ClaudeRawEvent::TurnInterrupted {
+            reason: "steered".to_string(),
+        });
+        return Ok(());
     }
 
     let status = child.wait().map_err(|error| CrabError::Io {
@@ -2303,6 +2350,22 @@ impl<D: DaemonDiscordIo> TurnExecutorRuntime for DaemonTurnRuntime<D> {
         }
         self.discord.edit_message(channel_id, message_id, content)
     }
+
+    fn next_gateway_message(&mut self) -> CrabResult<Option<GatewayMessage>> {
+        self.discord.next_gateway_message()
+    }
+
+    fn interrupt_backend_turn(
+        &mut self,
+        session: &crab_core::PhysicalSession,
+        turn_id: &str,
+    ) -> CrabResult<()> {
+        if session.backend == BackendKind::Claude {
+            block_on(self.claude_bridge.harness.interrupt_turn(session, turn_id))
+        } else {
+            Ok(())
+        }
+    }
 }
 
 pub fn run_daemon_loop_with_transport<CP, OP, D, C>(
@@ -3705,6 +3768,7 @@ mod tests {
                 output_tokens: 0,
                 total_tokens: 0,
             },
+            has_injected_bootstrap: false,
         }
     }
 
@@ -7315,6 +7379,62 @@ mod tests {
                 message,
             } if message.starts_with("failed to install Ctrl-C handler:")
         ));
+    }
+
+    #[test]
+    fn interrupt_backend_turn_delegates_to_claude_process_for_claude_backend() {
+        let claude_process = ScriptedClaudeProcess::with_scripted(
+            vec![Ok("claude-session-1".to_string())],
+            Vec::new(),
+            vec![Ok(())],
+            Vec::new(),
+        );
+        let (_workspace, mut runtime, process) =
+            build_scripted_claude_runtime("interrupt-claude-backend", claude_process);
+
+        let session = crab_core::PhysicalSession {
+            id: "physical-1".to_string(),
+            logical_session_id: "discord:channel:777".to_string(),
+            backend: BackendKind::Claude,
+            backend_session_id: "claude-session-1".to_string(),
+            created_at_epoch_ms: 1_000_000,
+            last_turn_id: None,
+        };
+
+        runtime
+            .interrupt_backend_turn(&session, "turn-1")
+            .expect("interrupt should succeed for Claude backend");
+
+        let stats = process.stats();
+        assert_eq!(stats.interrupt_calls, 1);
+        assert_eq!(stats.last_interrupted_turn_id, Some("turn-1".to_string()));
+    }
+
+    #[test]
+    fn interrupt_backend_turn_skips_non_claude_backends() {
+        let claude_process =
+            ScriptedClaudeProcess::with_scripted(Vec::new(), Vec::new(), Vec::new(), Vec::new());
+        let (_workspace, mut runtime, process) =
+            build_scripted_claude_runtime("interrupt-non-claude-backend", claude_process);
+
+        let session = crab_core::PhysicalSession {
+            id: "physical-1".to_string(),
+            logical_session_id: "discord:channel:777".to_string(),
+            backend: BackendKind::Codex,
+            backend_session_id: "codex-session-1".to_string(),
+            created_at_epoch_ms: 1_000_000,
+            last_turn_id: None,
+        };
+
+        runtime
+            .interrupt_backend_turn(&session, "turn-1")
+            .expect("interrupt should succeed (no-op) for non-Claude backend");
+
+        let stats = process.stats();
+        assert_eq!(
+            stats.interrupt_calls, 0,
+            "Claude process should not be called for non-Claude backend"
+        );
     }
 
     #[test]

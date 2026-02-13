@@ -1341,6 +1341,7 @@ mod tests {
                 output_tokens: 2,
                 total_tokens: 3,
             },
+            has_injected_bootstrap: false,
         }
     }
 

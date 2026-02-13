@@ -777,6 +777,7 @@ mod tests {
             queued_run_count: 0,
             last_activity_epoch_ms: now_epoch_ms,
             token_accounting: sample_token_accounting(),
+            has_injected_bootstrap: false,
         }
     }
 
@@ -1185,6 +1186,7 @@ mod tests {
                 queued_run_count: 0,
                 last_activity_epoch_ms: now_epoch_ms,
                 token_accounting: sample_token_accounting(),
+                has_injected_bootstrap: false,
             })
             .expect("session should persist");
 
