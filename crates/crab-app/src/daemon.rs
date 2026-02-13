@@ -593,6 +593,7 @@ fn run_claude_turn(
 ) -> CrabResult<()> {
     use std::io::{BufRead, BufReader, Read};
     use std::process::Stdio;
+    use std::sync::mpsc as std_mpsc;
 
     let mut command = std::process::Command::new("claude");
     command
@@ -600,6 +601,7 @@ fn run_claude_turn(
         .arg("--verbose")
         .arg("--output-format")
         .arg("stream-json")
+        .arg("--include-partial-messages")
         .arg("--dangerously-skip-permissions");
     if let Ok(workspace_root) = std::env::var("CRAB_WORKSPACE_ROOT") {
         let trimmed = workspace_root.trim();
@@ -663,13 +665,61 @@ fn run_claude_turn(
     let mut emitted_any = false;
     let mut saw_terminal = false;
 
-    let reader = BufReader::new(stdout);
-    for line in reader.lines() {
-        let line = line.map_err(|error| CrabError::Io {
-            context: DAEMON_CLAUDE_TRANSPORT_CONTEXT,
-            path: None,
-            message: format!("failed reading claude stdout: {error}"),
-        })?;
+    // `claude` can hang (network, auth, internal crash) and this daemon loop is single-threaded.
+    // If we block forever waiting for stdout, we stop processing Discord ingress entirely.
+    //
+    // We avoid this by reading stdout on a helper thread and enforcing a hard "no output" stall
+    // timeout that kills the child process and fails the turn.
+    let stall_timeout_secs = std::env::var("CRAB_BACKEND_STALL_TIMEOUT_SECS")
+        .ok()
+        .and_then(|raw| raw.trim().parse::<u64>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(30);
+    let stall_timeout = Duration::from_secs(stall_timeout_secs);
+
+    let (line_tx, line_rx) = std_mpsc::channel::<CrabResult<Option<String>>>();
+    let stdout_handle = thread::spawn(move || {
+        let reader = BufReader::new(stdout);
+        for line in reader.lines() {
+            let line = match line {
+                Ok(line) => line,
+                Err(error) => {
+                    let _ = line_tx.send(Err(CrabError::Io {
+                        context: DAEMON_CLAUDE_TRANSPORT_CONTEXT,
+                        path: None,
+                        message: format!("failed reading claude stdout: {error}"),
+                    }));
+                    return;
+                }
+            };
+            if line_tx.send(Ok(Some(line))).is_err() {
+                return;
+            }
+        }
+        let _ = line_tx.send(Ok(None));
+    });
+
+    loop {
+        let maybe_line = match line_rx.recv_timeout(stall_timeout) {
+            Ok(result) => result?,
+            Err(std_mpsc::RecvTimeoutError::Timeout) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                let _ = stderr_handle.join();
+                let _ = stdout_handle.join();
+                return Err(CrabError::InvariantViolation {
+                    context: DAEMON_CLAUDE_TRANSPORT_CONTEXT,
+                    message: format!(
+                        "claude process stalled (no stdout for {stall_timeout_secs}s) for run {} turn {}",
+                        input.run_id, input.turn_id
+                    ),
+                });
+            }
+            Err(std_mpsc::RecvTimeoutError::Disconnected) => break,
+        };
+        let Some(line) = maybe_line else {
+            break;
+        };
         let trimmed = line.trim();
         if trimmed.is_empty() {
             continue;
@@ -695,6 +745,7 @@ fn run_claude_turn(
         message: format!("failed waiting for claude process: {error}"),
     })?;
     let stderr_output = stderr_handle.join().unwrap_or_default();
+    let _ = stdout_handle.join();
 
     if !status.success() {
         let detail = if !stderr_output.trim().is_empty() {
@@ -2255,6 +2306,7 @@ where
     C: DaemonLoopControl + ?Sized,
     RB: FnOnce(OwnerConfig, D) -> CrabResult<DaemonTurnRuntime<D>>,
 {
+    let mut discord = discord;
     daemon_config.validate()?;
     let now_epoch_ms = control.now_epoch_ms()?;
     let mut boot = boot_runtime_with_processes(
@@ -2304,6 +2356,26 @@ where
     } else {
         tracing::info!("startup reconciliation: no in-flight work recovered");
     }
+
+    // If we had to reconcile stale in-flight work, tell the user(s). This prevents "silent"
+    // failure modes where the harness restarts but Discord looks stuck.
+    if !boot.startup_reconciliation.recovered_runs.is_empty() {
+        let sent = notify_startup_recovered_runs(
+            &boot.composition.state_stores.run_store,
+            &boot.startup_reconciliation.recovered_runs,
+            &mut discord,
+        );
+        #[cfg(coverage)]
+        let _ = &sent;
+        #[cfg(not(coverage))]
+        if let Err(_error) = sent {
+            tracing::warn!(
+                error = %_error,
+                "failed sending startup reconciliation notifications"
+            );
+        }
+    }
+
     boot.composition.backends.codex.ensure_started()?;
     let opencode_handle = boot.composition.backends.opencode.ensure_running()?;
 
@@ -2510,6 +2582,34 @@ fn trust_surface_for_logical_session_id(logical_session_id: &str) -> TrustSurfac
     TrustSurface::SharedDiscord
 }
 
+fn notify_startup_recovered_runs<D: DaemonDiscordIo>(
+    run_store: &crab_store::RunStore,
+    recovered_runs: &[crab_core::startup_reconciliation::StartupReconciliationRecoveredRun],
+    discord: &mut D,
+) -> CrabResult<usize> {
+    let mut sent = 0usize;
+    for recovered in recovered_runs {
+        let Some(run) = run_store.get_run(&recovered.logical_session_id, &recovered.run_id)? else {
+            continue;
+        };
+        let Some(channel_id) = run.delivery_channel_id.as_deref() else {
+            continue;
+        };
+        let content = format!(
+            "Crab restarted while processing a previous message, so it was marked cancelled. Please resend your last message.\n(run_id: {})",
+            run.id
+        );
+        let delivery_id = format!("startup:recovered:{}", run.id);
+        if discord
+            .post_message(channel_id, &delivery_id, &content)
+            .is_ok()
+        {
+            sent = sent.saturating_add(1);
+        }
+    }
+    Ok(sent)
+}
+
 fn epoch_ms_to_yyyy_mm_dd(epoch_ms: u64) -> CrabResult<String> {
     let days_i64 = (epoch_ms / MILLIS_PER_DAY) as i64;
     let (year, month, day) = civil_from_days(days_i64);
@@ -2538,11 +2638,11 @@ mod tests {
     use super::{
         conversation_kind_for_logical_session_id, epoch_ms_from_duration,
         epoch_ms_from_system_time, epoch_ms_to_yyyy_mm_dd, load_latest_checkpoint_summary,
-        memory_scope_directory_for_run, read_workspace_markdown, run_daemon_loop_with_transport,
-        run_daemon_loop_with_transport_and_runtime_builder, trust_surface_for_logical_session_id,
-        DaemonBackendExecutionBridge, DaemonClaudeProcess, DaemonConfig, DaemonDiscordIo,
-        DaemonLoopControl, DaemonLoopStats, DaemonTurnRuntime, OpenCodeBridgeRuntime,
-        OpenCodeBridgeTurnResult, SystemDaemonLoopControl,
+        memory_scope_directory_for_run, notify_startup_recovered_runs, read_workspace_markdown,
+        run_daemon_loop_with_transport, run_daemon_loop_with_transport_and_runtime_builder,
+        trust_surface_for_logical_session_id, DaemonBackendExecutionBridge, DaemonClaudeProcess,
+        DaemonConfig, DaemonDiscordIo, DaemonLoopControl, DaemonLoopStats, DaemonTurnRuntime,
+        OpenCodeBridgeRuntime, OpenCodeBridgeTurnResult, SystemDaemonLoopControl,
     };
     use crate::test_support::{runtime_config_for_workspace_with_lanes, TempWorkspace};
     use crate::TurnExecutorRuntime;
@@ -5409,6 +5509,121 @@ mod tests {
             .expect("session should exist");
         assert_eq!(updated.active_physical_session_id, None);
         assert_eq!(updated.lane_state, LaneState::Idle);
+    }
+
+    #[test]
+    fn daemon_loop_notifies_user_when_startup_reconciliation_recovers_stale_run() {
+        let workspace = TempWorkspace::new("daemon", "startup-reconcile-notify");
+        let config = runtime_config_for_workspace_with_lanes(&workspace.path, 1);
+
+        let state_root = workspace.path.join("state");
+        let session_store = SessionStore::new(state_root.clone());
+        let run_store = RunStore::new(state_root);
+
+        let logical_session_id = "discord:dm:111";
+        let mut session = sample_session(LaneState::Running, Some("phys-1".to_string()));
+        session.id = logical_session_id.to_string();
+        session.active_backend = BackendKind::Claude;
+        session.active_profile = claude_profile();
+        session_store
+            .upsert_session(&session)
+            .expect("seed session should persist");
+
+        let mut run = sample_claude_run("111");
+        run.id = "run:discord:dm:111:stale-1".to_string();
+        run.logical_session_id = logical_session_id.to_string();
+        run.status = RunStatus::Running;
+        run.delivery_channel_id = Some("dm-111".to_string());
+        run.queued_at_epoch_ms = 1;
+        run.started_at_epoch_ms = Some(1);
+        run.completed_at_epoch_ms = None;
+        run.profile.sender_is_owner = true;
+        run_store.upsert_run(&run).expect("seed run should persist");
+
+        let daemon_config = DaemonConfig {
+            bot_user_id: "999".to_string(),
+            tick_interval_ms: 1,
+            max_iterations: Some(1),
+        };
+        let discord = ScriptedDiscordIo::with_state(DiscordIoState {
+            inbound: VecDeque::from([Ok(None)]),
+            ..DiscordIoState::default()
+        });
+        let discord_state = discord.clone();
+        let codex = TrackingCodexProcess::new();
+        let opencode = TrackingOpenCodeProcess::new();
+
+        // Boot at 200s, tick once at 200s+1ms (run is stale relative to default 90s grace period).
+        let mut control = ScriptedControl::with_now(vec![200_000, 200_001]);
+
+        run_daemon_loop_with_transport(
+            &config,
+            &daemon_config,
+            codex,
+            opencode,
+            discord,
+            &mut control,
+        )
+        .expect("daemon loop should succeed");
+
+        let discord = discord_state.state();
+        assert!(discord
+            .posted
+            .iter()
+            .any(|(channel_id, delivery_id, content)| {
+                channel_id == "dm-111"
+                    && delivery_id.starts_with("startup:recovered:")
+                    && content.contains("marked cancelled")
+            }));
+    }
+
+    #[test]
+    fn notify_startup_recovered_runs_skips_when_run_is_missing() {
+        let workspace = TempWorkspace::new("daemon", "startup-reconcile-missing-run");
+        let state_root = workspace.path.join("state");
+        let run_store = RunStore::new(state_root);
+
+        let recovered = crab_core::startup_reconciliation::StartupReconciliationRecoveredRun {
+            logical_session_id: "discord:dm:111".to_string(),
+            run_id: "run:missing".to_string(),
+            previous_status: RunStatus::Running,
+            recovered_status: RunStatus::Cancelled,
+        };
+
+        let mut discord = ScriptedDiscordIo::with_state(DiscordIoState::default());
+        let sent = notify_startup_recovered_runs(&run_store, &[recovered], &mut discord)
+            .expect("notification attempt should not fail");
+
+        assert_eq!(sent, 0);
+        assert!(discord.state().posted.is_empty());
+    }
+
+    #[test]
+    fn notify_startup_recovered_runs_skips_when_delivery_channel_is_missing() {
+        let workspace = TempWorkspace::new("daemon", "startup-reconcile-missing-channel");
+        let state_root = workspace.path.join("state");
+        let run_store = RunStore::new(state_root);
+
+        let mut run = sample_claude_run("111");
+        run.id = "run:discord:dm:111:stale-missing-channel".to_string();
+        run.logical_session_id = "discord:dm:111".to_string();
+        run.status = RunStatus::Cancelled;
+        run.delivery_channel_id = None;
+        run_store.upsert_run(&run).expect("seed run should persist");
+
+        let recovered = crab_core::startup_reconciliation::StartupReconciliationRecoveredRun {
+            logical_session_id: run.logical_session_id.clone(),
+            run_id: run.id.clone(),
+            previous_status: RunStatus::Running,
+            recovered_status: RunStatus::Cancelled,
+        };
+
+        let mut discord = ScriptedDiscordIo::with_state(DiscordIoState::default());
+        let sent = notify_startup_recovered_runs(&run_store, &[recovered], &mut discord)
+            .expect("notification attempt should not fail");
+
+        assert_eq!(sent, 0);
+        assert!(discord.state().posted.is_empty());
     }
 
     #[test]
