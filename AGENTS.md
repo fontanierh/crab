@@ -259,12 +259,18 @@ The repository now enforces quality with executable gates and CI automation.
    `set -a; source .crab-secrets/target-machine.env; set +a`
 2. SSH to target machine:
    `ssh "$CRAB_TARGET_USER@$CRAB_TARGET_HOST"`
-3. On target machine, start/attach tmux:
+3. Ensure `tmux` is available on the target machine:
+   - If `tmux` is not found, it is expected to be installed via Homebrew at `/opt/homebrew/bin/tmux`.
+   - If your shell does not have Homebrew on `PATH`, run:
+     `eval "$(/opt/homebrew/bin/brew shellenv zsh)"`
+   - If Homebrew is missing, install it using the official Homebrew installer, then:
+     `brew install tmux`
+4. On target machine, start/attach tmux:
    `tmux new -As crab-main`
-4. Run commands/services inside that remote tmux session.
-5. Detach from remote tmux without stopping work:
+5. Run commands/services inside that remote tmux session.
+6. Detach from remote tmux without stopping work:
    `Ctrl-b d`
-6. Reattach later on target:
+7. Reattach later on target:
    `tmux attach -t crab-main`
 
 ### Non-interactive command execution (remote tmux)
