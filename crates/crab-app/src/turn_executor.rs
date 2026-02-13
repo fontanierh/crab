@@ -461,12 +461,8 @@ where
         run.completed_at_epoch_ms = Some(completed_at_epoch_ms);
         self.composition.state_stores.run_store.upsert_run(&run)?;
 
-        if final_status == RunStatus::Failed {
-            // Backend sessions are managed out-of-process. If a turn fails, the session may be
-            // corrupt/locked/unrecoverable; clear it so the next message forces a fresh physical
-            // session.
-            session.active_physical_session_id = None;
-        }
+        // Do not clear the physical session on ordinary failures: physical sessions are valuable
+        // continuity handles and should be preserved unless we explicitly rotate/reset.
 
         if let Some(run_usage) = resolve_backend_usage_accounting(&backend_events)? {
             session.token_accounting =
@@ -2885,7 +2881,10 @@ mod tests {
             .get_session("discord:channel:777")
             .expect("session lookup should succeed")
             .expect("session should exist");
-        assert_eq!(session.active_physical_session_id, None);
+        assert_eq!(
+            session.active_physical_session_id,
+            Some("physical-1".to_string())
+        );
 
         let runtime = executor.runtime_mut();
         assert_eq!(runtime.delivered_outputs.len(), 1);

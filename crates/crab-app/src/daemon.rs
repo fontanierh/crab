@@ -2354,7 +2354,7 @@ where
         }
     }
     if !boot.startup_reconciliation.recovered_runs.is_empty()
-        || !boot.startup_reconciliation.cleared_session_ids.is_empty()
+        || !boot.startup_reconciliation.repaired_session_ids.is_empty()
     {
         // `tracing` macros can produce stubborn per-line coverage gaps under `cargo llvm-cov`
         // (cfg(coverage)), even when the behavior is exercised. Keep runtime logs, but exclude
@@ -2362,13 +2362,13 @@ where
         #[cfg(not(coverage))]
         tracing::warn!(
             recovered_runs = boot.startup_reconciliation.recovered_runs.len(),
-            cleared_sessions = boot.startup_reconciliation.cleared_session_ids.len(),
+            repaired_sessions = boot.startup_reconciliation.repaired_session_ids.len(),
             "startup reconciliation recovered in-flight work"
         );
         #[cfg(not(coverage))]
         tracing::debug!(
             recovered = ?boot.startup_reconciliation.recovered_runs,
-            cleared = ?boot.startup_reconciliation.cleared_session_ids,
+            repaired = ?boot.startup_reconciliation.repaired_session_ids,
             "startup reconciliation details"
         );
     } else {
@@ -5490,7 +5490,7 @@ mod tests {
         let config = runtime_config_for_workspace_with_lanes(&workspace.path, 1);
 
         // Seed a session that is non-idle and still has a physical handle; startup reconciliation
-        // should clear it, which exercises the "recovered in-flight work" reporting branch.
+        // should repair the lane state to Idle without discarding the physical session handle.
         let state_root = workspace.path.join("state");
         let session_store = SessionStore::new(state_root);
         let seeded = sample_session(LaneState::Running, Some("phys-1".to_string()));
@@ -5525,7 +5525,10 @@ mod tests {
             .get_session(&seeded.id)
             .expect("session read should succeed")
             .expect("session should exist");
-        assert_eq!(updated.active_physical_session_id, None);
+        assert_eq!(
+            updated.active_physical_session_id,
+            Some("phys-1".to_string())
+        );
         assert_eq!(updated.lane_state, LaneState::Idle);
     }
 

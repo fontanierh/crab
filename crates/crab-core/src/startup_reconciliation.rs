@@ -16,7 +16,11 @@ pub struct StartupReconciliationRecoveredRun {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StartupReconciliationOutcome {
     pub recovered_runs: Vec<StartupReconciliationRecoveredRun>,
-    pub cleared_session_ids: Vec<String>,
+    /// Sessions whose lane state was repaired to `Idle` on startup so new work can be dispatched.
+    ///
+    /// Important: this does **not** clear `active_physical_session_id`. Physical sessions are
+    /// valuable continuity handles and should be preserved across restarts whenever possible.
+    pub repaired_session_ids: Vec<String>,
 }
 
 pub trait StartupReconciliationRuntime {
@@ -26,7 +30,15 @@ pub trait StartupReconciliationRuntime {
     fn persist_run(&mut self, run: &Run) -> CrabResult<()>;
     fn next_event_sequence(&self, logical_session_id: &str, run_id: &str) -> CrabResult<u64>;
     fn append_event(&mut self, event: &EventEnvelope) -> CrabResult<()>;
-    fn clear_active_physical_session(&mut self, logical_session_id: &str) -> CrabResult<()>;
+    /// Repairs the logical session to allow dispatch after a restart.
+    ///
+    /// Must:
+    /// - set `lane_state` to `Idle`
+    /// - recompute `queued_run_count`
+    ///
+    /// Must NOT:
+    /// - clear `active_physical_session_id`
+    fn repair_session_lane_state(&mut self, logical_session_id: &str) -> CrabResult<()>;
 }
 
 pub fn execute_startup_reconciliation<R: StartupReconciliationRuntime>(
@@ -41,13 +53,14 @@ pub fn execute_startup_reconciliation<R: StartupReconciliationRuntime>(
     sessions.sort_by(|left, right| left.id.cmp(&right.id));
 
     let mut recovered_runs = Vec::new();
-    let mut cleared_session_ids = Vec::new();
+    let mut repaired_session_ids = Vec::new();
 
     for session in sessions {
         let mut runs = runtime.list_runs_for_session(&session.id)?;
         runs.sort_by(|left, right| left.id.cmp(&right.id));
 
         let mut session_has_recovered_run = false;
+        let mut has_non_stale_inflight_run = false;
         for run in runs {
             if run.logical_session_id != session.id {
                 return Err(CrabError::InvariantViolation {
@@ -59,7 +72,14 @@ pub fn execute_startup_reconciliation<R: StartupReconciliationRuntime>(
                 });
             }
 
+            if run.status != RunStatus::Running || run.completed_at_epoch_ms.is_some() {
+                continue;
+            }
+
+            // A non-stale in-flight run means the previous process may still be working; keep the
+            // session lane state intact until the run becomes stale and is reconciled.
             if !is_stale_inflight_run(&run, now_epoch_ms, grace_period_ms)? {
+                has_non_stale_inflight_run = true;
                 continue;
             }
 
@@ -93,15 +113,19 @@ pub fn execute_startup_reconciliation<R: StartupReconciliationRuntime>(
             session_has_recovered_run = true;
         }
 
-        if should_clear_active_physical_handle(&session, session_has_recovered_run) {
-            runtime.clear_active_physical_session(&session.id)?;
-            cleared_session_ids.push(session.id);
+        if should_repair_lane_state(
+            &session,
+            session_has_recovered_run,
+            has_non_stale_inflight_run,
+        ) {
+            runtime.repair_session_lane_state(&session.id)?;
+            repaired_session_ids.push(session.id);
         }
     }
 
     Ok(StartupReconciliationOutcome {
         recovered_runs,
-        cleared_session_ids,
+        repaired_session_ids,
     })
 }
 
@@ -121,18 +145,18 @@ fn validate_reconciliation_input(now_epoch_ms: u64, grace_period_ms: u64) -> Cra
     Ok(())
 }
 
-fn should_clear_active_physical_handle(
+fn should_repair_lane_state(
     session: &LogicalSession,
     session_has_recovered_run: bool,
+    has_non_stale_inflight_run: bool,
 ) -> bool {
-    session.active_physical_session_id.is_some()
-        && (session_has_recovered_run || session.lane_state != LaneState::Idle)
+    session_has_recovered_run
+        || (session.lane_state != LaneState::Idle && !has_non_stale_inflight_run)
 }
 
 fn is_stale_inflight_run(run: &Run, now_epoch_ms: u64, grace_period_ms: u64) -> CrabResult<bool> {
-    if run.status != RunStatus::Running || run.completed_at_epoch_ms.is_some() {
-        return Ok(false);
-    }
+    debug_assert_eq!(run.status, RunStatus::Running);
+    debug_assert!(run.completed_at_epoch_ms.is_none());
 
     let reference_epoch_ms = run.started_at_epoch_ms.unwrap_or(run.queued_at_epoch_ms);
     let stale_after_epoch_ms =
@@ -229,10 +253,10 @@ mod tests {
         next_sequence: BTreeMap<(String, String), u64>,
         persist_run_result: CrabResult<()>,
         append_event_result: CrabResult<()>,
-        clear_session_result: CrabResult<()>,
+        repair_session_result: CrabResult<()>,
         persisted_runs: Vec<Run>,
         appended_events: Vec<EventEnvelope>,
-        cleared_sessions: Vec<String>,
+        repaired_sessions: Vec<String>,
         calls: Vec<String>,
     }
 
@@ -248,10 +272,10 @@ mod tests {
                 next_sequence: BTreeMap::new(),
                 persist_run_result: Ok(()),
                 append_event_result: Ok(()),
-                clear_session_result: Ok(()),
+                repair_session_result: Ok(()),
                 persisted_runs: Vec::new(),
                 appended_events: Vec::new(),
-                cleared_sessions: Vec::new(),
+                repaired_sessions: Vec::new(),
                 calls: Vec::new(),
             }
         }
@@ -301,11 +325,11 @@ mod tests {
             self.append_event_result.clone()
         }
 
-        fn clear_active_physical_session(&mut self, logical_session_id: &str) -> CrabResult<()> {
+        fn repair_session_lane_state(&mut self, logical_session_id: &str) -> CrabResult<()> {
             self.calls
-                .push(format!("clear_session:{logical_session_id}"));
-            self.cleared_sessions.push(logical_session_id.to_string());
-            self.clear_session_result.clone()
+                .push(format!("repair_session:{logical_session_id}"));
+            self.repaired_sessions.push(logical_session_id.to_string());
+            self.repair_session_result.clone()
         }
     }
 
@@ -411,7 +435,7 @@ mod tests {
     }
 
     #[test]
-    fn reconciles_stale_running_runs_and_clears_session_handle() {
+    fn reconciles_stale_running_runs_and_repairs_session_lane_state() {
         let mut runtime = FakeRuntime::new();
         insert_running_run(
             &mut runtime,
@@ -438,7 +462,7 @@ mod tests {
                     previous_status: RunStatus::Running,
                     recovered_status: RunStatus::Cancelled,
                 }],
-                cleared_session_ids: vec!["discord:channel:a".to_string()],
+                repaired_session_ids: vec!["discord:channel:a".to_string()],
             }
         );
         assert_eq!(runtime.persisted_runs.len(), 1);
@@ -465,7 +489,7 @@ mod tests {
         );
         assert_eq!(runtime.calls[0], "restart_backends");
         assert_eq!(
-            runtime.cleared_sessions,
+            runtime.repaired_sessions,
             vec!["discord:channel:a".to_string()]
         );
     }
@@ -573,7 +597,7 @@ mod tests {
             .collect();
         assert_eq!(persisted_ids, recovered_ids);
         assert_eq!(
-            outcome.cleared_session_ids,
+            outcome.repaired_session_ids,
             vec![
                 "discord:channel:a".to_string(),
                 "discord:channel:z".to_string()
@@ -604,14 +628,14 @@ mod tests {
         let outcome = execute_startup_reconciliation(&mut runtime, 1_739_173_300_000, 60_000)
             .expect("recent run should not reconcile");
         assert!(outcome.recovered_runs.is_empty());
-        assert!(outcome.cleared_session_ids.is_empty());
+        assert!(outcome.repaired_session_ids.is_empty());
         assert!(runtime.persisted_runs.is_empty());
         assert!(runtime.appended_events.is_empty());
-        assert!(runtime.cleared_sessions.is_empty());
+        assert!(runtime.repaired_sessions.is_empty());
     }
 
     #[test]
-    fn clears_non_idle_session_handles_even_without_stale_run() {
+    fn repairs_non_idle_session_lane_states_even_without_stale_run() {
         let mut runtime = FakeRuntime::new();
         runtime.sessions.push(session(
             "discord:channel:cancelling",
@@ -631,14 +655,14 @@ mod tests {
         );
 
         let outcome = execute_startup_reconciliation(&mut runtime, 1_739_173_300_000, 60_000)
-            .expect("non-idle handles should clear on startup");
+            .expect("non-idle lane states should repair on startup");
         assert!(outcome.recovered_runs.is_empty());
         assert_eq!(
-            outcome.cleared_session_ids,
+            outcome.repaired_session_ids,
             vec!["discord:channel:cancelling".to_string()]
         );
         assert_eq!(
-            runtime.cleared_sessions,
+            runtime.repaired_sessions,
             vec!["discord:channel:cancelling".to_string()]
         );
     }
@@ -774,20 +798,20 @@ mod tests {
                 .expect_err("append failures should propagate");
         assert_eq!(append_error, boom("append_event"));
 
-        let mut clear_runtime = FakeRuntime::new();
-        clear_runtime.sessions.push(session(
+        let mut repair_runtime = FakeRuntime::new();
+        repair_runtime.sessions.push(session(
             "discord:channel:c",
             LaneState::Cancelling,
             Some("phys-c"),
         ));
-        clear_runtime
+        repair_runtime
             .runs_by_session
             .insert("discord:channel:c".to_string(), Vec::new());
-        clear_runtime.clear_session_result = Err(boom("clear_session"));
-        let clear_error =
-            execute_startup_reconciliation(&mut clear_runtime, 1_739_173_300_000, 60_000)
-                .expect_err("clear failures should propagate");
-        assert_eq!(clear_error, boom("clear_session"));
+        repair_runtime.repair_session_result = Err(boom("repair_session"));
+        let repair_error =
+            execute_startup_reconciliation(&mut repair_runtime, 1_739_173_300_000, 60_000)
+                .expect_err("repair failures should propagate");
+        assert_eq!(repair_error, boom("repair_session"));
     }
 
     #[test]

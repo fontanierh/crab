@@ -251,7 +251,7 @@ where
             .append_event(event)
     }
 
-    fn clear_active_physical_session(&mut self, logical_session_id: &str) -> CrabResult<()> {
+    fn repair_session_lane_state(&mut self, logical_session_id: &str) -> CrabResult<()> {
         let Some(mut session) = self
             .composition
             .state_stores
@@ -264,7 +264,6 @@ where
             });
         };
 
-        session.active_physical_session_id = None;
         session.lane_state = LaneState::Idle;
         session.queued_run_count = queued_run_count_for_session(
             &self.composition.state_stores.run_store,
@@ -1099,7 +1098,7 @@ mod tests {
             .expect("reconciliation should succeed");
         assert_eq!(outcome.recovered_runs.len(), 1);
         assert_eq!(
-            outcome.cleared_session_ids,
+            outcome.repaired_session_ids,
             vec![logical_session_id.to_string()]
         );
 
@@ -1118,7 +1117,10 @@ mod tests {
             .get_session(logical_session_id)
             .expect("session lookup should succeed")
             .expect("session should exist");
-        assert_eq!(session.active_physical_session_id, None);
+        assert_eq!(
+            session.active_physical_session_id,
+            Some("physical-1".to_string())
+        );
         assert_eq!(session.lane_state, LaneState::Idle);
 
         let events = composition
@@ -1170,7 +1172,10 @@ mod tests {
         .expect("boot should succeed");
 
         assert!(booted.startup_reconciliation.recovered_runs.is_empty());
-        assert!(booted.startup_reconciliation.cleared_session_ids.is_empty());
+        assert!(booted
+            .startup_reconciliation
+            .repaired_session_ids
+            .is_empty());
         assert_eq!(
             booted.heartbeat_loop_state.next_heartbeat_due_at_epoch_ms(),
             1_739_173_310_000
@@ -1359,8 +1364,8 @@ mod tests {
     }
 
     #[test]
-    fn startup_runtime_clear_active_physical_session_requires_existing_session() {
-        let workspace = TempWorkspace::new("maintenance", "startup-clear-missing");
+    fn startup_runtime_repair_session_lane_state_requires_existing_session() {
+        let workspace = TempWorkspace::new("maintenance", "startup-repair-missing");
         let config = runtime_config_for_workspace_with_lanes(&workspace.path, 1);
         let mut composition =
             compose_runtime_with_processes(&config, "999", FakeCodexProcess, FakeOpenCodeProcess)
@@ -1370,7 +1375,7 @@ mod tests {
             composition: &mut composition,
         };
         let error = runtime
-            .clear_active_physical_session("discord:channel:missing")
+            .repair_session_lane_state("discord:channel:missing")
             .expect_err("missing session should fail");
         assert_eq!(
             error,
@@ -1382,7 +1387,7 @@ mod tests {
     }
 
     #[test]
-    fn startup_runtime_adapter_exercises_restart_and_clear_error_paths() {
+    fn startup_runtime_adapter_exercises_restart_and_repair_error_paths() {
         {
             let workspace = TempWorkspace::new("maintenance", "startup-restart-backends");
             let config = runtime_config_for_workspace_with_lanes(&workspace.path, 1);
@@ -1401,7 +1406,7 @@ mod tests {
         }
 
         {
-            let workspace = TempWorkspace::new("maintenance", "startup-clear-session-store-io");
+            let workspace = TempWorkspace::new("maintenance", "startup-repair-session-store-io");
             let config = runtime_config_for_workspace_with_lanes(&workspace.path, 1);
             let mut composition = compose_runtime_with_processes(
                 &config,
@@ -1417,7 +1422,7 @@ mod tests {
                 composition: &mut composition,
             };
             let error = runtime
-                .clear_active_physical_session("discord:channel:any")
+                .repair_session_lane_state("discord:channel:any")
                 .expect_err("session store IO failure should surface");
             assert!(
                 matches!(error, CrabError::Io { context, .. } if context == "session_store_layout")
@@ -1425,7 +1430,7 @@ mod tests {
         }
 
         {
-            let workspace = TempWorkspace::new("maintenance", "startup-clear-queued-run-io");
+            let workspace = TempWorkspace::new("maintenance", "startup-repair-queued-run-io");
             let config = runtime_config_for_workspace_with_lanes(&workspace.path, 1);
             let mut composition = compose_runtime_with_processes(
                 &config,
@@ -1448,7 +1453,7 @@ mod tests {
                 composition: &mut composition,
             };
             let error = runtime
-                .clear_active_physical_session(logical_session_id)
+                .repair_session_lane_state(logical_session_id)
                 .expect_err("queued run count failure should surface");
             assert!(
                 matches!(error, CrabError::Io { context, .. } if context == "run_store_layout")
