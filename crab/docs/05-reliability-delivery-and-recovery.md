@@ -99,9 +99,18 @@ Result:
 3. detect stale in-flight runs (running beyond grace period)
 4. mark stale runs as cancelled
 5. append synthetic recovery run-state event
-6. clear active physical handles when needed
+6. repair non-idle lane state back to `idle` so new work can be dispatched
+   - Important: this does **not** clear `active_physical_session_id`. Physical sessions are
+     valuable continuity handles and should be preserved across restarts whenever possible.
+7. repair orphan `active_physical_session_id` values conservatively:
+   - if the currently active physical session has never produced a successful run, but it has
+     produced at least one failed run, Crab switches the active handle to the most recent
+     successful `physical_session_id` seen in persisted run history for that logical session.
+   - this recovers from "missing session id" situations after crashes/restarts without wiping
+     the entire conversation context.
 
-This forces next user turn to start with a valid physical session.
+This ensures the runtime can continue dispatching work after restart while preserving session
+continuity whenever possible.
 
 ## Heartbeat Cycle
 

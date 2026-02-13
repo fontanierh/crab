@@ -13,7 +13,9 @@ execution, delivery, rotation, and recovery.
 2. `crabd` validates config, workspace layout, and state schema compatibility/migrations.
 3. `crabd` runs startup reconciliation:
    - stale `running` runs are repaired
-   - non-idle session handles are cleared when required
+   - non-idle lane state is repaired to `idle` without discarding `active_physical_session_id`
+   - orphan `active_physical_session_id` values can be repaired to the most recent successful
+     physical session id when the active handle has only failed locally
    - backend managers are restarted if needed
 4. `crabd` enters daemon loop:
    - poll ingress frames from connector
