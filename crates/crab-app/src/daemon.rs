@@ -651,7 +651,10 @@ fn run_claude_turn(
     }
     command.arg(&input.user_input);
 
-    command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
 
     let mut child = command.spawn().map_err(|error| CrabError::Io {
         context: DAEMON_CLAUDE_TRANSPORT_CONTEXT,
