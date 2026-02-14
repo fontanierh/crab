@@ -382,7 +382,7 @@ where
                 now_epoch_ms: started_at_epoch_ms,
                 last_activity_epoch_ms: session.last_activity_epoch_ms,
                 lane_is_idle: true,
-                token_usage_total: Some(session.token_accounting.total_tokens),
+                token_usage_total: Some(session.token_accounting.context_window_tokens()),
                 compaction_token_threshold: self
                     .composition
                     .rotation_policy
@@ -603,7 +603,7 @@ where
             self.append_system_run_note(&run, payload, completed_at_epoch_ms)?;
             supplemental_emitted_event_count = supplemental_emitted_event_count.saturating_add(1);
         }
-        let token_total_before_rotation = session.token_accounting.total_tokens;
+        let token_total_before_rotation = session.token_accounting.context_window_tokens();
         #[cfg(coverage)]
         let _ = token_total_before_rotation;
 
@@ -656,7 +656,7 @@ where
             rendered_len = delivery.total_rendered_len,
             token_total_before_rotation,
             rotated = rotation_outcome.is_some(),
-            token_total_after_rotation = session.token_accounting.total_tokens,
+            token_total_after_rotation = session.token_accounting.context_window_tokens(),
             "run completed"
         );
 
@@ -1084,7 +1084,7 @@ where
             now_epoch_ms,
             last_activity_epoch_ms: session.last_activity_epoch_ms,
             lane_is_idle: session.lane_state == LaneState::Idle,
-            token_usage_total: Some(session.token_accounting.total_tokens),
+            token_usage_total: Some(session.token_accounting.context_window_tokens()),
             compaction_token_threshold: self.composition.rotation_policy.compaction_token_threshold,
             inactivity_timeout_secs: self.composition.rotation_policy.inactivity_timeout_secs,
             manual_request,
@@ -1113,7 +1113,7 @@ where
             logical_session_id = %run.logical_session_id,
             run_id = %run.id,
             triggers = %render_rotation_triggers(&decision.triggers),
-            token_usage_total = session.token_accounting.total_tokens,
+            token_usage_total = session.token_accounting.context_window_tokens(),
             "rotation started"
         );
 
@@ -1411,6 +1411,8 @@ where
                 input_tokens: 0,
                 output_tokens: 0,
                 total_tokens: 0,
+                cache_read_input_tokens: 0,
+                cache_creation_input_tokens: 0,
             },
             has_injected_bootstrap: false,
         })
@@ -1797,6 +1799,8 @@ where
             input_tokens: 0,
             output_tokens: 0,
             total_tokens: 0,
+            cache_read_input_tokens: 0,
+            cache_creation_input_tokens: 0,
         };
         Ok(())
     }
@@ -2041,30 +2045,43 @@ fn parse_usage_from_backend_payload(
         return Ok(None);
     }
 
-    if let Some(usage) = parse_usage_triplet(
+    if let Some(usage) = parse_usage_set(
         payload,
         "run_usage_input_tokens",
         "run_usage_output_tokens",
         "run_usage_total_tokens",
+        "run_usage_cache_read_input_tokens",
+        "run_usage_cache_creation_input_tokens",
     )? {
         return Ok(Some(usage));
     }
-    if let Some(usage) = parse_usage_triplet(
+    if let Some(usage) = parse_usage_set(
         payload,
         "usage_input_tokens",
         "usage_output_tokens",
         "usage_total_tokens",
+        "usage_cache_read_input_tokens",
+        "usage_cache_creation_input_tokens",
     )? {
         return Ok(Some(usage));
     }
-    parse_usage_triplet(payload, "input_tokens", "output_tokens", "total_tokens")
+    parse_usage_set(
+        payload,
+        "input_tokens",
+        "output_tokens",
+        "total_tokens",
+        "cache_read_input_tokens",
+        "cache_creation_input_tokens",
+    )
 }
 
-fn parse_usage_triplet(
+fn parse_usage_set(
     payload: &BTreeMap<String, String>,
     input_key: &'static str,
     output_key: &'static str,
     total_key: &'static str,
+    cache_read_key: &'static str,
+    cache_creation_key: &'static str,
 ) -> CrabResult<Option<TokenAccounting>> {
     let has_any = payload.contains_key(input_key)
         || payload.contains_key(output_key)
@@ -2090,9 +2107,18 @@ fn parse_usage_triplet(
             })
     };
 
+    let parse_optional = |key: &'static str| -> u64 {
+        payload
+            .get(key)
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(0)
+    };
+
     let input_tokens = parse_required(input_key)?;
     let output_tokens = parse_required(output_key)?;
     let total_tokens = parse_required(total_key)?;
+    let cache_read_input_tokens = parse_optional(cache_read_key);
+    let cache_creation_input_tokens = parse_optional(cache_creation_key);
 
     let minimum_total =
         input_tokens
@@ -2116,6 +2142,8 @@ fn parse_usage_triplet(
         input_tokens,
         output_tokens,
         total_tokens,
+        cache_read_input_tokens,
+        cache_creation_input_tokens,
     }))
 }
 
@@ -2144,10 +2172,26 @@ fn merge_token_accounting(
             context: "turn_executor_usage_accounting",
             message: "total token accounting overflow".to_string(),
         })?;
+    let cache_read_input_tokens = existing
+        .cache_read_input_tokens
+        .checked_add(increment.cache_read_input_tokens)
+        .ok_or(CrabError::InvariantViolation {
+            context: "turn_executor_usage_accounting",
+            message: "cache_read_input token accounting overflow".to_string(),
+        })?;
+    let cache_creation_input_tokens = existing
+        .cache_creation_input_tokens
+        .checked_add(increment.cache_creation_input_tokens)
+        .ok_or(CrabError::InvariantViolation {
+            context: "turn_executor_usage_accounting",
+            message: "cache_creation_input token accounting overflow".to_string(),
+        })?;
     Ok(TokenAccounting {
         input_tokens,
         output_tokens,
         total_tokens,
+        cache_read_input_tokens,
+        cache_creation_input_tokens,
     })
 }
 
@@ -2752,6 +2796,8 @@ mod tests {
                 input_tokens: 0,
                 output_tokens: 0,
                 total_tokens: 0,
+                cache_read_input_tokens: 0,
+                cache_creation_input_tokens: 0,
             },
             has_injected_bootstrap: false,
         }
@@ -3240,9 +3286,11 @@ mod tests {
                     2,
                     BackendEventKind::RunNote,
                     &[
-                        ("run_usage_input_tokens", "50000"),
+                        ("run_usage_input_tokens", "5000"),
                         ("run_usage_output_tokens", "30000"),
-                        ("run_usage_total_tokens", "120000"),
+                        ("run_usage_total_tokens", "35000"),
+                        ("run_usage_cache_read_input_tokens", "110000"),
+                        ("run_usage_cache_creation_input_tokens", "5000"),
                     ],
                 ),
                 backend_event(
@@ -3260,9 +3308,11 @@ mod tests {
                     2,
                     BackendEventKind::RunNote,
                     &[
-                        ("run_usage_input_tokens", "50000"),
+                        ("run_usage_input_tokens", "5000"),
                         ("run_usage_output_tokens", "30000"),
-                        ("run_usage_total_tokens", "120000"),
+                        ("run_usage_total_tokens", "35000"),
+                        ("run_usage_cache_read_input_tokens", "110000"),
+                        ("run_usage_cache_creation_input_tokens", "5000"),
                     ],
                 ),
                 backend_event(
@@ -3527,6 +3577,9 @@ mod tests {
         assert_eq!(session.token_accounting.input_tokens, 10);
         assert_eq!(session.token_accounting.output_tokens, 9);
         assert_eq!(session.token_accounting.total_tokens, 21);
+        assert_eq!(session.token_accounting.cache_read_input_tokens, 0);
+        assert_eq!(session.token_accounting.cache_creation_input_tokens, 0);
+        assert_eq!(session.token_accounting.context_window_tokens(), 10);
         assert_eq!(
             executor.runtime_mut().build_context_bootstrap_flags,
             vec![true, false]
@@ -3556,9 +3609,11 @@ mod tests {
                     2,
                     BackendEventKind::RunNote,
                     &[
-                        ("run_usage_input_tokens", "50000"),
+                        ("run_usage_input_tokens", "5000"),
                         ("run_usage_output_tokens", "30000"),
-                        ("run_usage_total_tokens", "120000"),
+                        ("run_usage_total_tokens", "35000"),
+                        ("run_usage_cache_read_input_tokens", "110000"),
+                        ("run_usage_cache_creation_input_tokens", "5000"),
                     ],
                 ),
                 backend_event(
@@ -3576,9 +3631,11 @@ mod tests {
                     2,
                     BackendEventKind::RunNote,
                     &[
-                        ("run_usage_input_tokens", "50000"),
+                        ("run_usage_input_tokens", "5000"),
                         ("run_usage_output_tokens", "30000"),
-                        ("run_usage_total_tokens", "120000"),
+                        ("run_usage_total_tokens", "35000"),
+                        ("run_usage_cache_read_input_tokens", "110000"),
+                        ("run_usage_cache_creation_input_tokens", "5000"),
                     ],
                 ),
                 backend_event(
@@ -4519,9 +4576,11 @@ mod tests {
                     1,
                     BackendEventKind::RunNote,
                     &[
-                        ("run_usage_input_tokens", "60000"),
+                        ("run_usage_input_tokens", "5000"),
                         ("run_usage_output_tokens", "20000"),
-                        ("run_usage_total_tokens", "120000"),
+                        ("run_usage_total_tokens", "25000"),
+                        ("run_usage_cache_read_input_tokens", "110000"),
+                        ("run_usage_cache_creation_input_tokens", "5000"),
                     ],
                 ),
                 backend_event(
@@ -4538,9 +4597,11 @@ mod tests {
                     1,
                     BackendEventKind::RunNote,
                     &[
-                        ("run_usage_input_tokens", "60000"),
+                        ("run_usage_input_tokens", "5000"),
                         ("run_usage_output_tokens", "20000"),
-                        ("run_usage_total_tokens", "120000"),
+                        ("run_usage_total_tokens", "25000"),
+                        ("run_usage_cache_read_input_tokens", "110000"),
+                        ("run_usage_cache_creation_input_tokens", "5000"),
                     ],
                 ),
                 backend_event(
@@ -4628,9 +4689,11 @@ mod tests {
                     1,
                     BackendEventKind::RunNote,
                     &[
-                        ("run_usage_input_tokens", "60000"),
+                        ("run_usage_input_tokens", "5000"),
                         ("run_usage_output_tokens", "20000"),
-                        ("run_usage_total_tokens", "120000"),
+                        ("run_usage_total_tokens", "25000"),
+                        ("run_usage_cache_read_input_tokens", "110000"),
+                        ("run_usage_cache_creation_input_tokens", "5000"),
                     ],
                 ),
                 backend_event(
@@ -5025,9 +5088,11 @@ mod tests {
                     1,
                     BackendEventKind::RunNote,
                     &[
-                        ("run_usage_input_tokens", "60000"),
+                        ("run_usage_input_tokens", "5000"),
                         ("run_usage_output_tokens", "20000"),
-                        ("run_usage_total_tokens", "120000"),
+                        ("run_usage_total_tokens", "25000"),
+                        ("run_usage_cache_read_input_tokens", "110000"),
+                        ("run_usage_cache_creation_input_tokens", "5000"),
                     ],
                 ),
                 backend_event(
@@ -5045,9 +5110,11 @@ mod tests {
                     1,
                     BackendEventKind::RunNote,
                     &[
-                        ("run_usage_input_tokens", "60000"),
+                        ("run_usage_input_tokens", "5000"),
                         ("run_usage_output_tokens", "20000"),
-                        ("run_usage_total_tokens", "120000"),
+                        ("run_usage_total_tokens", "25000"),
+                        ("run_usage_cache_read_input_tokens", "110000"),
+                        ("run_usage_cache_creation_input_tokens", "5000"),
                     ],
                 ),
                 backend_event(
@@ -5136,9 +5203,11 @@ mod tests {
                     1,
                     BackendEventKind::RunNote,
                     &[
-                        ("run_usage_input_tokens", "60000"),
+                        ("run_usage_input_tokens", "5000"),
                         ("run_usage_output_tokens", "20000"),
-                        ("run_usage_total_tokens", "120000"),
+                        ("run_usage_total_tokens", "25000"),
+                        ("run_usage_cache_read_input_tokens", "110000"),
+                        ("run_usage_cache_creation_input_tokens", "5000"),
                     ],
                 ),
                 backend_event(
@@ -5155,9 +5224,11 @@ mod tests {
                     1,
                     BackendEventKind::RunNote,
                     &[
-                        ("run_usage_input_tokens", "60000"),
+                        ("run_usage_input_tokens", "5000"),
                         ("run_usage_output_tokens", "20000"),
-                        ("run_usage_total_tokens", "120000"),
+                        ("run_usage_total_tokens", "25000"),
+                        ("run_usage_cache_read_input_tokens", "110000"),
+                        ("run_usage_cache_creation_input_tokens", "5000"),
                     ],
                 ),
                 backend_event(
@@ -5277,6 +5348,8 @@ mod tests {
                     input_tokens: u64::MAX,
                     output_tokens: 0,
                     total_tokens: 0,
+                    cache_read_input_tokens: 0,
+                    cache_creation_input_tokens: 0,
                 },
                 has_injected_bootstrap: false,
             })
@@ -6768,6 +6841,8 @@ mod tests {
         assert_eq!(usage.input_tokens, 10);
         assert_eq!(usage.output_tokens, 6);
         assert_eq!(usage.total_tokens, 16);
+        assert_eq!(usage.cache_read_input_tokens, 0);
+        assert_eq!(usage.cache_creation_input_tokens, 0);
 
         let none = super::resolve_backend_usage_accounting(&[backend_event(
             1,
@@ -6883,28 +6958,38 @@ mod tests {
                 input_tokens: 1,
                 output_tokens: 2,
                 total_tokens: 3,
+                cache_read_input_tokens: 100,
+                cache_creation_input_tokens: 50,
             },
             crab_core::TokenAccounting {
                 input_tokens: 4,
                 output_tokens: 5,
                 total_tokens: 9,
+                cache_read_input_tokens: 200,
+                cache_creation_input_tokens: 75,
             },
         )
         .expect("merge should succeed");
         assert_eq!(merged.input_tokens, 5);
         assert_eq!(merged.output_tokens, 7);
         assert_eq!(merged.total_tokens, 12);
+        assert_eq!(merged.cache_read_input_tokens, 300);
+        assert_eq!(merged.cache_creation_input_tokens, 125);
 
         let overflow = super::merge_token_accounting(
             crab_core::TokenAccounting {
                 input_tokens: u64::MAX,
                 output_tokens: 0,
                 total_tokens: 0,
+                cache_read_input_tokens: 0,
+                cache_creation_input_tokens: 0,
             },
             crab_core::TokenAccounting {
                 input_tokens: 1,
                 output_tokens: 0,
                 total_tokens: 0,
+                cache_read_input_tokens: 0,
+                cache_creation_input_tokens: 0,
             },
         )
         .expect_err("merge overflow should fail");
@@ -6921,11 +7006,15 @@ mod tests {
                 input_tokens: 0,
                 output_tokens: u64::MAX,
                 total_tokens: 0,
+                cache_read_input_tokens: 0,
+                cache_creation_input_tokens: 0,
             },
             crab_core::TokenAccounting {
                 input_tokens: 0,
                 output_tokens: 1,
                 total_tokens: 0,
+                cache_read_input_tokens: 0,
+                cache_creation_input_tokens: 0,
             },
         )
         .expect_err("output merge overflow should fail");
@@ -6942,11 +7031,15 @@ mod tests {
                 input_tokens: 0,
                 output_tokens: 0,
                 total_tokens: u64::MAX,
+                cache_read_input_tokens: 0,
+                cache_creation_input_tokens: 0,
             },
             crab_core::TokenAccounting {
                 input_tokens: 0,
                 output_tokens: 0,
                 total_tokens: 1,
+                cache_read_input_tokens: 0,
+                cache_creation_input_tokens: 0,
             },
         )
         .expect_err("total merge overflow should fail");
@@ -6955,6 +7048,56 @@ mod tests {
             CrabError::InvariantViolation {
                 context: "turn_executor_usage_accounting",
                 message: "total token accounting overflow".to_string(),
+            }
+        );
+
+        let cache_read_overflow = super::merge_token_accounting(
+            crab_core::TokenAccounting {
+                input_tokens: 0,
+                output_tokens: 0,
+                total_tokens: 0,
+                cache_read_input_tokens: u64::MAX,
+                cache_creation_input_tokens: 0,
+            },
+            crab_core::TokenAccounting {
+                input_tokens: 0,
+                output_tokens: 0,
+                total_tokens: 0,
+                cache_read_input_tokens: 1,
+                cache_creation_input_tokens: 0,
+            },
+        )
+        .expect_err("cache_read merge overflow should fail");
+        assert_eq!(
+            cache_read_overflow,
+            CrabError::InvariantViolation {
+                context: "turn_executor_usage_accounting",
+                message: "cache_read_input token accounting overflow".to_string(),
+            }
+        );
+
+        let cache_creation_overflow = super::merge_token_accounting(
+            crab_core::TokenAccounting {
+                input_tokens: 0,
+                output_tokens: 0,
+                total_tokens: 0,
+                cache_read_input_tokens: 0,
+                cache_creation_input_tokens: u64::MAX,
+            },
+            crab_core::TokenAccounting {
+                input_tokens: 0,
+                output_tokens: 0,
+                total_tokens: 0,
+                cache_read_input_tokens: 0,
+                cache_creation_input_tokens: 1,
+            },
+        )
+        .expect_err("cache_creation merge overflow should fail");
+        assert_eq!(
+            cache_creation_overflow,
+            CrabError::InvariantViolation {
+                context: "turn_executor_usage_accounting",
+                message: "cache_creation_input token accounting overflow".to_string(),
             }
         );
     }

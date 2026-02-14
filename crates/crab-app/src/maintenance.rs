@@ -763,6 +763,8 @@ mod tests {
             input_tokens: 100,
             output_tokens: 50,
             total_tokens: 150,
+            cache_read_input_tokens: 0,
+            cache_creation_input_tokens: 0,
         }
     }
 

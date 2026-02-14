@@ -51,7 +51,7 @@ Persists `LogicalSession` records and a session index:
 - active backend/profile
 - active physical session id
 - last checkpoint pointer
-- token accounting summary
+- token accounting summary (includes cache token fields with backward-compatible defaults)
 
 ### RunStore
 

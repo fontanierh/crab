@@ -163,6 +163,20 @@ pub struct TokenAccounting {
     pub input_tokens: u64,
     pub output_tokens: u64,
     pub total_tokens: u64,
+    #[serde(default)]
+    pub cache_read_input_tokens: u64,
+    #[serde(default)]
+    pub cache_creation_input_tokens: u64,
+}
+
+impl TokenAccounting {
+    /// Real context window consumption: cached + non-cached input tokens.
+    #[must_use]
+    pub fn context_window_tokens(&self) -> u64 {
+        self.cache_read_input_tokens
+            .saturating_add(self.cache_creation_input_tokens)
+            .saturating_add(self.input_tokens)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -290,6 +304,8 @@ mod tests {
             input_tokens: 1200,
             output_tokens: 300,
             total_tokens: 1500,
+            cache_read_input_tokens: 0,
+            cache_creation_input_tokens: 0,
         }
     }
 
@@ -476,5 +492,42 @@ mod tests {
             delivered_at_epoch_ms: 1_739_173_201_100,
         };
         assert_json_round_trip(&outbound);
+    }
+
+    #[test]
+    fn token_accounting_context_window_tokens_helper() {
+        let accounting = TokenAccounting {
+            input_tokens: 5,
+            output_tokens: 10,
+            total_tokens: 15,
+            cache_read_input_tokens: 40_000,
+            cache_creation_input_tokens: 7_000,
+        };
+        assert_eq!(accounting.context_window_tokens(), 47_005);
+    }
+
+    #[test]
+    fn token_accounting_context_window_tokens_saturates_on_overflow() {
+        let accounting = TokenAccounting {
+            input_tokens: 1,
+            output_tokens: 0,
+            total_tokens: 1,
+            cache_read_input_tokens: u64::MAX,
+            cache_creation_input_tokens: 1,
+        };
+        assert_eq!(accounting.context_window_tokens(), u64::MAX);
+    }
+
+    #[test]
+    fn token_accounting_backward_compat_deserialization() {
+        let json = r#"{"input_tokens":10,"output_tokens":5,"total_tokens":15}"#;
+        let accounting: TokenAccounting =
+            serde_json::from_str(json).expect("legacy JSON should deserialize");
+        assert_eq!(accounting.input_tokens, 10);
+        assert_eq!(accounting.output_tokens, 5);
+        assert_eq!(accounting.total_tokens, 15);
+        assert_eq!(accounting.cache_read_input_tokens, 0);
+        assert_eq!(accounting.cache_creation_input_tokens, 0);
+        assert_eq!(accounting.context_window_tokens(), 10);
     }
 }

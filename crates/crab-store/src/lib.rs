@@ -1340,6 +1340,8 @@ mod tests {
                 input_tokens: 1,
                 output_tokens: 2,
                 total_tokens: 3,
+                cache_read_input_tokens: 0,
+                cache_creation_input_tokens: 0,
             },
             has_injected_bootstrap: false,
         }

@@ -452,6 +452,8 @@ mod tests {
             input_tokens: 10,
             output_tokens: 3,
             total_tokens: 13,
+            cache_read_input_tokens: 0,
+            cache_creation_input_tokens: 0,
         }
     }
 

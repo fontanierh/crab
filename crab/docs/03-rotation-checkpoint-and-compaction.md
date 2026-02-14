@@ -41,10 +41,16 @@ Token usage source for trigger evaluation:
   `LogicalSession.token_accounting` on run completion.
 - Supported normalized payload key families:
   - `run_usage_input_tokens` / `run_usage_output_tokens` / `run_usage_total_tokens`
+    / `run_usage_cache_read_input_tokens` / `run_usage_cache_creation_input_tokens`
   - `usage_input_tokens` / `usage_output_tokens` / `usage_total_tokens`
+    / `usage_cache_read_input_tokens` / `usage_cache_creation_input_tokens`
   - `input_tokens` / `output_tokens` / `total_tokens`
-- Token-triggered compaction should consume `token_accounting.total_tokens` from persisted
-  session state.
+    / `cache_read_input_tokens` / `cache_creation_input_tokens`
+- Token-triggered compaction consumes `token_accounting.context_window_tokens()` from
+  persisted session state. This computes `cache_read_input_tokens +
+  cache_creation_input_tokens + input_tokens`, which represents the true context window
+  consumption (non-cached input tokens alone massively undercount actual usage when prompt
+  caching is active).
 - On successful rotation, Crab resets `LogicalSession.token_accounting` back to 0 so the
   threshold represents tokens since the last rotation (avoids retriggering compaction on
   every subsequent run).

@@ -34,6 +34,8 @@ pub enum ClaudeRawEvent {
         input_tokens: u64,
         output_tokens: u64,
         total_tokens: u64,
+        cache_read_input_tokens: u64,
+        cache_creation_input_tokens: u64,
     },
     RunNote {
         note: String,
@@ -54,6 +56,8 @@ struct UsageAccounting {
     input_tokens: u64,
     output_tokens: u64,
     total_tokens: u64,
+    cache_read_input_tokens: u64,
+    cache_creation_input_tokens: u64,
 }
 
 pub trait ClaudeProcess: Send + Sync {
@@ -174,6 +178,8 @@ fn normalize_claude_event(sequence: u64, raw_event: ClaudeRawEvent) -> CrabResul
             input_tokens,
             output_tokens,
             total_tokens,
+            cache_read_input_tokens,
+            cache_creation_input_tokens,
         } => {
             let minimum_total = input_tokens.checked_add(output_tokens).ok_or_else(|| {
                 CrabError::InvariantViolation {
@@ -195,6 +201,14 @@ fn normalize_claude_event(sequence: u64, raw_event: ClaudeRawEvent) -> CrabResul
                     ("usage_input_tokens".to_string(), input_tokens.to_string()),
                     ("usage_output_tokens".to_string(), output_tokens.to_string()),
                     ("usage_total_tokens".to_string(), total_tokens.to_string()),
+                    (
+                        "usage_cache_read_input_tokens".to_string(),
+                        cache_read_input_tokens.to_string(),
+                    ),
+                    (
+                        "usage_cache_creation_input_tokens".to_string(),
+                        cache_creation_input_tokens.to_string(),
+                    ),
                 ]),
             )
         }
@@ -307,6 +321,14 @@ fn run_usage_payload(usage: UsageAccounting) -> BTreeMap<String, String> {
             "run_usage_total_tokens".to_string(),
             usage.total_tokens.to_string(),
         ),
+        (
+            "run_usage_cache_read_input_tokens".to_string(),
+            usage.cache_read_input_tokens.to_string(),
+        ),
+        (
+            "run_usage_cache_creation_input_tokens".to_string(),
+            usage.cache_creation_input_tokens.to_string(),
+        ),
         ("run_usage_source".to_string(), "claude".to_string()),
     ])
 }
@@ -342,11 +364,15 @@ impl Stream for ClaudeNormalizeStream {
                         input_tokens,
                         output_tokens,
                         total_tokens,
+                        cache_read_input_tokens,
+                        cache_creation_input_tokens,
                     } => {
                         let usage = UsageAccounting {
                             input_tokens,
                             output_tokens,
                             total_tokens,
+                            cache_read_input_tokens,
+                            cache_creation_input_tokens,
                         };
                         match normalize_claude_event(
                             self.next_sequence,
@@ -354,6 +380,8 @@ impl Stream for ClaudeNormalizeStream {
                                 input_tokens,
                                 output_tokens,
                                 total_tokens,
+                                cache_read_input_tokens,
+                                cache_creation_input_tokens,
                             },
                         ) {
                             Ok(event) => {
@@ -624,6 +652,11 @@ mod tests {
                     ("usage_input_tokens".to_string(), "7".to_string()),
                     ("usage_output_tokens".to_string(), "5".to_string()),
                     ("usage_total_tokens".to_string(), "12".to_string()),
+                    ("usage_cache_read_input_tokens".to_string(), "0".to_string()),
+                    (
+                        "usage_cache_creation_input_tokens".to_string(),
+                        "0".to_string(),
+                    ),
                 ]),
             },
             BackendEvent {
@@ -659,6 +692,8 @@ mod tests {
                 input_tokens: 7,
                 output_tokens: 5,
                 total_tokens: 12,
+                cache_read_input_tokens: 0,
+                cache_creation_input_tokens: 0,
             },
             ClaudeRawEvent::TurnCompleted {
                 stop_reason: "end_turn".to_string(),
@@ -702,6 +737,14 @@ mod tests {
             (
                 "run_usage_total_tokens".to_string(),
                 total_tokens.to_string(),
+            ),
+            (
+                "run_usage_cache_read_input_tokens".to_string(),
+                "0".to_string(),
+            ),
+            (
+                "run_usage_cache_creation_input_tokens".to_string(),
+                "0".to_string(),
             ),
             ("run_usage_source".to_string(), "claude".to_string()),
         ])
@@ -760,12 +803,12 @@ mod tests {
             "1|TextDelta|delta=hello\n\
 2|ToolCall|input_json={\"cmd\":\"ls\"};tool_call_id=call-1;tool_name=bash\n\
 3|ToolResult|is_error=false;output=ok;tool_call_id=call-1;tool_name=bash\n\
-4|RunNote|usage_input_tokens=7;usage_output_tokens=5;usage_total_tokens=12\n\
+4|RunNote|usage_cache_creation_input_tokens=0;usage_cache_read_input_tokens=0;usage_input_tokens=7;usage_output_tokens=5;usage_total_tokens=12\n\
 5|RunNote|note=checkpoint created\n\
 6|TurnCompleted|stop_reason=end_turn\n\
 7|TurnInterrupted|reason=cancelled\n\
 8|Error|message=backend failed\n\
-9|RunNote|run_usage_input_tokens=7;run_usage_output_tokens=5;run_usage_source=claude;run_usage_total_tokens=12"
+9|RunNote|run_usage_cache_creation_input_tokens=0;run_usage_cache_read_input_tokens=0;run_usage_input_tokens=7;run_usage_output_tokens=5;run_usage_source=claude;run_usage_total_tokens=12"
         );
     }
 
@@ -792,11 +835,15 @@ mod tests {
                 input_tokens: 3,
                 output_tokens: 2,
                 total_tokens: 5,
+                cache_read_input_tokens: 0,
+                cache_creation_input_tokens: 0,
             },
             ClaudeRawEvent::Usage {
                 input_tokens: 10,
                 output_tokens: 6,
                 total_tokens: 16,
+                cache_read_input_tokens: 0,
+                cache_creation_input_tokens: 0,
             },
         ];
         let events = send_turn_events(raw_events);
@@ -917,6 +964,8 @@ mod tests {
                 input_tokens: 10,
                 output_tokens: 5,
                 total_tokens: 12,
+                cache_read_input_tokens: 0,
+                cache_creation_input_tokens: 0,
             },
             CrabError::InvariantViolation {
                 context: "claude_event_usage",
@@ -929,6 +978,8 @@ mod tests {
                 input_tokens: u64::MAX,
                 output_tokens: 1,
                 total_tokens: u64::MAX,
+                cache_read_input_tokens: 0,
+                cache_creation_input_tokens: 0,
             },
             CrabError::InvariantViolation {
                 context: "claude_event_usage",

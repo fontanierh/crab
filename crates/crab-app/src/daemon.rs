@@ -197,13 +197,13 @@ fn append_claude_assistant_events(
         }
     }
     if let Some(usage_payload) = message.get("usage") {
-        if let Some((input_tokens, output_tokens, total_tokens)) =
-            parse_claude_usage_payload(usage_payload)
-        {
+        if let Some(usage) = parse_claude_usage_payload(usage_payload) {
             events.push(ClaudeRawEvent::Usage {
-                input_tokens,
-                output_tokens,
-                total_tokens,
+                input_tokens: usage.input_tokens,
+                output_tokens: usage.output_tokens,
+                total_tokens: usage.total_tokens,
+                cache_read_input_tokens: usage.cache_read_input_tokens,
+                cache_creation_input_tokens: usage.cache_creation_input_tokens,
             });
         }
     }
@@ -276,13 +276,13 @@ fn append_claude_content_item_event(
 #[cfg(any(test, not(coverage)))]
 fn append_claude_result_events(payload: &serde_json::Value, events: &mut Vec<ClaudeRawEvent>) {
     if let Some(usage_payload) = payload.get("usage") {
-        if let Some((input_tokens, output_tokens, total_tokens)) =
-            parse_claude_usage_payload(usage_payload)
-        {
+        if let Some(usage) = parse_claude_usage_payload(usage_payload) {
             events.push(ClaudeRawEvent::Usage {
-                input_tokens,
-                output_tokens,
-                total_tokens,
+                input_tokens: usage.input_tokens,
+                output_tokens: usage.output_tokens,
+                total_tokens: usage.total_tokens,
+                cache_read_input_tokens: usage.cache_read_input_tokens,
+                cache_creation_input_tokens: usage.cache_creation_input_tokens,
             });
         }
     }
@@ -314,12 +314,31 @@ fn append_claude_result_events(payload: &serde_json::Value, events: &mut Vec<Cla
 }
 
 #[cfg(any(test, not(coverage)))]
-fn parse_claude_usage_payload(usage_payload: &serde_json::Value) -> Option<(u64, u64, u64)> {
+struct ClaudeUsageFields {
+    input_tokens: u64,
+    output_tokens: u64,
+    total_tokens: u64,
+    cache_read_input_tokens: u64,
+    cache_creation_input_tokens: u64,
+}
+
+#[cfg(any(test, not(coverage)))]
+fn parse_claude_usage_payload(usage_payload: &serde_json::Value) -> Option<ClaudeUsageFields> {
     let input_tokens = value_as_u64(usage_payload.get("input_tokens"))?;
     let output_tokens = value_as_u64(usage_payload.get("output_tokens"))?;
     let total_tokens = value_as_u64(usage_payload.get("total_tokens"))
         .or_else(|| input_tokens.checked_add(output_tokens))?;
-    Some((input_tokens, output_tokens, total_tokens))
+    let cache_read_input_tokens =
+        value_as_u64(usage_payload.get("cache_read_input_tokens")).unwrap_or(0);
+    let cache_creation_input_tokens =
+        value_as_u64(usage_payload.get("cache_creation_input_tokens")).unwrap_or(0);
+    Some(ClaudeUsageFields {
+        input_tokens,
+        output_tokens,
+        total_tokens,
+        cache_read_input_tokens,
+        cache_creation_input_tokens,
+    })
 }
 
 #[cfg(any(test, not(coverage)))]
@@ -371,6 +390,8 @@ fn deterministic_claude_send_turn(input: &TurnInput) -> CrabResult<Vec<ClaudeRaw
             input_tokens,
             output_tokens,
             total_tokens,
+            cache_read_input_tokens: 0,
+            cache_creation_input_tokens: 0,
         },
         ClaudeRawEvent::TurnCompleted {
             stop_reason: "end_turn".to_string(),
@@ -3768,6 +3789,8 @@ mod tests {
                 input_tokens: 0,
                 output_tokens: 0,
                 total_tokens: 0,
+                cache_read_input_tokens: 0,
+                cache_creation_input_tokens: 0,
             },
             has_injected_bootstrap: false,
         }
@@ -3846,7 +3869,9 @@ mod tests {
                 ClaudeRawEvent::Usage {
                     input_tokens: 2,
                     output_tokens: 1,
-                    total_tokens: 3
+                    total_tokens: 3,
+                    cache_read_input_tokens: 0,
+                    cache_creation_input_tokens: 0,
                 }
             )
         }));
@@ -3856,7 +3881,9 @@ mod tests {
                 ClaudeRawEvent::Usage {
                     input_tokens: 2,
                     output_tokens: 3,
-                    total_tokens: 5
+                    total_tokens: 5,
+                    cache_read_input_tokens: 0,
+                    cache_creation_input_tokens: 0,
                 }
             )
         }));
@@ -3905,6 +3932,38 @@ mod tests {
                 ClaudeRawEvent::Error { message } if message == "boom"
             )
         }));
+    }
+
+    #[test]
+    fn claude_usage_payload_parses_cache_tokens_when_present() {
+        let payload: serde_json::Value = serde_json::json!({
+            "input_tokens": 3,
+            "output_tokens": 5,
+            "cache_read_input_tokens": 40000,
+            "cache_creation_input_tokens": 7000,
+        });
+        let usage =
+            super::parse_claude_usage_payload(&payload).expect("usage payload should parse");
+        assert_eq!(usage.input_tokens, 3);
+        assert_eq!(usage.output_tokens, 5);
+        assert_eq!(usage.total_tokens, 8);
+        assert_eq!(usage.cache_read_input_tokens, 40000);
+        assert_eq!(usage.cache_creation_input_tokens, 7000);
+    }
+
+    #[test]
+    fn claude_usage_payload_defaults_cache_tokens_to_zero_when_absent() {
+        let payload: serde_json::Value = serde_json::json!({
+            "input_tokens": 2,
+            "output_tokens": 3,
+        });
+        let usage =
+            super::parse_claude_usage_payload(&payload).expect("usage payload should parse");
+        assert_eq!(usage.input_tokens, 2);
+        assert_eq!(usage.output_tokens, 3);
+        assert_eq!(usage.total_tokens, 5);
+        assert_eq!(usage.cache_read_input_tokens, 0);
+        assert_eq!(usage.cache_creation_input_tokens, 0);
     }
 
     #[test]
@@ -3966,6 +4025,7 @@ mod tests {
                 input_tokens,
                 output_tokens,
                 total_tokens,
+                ..
             } = event
             {
                 if *input_tokens == 3 && *output_tokens == 2 && *total_tokens == 5 {
@@ -3980,7 +4040,8 @@ mod tests {
                 ClaudeRawEvent::Usage {
                     input_tokens: 7,
                     output_tokens: 5,
-                    total_tokens: 12
+                    total_tokens: 12,
+                    ..
                 }
             )
         }));
@@ -4047,6 +4108,8 @@ mod tests {
                     input_tokens: 3,
                     output_tokens: 3,
                     total_tokens: 6,
+                    cache_read_input_tokens: 0,
+                    cache_creation_input_tokens: 0,
                 },
                 ClaudeRawEvent::TurnCompleted {
                     stop_reason: "end_turn".to_string(),
@@ -4178,6 +4241,8 @@ mod tests {
                     input_tokens: 5,
                     output_tokens: 7,
                     total_tokens: 12,
+                    cache_read_input_tokens: 0,
+                    cache_creation_input_tokens: 0,
                 },
                 ClaudeRawEvent::TurnCompleted {
                     stop_reason: "done".to_string(),
