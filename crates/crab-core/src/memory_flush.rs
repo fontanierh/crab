@@ -65,18 +65,24 @@ pub fn finalize_hidden_memory_flush(raw_output: &str) -> CrabResult<HiddenMemory
 }
 
 fn parse_memory_flush_ack(raw_output: &str) -> CrabResult<MemoryFlushAck> {
-    let normalized = raw_output.trim();
-    if normalized == MEMORY_FLUSH_NO_REPLY_TOKEN {
+    let last_line = raw_output
+        .lines()
+        .rev()
+        .find(|line| !line.trim().is_empty())
+        .map(|line| line.trim())
+        .unwrap_or("");
+
+    if last_line == MEMORY_FLUSH_NO_REPLY_TOKEN {
         return Ok(MemoryFlushAck::NoReply);
     }
-    if normalized == MEMORY_FLUSH_DONE_TOKEN {
+    if last_line == MEMORY_FLUSH_DONE_TOKEN {
         return Ok(MemoryFlushAck::Done);
     }
 
     Err(CrabError::InvariantViolation {
         context: "memory_flush_hidden_turn",
         message: format!(
-            "expected one of [{MEMORY_FLUSH_NO_REPLY_TOKEN}, {MEMORY_FLUSH_DONE_TOKEN}], got {:?}",
+            "expected last non-empty line to be one of [{MEMORY_FLUSH_NO_REPLY_TOKEN}, {MEMORY_FLUSH_DONE_TOKEN}], got {:?}",
             raw_output
         ),
     })
@@ -184,8 +190,9 @@ mod tests {
             error,
             CrabError::InvariantViolation {
                 context: "memory_flush_hidden_turn",
-                message: "expected one of [NO_REPLY, MEMORY_FLUSH_DONE], got \"completed\""
-                    .to_string(),
+                message:
+                    "expected last non-empty line to be one of [NO_REPLY, MEMORY_FLUSH_DONE], got \"completed\""
+                        .to_string(),
             }
         );
     }
@@ -197,8 +204,50 @@ mod tests {
             error,
             CrabError::InvariantViolation {
                 context: "memory_flush_hidden_turn",
-                message: "expected one of [NO_REPLY, MEMORY_FLUSH_DONE], got \"   \"".to_string(),
+                message:
+                    "expected last non-empty line to be one of [NO_REPLY, MEMORY_FLUSH_DONE], got \"   \""
+                        .to_string(),
             }
         );
+    }
+
+    #[test]
+    fn finalize_accepts_done_after_preceding_text() {
+        let output = "I'll persist the facts now.\nMEMORY_FLUSH_DONE";
+        let outcome = finalize_hidden_memory_flush(output)
+            .expect("sentinel on last line should be accepted despite preceding text");
+        assert_eq!(outcome.ack, MemoryFlushAck::Done);
+        assert!(outcome.suppress_user_output);
+    }
+
+    #[test]
+    fn finalize_accepts_no_reply_after_preceding_text() {
+        let output = "Nothing to persist.\nNO_REPLY";
+        let outcome = finalize_hidden_memory_flush(output)
+            .expect("sentinel on last line should be accepted despite preceding text");
+        assert_eq!(outcome.ack, MemoryFlushAck::NoReply);
+        assert!(outcome.suppress_user_output);
+    }
+
+    #[test]
+    fn finalize_accepts_sentinel_with_trailing_blank_lines() {
+        let output = "Some reasoning\nMEMORY_FLUSH_DONE\n\n  \n";
+        let outcome = finalize_hidden_memory_flush(output)
+            .expect("trailing blank lines after sentinel should be accepted");
+        assert_eq!(outcome.ack, MemoryFlushAck::Done);
+    }
+
+    #[test]
+    fn finalize_rejects_sentinel_not_on_last_line() {
+        let output = "MEMORY_FLUSH_DONE\nsome trailing text";
+        let error = finalize_hidden_memory_flush(output)
+            .expect_err("sentinel followed by non-sentinel text should fail");
+        assert!(matches!(
+            error,
+            CrabError::InvariantViolation {
+                context: "memory_flush_hidden_turn",
+                ..
+            }
+        ));
     }
 }

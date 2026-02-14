@@ -49,10 +49,11 @@ Backend compaction signal mechanism:
 Memory flush contract (`crates/crab-core/src/memory_flush.rs`):
 
 - hidden turn prompt asks agent to persist durable memory facts
-- assistant must return exactly one token:
+- the last non-empty line of assistant output must be one of:
   - `NO_REPLY`
   - `MEMORY_FLUSH_DONE`
-- any other output is invalid
+- preceding text (reasoning, tool output deltas) is tolerated as long as the sentinel
+  appears on the final non-empty line
 - flush output is suppressed from user-visible chat
 
 Flush failures are non-blocking in rotation sequence; they are captured as rotation metadata.
