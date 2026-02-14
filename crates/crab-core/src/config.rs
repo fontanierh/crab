@@ -5,7 +5,6 @@ use crate::error::{CrabError, CrabResult};
 
 pub const DEFAULT_WORKSPACE_ROOT: &str = "~/.crab/workspace";
 pub const DEFAULT_MAX_CONCURRENT_LANES: usize = 4;
-pub const DEFAULT_COMPACTION_TOKEN_THRESHOLD: u64 = 120_000;
 pub const DEFAULT_INACTIVITY_TIMEOUT_SECS: u64 = 1_800;
 pub const DEFAULT_STARTUP_RECONCILIATION_GRACE_PERIOD_SECS: u64 = 90;
 pub const DEFAULT_HEARTBEAT_INTERVAL_SECS: u64 = 10;
@@ -17,7 +16,6 @@ pub const DEFAULT_WORKSPACE_GIT_BRANCH: &str = "main";
 pub const DEFAULT_WORKSPACE_GIT_COMMIT_NAME: &str = "Crab Workspace Bot";
 pub const DEFAULT_WORKSPACE_GIT_COMMIT_EMAIL: &str = "crab@localhost";
 
-const COMPACTION_TOKEN_THRESHOLD_KEY: &str = "CRAB_COMPACTION_TOKEN_THRESHOLD";
 const INACTIVITY_TIMEOUT_SECS_KEY: &str = "CRAB_INACTIVITY_TIMEOUT_SECS";
 const STARTUP_RECONCILIATION_GRACE_PERIOD_SECS_KEY: &str =
     "CRAB_STARTUP_RECONCILIATION_GRACE_PERIOD_SECS";
@@ -58,7 +56,6 @@ pub struct OwnerConfig {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RotationPolicyConfig {
-    pub compaction_token_threshold: u64,
     pub inactivity_timeout_secs: u64,
 }
 
@@ -189,17 +186,12 @@ fn parse_positive_u64(key: &'static str, raw_value: &str) -> CrabResult<u64> {
 }
 
 fn parse_rotation_policy(values: &HashMap<String, String>) -> CrabResult<RotationPolicyConfig> {
-    let compaction_token_threshold = match values.get(COMPACTION_TOKEN_THRESHOLD_KEY) {
-        Some(raw_value) => parse_positive_u64(COMPACTION_TOKEN_THRESHOLD_KEY, raw_value)?,
-        None => DEFAULT_COMPACTION_TOKEN_THRESHOLD,
-    };
     let inactivity_timeout_secs = match values.get(INACTIVITY_TIMEOUT_SECS_KEY) {
         Some(raw_value) => parse_positive_u64(INACTIVITY_TIMEOUT_SECS_KEY, raw_value)?,
         None => DEFAULT_INACTIVITY_TIMEOUT_SECS,
     };
 
     Ok(RotationPolicyConfig {
-        compaction_token_threshold,
         inactivity_timeout_secs,
     })
 }
@@ -696,12 +688,11 @@ mod tests {
         is_discord_user_id, HeartbeatConfig, OwnerConfig, OwnerProfileDefaults,
         RotationPolicyConfig, RuntimeConfig, StartupReconciliationConfig, WorkspaceGitConfig,
         WorkspaceGitPushPolicy, DEFAULT_BACKEND_STALL_TIMEOUT_SECS,
-        DEFAULT_COMPACTION_TOKEN_THRESHOLD, DEFAULT_DISPATCHER_STALL_TIMEOUT_SECS,
-        DEFAULT_HEARTBEAT_INTERVAL_SECS, DEFAULT_INACTIVITY_TIMEOUT_SECS,
-        DEFAULT_MAX_CONCURRENT_LANES, DEFAULT_RUN_STALL_TIMEOUT_SECS,
-        DEFAULT_STARTUP_RECONCILIATION_GRACE_PERIOD_SECS, DEFAULT_WORKSPACE_GIT_BRANCH,
-        DEFAULT_WORKSPACE_GIT_COMMIT_EMAIL, DEFAULT_WORKSPACE_GIT_COMMIT_NAME,
-        DEFAULT_WORKSPACE_GIT_ENABLED, DEFAULT_WORKSPACE_ROOT,
+        DEFAULT_DISPATCHER_STALL_TIMEOUT_SECS, DEFAULT_HEARTBEAT_INTERVAL_SECS,
+        DEFAULT_INACTIVITY_TIMEOUT_SECS, DEFAULT_MAX_CONCURRENT_LANES,
+        DEFAULT_RUN_STALL_TIMEOUT_SECS, DEFAULT_STARTUP_RECONCILIATION_GRACE_PERIOD_SECS,
+        DEFAULT_WORKSPACE_GIT_BRANCH, DEFAULT_WORKSPACE_GIT_COMMIT_EMAIL,
+        DEFAULT_WORKSPACE_GIT_COMMIT_NAME, DEFAULT_WORKSPACE_GIT_ENABLED, DEFAULT_WORKSPACE_ROOT,
     };
     use crate::error::CrabError;
 
@@ -728,7 +719,6 @@ mod tests {
             ("CRAB_DISCORD_TOKEN", "test-token"),
             ("CRAB_WORKSPACE_ROOT", "/tmp/crab"),
             ("CRAB_MAX_CONCURRENT_LANES", "8"),
-            ("CRAB_COMPACTION_TOKEN_THRESHOLD", "90000"),
             ("CRAB_INACTIVITY_TIMEOUT_SECS", "3600"),
             ("CRAB_STARTUP_RECONCILIATION_GRACE_PERIOD_SECS", "120"),
             ("CRAB_HEARTBEAT_INTERVAL_SECS", "15"),
@@ -763,7 +753,6 @@ mod tests {
         assert_eq!(
             parsed.rotation,
             RotationPolicyConfig {
-                compaction_token_threshold: 90_000,
                 inactivity_timeout_secs: 3_600,
             }
         );
@@ -818,7 +807,6 @@ mod tests {
         assert_eq!(
             parsed.rotation,
             RotationPolicyConfig {
-                compaction_token_threshold: DEFAULT_COMPACTION_TOKEN_THRESHOLD,
                 inactivity_timeout_secs: DEFAULT_INACTIVITY_TIMEOUT_SECS,
             }
         );
@@ -884,34 +872,6 @@ mod tests {
             err,
             CrabError::InvalidConfig {
                 key: "CRAB_MAX_CONCURRENT_LANES",
-                value: "0".to_string(),
-                reason: "must be greater than 0",
-            }
-        );
-    }
-
-    #[test]
-    fn rejects_non_numeric_compaction_threshold() {
-        let err = parse_with_token(&[("CRAB_COMPACTION_TOKEN_THRESHOLD", "eighty-thousand")])
-            .expect_err("compaction threshold must be numeric");
-        assert_eq!(
-            err,
-            CrabError::InvalidConfig {
-                key: "CRAB_COMPACTION_TOKEN_THRESHOLD",
-                value: "eighty-thousand".to_string(),
-                reason: "must be a positive integer",
-            }
-        );
-    }
-
-    #[test]
-    fn rejects_zero_compaction_threshold() {
-        let err = parse_with_token(&[("CRAB_COMPACTION_TOKEN_THRESHOLD", "0")])
-            .expect_err("compaction threshold must be positive");
-        assert_eq!(
-            err,
-            CrabError::InvalidConfig {
-                key: "CRAB_COMPACTION_TOKEN_THRESHOLD",
                 value: "0".to_string(),
                 reason: "must be greater than 0",
             }

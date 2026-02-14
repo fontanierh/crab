@@ -10,7 +10,7 @@ pub enum ManualRotationRequest {
 pub enum RotationTrigger {
     ManualCompact,
     ManualReset,
-    TokenCompaction,
+    BackendCompaction,
     InactivityTimeout,
 }
 
@@ -19,8 +19,7 @@ pub struct RotationTriggerInput {
     pub now_epoch_ms: u64,
     pub last_activity_epoch_ms: u64,
     pub lane_is_idle: bool,
-    pub token_usage_total: Option<u64>,
-    pub compaction_token_threshold: u64,
+    pub backend_compaction_signaled: bool,
     pub inactivity_timeout_secs: u64,
     pub manual_request: Option<ManualRotationRequest>,
 }
@@ -45,11 +44,8 @@ pub fn evaluate_rotation_triggers(
         });
     }
 
-    if input
-        .token_usage_total
-        .is_some_and(|usage| usage >= input.compaction_token_threshold)
-    {
-        triggers.push(RotationTrigger::TokenCompaction);
+    if input.backend_compaction_signaled {
+        triggers.push(RotationTrigger::BackendCompaction);
     }
 
     if input.lane_is_idle {
@@ -75,14 +71,6 @@ pub fn evaluate_rotation_triggers(
 }
 
 fn validate_rotation_trigger_input(input: &RotationTriggerInput) -> CrabResult<()> {
-    if input.compaction_token_threshold == 0 {
-        return Err(CrabError::InvalidConfig {
-            key: "CRAB_COMPACTION_TOKEN_THRESHOLD",
-            value: input.compaction_token_threshold.to_string(),
-            reason: "must be greater than 0",
-        });
-    }
-
     if input.inactivity_timeout_secs == 0 {
         return Err(CrabError::InvalidConfig {
             key: "CRAB_INACTIVITY_TIMEOUT_SECS",
@@ -117,8 +105,7 @@ mod tests {
             now_epoch_ms: 10_000,
             last_activity_epoch_ms: 9_500,
             lane_is_idle: false,
-            token_usage_total: Some(1_000),
-            compaction_token_threshold: 2_000,
+            backend_compaction_signaled: false,
             inactivity_timeout_secs: 60,
             manual_request: None,
         }
@@ -131,7 +118,7 @@ mod tests {
         assert!(decision.triggers.is_empty());
         assert!(!decision
             .triggers
-            .contains(&RotationTrigger::TokenCompaction));
+            .contains(&RotationTrigger::BackendCompaction));
     }
 
     #[test]
@@ -157,22 +144,21 @@ mod tests {
     }
 
     #[test]
-    fn triggers_compaction_when_usage_reaches_threshold() {
+    fn triggers_backend_compaction_when_signaled() {
         let mut value = input();
-        value.token_usage_total = Some(2_000);
+        value.backend_compaction_signaled = true;
 
         let decision = evaluate_rotation_triggers(&value).expect("evaluation should succeed");
         assert!(decision.should_rotate);
-        assert_eq!(decision.triggers, vec![RotationTrigger::TokenCompaction]);
+        assert_eq!(decision.triggers, vec![RotationTrigger::BackendCompaction]);
         assert!(decision
             .triggers
-            .contains(&RotationTrigger::TokenCompaction));
+            .contains(&RotationTrigger::BackendCompaction));
     }
 
     #[test]
-    fn ignores_compaction_when_usage_is_unavailable() {
-        let mut value = input();
-        value.token_usage_total = None;
+    fn ignores_backend_compaction_when_not_signaled() {
+        let value = input();
 
         let decision = evaluate_rotation_triggers(&value).expect("evaluation should succeed");
         assert!(!decision.should_rotate);
@@ -226,7 +212,7 @@ mod tests {
     fn includes_multiple_triggers_in_stable_priority_order() {
         let mut value = input();
         value.manual_request = Some(ManualRotationRequest::Reset);
-        value.token_usage_total = Some(4_000);
+        value.backend_compaction_signaled = true;
         value.lane_is_idle = true;
         value.last_activity_epoch_ms = 0;
         value.now_epoch_ms = 120_000;
@@ -238,26 +224,9 @@ mod tests {
             decision.triggers,
             vec![
                 RotationTrigger::ManualReset,
-                RotationTrigger::TokenCompaction,
+                RotationTrigger::BackendCompaction,
                 RotationTrigger::InactivityTimeout,
             ]
-        );
-    }
-
-    #[test]
-    fn rejects_zero_compaction_threshold() {
-        let mut value = input();
-        value.compaction_token_threshold = 0;
-
-        let error =
-            evaluate_rotation_triggers(&value).expect_err("zero compaction threshold should fail");
-        assert_eq!(
-            error,
-            CrabError::InvalidConfig {
-                key: "CRAB_COMPACTION_TOKEN_THRESHOLD",
-                value: "0".to_string(),
-                reason: "must be greater than 0",
-            }
         );
     }
 

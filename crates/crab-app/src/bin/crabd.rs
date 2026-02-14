@@ -516,7 +516,6 @@ fn run_with_values_and_discord_and_control(
         bot_user_id = %daemon_config.bot_user_id,
         workspace_root = %runtime_config.workspace_root,
         max_concurrent_lanes = runtime_config.max_concurrent_lanes,
-        compaction_token_threshold = runtime_config.rotation.compaction_token_threshold,
         inactivity_timeout_secs = runtime_config.rotation.inactivity_timeout_secs,
         startup_reconciliation_grace_period_secs = runtime_config.startup_reconciliation.grace_period_secs,
         heartbeat_interval_secs = runtime_config.heartbeat.interval_secs,

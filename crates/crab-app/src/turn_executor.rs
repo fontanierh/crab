@@ -1,5 +1,5 @@
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc::RecvTimeoutError;
 use std::time::Duration;
 
@@ -382,11 +382,7 @@ where
                 now_epoch_ms: started_at_epoch_ms,
                 last_activity_epoch_ms: session.last_activity_epoch_ms,
                 lane_is_idle: true,
-                token_usage_total: Some(session.token_accounting.context_window_tokens()),
-                compaction_token_threshold: self
-                    .composition
-                    .rotation_policy
-                    .compaction_token_threshold,
+                backend_compaction_signaled: false,
                 inactivity_timeout_secs: self.composition.rotation_policy.inactivity_timeout_secs,
                 manual_request: None,
             })?;
@@ -705,6 +701,14 @@ where
                 completed_at_epoch_ms,
             );
             let _ = delivery_result?;
+        } else if let Some(ref outcome) = rotation_outcome {
+            let notification = format!(
+                "Crab: session rotated ({}). Context checkpointed.",
+                outcome.triggers_label
+            );
+            // Keep on one line: multi-line call sites can produce llvm-cov line-mapping gaps.
+            #[rustfmt::skip]
+            let _ = self.deliver_rendered_assistant_output(&run, &delivery_message_id(&run.id, 0), &notification, 0, completed_at_epoch_ms)?;
         }
 
         if final_status == RunStatus::Failed && delivery.total_rendered_len == 0 {
@@ -1080,12 +1084,13 @@ where
         manual_request: Option<ManualRotationRequest>,
         completed_event_log_sabotage_path: Option<PathBuf>,
     ) -> CrabResult<Option<RotationExecutionOutcome>> {
+        let backend_compaction_signaled =
+            check_compaction_signal(&self.composition.state_stores.root);
         let decision = evaluate_rotation_triggers(&RotationTriggerInput {
             now_epoch_ms,
             last_activity_epoch_ms: session.last_activity_epoch_ms,
             lane_is_idle: session.lane_state == LaneState::Idle,
-            token_usage_total: Some(session.token_accounting.context_window_tokens()),
-            compaction_token_threshold: self.composition.rotation_policy.compaction_token_threshold,
+            backend_compaction_signaled,
             inactivity_timeout_secs: self.composition.rotation_policy.inactivity_timeout_secs,
             manual_request,
         })?;
@@ -1207,8 +1212,18 @@ where
             now_epoch_ms,
         )?;
 
+        if decision
+            .triggers
+            .contains(&RotationTrigger::BackendCompaction)
+        {
+            consume_compaction_signal(&self.composition.state_stores.root);
+        }
+
+        let triggers_label = render_rotation_triggers(&decision.triggers);
+
         Ok(Some(RotationExecutionOutcome {
             checkpoint_id: outcome.checkpoint_id,
+            triggers_label,
             onboarding_completion_resolution,
             supplemental_emitted_event_count: onboarding_rotation_note_count,
         }))
@@ -1599,6 +1614,7 @@ struct PendingOnboardingGateResolution {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct RotationExecutionOutcome {
     checkpoint_id: String,
+    triggers_label: String,
     onboarding_completion_resolution: Option<OnboardingCompletionResolution>,
     supplemental_emitted_event_count: usize,
 }
@@ -1907,7 +1923,7 @@ fn rotation_trigger_token(trigger: RotationTrigger) -> &'static str {
     match trigger {
         RotationTrigger::ManualCompact => "manual_compact",
         RotationTrigger::ManualReset => "manual_reset",
-        RotationTrigger::TokenCompaction => "token_compaction",
+        RotationTrigger::BackendCompaction => "backend_compaction",
         RotationTrigger::InactivityTimeout => "inactivity_timeout",
     }
 }
@@ -1918,6 +1934,18 @@ fn render_rotation_triggers(triggers: &[RotationTrigger]) -> String {
         .map(|trigger| rotation_trigger_token(*trigger))
         .collect::<Vec<_>>()
         .join(",")
+}
+
+fn compaction_signal_path(state_root: &Path) -> PathBuf {
+    state_root.join("compaction-signal")
+}
+
+fn check_compaction_signal(state_root: &Path) -> bool {
+    compaction_signal_path(state_root).exists()
+}
+
+fn consume_compaction_signal(state_root: &Path) {
+    let _ = std::fs::remove_file(compaction_signal_path(state_root));
 }
 
 fn backend_kind_token(backend: crab_core::BackendKind) -> &'static str {
@@ -3319,47 +3347,19 @@ mod tests {
     fn rotation_run_persists_workspace_git_commit_with_checkpoint_metadata() {
         let workspace = TempWorkspace::new("turn-executor", "workspace-git-rotation-commit");
         let mut runtime = FakeRuntime::with_backend_events(
-            vec![
-                backend_event(1, BackendEventKind::TextDelta, &[("text", "ship it")]),
-                backend_event(
-                    2,
-                    BackendEventKind::RunNote,
-                    &[
-                        ("run_usage_input_tokens", "5000"),
-                        ("run_usage_output_tokens", "30000"),
-                        ("run_usage_total_tokens", "35000"),
-                        ("run_usage_cache_read_input_tokens", "110000"),
-                        ("run_usage_cache_creation_input_tokens", "5000"),
-                    ],
-                ),
-                backend_event(
-                    3,
-                    BackendEventKind::TurnCompleted,
-                    &[("stop_reason", "done")],
-                ),
-            ],
+            vec![backend_event(
+                1,
+                BackendEventKind::TurnCompleted,
+                &[("stop_reason", "done")],
+            )],
             &[1, 2, 3, 4, 5, 6, 7],
         );
         runtime.execute_turn_results = VecDeque::from(vec![
-            Ok(vec![
-                backend_event(1, BackendEventKind::TextDelta, &[("text", "ship it")]),
-                backend_event(
-                    2,
-                    BackendEventKind::RunNote,
-                    &[
-                        ("run_usage_input_tokens", "5000"),
-                        ("run_usage_output_tokens", "30000"),
-                        ("run_usage_total_tokens", "35000"),
-                        ("run_usage_cache_read_input_tokens", "110000"),
-                        ("run_usage_cache_creation_input_tokens", "5000"),
-                    ],
-                ),
-                backend_event(
-                    3,
-                    BackendEventKind::TurnCompleted,
-                    &[("stop_reason", "done")],
-                ),
-            ]),
+            Ok(vec![backend_event(
+                1,
+                BackendEventKind::TurnCompleted,
+                &[("stop_reason", "done")],
+            )]),
             Ok(hidden_memory_flush_backend_events("NO_REPLY")),
             Ok(hidden_checkpoint_backend_events(&checkpoint_document_json(
                 "rotation checkpoint",
@@ -3373,6 +3373,9 @@ mod tests {
         config.workspace_git.enabled = true;
         config.workspace_git.push_policy = WorkspaceGitPushPolicy::Manual;
         let mut executor = build_executor_with_config(runtime, 8, config);
+        let signal_path = workspace.path.join("state/compaction-signal");
+        fs::create_dir_all(signal_path.parent().unwrap()).expect("state dir should be creatable");
+        fs::write(&signal_path, "").expect("signal file should be writable");
 
         executor
             .process_gateway_message(gateway_message("m-git-rotation"))
@@ -3385,7 +3388,7 @@ mod tests {
         assert!(head_message.contains("Crab-Trigger: rotation_checkpoint"));
         assert!(head_message.contains("Crab-Run-Id: run:discord:channel:777:m-git-rotation"));
         assert!(head_message
-            .contains("Crab-Checkpoint-Id: ckpt:run:discord:channel:777:m-git-rotation:6"));
+            .contains("Crab-Checkpoint-Id: ckpt:run:discord:channel:777:m-git-rotation:"));
     }
 
     #[test]
@@ -3644,53 +3647,25 @@ mod tests {
     }
 
     #[test]
-    fn process_gateway_message_rotates_when_token_threshold_is_reached() {
-        let workspace = TempWorkspace::new("turn-executor", "rotation-token-trigger");
+    fn process_gateway_message_rotates_when_backend_compaction_signal_is_present() {
+        let workspace = TempWorkspace::new("turn-executor", "rotation-backend-compaction");
         let mut runtime = FakeRuntime::with_backend_events(
-            vec![
-                backend_event(1, BackendEventKind::TextDelta, &[("text", "shipping now")]),
-                backend_event(
-                    2,
-                    BackendEventKind::RunNote,
-                    &[
-                        ("run_usage_input_tokens", "5000"),
-                        ("run_usage_output_tokens", "30000"),
-                        ("run_usage_total_tokens", "35000"),
-                        ("run_usage_cache_read_input_tokens", "110000"),
-                        ("run_usage_cache_creation_input_tokens", "5000"),
-                    ],
-                ),
-                backend_event(
-                    3,
-                    BackendEventKind::TurnCompleted,
-                    &[("stop_reason", "done")],
-                ),
-            ],
+            vec![backend_event(
+                1,
+                BackendEventKind::TurnCompleted,
+                &[("stop_reason", "done")],
+            )],
             &[1, 2, 3, 4, 5, 6],
         );
         runtime.execute_turn_results = VecDeque::from(vec![
-            Ok(vec![
-                backend_event(1, BackendEventKind::TextDelta, &[("text", "shipping now")]),
-                backend_event(
-                    2,
-                    BackendEventKind::RunNote,
-                    &[
-                        ("run_usage_input_tokens", "5000"),
-                        ("run_usage_output_tokens", "30000"),
-                        ("run_usage_total_tokens", "35000"),
-                        ("run_usage_cache_read_input_tokens", "110000"),
-                        ("run_usage_cache_creation_input_tokens", "5000"),
-                    ],
-                ),
-                backend_event(
-                    3,
-                    BackendEventKind::TurnCompleted,
-                    &[("stop_reason", "done")],
-                ),
-            ]),
+            Ok(vec![backend_event(
+                1,
+                BackendEventKind::TurnCompleted,
+                &[("stop_reason", "done")],
+            )]),
             Ok(hidden_memory_flush_backend_events("NO_REPLY")),
             Ok(hidden_checkpoint_backend_events(&checkpoint_document_json(
-                "token trigger checkpoint",
+                "backend compaction checkpoint",
             ))),
         ]);
         runtime.ensure_session_results = VecDeque::from(vec![
@@ -3699,13 +3674,24 @@ mod tests {
         ]);
         let mut executor = build_executor(&workspace, runtime, 8);
 
+        // Write the compaction signal file before processing
+        let signal_path = workspace.path.join("state/compaction-signal");
+        fs::create_dir_all(signal_path.parent().unwrap()).expect("state dir should be creatable");
+        fs::write(&signal_path, "").expect("signal file should be writable");
+
         executor
-            .process_gateway_message(gateway_message("m-rotation-token"))
-            .expect("token-trigger run should succeed")
+            .process_gateway_message(gateway_message("m-rotation-backend"))
+            .expect("backend-compaction run should succeed")
             .expect("run should dispatch");
 
+        // Signal file should be consumed after rotation
+        assert!(
+            !signal_path.exists(),
+            "compaction signal file should be consumed after rotation"
+        );
+
         let logical_session_id = "discord:channel:777";
-        let run_id = "run:discord:channel:777:m-rotation-token";
+        let run_id = "run:discord:channel:777:m-rotation-backend";
         let session = executor
             .composition()
             .state_stores
@@ -3743,6 +3729,56 @@ mod tests {
                     .get("rotation_event")
                     .is_some_and(|value| value == "completed")
         }));
+
+        // Discord notification should be delivered for non-manual rotation
+        let runtime = executor.runtime_mut();
+        assert!(
+            runtime
+                .delivered_outputs
+                .iter()
+                .any(|output| output.4.contains("session rotated (backend_compaction)")),
+            "Discord notification should be delivered for backend compaction rotation"
+        );
+    }
+
+    #[test]
+    fn process_gateway_message_does_not_rotate_when_backend_compaction_signal_is_absent() {
+        let workspace = TempWorkspace::new("turn-executor", "rotation-no-signal");
+        let runtime = FakeRuntime::with_backend_events(
+            vec![
+                backend_event(1, BackendEventKind::TextDelta, &[("text", "no rotation")]),
+                backend_event(
+                    2,
+                    BackendEventKind::TurnCompleted,
+                    &[("stop_reason", "done")],
+                ),
+            ],
+            &[1, 2, 3, 4, 5],
+        );
+        let mut executor = build_executor(&workspace, runtime, 8);
+
+        // No signal file — should not rotate
+        executor
+            .process_gateway_message(gateway_message("m-no-rotation"))
+            .expect("run should succeed")
+            .expect("run should dispatch");
+
+        let logical_session_id = "discord:channel:777";
+        let session = executor
+            .composition()
+            .state_stores
+            .session_store
+            .get_session(logical_session_id)
+            .expect("session lookup should succeed")
+            .expect("session should exist");
+        assert!(
+            session.active_physical_session_id.is_some(),
+            "session should still have active physical session (no rotation)"
+        );
+        assert!(
+            session.last_successful_checkpoint_id.is_none(),
+            "no checkpoint should have been created"
+        );
     }
 
     #[test]
@@ -4607,7 +4643,7 @@ mod tests {
         executor
             .composition_mut()
             .rotation_policy
-            .compaction_token_threshold = 0;
+            .inactivity_timeout_secs = 0;
 
         let error = executor
             .process_gateway_message(gateway_message("m-rotation-invalid-policy"))
@@ -4615,7 +4651,7 @@ mod tests {
         assert_eq!(
             error,
             CrabError::InvalidConfig {
-                key: "CRAB_COMPACTION_TOKEN_THRESHOLD",
+                key: "CRAB_INACTIVITY_TIMEOUT_SECS",
                 value: "0".to_string(),
                 reason: "must be greater than 0",
             }
@@ -4662,45 +4698,19 @@ mod tests {
     fn token_trigger_rotation_uses_backend_hidden_checkpoint_turn_without_fallback() {
         let workspace = TempWorkspace::new("turn-executor", "rotation-backend-checkpoint");
         let mut runtime = FakeRuntime::with_backend_events(
-            vec![
-                backend_event(
-                    1,
-                    BackendEventKind::RunNote,
-                    &[
-                        ("run_usage_input_tokens", "5000"),
-                        ("run_usage_output_tokens", "20000"),
-                        ("run_usage_total_tokens", "25000"),
-                        ("run_usage_cache_read_input_tokens", "110000"),
-                        ("run_usage_cache_creation_input_tokens", "5000"),
-                    ],
-                ),
-                backend_event(
-                    2,
-                    BackendEventKind::TurnCompleted,
-                    &[("stop_reason", "done")],
-                ),
-            ],
+            vec![backend_event(
+                1,
+                BackendEventKind::TurnCompleted,
+                &[("stop_reason", "done")],
+            )],
             &[1, 2, 3, 4, 5],
         );
         runtime.execute_turn_results = VecDeque::from(vec![
-            Ok(vec![
-                backend_event(
-                    1,
-                    BackendEventKind::RunNote,
-                    &[
-                        ("run_usage_input_tokens", "5000"),
-                        ("run_usage_output_tokens", "20000"),
-                        ("run_usage_total_tokens", "25000"),
-                        ("run_usage_cache_read_input_tokens", "110000"),
-                        ("run_usage_cache_creation_input_tokens", "5000"),
-                    ],
-                ),
-                backend_event(
-                    2,
-                    BackendEventKind::TurnCompleted,
-                    &[("stop_reason", "done")],
-                ),
-            ]),
+            Ok(vec![backend_event(
+                1,
+                BackendEventKind::TurnCompleted,
+                &[("stop_reason", "done")],
+            )]),
             Ok(hidden_memory_flush_backend_events("NO_REPLY")),
             Ok(hidden_checkpoint_backend_events(&checkpoint_document_json(
                 "Primary hidden checkpoint from backend",
@@ -4712,6 +4722,9 @@ mod tests {
             Ok(physical_session_fixture()),
         ]);
         let mut executor = build_executor(&workspace, runtime, 8);
+        let signal_path = workspace.path.join("state/compaction-signal");
+        fs::create_dir_all(signal_path.parent().unwrap()).expect("state dir should be creatable");
+        fs::write(&signal_path, "").expect("signal file should be writable");
 
         executor
             .process_gateway_message(gateway_message("m-rotation-backend-checkpoint"))
@@ -4818,15 +4831,15 @@ mod tests {
             )),
         ]);
         let mut executor = build_executor(&workspace, runtime, 8);
-        executor
-            .composition_mut()
-            .rotation_policy
-            .compaction_token_threshold = 1;
         fs::write(
             workspace.path.join("BOOTSTRAP.md"),
             "Bootstrap remains pending until owner onboarding capture is applied.",
         )
         .expect("bootstrap marker should be writable");
+        // Write compaction signal to trigger rotation
+        let signal_path = workspace.path.join("state/compaction-signal");
+        fs::create_dir_all(signal_path.parent().unwrap()).expect("state dir should be creatable");
+        fs::write(&signal_path, "").expect("signal file should be writable");
 
         let dispatched = executor
             .process_gateway_message(gateway_owner_dm_message_with_content(
@@ -5196,46 +5209,20 @@ mod tests {
     fn token_trigger_rotation_falls_back_when_backend_checkpoint_schema_validation_fails() {
         let workspace = TempWorkspace::new("turn-executor", "rotation-checkpoint-schema-failure");
         let mut runtime = FakeRuntime::with_backend_events(
-            vec![
-                backend_event(
-                    1,
-                    BackendEventKind::RunNote,
-                    &[
-                        ("run_usage_input_tokens", "5000"),
-                        ("run_usage_output_tokens", "20000"),
-                        ("run_usage_total_tokens", "25000"),
-                        ("run_usage_cache_read_input_tokens", "110000"),
-                        ("run_usage_cache_creation_input_tokens", "5000"),
-                    ],
-                ),
-                backend_event(
-                    2,
-                    BackendEventKind::TurnCompleted,
-                    &[("stop_reason", "done")],
-                ),
-            ],
+            vec![backend_event(
+                1,
+                BackendEventKind::TurnCompleted,
+                &[("stop_reason", "done")],
+            )],
             &[1, 2, 3, 4, 5],
         );
         let invalid_checkpoint_json = r#"{"summary":" ","decisions":["keep"],"open_questions":["none"],"next_actions":["continue"],"artifacts":[{"path":"state/rotation","note":"checkpoint"}]}"#;
         runtime.execute_turn_results = VecDeque::from(vec![
-            Ok(vec![
-                backend_event(
-                    1,
-                    BackendEventKind::RunNote,
-                    &[
-                        ("run_usage_input_tokens", "5000"),
-                        ("run_usage_output_tokens", "20000"),
-                        ("run_usage_total_tokens", "25000"),
-                        ("run_usage_cache_read_input_tokens", "110000"),
-                        ("run_usage_cache_creation_input_tokens", "5000"),
-                    ],
-                ),
-                backend_event(
-                    2,
-                    BackendEventKind::TurnCompleted,
-                    &[("stop_reason", "done")],
-                ),
-            ]),
+            Ok(vec![backend_event(
+                1,
+                BackendEventKind::TurnCompleted,
+                &[("stop_reason", "done")],
+            )]),
             Ok(hidden_memory_flush_backend_events("NO_REPLY")),
             Ok(hidden_checkpoint_backend_events(invalid_checkpoint_json)),
             Ok(hidden_checkpoint_backend_events(invalid_checkpoint_json)),
@@ -5246,6 +5233,9 @@ mod tests {
             Ok(physical_session_fixture()),
         ]);
         let mut executor = build_executor(&workspace, runtime, 8);
+        let signal_path = workspace.path.join("state/compaction-signal");
+        fs::create_dir_all(signal_path.parent().unwrap()).expect("state dir should be creatable");
+        fs::write(&signal_path, "").expect("signal file should be writable");
 
         executor
             .process_gateway_message(gateway_message("m-rotation-checkpoint-schema-failure"))
@@ -5313,45 +5303,19 @@ mod tests {
     fn token_trigger_rotation_falls_back_when_backend_checkpoint_turn_execution_fails() {
         let workspace = TempWorkspace::new("turn-executor", "rotation-checkpoint-backend-failure");
         let mut runtime = FakeRuntime::with_backend_events(
-            vec![
-                backend_event(
-                    1,
-                    BackendEventKind::RunNote,
-                    &[
-                        ("run_usage_input_tokens", "5000"),
-                        ("run_usage_output_tokens", "20000"),
-                        ("run_usage_total_tokens", "25000"),
-                        ("run_usage_cache_read_input_tokens", "110000"),
-                        ("run_usage_cache_creation_input_tokens", "5000"),
-                    ],
-                ),
-                backend_event(
-                    2,
-                    BackendEventKind::TurnCompleted,
-                    &[("stop_reason", "done")],
-                ),
-            ],
+            vec![backend_event(
+                1,
+                BackendEventKind::TurnCompleted,
+                &[("stop_reason", "done")],
+            )],
             &[1, 2, 3, 4, 5],
         );
         runtime.execute_turn_results = VecDeque::from(vec![
-            Ok(vec![
-                backend_event(
-                    1,
-                    BackendEventKind::RunNote,
-                    &[
-                        ("run_usage_input_tokens", "5000"),
-                        ("run_usage_output_tokens", "20000"),
-                        ("run_usage_total_tokens", "25000"),
-                        ("run_usage_cache_read_input_tokens", "110000"),
-                        ("run_usage_cache_creation_input_tokens", "5000"),
-                    ],
-                ),
-                backend_event(
-                    2,
-                    BackendEventKind::TurnCompleted,
-                    &[("stop_reason", "done")],
-                ),
-            ]),
+            Ok(vec![backend_event(
+                1,
+                BackendEventKind::TurnCompleted,
+                &[("stop_reason", "done")],
+            )]),
             Ok(hidden_memory_flush_backend_events("NO_REPLY")),
             Err(CrabError::InvariantViolation {
                 context: "checkpoint_backend_turn",
@@ -5364,6 +5328,9 @@ mod tests {
             Ok(physical_session_fixture()),
         ]);
         let mut executor = build_executor(&workspace, runtime, 8);
+        let signal_path = workspace.path.join("state/compaction-signal");
+        fs::create_dir_all(signal_path.parent().unwrap()).expect("state dir should be creatable");
+        fs::write(&signal_path, "").expect("signal file should be writable");
 
         executor
             .process_gateway_message(gateway_message("m-rotation-checkpoint-backend-failure"))
@@ -7284,8 +7251,8 @@ mod tests {
             "manual_reset"
         );
         assert_eq!(
-            super::rotation_trigger_token(crab_core::RotationTrigger::TokenCompaction),
-            "token_compaction"
+            super::rotation_trigger_token(crab_core::RotationTrigger::BackendCompaction),
+            "backend_compaction"
         );
         assert_eq!(
             super::rotation_trigger_token(crab_core::RotationTrigger::InactivityTimeout),
@@ -7294,9 +7261,9 @@ mod tests {
         assert_eq!(
             super::render_rotation_triggers(&[
                 crab_core::RotationTrigger::ManualCompact,
-                crab_core::RotationTrigger::TokenCompaction,
+                crab_core::RotationTrigger::BackendCompaction,
             ]),
-            "manual_compact,token_compaction".to_string()
+            "manual_compact,backend_compaction".to_string()
         );
         assert_eq!(super::backend_kind_token(BackendKind::Claude), "claude");
         assert_eq!(super::backend_kind_token(BackendKind::Codex), "codex");
