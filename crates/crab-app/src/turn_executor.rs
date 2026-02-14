@@ -211,6 +211,32 @@ where
         })
     }
 
+    pub fn enqueue_pending_trigger(
+        &mut self,
+        channel_id: &str,
+        message: &str,
+    ) -> CrabResult<QueuedTurn> {
+        if channel_id.trim().is_empty() {
+            return Err(CrabError::InvariantViolation {
+                context: "pending_trigger_enqueue",
+                message: "channel_id must not be empty".to_string(),
+            });
+        }
+        let trigger_id = format!("trigger:{}", self.runtime.now_epoch_ms()?);
+        let ingress = crab_discord::IngressMessage {
+            message_id: trigger_id,
+            // Use a synthetic numeric author ID because sender identity validation
+            // requires digits-only Discord user IDs.
+            author_id: "0".to_string(),
+            channel_id: channel_id.to_string(),
+            content: message.to_string(),
+            routing_key: RoutingKey::Channel {
+                channel_id: channel_id.to_string(),
+            },
+        };
+        self.enqueue_ingress_message(ingress)
+    }
+
     fn check_for_steering_message(&mut self, current_logical_session_id: &str) -> CrabResult<bool> {
         let Some(message) = self.runtime.next_gateway_message()? else {
             return Ok(false);
@@ -8372,5 +8398,37 @@ mod tests {
             .expect("memory flush error should be recorded");
         assert!(flush_error.contains("hidden memory flush failed and was ignored"));
         assert!(flush_error.contains("session unavailable for flush"));
+    }
+
+    #[test]
+    fn enqueue_pending_trigger_creates_queued_run_with_correct_session() {
+        let workspace = TempWorkspace::new("turn-executor", "pending-trigger");
+        let runtime = FakeRuntime::with_backend_events(Vec::new(), &[42_000, 42_001]);
+        let mut executor = build_executor(&workspace, runtime, 8);
+
+        let queued = executor
+            .enqueue_pending_trigger("777", "Check deployment status")
+            .expect("enqueue pending trigger should succeed");
+
+        assert_eq!(queued.logical_session_id, "discord:channel:777");
+        assert!(queued.run_id.contains("trigger:42000"));
+        assert_eq!(queued.author_id, "0");
+        assert_eq!(
+            queued.routing_key,
+            crab_discord::RoutingKey::Channel {
+                channel_id: "777".to_string(),
+            }
+        );
+        assert_eq!(queued.queued_run_count, 1);
+
+        let run = executor
+            .composition()
+            .state_stores
+            .run_store
+            .get_run("discord:channel:777", &queued.run_id)
+            .expect("run read should succeed")
+            .expect("run should exist");
+        assert_eq!(run.user_input, "Check deployment status");
+        assert_eq!(run.status, RunStatus::Queued);
     }
 }

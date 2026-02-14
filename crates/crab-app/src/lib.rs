@@ -9,6 +9,7 @@ mod memory_cli;
 mod startup;
 #[cfg(test)]
 mod test_support;
+mod trigger_cli;
 mod turn_executor;
 
 pub use composition::{
@@ -27,4 +28,5 @@ pub use maintenance::{
 };
 pub use memory_cli::{run_memory_get_cli, run_memory_search_cli};
 pub use startup::{initialize_runtime_startup, AppStartupOutcome};
+pub use trigger_cli::run_trigger_cli;
 pub use turn_executor::{DispatchedTurn, QueuedTurn, TurnExecutor, TurnExecutorRuntime};

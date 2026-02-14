@@ -83,6 +83,12 @@ Discord message formatting:\n\
 - Always place a blank line between distinct thoughts, answers, or actions.\n\
 - Each blank-line-separated section becomes its own Discord message.\n\
 \n\
+Self-trigger:\n\
+- You can schedule yourself to revisit a channel later using the crab-trigger command.\n\
+- Example: sleep 1800 && crab-trigger --state-dir \"$CRAB_STATE_DIR\" --channel <channel_id> --message \"Check on deployment\" &\n\
+- The command fires immediately; use sleep/cron/at for delays.\n\
+- CRAB_STATE_DIR is set in your environment.\n\
+\n\
 Operating constraints:\n\
 - Keep responses actionable and concise.\n\
 - Respect owner/operator commands and current session policy.";
@@ -671,6 +677,8 @@ fn run_claude_turn(
         let trimmed = workspace_root.trim();
         if !trimmed.is_empty() {
             command.current_dir(trimmed);
+            let state_dir = Path::new(trimmed).join("state");
+            command.env("CRAB_STATE_DIR", state_dir);
         }
     }
     if let Some(model) = config
@@ -1065,6 +1073,7 @@ impl DaemonConfig {
 pub struct DaemonLoopStats {
     pub iterations: u64,
     pub ingested_messages: u64,
+    pub ingested_triggers: u64,
     pub dispatched_runs: u64,
     pub heartbeat_cycles: u64,
 }
@@ -2545,6 +2554,25 @@ where
             stats.ingested_messages = stats.ingested_messages.saturating_add(u64::from(enqueued));
         }
 
+        for (trigger_path, trigger) in
+            crab_core::read_pending_triggers(&executor.composition().state_stores.root)?
+        {
+            match executor.enqueue_pending_trigger(&trigger.channel_id, &trigger.message) {
+                Ok(_) => {
+                    crab_core::consume_pending_trigger(&trigger_path)?;
+                    stats.ingested_triggers = stats.ingested_triggers.saturating_add(1);
+                }
+                Err(_error) => {
+                    #[cfg(not(coverage))]
+                    tracing::warn!(
+                        channel_id = %trigger.channel_id,
+                        error = %_error,
+                        "failed to enqueue pending trigger"
+                    );
+                }
+            }
+        }
+
         while executor.dispatch_next_run()?.is_some() {
             stats.dispatched_runs = stats.dispatched_runs.saturating_add(1);
         }
@@ -2620,6 +2648,7 @@ where
     tracing::info!(
         iterations = stats.iterations,
         ingested = stats.ingested_messages,
+        triggers = stats.ingested_triggers,
         dispatched = stats.dispatched_runs,
         heartbeats = stats.heartbeat_cycles,
         "daemon loop exiting: shutting down backends"
@@ -5092,6 +5121,7 @@ mod tests {
             DaemonLoopStats {
                 iterations: 2,
                 ingested_messages: 1,
+                ingested_triggers: 0,
                 dispatched_runs: 1,
                 heartbeat_cycles: 0
             }
@@ -6407,6 +6437,100 @@ mod tests {
                 message,
             } if message == "forced opencode stop failure"
         ));
+    }
+
+    #[test]
+    fn daemon_loop_polls_and_consumes_pending_triggers() {
+        let workspace = TempWorkspace::new("daemon", "trigger-poll");
+        let config = runtime_config_for_workspace_with_lanes(&workspace.path, 2);
+        let daemon_config = DaemonConfig {
+            bot_user_id: "999".to_string(),
+            tick_interval_ms: 5,
+            max_iterations: Some(2),
+        };
+
+        // Seed a pending trigger file before starting the loop.
+        let state_root = workspace.path.join("state");
+        std::fs::create_dir_all(&state_root).expect("state root should be creatable");
+        let trigger = crab_core::PendingTrigger {
+            channel_id: "777".to_string(),
+            message: "scheduled check-in".to_string(),
+        };
+        let trigger_path =
+            crab_core::write_pending_trigger(&state_root, &trigger).expect("write should succeed");
+        assert!(trigger_path.exists());
+
+        let discord = ScriptedDiscordIo::with_state(DiscordIoState {
+            inbound: VecDeque::from([Ok(None), Ok(None)]),
+            ..DiscordIoState::default()
+        });
+        let codex = TrackingCodexProcess::new();
+        let opencode = TrackingOpenCodeProcess::new();
+        let mut control = ScriptedControl::with_now(vec![
+            2_000_000_000_000,
+            2_000_000_000_001,
+            2_000_000_000_002,
+        ]);
+
+        let stats = run_daemon_loop_with_transport(
+            &config,
+            &daemon_config,
+            codex,
+            opencode,
+            discord,
+            &mut control,
+        )
+        .expect("daemon loop should succeed");
+
+        assert_eq!(stats.ingested_triggers, 1);
+        assert_eq!(stats.dispatched_runs, 1);
+        assert!(!trigger_path.exists(), "trigger file should be consumed");
+    }
+
+    #[test]
+    fn daemon_loop_logs_warning_when_trigger_enqueue_fails() {
+        let workspace = TempWorkspace::new("daemon", "trigger-enqueue-fail");
+        let config = runtime_config_for_workspace_with_lanes(&workspace.path, 2);
+        let daemon_config = DaemonConfig {
+            bot_user_id: "999".to_string(),
+            tick_interval_ms: 5,
+            max_iterations: Some(2),
+        };
+
+        // Seed a trigger file with a blank channel_id that will fail enqueue validation.
+        let state_root = workspace.path.join("state");
+        std::fs::create_dir_all(state_root.join("pending_triggers"))
+            .expect("trigger dir should be creatable");
+        let trigger_json = r#"{"channel_id":" ","message":"bad trigger"}"#;
+        let trigger_path = state_root.join("pending_triggers/bad-trigger.json");
+        std::fs::write(&trigger_path, trigger_json).expect("trigger write should succeed");
+
+        let discord = ScriptedDiscordIo::with_state(DiscordIoState {
+            inbound: VecDeque::from([Ok(None), Ok(None)]),
+            ..DiscordIoState::default()
+        });
+        let codex = TrackingCodexProcess::new();
+        let opencode = TrackingOpenCodeProcess::new();
+        let mut control = ScriptedControl::with_now(vec![
+            2_000_000_000_000,
+            2_000_000_000_001,
+            2_000_000_000_002,
+        ]);
+
+        let stats = run_daemon_loop_with_transport(
+            &config,
+            &daemon_config,
+            codex,
+            opencode,
+            discord,
+            &mut control,
+        )
+        .expect("daemon loop should succeed despite trigger enqueue failure");
+
+        // The bad trigger should not have been ingested.
+        assert_eq!(stats.ingested_triggers, 0);
+        // The trigger file should still exist (not consumed on failure).
+        assert!(trigger_path.exists());
     }
 
     #[test]

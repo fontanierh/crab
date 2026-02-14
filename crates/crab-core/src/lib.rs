@@ -26,6 +26,7 @@ pub mod profile;
 pub mod prompt_contract;
 pub mod rotation;
 pub mod rotation_sequence;
+pub mod self_trigger;
 pub mod sender_identity;
 pub mod startup_reconciliation;
 pub mod state_schema;
@@ -142,6 +143,10 @@ pub use rotation::{
 };
 pub use rotation_sequence::{
     execute_rotation_sequence, RotationSequenceOutcome, RotationSequenceRuntime,
+};
+pub use self_trigger::{
+    consume_pending_trigger, read_pending_triggers, validate_pending_trigger,
+    write_pending_trigger, PendingTrigger, PENDING_TRIGGERS_DIR_NAME,
 };
 pub use sender_identity::{
     resolve_sender_identity, ResolvedSenderIdentity, SenderConversationKind, SenderIdentityInput,

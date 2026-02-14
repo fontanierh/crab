@@ -1533,6 +1533,7 @@ mod tests {
             DaemonLoopStats {
                 iterations: 1,
                 ingested_messages: 1,
+                ingested_triggers: 0,
                 dispatched_runs: 1,
                 heartbeat_cycles: 0,
             }
@@ -1623,6 +1624,7 @@ mod tests {
             DaemonLoopStats {
                 iterations: 1,
                 ingested_messages: 1,
+                ingested_triggers: 0,
                 dispatched_runs: 1,
                 heartbeat_cycles: 0,
             }
@@ -1653,6 +1655,7 @@ mod tests {
             DaemonLoopStats {
                 iterations: 1,
                 ingested_messages: 1,
+                ingested_triggers: 0,
                 dispatched_runs: 1,
                 heartbeat_cycles: 0,
             }
