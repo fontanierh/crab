@@ -2190,9 +2190,9 @@ impl<D: DaemonDiscordIo> TurnExecutorRuntime for DaemonTurnRuntime<D> {
                 self.owner
                     .profile_defaults
                     .backend
-                    .unwrap_or(BackendKind::Codex)
+                    .unwrap_or(BackendKind::Claude)
             } else {
-                BackendKind::Codex
+                BackendKind::Claude
             },
             model: if trust_context.sender_is_owner {
                 self.owner
@@ -5082,7 +5082,9 @@ mod tests {
     #[test]
     fn daemon_loop_ingests_dispatches_and_stops_backends() {
         let workspace = TempWorkspace::new("daemon", "dispatch");
-        let config = runtime_config_for_workspace_with_lanes(&workspace.path, 2);
+        let mut config = runtime_config_for_workspace_with_lanes(&workspace.path, 2);
+        config.owner.profile_defaults.backend = Some(BackendKind::Codex);
+        config.owner.discord_user_ids = vec!["111".to_string()];
         let daemon_config = DaemonConfig {
             bot_user_id: "999".to_string(),
             tick_interval_ms: 5,
@@ -6989,7 +6991,7 @@ mod tests {
             .resolve_run_profile("discord:channel:777", "123", "hello")
             .expect("profile resolution should succeed");
         assert!(telemetry.sender_is_owner);
-        assert_eq!(telemetry.resolved_profile.backend, BackendKind::Codex);
+        assert_eq!(telemetry.resolved_profile.backend, BackendKind::Claude);
         assert_eq!(telemetry.resolved_profile.model, "auto");
         assert_eq!(
             telemetry.resolved_profile.reasoning_level,

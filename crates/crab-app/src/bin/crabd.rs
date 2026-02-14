@@ -1539,7 +1539,7 @@ mod tests {
             }
         );
         assert_eq!(control.slept, vec![1]);
-        assert_run_event_stream_contains_delta(&workspace_root, run_id, "Codex bridge response");
+        assert_run_event_stream_contains_delta(&workspace_root, run_id, "Claude bridge response");
     }
 
     #[test]
