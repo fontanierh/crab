@@ -144,7 +144,8 @@ All schema validation/retry/fallback logic is shared in `crab-core`.
 Implemented:
 
 - trigger evaluator primitives
-- hidden memory flush primitives
+- hidden memory flush primitives and `TurnExecutor` backend wiring (memory flush turn
+  sends prompt to backend, drains stream, validates ack token; errors are non-blocking)
 - checkpoint parser/retry/fallback primitives
 - rotation sequence primitives
 - token accounting propagation from normalized backend usage payloads into

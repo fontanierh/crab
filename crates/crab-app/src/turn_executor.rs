@@ -1624,10 +1624,41 @@ where
 {
     fn run_hidden_memory_flush(&mut self) -> CrabResult<()> {
         let cycle_id = format!("{}:{}", self.run.id, self.checkpoint_created_at_epoch_ms);
-        let _prompt = build_memory_flush_prompt(&cycle_id)
+        let prompt = build_memory_flush_prompt(&cycle_id)
             .expect("turn rotation runtime always uses a non-empty cycle id");
-        let _ = finalize_hidden_memory_flush("NO_REPLY")
-            .expect("turn rotation runtime uses a known-good hidden flush ack token");
+
+        let mut physical_session = self.runtime.ensure_physical_session(
+            &self.run.logical_session_id,
+            &self.run.profile.resolved_profile,
+            self.logical_session.active_physical_session_id.as_deref(),
+        )?;
+        self.logical_session.active_backend = self.run.profile.resolved_profile.backend;
+        self.logical_session.active_profile = self.run.profile.resolved_profile.clone();
+        self.logical_session.active_physical_session_id = Some(physical_session.id.clone());
+
+        let mut hidden_flush_run = self.run.clone();
+        hidden_flush_run.user_input = prompt.clone();
+        hidden_flush_run.physical_session_id = Some(physical_session.id.clone());
+
+        let hidden_turn_id = format!("turn:{}:hidden-memory-flush", self.run.id);
+        let mut backend_event_stream = self.runtime.execute_backend_turn(
+            self.codex_lifecycle,
+            &mut physical_session,
+            &hidden_flush_run,
+            &hidden_turn_id,
+            &prompt,
+        )?;
+
+        let mut raw_output = String::new();
+        loop {
+            let next = block_on(poll_fn(|cx| backend_event_stream.as_mut().poll_next(cx)));
+            let Some(backend_event) = next else { break };
+            if let Some(delta) = extract_backend_text_delta(&backend_event) {
+                raw_output.push_str(delta);
+            }
+        }
+
+        let _outcome = finalize_hidden_memory_flush(&raw_output)?;
         Ok(())
     }
 
@@ -2425,9 +2456,10 @@ mod tests {
 
     use crab_backends::BackendEventKind;
     use crab_core::{
-        build_checkpoint_prompt, BackendKind, CrabError, CrabResult, EventKind, InferenceProfile,
-        LaneState, OwnerProfileMetadata, ProfileValueSource, ReasoningLevel, RunProfileTelemetry,
-        RunStatus, WorkspaceGitPushPolicy, ONBOARDING_CAPTURE_INCOMPLETE_TOKEN,
+        build_checkpoint_prompt, build_memory_flush_prompt, BackendKind, CrabError, CrabResult,
+        EventKind, InferenceProfile, LaneState, OwnerProfileMetadata, ProfileValueSource,
+        ReasoningLevel, RunProfileTelemetry, RunStatus, WorkspaceGitPushPolicy,
+        MEMORY_FLUSH_DONE_TOKEN, ONBOARDING_CAPTURE_INCOMPLETE_TOKEN,
     };
     use crab_discord::{GatewayConversationKind, GatewayMessage};
     use futures::stream;
@@ -2844,6 +2876,13 @@ mod tests {
     fn hidden_checkpoint_backend_events(raw_output: &str) -> Vec<crab_backends::BackendEvent> {
         vec![
             backend_event(1, BackendEventKind::TextDelta, &[("text", raw_output)]),
+            backend_event(2, BackendEventKind::TurnCompleted, &[("finish", "done")]),
+        ]
+    }
+
+    fn hidden_memory_flush_backend_events(ack_token: &str) -> Vec<crab_backends::BackendEvent> {
+        vec![
+            backend_event(1, BackendEventKind::TextDelta, &[("text", ack_token)]),
             backend_event(2, BackendEventKind::TurnCompleted, &[("finish", "done")]),
         ]
     }
@@ -3321,9 +3360,14 @@ mod tests {
                     &[("stop_reason", "done")],
                 ),
             ]),
+            Ok(hidden_memory_flush_backend_events("NO_REPLY")),
             Ok(hidden_checkpoint_backend_events(&checkpoint_document_json(
                 "rotation checkpoint",
             ))),
+        ]);
+        runtime.ensure_session_results = VecDeque::from(vec![
+            Ok(physical_session_fixture()),
+            Ok(physical_session_fixture()),
         ]);
         let mut config = runtime_config_for_workspace_with_lanes(&workspace.path, 2);
         config.workspace_git.enabled = true;
@@ -3644,9 +3688,14 @@ mod tests {
                     &[("stop_reason", "done")],
                 ),
             ]),
+            Ok(hidden_memory_flush_backend_events("NO_REPLY")),
             Ok(hidden_checkpoint_backend_events(&checkpoint_document_json(
                 "token trigger checkpoint",
             ))),
+        ]);
+        runtime.ensure_session_results = VecDeque::from(vec![
+            Ok(physical_session_fixture()),
+            Ok(physical_session_fixture()),
         ]);
         let mut executor = build_executor(&workspace, runtime, 8);
 
@@ -3701,9 +3750,16 @@ mod tests {
         let workspace = TempWorkspace::new("turn-executor", "manual-compact-owner");
         let mut runtime = FakeRuntime::with_backend_events(Vec::new(), &[1, 2, 3, 4]);
         runtime.resolve_profile_results = VecDeque::from(vec![Ok(owner_profile_telemetry())]);
-        runtime.execute_turn_results = VecDeque::from(vec![Ok(hidden_checkpoint_backend_events(
-            &checkpoint_document_json("manual compact checkpoint"),
-        ))]);
+        runtime.execute_turn_results = VecDeque::from(vec![
+            Ok(hidden_memory_flush_backend_events("NO_REPLY")),
+            Ok(hidden_checkpoint_backend_events(&checkpoint_document_json(
+                "manual compact checkpoint",
+            ))),
+        ]);
+        runtime.ensure_session_results = VecDeque::from(vec![
+            Ok(physical_session_fixture()),
+            Ok(physical_session_fixture()),
+        ]);
         let mut executor = build_executor(&workspace, runtime, 8);
 
         let dispatched = executor
@@ -3769,9 +3825,16 @@ mod tests {
         let workspace = TempWorkspace::new("turn-executor", "manual-compact-delivery-error");
         let mut runtime = FakeRuntime::with_backend_events(Vec::new(), &[1, 2, 3, 4, 5]);
         runtime.resolve_profile_results = VecDeque::from(vec![Ok(owner_profile_telemetry())]);
-        runtime.execute_turn_results = VecDeque::from(vec![Ok(hidden_checkpoint_backend_events(
-            &checkpoint_document_json("manual compact checkpoint"),
-        ))]);
+        runtime.execute_turn_results = VecDeque::from(vec![
+            Ok(hidden_memory_flush_backend_events("NO_REPLY")),
+            Ok(hidden_checkpoint_backend_events(&checkpoint_document_json(
+                "manual compact checkpoint",
+            ))),
+        ]);
+        runtime.ensure_session_results = VecDeque::from(vec![
+            Ok(physical_session_fixture()),
+            Ok(physical_session_fixture()),
+        ]);
         runtime.deliver_results = VecDeque::from(vec![Err(CrabError::InvariantViolation {
             context: "deliver_manual",
             message: "manual response delivery failed".to_string(),
@@ -4378,9 +4441,16 @@ mod tests {
         let workspace =
             TempWorkspace::new("turn-executor", "rotation-completed-event-direct-error");
         let mut runtime = FakeRuntime::with_backend_events(Vec::new(), &[]);
-        runtime.execute_turn_results = VecDeque::from(vec![Ok(hidden_checkpoint_backend_events(
-            &checkpoint_document_json("rotation completed event"),
-        ))]);
+        runtime.execute_turn_results = VecDeque::from(vec![
+            Ok(hidden_memory_flush_backend_events("NO_REPLY")),
+            Ok(hidden_checkpoint_backend_events(&checkpoint_document_json(
+                "rotation completed event",
+            ))),
+        ]);
+        runtime.ensure_session_results = VecDeque::from(vec![
+            Ok(physical_session_fixture()),
+            Ok(physical_session_fixture()),
+        ]);
         let mut executor = build_executor(&workspace, runtime, 8);
         let logical_session_id = "discord:channel:777";
         let run_id = "run:discord:channel:777:rotation-completed-event-direct-error";
@@ -4413,9 +4483,16 @@ mod tests {
     fn maybe_execute_rotation_surfaces_rotation_sabotage_path_errors() {
         let workspace = TempWorkspace::new("turn-executor", "rotation-sabotage-path-error");
         let mut runtime = FakeRuntime::with_backend_events(Vec::new(), &[]);
-        runtime.execute_turn_results = VecDeque::from(vec![Ok(hidden_checkpoint_backend_events(
-            &checkpoint_document_json("rotation sabotage"),
-        ))]);
+        runtime.execute_turn_results = VecDeque::from(vec![
+            Ok(hidden_memory_flush_backend_events("NO_REPLY")),
+            Ok(hidden_checkpoint_backend_events(&checkpoint_document_json(
+                "rotation sabotage",
+            ))),
+        ]);
+        runtime.ensure_session_results = VecDeque::from(vec![
+            Ok(physical_session_fixture()),
+            Ok(physical_session_fixture()),
+        ]);
         let mut executor = build_executor(&workspace, runtime, 8);
         let logical_session_id = "discord:channel:777";
         let run_id = "run:discord:channel:777:rotation-sabotage-path-error";
@@ -4451,9 +4528,16 @@ mod tests {
         let session_path = session_file_path(&state_root, "discord:channel:777");
         let mut runtime = FakeRuntime::with_backend_events(Vec::new(), &[1, 2, 3, 4, 5]);
         runtime.resolve_profile_results = VecDeque::from(vec![Ok(owner_profile_telemetry())]);
-        runtime.execute_turn_results = VecDeque::from(vec![Ok(hidden_checkpoint_backend_events(
-            &checkpoint_document_json("session persist failure checkpoint"),
-        ))]);
+        runtime.execute_turn_results = VecDeque::from(vec![
+            Ok(hidden_memory_flush_backend_events("NO_REPLY")),
+            Ok(hidden_checkpoint_backend_events(&checkpoint_document_json(
+                "session persist failure checkpoint",
+            ))),
+        ]);
+        runtime.ensure_session_results = VecDeque::from(vec![
+            Ok(physical_session_fixture()),
+            Ok(physical_session_fixture()),
+        ]);
         runtime = runtime.with_now_epoch_sabotage(4, session_path);
         let mut executor = build_executor(&workspace, runtime, 8);
 
@@ -4477,9 +4561,16 @@ mod tests {
         let workspace = TempWorkspace::new("turn-executor", "manual-checkpoint-store-error");
         let mut runtime = FakeRuntime::with_backend_events(Vec::new(), &[1, 2, 3, 4, 5]);
         runtime.resolve_profile_results = VecDeque::from(vec![Ok(owner_profile_telemetry())]);
-        runtime.execute_turn_results = VecDeque::from(vec![Ok(hidden_checkpoint_backend_events(
-            &checkpoint_document_json("checkpoint persist failure"),
-        ))]);
+        runtime.execute_turn_results = VecDeque::from(vec![
+            Ok(hidden_memory_flush_backend_events("NO_REPLY")),
+            Ok(hidden_checkpoint_backend_events(&checkpoint_document_json(
+                "checkpoint persist failure",
+            ))),
+        ]);
+        runtime.ensure_session_results = VecDeque::from(vec![
+            Ok(physical_session_fixture()),
+            Ok(physical_session_fixture()),
+        ]);
         let mut executor = build_executor(&workspace, runtime, 8);
 
         let checkpoints_root = state_root(&workspace).join("checkpoints");
@@ -4610,11 +4701,13 @@ mod tests {
                     &[("stop_reason", "done")],
                 ),
             ]),
+            Ok(hidden_memory_flush_backend_events("NO_REPLY")),
             Ok(hidden_checkpoint_backend_events(&checkpoint_document_json(
                 "Primary hidden checkpoint from backend",
             ))),
         ]);
         runtime.ensure_session_results = VecDeque::from(vec![
+            Ok(physical_session_fixture()),
             Ok(physical_session_fixture()),
             Ok(physical_session_fixture()),
         ]);
@@ -4625,13 +4718,13 @@ mod tests {
             .expect("backend checkpoint run should succeed")
             .expect("backend checkpoint run should dispatch");
         let runtime = executor.runtime_mut();
-        assert_eq!(runtime.executed_turn_contexts.len(), 2);
+        assert_eq!(runtime.executed_turn_contexts.len(), 3);
         assert_eq!(
-            runtime.executed_turn_contexts[1].0,
+            runtime.executed_turn_contexts[2].0,
             "turn:run:discord:channel:777:m-rotation-backend-checkpoint:hidden-checkpoint:1"
         );
         assert_eq!(
-            runtime.executed_turn_contexts[1].1,
+            runtime.executed_turn_contexts[2].1,
             build_checkpoint_prompt()
         );
 
@@ -4705,11 +4798,15 @@ mod tests {
             Ok(hidden_checkpoint_backend_events(
                 onboarding_capture_payload_json(),
             )),
+            Ok(hidden_memory_flush_backend_events("NO_REPLY")),
             Ok(hidden_checkpoint_backend_events(&checkpoint_document_json(
                 "rotation onboarding checkpoint",
             ))),
         ]);
         runtime.ensure_session_results = VecDeque::from(vec![
+            Ok(physical_session_fixture_for(
+                "discord:dm:424242424242424242",
+            )),
             Ok(physical_session_fixture_for(
                 "discord:dm:424242424242424242",
             )),
@@ -4742,7 +4839,7 @@ mod tests {
         assert!(!workspace.path.join("BOOTSTRAP.md").exists());
 
         let runtime = executor.runtime_mut();
-        assert_eq!(runtime.executed_turn_contexts.len(), 3);
+        assert_eq!(runtime.executed_turn_contexts.len(), 4);
         assert!(runtime.executed_turn_contexts[1]
             .1
             .contains("Onboarding extraction session id: onboarding-rotation:run:discord:dm:424242424242424242:m-rotation-onboarding-success"));
@@ -4778,12 +4875,16 @@ mod tests {
         )
         .expect("bootstrap marker should be writable");
         let mut runtime = FakeRuntime::with_backend_events(Vec::new(), &[]);
-        runtime.execute_turn_results = VecDeque::from(vec![Ok(hidden_checkpoint_backend_events(
-            &checkpoint_document_json("rotation without onboarding extraction"),
-        ))]);
-        runtime.ensure_session_results = VecDeque::from(vec![Ok(physical_session_fixture_for(
-            "discord:channel:777",
-        ))]);
+        runtime.execute_turn_results = VecDeque::from(vec![
+            Ok(hidden_memory_flush_backend_events("NO_REPLY")),
+            Ok(hidden_checkpoint_backend_events(&checkpoint_document_json(
+                "rotation without onboarding extraction",
+            ))),
+        ]);
+        runtime.ensure_session_results = VecDeque::from(vec![
+            Ok(physical_session_fixture_for("discord:channel:777")),
+            Ok(physical_session_fixture_for("discord:channel:777")),
+        ]);
         let mut executor = build_executor(&workspace, runtime, 8);
         fs::write(
             workspace.path.join("BOOTSTRAP.md"),
@@ -4811,9 +4912,9 @@ mod tests {
         assert!(outcome.onboarding_completion_resolution.is_none());
         assert_eq!(outcome.supplemental_emitted_event_count, 0);
         let runtime = executor.runtime_mut();
-        assert_eq!(runtime.executed_turn_contexts.len(), 1);
+        assert_eq!(runtime.executed_turn_contexts.len(), 2);
         assert_eq!(
-            runtime.executed_turn_contexts[0].1,
+            runtime.executed_turn_contexts[1].1,
             build_checkpoint_prompt()
         );
     }
@@ -4871,11 +4972,15 @@ mod tests {
             Ok(hidden_checkpoint_backend_events(
                 ONBOARDING_CAPTURE_INCOMPLETE_TOKEN,
             )),
+            Ok(hidden_memory_flush_backend_events("NO_REPLY")),
             Ok(hidden_checkpoint_backend_events(&checkpoint_document_json(
                 "rotation after incomplete onboarding extraction",
             ))),
         ]);
         runtime.ensure_session_results = VecDeque::from(vec![
+            Ok(physical_session_fixture_for(
+                "discord:dm:424242424242424242",
+            )),
             Ok(physical_session_fixture_for(
                 "discord:dm:424242424242424242",
             )),
@@ -4942,11 +5047,15 @@ mod tests {
         let mut runtime = FakeRuntime::with_backend_events(Vec::new(), &[]);
         runtime.execute_turn_results = VecDeque::from(vec![
             Ok(hidden_checkpoint_backend_events("{")),
+            Ok(hidden_memory_flush_backend_events("NO_REPLY")),
             Ok(hidden_checkpoint_backend_events(&checkpoint_document_json(
                 "rotation after parse error",
             ))),
         ]);
         runtime.ensure_session_results = VecDeque::from(vec![
+            Ok(physical_session_fixture_for(
+                "discord:dm:424242424242424242",
+            )),
             Ok(physical_session_fixture_for(
                 "discord:dm:424242424242424242",
             )),
@@ -5016,11 +5125,15 @@ mod tests {
             Ok(hidden_checkpoint_backend_events(
                 onboarding_capture_payload_json(),
             )),
+            Ok(hidden_memory_flush_backend_events("NO_REPLY")),
             Ok(hidden_checkpoint_backend_events(&checkpoint_document_json(
                 "rotation after apply error",
             ))),
         ]);
         runtime.ensure_session_results = VecDeque::from(vec![
+            Ok(physical_session_fixture_for(
+                "discord:dm:424242424242424242",
+            )),
             Ok(physical_session_fixture_for(
                 "discord:dm:424242424242424242",
             )),
@@ -5123,10 +5236,12 @@ mod tests {
                     &[("stop_reason", "done")],
                 ),
             ]),
+            Ok(hidden_memory_flush_backend_events("NO_REPLY")),
             Ok(hidden_checkpoint_backend_events(invalid_checkpoint_json)),
             Ok(hidden_checkpoint_backend_events(invalid_checkpoint_json)),
         ]);
         runtime.ensure_session_results = VecDeque::from(vec![
+            Ok(physical_session_fixture()),
             Ok(physical_session_fixture()),
             Ok(physical_session_fixture()),
         ]);
@@ -5137,21 +5252,21 @@ mod tests {
             .expect("rotation should succeed with fallback checkpoint")
             .expect("schema failure run should dispatch");
         let runtime = executor.runtime_mut();
-        assert_eq!(runtime.executed_turn_contexts.len(), 3);
+        assert_eq!(runtime.executed_turn_contexts.len(), 4);
         assert_eq!(
-            runtime.executed_turn_contexts[1].1,
+            runtime.executed_turn_contexts[2].1,
             build_checkpoint_prompt()
         );
         assert_eq!(
-            runtime.executed_turn_contexts[2].0,
+            runtime.executed_turn_contexts[3].0,
             "turn:run:discord:channel:777:m-rotation-checkpoint-schema-failure:hidden-checkpoint:2"
         );
-        assert!(runtime.executed_turn_contexts[2]
+        assert!(runtime.executed_turn_contexts[3]
             .1
             .contains("Your previous checkpoint response was invalid"));
         assert_ne!(
-            runtime.executed_turn_contexts[2].1,
-            runtime.executed_turn_contexts[1].1
+            runtime.executed_turn_contexts[3].1,
+            runtime.executed_turn_contexts[2].1
         );
 
         let logical_session_id = "discord:channel:777";
@@ -5237,12 +5352,14 @@ mod tests {
                     &[("stop_reason", "done")],
                 ),
             ]),
+            Ok(hidden_memory_flush_backend_events("NO_REPLY")),
             Err(CrabError::InvariantViolation {
                 context: "checkpoint_backend_turn",
                 message: "backend unavailable".to_string(),
             }),
         ]);
         runtime.ensure_session_results = VecDeque::from(vec![
+            Ok(physical_session_fixture()),
             Ok(physical_session_fixture()),
             Ok(physical_session_fixture()),
         ]);
@@ -5253,13 +5370,13 @@ mod tests {
             .expect("rotation should succeed with deterministic fallback")
             .expect("backend failure run should dispatch");
         let runtime = executor.runtime_mut();
-        assert_eq!(runtime.executed_turn_contexts.len(), 2);
+        assert_eq!(runtime.executed_turn_contexts.len(), 3);
         assert_eq!(
-            runtime.executed_turn_contexts[1].0,
+            runtime.executed_turn_contexts[2].0,
             "turn:run:discord:channel:777:m-rotation-checkpoint-backend-failure:hidden-checkpoint:1"
         );
         assert_eq!(
-            runtime.executed_turn_contexts[1].1,
+            runtime.executed_turn_contexts[2].1,
             build_checkpoint_prompt()
         );
 
@@ -7590,6 +7707,8 @@ mod tests {
                     &[("stop_reason", "done")],
                 ),
             ]),
+            // Hidden memory flush turn during pre-run rotation
+            Ok(hidden_memory_flush_backend_events("NO_REPLY")),
             // Hidden checkpoint turn during pre-run rotation
             Ok(hidden_checkpoint_backend_events(&checkpoint_document_json(
                 "inactivity checkpoint",
@@ -7609,6 +7728,8 @@ mod tests {
             Ok(sample_profile_telemetry()),
         ]);
         runtime.ensure_session_results = VecDeque::from(vec![
+            Ok(physical_session_fixture()),
+            // ensure_physical_session for hidden memory flush turn during rotation
             Ok(physical_session_fixture()),
             // ensure_physical_session for hidden checkpoint turn during rotation
             Ok(physical_session_fixture()),
@@ -7850,9 +7971,16 @@ mod tests {
         let workspace = TempWorkspace::new("turn-executor", "bootstrap-flag-reset");
         let mut runtime = FakeRuntime::with_backend_events(Vec::new(), &[1, 2, 3, 4]);
         runtime.resolve_profile_results = VecDeque::from(vec![Ok(owner_profile_telemetry())]);
-        runtime.execute_turn_results = VecDeque::from(vec![Ok(hidden_checkpoint_backend_events(
-            &checkpoint_document_json("manual compact checkpoint"),
-        ))]);
+        runtime.execute_turn_results = VecDeque::from(vec![
+            Ok(hidden_memory_flush_backend_events("NO_REPLY")),
+            Ok(hidden_checkpoint_backend_events(&checkpoint_document_json(
+                "manual compact checkpoint",
+            ))),
+        ]);
+        runtime.ensure_session_results = VecDeque::from(vec![
+            Ok(physical_session_fixture()),
+            Ok(physical_session_fixture()),
+        ]);
         let mut executor = build_executor(&workspace, runtime, 8);
 
         executor
@@ -8003,5 +8131,278 @@ mod tests {
             missing_usage_count, 0,
             "no missing usage diagnostic should be emitted on failed runs"
         );
+    }
+
+    // ── Memory flush hidden turn tests ───────────────────────────────────
+
+    #[test]
+    fn memory_flush_hidden_turn_sends_prompt_to_backend() {
+        let workspace = TempWorkspace::new("turn-executor", "memory-flush-prompt-delivery");
+        let mut runtime = FakeRuntime::with_backend_events(Vec::new(), &[1, 2, 3, 4]);
+        runtime.resolve_profile_results = VecDeque::from(vec![Ok(owner_profile_telemetry())]);
+        runtime.execute_turn_results = VecDeque::from(vec![
+            Ok(hidden_memory_flush_backend_events("NO_REPLY")),
+            Ok(hidden_checkpoint_backend_events(&checkpoint_document_json(
+                "flush prompt test checkpoint",
+            ))),
+        ]);
+        runtime.ensure_session_results = VecDeque::from(vec![
+            Ok(physical_session_fixture()),
+            Ok(physical_session_fixture()),
+        ]);
+        let mut executor = build_executor(&workspace, runtime, 8);
+
+        executor
+            .process_gateway_message(gateway_message_with_content(
+                "m-flush-prompt-delivery",
+                "/compact confirm",
+            ))
+            .expect("compact should succeed")
+            .expect("compact should dispatch");
+
+        let runtime = executor.runtime_mut();
+        assert!(runtime.executed_turn_contexts.len() >= 2);
+        let (flush_turn_id, flush_prompt) = &runtime.executed_turn_contexts[0];
+        assert_eq!(
+            flush_turn_id,
+            "turn:run:discord:channel:777:m-flush-prompt-delivery:hidden-memory-flush"
+        );
+        let expected_prompt =
+            build_memory_flush_prompt("run:discord:channel:777:m-flush-prompt-delivery:4")
+                .expect("prompt builder should succeed");
+        assert_eq!(flush_prompt, &expected_prompt);
+    }
+
+    #[test]
+    fn memory_flush_done_ack_does_not_block_rotation() {
+        let workspace = TempWorkspace::new("turn-executor", "memory-flush-done-ack");
+        let mut runtime = FakeRuntime::with_backend_events(Vec::new(), &[1, 2, 3, 4]);
+        runtime.resolve_profile_results = VecDeque::from(vec![Ok(owner_profile_telemetry())]);
+        runtime.execute_turn_results = VecDeque::from(vec![
+            Ok(hidden_memory_flush_backend_events(MEMORY_FLUSH_DONE_TOKEN)),
+            Ok(hidden_checkpoint_backend_events(&checkpoint_document_json(
+                "flush done checkpoint",
+            ))),
+        ]);
+        runtime.ensure_session_results = VecDeque::from(vec![
+            Ok(physical_session_fixture()),
+            Ok(physical_session_fixture()),
+        ]);
+        let mut executor = build_executor(&workspace, runtime, 8);
+
+        let dispatched = executor
+            .process_gateway_message(gateway_message_with_content(
+                "m-flush-done-ack",
+                "/compact confirm",
+            ))
+            .expect("compact should succeed")
+            .expect("compact should dispatch");
+        assert_eq!(dispatched.status, RunStatus::Succeeded);
+
+        let session = executor
+            .composition()
+            .state_stores
+            .session_store
+            .get_session("discord:channel:777")
+            .expect("session lookup should succeed")
+            .expect("session should exist");
+        assert!(session.last_successful_checkpoint_id.is_some());
+
+        let events = executor
+            .composition()
+            .state_stores
+            .event_store
+            .replay_run(
+                "discord:channel:777",
+                "run:discord:channel:777:m-flush-done-ack",
+            )
+            .expect("event replay should succeed");
+        let rotation_completed = events
+            .iter()
+            .find(|event| {
+                event.kind == EventKind::RunNote
+                    && event
+                        .payload
+                        .get("rotation_event")
+                        .is_some_and(|value| value == "completed")
+            })
+            .expect("rotation completed event should exist");
+        assert_eq!(
+            rotation_completed.payload.get("memory_flush_error"),
+            Some(&"none".to_string())
+        );
+    }
+
+    #[test]
+    fn memory_flush_backend_error_is_non_blocking() {
+        let workspace = TempWorkspace::new("turn-executor", "memory-flush-backend-error");
+        let mut runtime = FakeRuntime::with_backend_events(Vec::new(), &[1, 2, 3, 4]);
+        runtime.resolve_profile_results = VecDeque::from(vec![Ok(owner_profile_telemetry())]);
+        runtime.execute_turn_results = VecDeque::from(vec![
+            Err(CrabError::InvariantViolation {
+                context: "memory_flush_backend",
+                message: "backend unavailable for flush".to_string(),
+            }),
+            Ok(hidden_checkpoint_backend_events(&checkpoint_document_json(
+                "flush error checkpoint",
+            ))),
+        ]);
+        runtime.ensure_session_results = VecDeque::from(vec![
+            Ok(physical_session_fixture()),
+            Ok(physical_session_fixture()),
+        ]);
+        let mut executor = build_executor(&workspace, runtime, 8);
+
+        let dispatched = executor
+            .process_gateway_message(gateway_message_with_content(
+                "m-flush-backend-error",
+                "/compact confirm",
+            ))
+            .expect("compact should succeed despite flush error")
+            .expect("compact should dispatch");
+        assert_eq!(dispatched.status, RunStatus::Succeeded);
+
+        let session = executor
+            .composition()
+            .state_stores
+            .session_store
+            .get_session("discord:channel:777")
+            .expect("session lookup should succeed")
+            .expect("session should exist");
+        assert!(session.last_successful_checkpoint_id.is_some());
+
+        let events = executor
+            .composition()
+            .state_stores
+            .event_store
+            .replay_run(
+                "discord:channel:777",
+                "run:discord:channel:777:m-flush-backend-error",
+            )
+            .expect("event replay should succeed");
+        let rotation_completed = events
+            .iter()
+            .find(|event| {
+                event.kind == EventKind::RunNote
+                    && event
+                        .payload
+                        .get("rotation_event")
+                        .is_some_and(|value| value == "completed")
+            })
+            .expect("rotation completed event should exist");
+        let flush_error = rotation_completed
+            .payload
+            .get("memory_flush_error")
+            .expect("memory flush error should be recorded");
+        assert!(flush_error.contains("hidden memory flush failed and was ignored"));
+        assert!(flush_error.contains("backend unavailable for flush"));
+    }
+
+    #[test]
+    fn memory_flush_invalid_ack_is_non_blocking() {
+        let workspace = TempWorkspace::new("turn-executor", "memory-flush-invalid-ack");
+        let mut runtime = FakeRuntime::with_backend_events(Vec::new(), &[1, 2, 3, 4]);
+        runtime.resolve_profile_results = VecDeque::from(vec![Ok(owner_profile_telemetry())]);
+        runtime.execute_turn_results = VecDeque::from(vec![
+            Ok(hidden_memory_flush_backend_events("UNEXPECTED_RESPONSE")),
+            Ok(hidden_checkpoint_backend_events(&checkpoint_document_json(
+                "flush invalid ack checkpoint",
+            ))),
+        ]);
+        runtime.ensure_session_results = VecDeque::from(vec![
+            Ok(physical_session_fixture()),
+            Ok(physical_session_fixture()),
+        ]);
+        let mut executor = build_executor(&workspace, runtime, 8);
+
+        let dispatched = executor
+            .process_gateway_message(gateway_message_with_content(
+                "m-flush-invalid-ack",
+                "/compact confirm",
+            ))
+            .expect("compact should succeed despite invalid ack")
+            .expect("compact should dispatch");
+        assert_eq!(dispatched.status, RunStatus::Succeeded);
+
+        let events = executor
+            .composition()
+            .state_stores
+            .event_store
+            .replay_run(
+                "discord:channel:777",
+                "run:discord:channel:777:m-flush-invalid-ack",
+            )
+            .expect("event replay should succeed");
+        let rotation_completed = events
+            .iter()
+            .find(|event| {
+                event.kind == EventKind::RunNote
+                    && event
+                        .payload
+                        .get("rotation_event")
+                        .is_some_and(|value| value == "completed")
+            })
+            .expect("rotation completed event should exist");
+        let flush_error = rotation_completed
+            .payload
+            .get("memory_flush_error")
+            .expect("memory flush error should be recorded");
+        assert!(flush_error.contains("hidden memory flush failed and was ignored"));
+        assert!(flush_error.contains("UNEXPECTED_RESPONSE"));
+    }
+
+    #[test]
+    fn memory_flush_ensure_session_error_is_non_blocking() {
+        let workspace = TempWorkspace::new("turn-executor", "memory-flush-session-error");
+        let mut runtime = FakeRuntime::with_backend_events(Vec::new(), &[1, 2, 3, 4]);
+        runtime.resolve_profile_results = VecDeque::from(vec![Ok(owner_profile_telemetry())]);
+        // Memory flush ensure_physical_session fails; checkpoint succeeds.
+        runtime.ensure_session_results = VecDeque::from(vec![
+            Err(CrabError::InvariantViolation {
+                context: "ensure_session_flush",
+                message: "session unavailable for flush".to_string(),
+            }),
+            Ok(physical_session_fixture()),
+        ]);
+        // Only checkpoint consumes execute_backend_turn (flush never reaches it).
+        runtime.execute_turn_results = VecDeque::from(vec![Ok(hidden_checkpoint_backend_events(
+            &checkpoint_document_json("flush session error checkpoint"),
+        ))]);
+        let mut executor = build_executor(&workspace, runtime, 8);
+
+        let dispatched = executor
+            .process_gateway_message(gateway_message_with_content(
+                "m-flush-session-error",
+                "/compact confirm",
+            ))
+            .expect("compact should succeed despite flush session error")
+            .expect("compact should dispatch");
+        assert_eq!(dispatched.status, RunStatus::Succeeded);
+
+        let events = executor
+            .composition()
+            .state_stores
+            .event_store
+            .replay_run(
+                "discord:channel:777",
+                "run:discord:channel:777:m-flush-session-error",
+            )
+            .expect("event replay should succeed");
+        let rotation_completed = events
+            .iter()
+            .find(|event| {
+                event.kind == EventKind::RunNote
+                    && event
+                        .payload
+                        .get("rotation_event")
+                        .is_some_and(|value| value == "completed")
+            })
+            .expect("rotation completed event should exist");
+        let flush_error = rotation_completed
+            .payload
+            .get("memory_flush_error")
+            .expect("memory flush error should be recorded");
+        assert!(flush_error.contains("hidden memory flush failed and was ignored"));
+        assert!(flush_error.contains("session unavailable for flush"));
     }
 }
