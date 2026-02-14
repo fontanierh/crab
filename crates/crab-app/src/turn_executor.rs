@@ -706,9 +706,10 @@ where
                 "Crab: session rotated ({}). Context checkpointed.",
                 outcome.triggers_label
             );
+            let notification_id = format!("delivery:{}:rotation-notification", run.id);
             // Keep on one line: multi-line call sites can produce llvm-cov line-mapping gaps.
             #[rustfmt::skip]
-            let _ = self.deliver_rendered_assistant_output(&run, &delivery_message_id(&run.id, 0), &notification, 0, completed_at_epoch_ms)?;
+            let _ = self.deliver_rendered_assistant_output(&run, &notification_id, &notification, 0, completed_at_epoch_ms)?;
         }
 
         if final_status == RunStatus::Failed && delivery.total_rendered_len == 0 {
