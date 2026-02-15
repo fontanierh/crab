@@ -216,6 +216,7 @@ dependencies = [
  "crab-core",
  "crab-store",
  "serde",
+ "serde_json",
  "sha2",
 ]
 

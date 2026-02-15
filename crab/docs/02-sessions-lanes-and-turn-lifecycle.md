@@ -84,6 +84,25 @@ Current orchestration path in `crates/crab-app/src/turn_executor.rs`:
 12. Stream accumulated assistant output via delivery ledger
 13. Persist final run/session state and completion event
 
+## Attachment Handling
+
+When a Discord message includes file or image attachments, the pipeline threads them through to
+the backend agent:
+
+1. **Connector** extracts attachment metadata (URL, filename, size, content_type) from Serenity
+   `Message.attachments` and populates `GatewayMessage.attachments`.
+2. **Daemon** (`persist_enqueued_run` in `turn_executor.rs`): downloads each attachment from the
+   CDN URL to `state/attachments/{run_id}/`, then prepends file-path annotations to `user_input`:
+   `[attached file: photo.png (saved to /path/to/state/attachments/run-id/photo.png)]`
+3. **Claude Code** receives the annotated text and can read files (including images) via its
+   built-in Read tool.
+4. **Cleanup**: attachment directory is removed at run finalization (all terminal statuses:
+   succeeded, failed, cancelled).
+5. Attachments are ephemeral and do not survive session rotation.
+
+Filename sanitization replaces path-traversal characters (`/`, `\`, `\0`) to prevent writes
+outside the attachment directory.
+
 ## Run/Event Identity
 
 - run id: deterministic from logical session + ingress message id

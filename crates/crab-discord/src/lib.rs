@@ -23,6 +23,15 @@ pub enum GatewayConversationKind {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GatewayAttachment {
+    pub url: String,
+    pub filename: String,
+    pub size: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_type: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GatewayMessage {
     pub message_id: String,
     pub author_id: String,
@@ -32,6 +41,8 @@ pub struct GatewayMessage {
     pub thread_id: Option<String>,
     pub content: String,
     pub conversation_kind: GatewayConversationKind,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attachments: Vec<GatewayAttachment>,
 }
 
 /// JSONL IPC frame emitted by `crabd` (stdout) and consumed by `crab-discord-connector`.
@@ -122,6 +133,7 @@ pub struct IngressMessage {
     pub channel_id: String,
     pub content: String,
     pub routing_key: RoutingKey,
+    pub attachments: Vec<GatewayAttachment>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -343,6 +355,7 @@ impl GatewayIngress {
             channel_id: message.channel_id,
             content: message.content,
             routing_key,
+            attachments: message.attachments,
         }))
     }
 }
@@ -593,9 +606,9 @@ mod tests {
 
     use super::{
         extract_routing_key, split_discord_message, DeliveryAttempt, DiscordMessageChunk,
-        GatewayConversationKind, GatewayIngress, GatewayMessage, IdempotentDeliveryLedger,
-        MarkSentDecision, RoutingKey, ShouldSendDecision, StreamingDelivery, StreamingDeliveryOp,
-        DISCORD_MESSAGE_CHAR_LIMIT,
+        GatewayAttachment, GatewayConversationKind, GatewayIngress, GatewayMessage,
+        IdempotentDeliveryLedger, MarkSentDecision, RoutingKey, ShouldSendDecision,
+        StreamingDelivery, StreamingDeliveryOp, DISCORD_MESSAGE_CHAR_LIMIT,
     };
 
     fn sample_message(kind: GatewayConversationKind) -> GatewayMessage {
@@ -608,6 +621,7 @@ mod tests {
             thread_id: None,
             content: "hello".to_string(),
             conversation_kind: kind,
+            attachments: vec![],
         }
     }
 
@@ -1582,5 +1596,80 @@ mod tests {
         ));
 
         let _ = fs::remove_file(&root);
+    }
+
+    #[test]
+    fn gateway_message_serde_round_trip_with_attachments() {
+        let message = GatewayMessage {
+            message_id: "m-1".to_string(),
+            author_id: "u-1".to_string(),
+            author_is_bot: false,
+            channel_id: "c-1".to_string(),
+            guild_id: Some("g-1".to_string()),
+            thread_id: None,
+            content: "hello".to_string(),
+            conversation_kind: GatewayConversationKind::GuildChannel,
+            attachments: vec![GatewayAttachment {
+                url: "https://cdn.example.com/file.png".to_string(),
+                filename: "file.png".to_string(),
+                size: 1024,
+                content_type: Some("image/png".to_string()),
+            }],
+        };
+        let json = serde_json::to_string(&message).expect("serialize should succeed");
+        let deserialized: GatewayMessage =
+            serde_json::from_str(&json).expect("deserialize should succeed");
+        assert_eq!(message, deserialized);
+    }
+
+    #[test]
+    fn gateway_message_deserializes_without_attachments_key() {
+        let json = r#"{
+            "message_id": "m-1",
+            "author_id": "u-1",
+            "author_is_bot": false,
+            "channel_id": "c-1",
+            "guild_id": "g-1",
+            "thread_id": null,
+            "content": "hello",
+            "conversation_kind": "guild_channel"
+        }"#;
+        let message: GatewayMessage =
+            serde_json::from_str(json).expect("deserialize should succeed");
+        assert!(message.attachments.is_empty());
+    }
+
+    #[test]
+    fn gateway_ingress_forwards_attachments() {
+        let ingress = GatewayIngress::new("bot-self").expect("ingress should build");
+        let mut message = sample_message(GatewayConversationKind::GuildChannel);
+        message.attachments = vec![GatewayAttachment {
+            url: "https://cdn.example.com/photo.jpg".to_string(),
+            filename: "photo.jpg".to_string(),
+            size: 2048,
+            content_type: Some("image/jpeg".to_string()),
+        }];
+
+        let accepted = ingress
+            .ingest(message)
+            .expect("ingest should succeed")
+            .expect("message should be accepted");
+        assert_eq!(accepted.attachments.len(), 1);
+        assert_eq!(accepted.attachments[0].filename, "photo.jpg");
+    }
+
+    #[test]
+    fn gateway_attachment_without_content_type_serializes() {
+        let attachment = GatewayAttachment {
+            url: "https://cdn.example.com/data.bin".to_string(),
+            filename: "data.bin".to_string(),
+            size: 512,
+            content_type: None,
+        };
+        let json = serde_json::to_string(&attachment).expect("serialize should succeed");
+        assert!(!json.contains("content_type"));
+        let deserialized: GatewayAttachment =
+            serde_json::from_str(&json).expect("deserialize should succeed");
+        assert_eq!(attachment, deserialized);
     }
 }

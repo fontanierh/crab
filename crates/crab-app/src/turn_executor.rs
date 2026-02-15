@@ -24,7 +24,9 @@ use crab_core::{
     WorkspaceGitPushRequest, DEFAULT_CHECKPOINT_MAX_ATTEMPTS,
     DEFAULT_FALLBACK_TRANSCRIPT_TAIL_LIMIT, ONBOARDING_CAPTURE_INCOMPLETE_TOKEN,
 };
-use crab_discord::{DeliveryAttempt, GatewayMessage, RoutingKey, ShouldSendDecision};
+use crab_discord::{
+    DeliveryAttempt, GatewayAttachment, GatewayMessage, RoutingKey, ShouldSendDecision,
+};
 use crab_scheduler::QueuedRun;
 use crab_store::{CheckpointStore, EventStore};
 use futures::executor::block_on;
@@ -233,6 +235,7 @@ where
             routing_key: RoutingKey::Channel {
                 channel_id: channel_id.to_string(),
             },
+            attachments: vec![],
         };
         self.enqueue_ingress_message(ingress)
     }
@@ -348,7 +351,12 @@ where
             logical_session_id: logical_session_id.to_string(),
             physical_session_id: None,
             status: RunStatus::Queued,
-            user_input: ingress.content.clone(),
+            user_input: build_user_input_with_attachments(
+                &ingress.content,
+                &ingress.attachments,
+                &self.composition.state_stores.root,
+                run_id,
+            ),
             delivery_channel_id: Some(ingress.channel_id.clone()),
             profile: profile.clone(),
             queued_at_epoch_ms: now_epoch_ms,
@@ -760,6 +768,8 @@ where
             completed_at_epoch_ms,
             rotation_outcome.as_ref(),
         );
+
+        cleanup_attachment_directory(&self.composition.state_stores.root, &run.id);
 
         Ok(DispatchedTurn {
             logical_session_id: logical_session_id.to_string(),
@@ -2502,6 +2512,84 @@ where
     }
 }
 
+fn attachment_directory(state_root: &Path, run_id: &str) -> PathBuf {
+    state_root
+        .join("attachments")
+        .join(run_id.replace(['/', '\\', ':'], "_"))
+}
+
+fn sanitize_attachment_filename(filename: &str, index: usize) -> String {
+    let trimmed = filename.trim();
+    if trimmed.is_empty() {
+        return format!("attachment_{index}");
+    }
+    trimmed.replace(['/', '\\', '\0'], "_")
+}
+
+fn cleanup_attachment_directory(state_root: &Path, run_id: &str) {
+    let _ = std::fs::remove_dir_all(attachment_directory(state_root, run_id));
+}
+
+#[cfg(not(any(test, coverage)))]
+fn download_attachment(url: &str, dest_path: &Path) -> Result<(), String> {
+    let response = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(120))
+        .build()
+        .map_err(|e| e.to_string())?
+        .get(url)
+        .send()
+        .map_err(|e| e.to_string())?;
+    if !response.status().is_success() {
+        return Err(format!("HTTP {}", response.status()));
+    }
+    std::fs::write(dest_path, &response.bytes().map_err(|e| e.to_string())?)
+        .map_err(|e| e.to_string())
+}
+
+#[cfg(any(test, coverage))]
+fn download_attachment(url: &str, _dest_path: &Path) -> Result<(), String> {
+    if url.contains("FAIL_DOWNLOAD") {
+        return Err("simulated download failure".to_string());
+    }
+    Ok(())
+}
+
+fn build_user_input_with_attachments(
+    content: &str,
+    attachments: &[GatewayAttachment],
+    state_root: &Path,
+    run_id: &str,
+) -> String {
+    if attachments.is_empty() {
+        return content.to_string();
+    }
+    let dir = attachment_directory(state_root, run_id);
+    let _ = std::fs::create_dir_all(&dir);
+
+    let mut lines = Vec::new();
+    for (i, att) in attachments.iter().enumerate() {
+        let safe_name = sanitize_attachment_filename(&att.filename, i);
+        let dest = dir.join(&safe_name);
+        match download_attachment(&att.url, &dest) {
+            Ok(()) => lines.push(format!(
+                "[attached file: {} (saved to {})]",
+                att.filename,
+                dest.to_string_lossy()
+            )),
+            Err(e) => lines.push(format!(
+                "[attached file: {} (download failed: {})]",
+                att.filename, e
+            )),
+        }
+    }
+    let annotation = lines.join("\n");
+    if content.trim().is_empty() {
+        format!("{annotation}\n(no text message provided)")
+    } else {
+        format!("{annotation}\n{content}")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::{BTreeMap, VecDeque};
@@ -2516,10 +2604,14 @@ mod tests {
         ReasoningLevel, RunProfileTelemetry, RunStatus, WorkspaceGitPushPolicy,
         MEMORY_FLUSH_DONE_TOKEN, ONBOARDING_CAPTURE_INCOMPLETE_TOKEN,
     };
-    use crab_discord::{GatewayConversationKind, GatewayMessage};
+    use crab_discord::{GatewayAttachment, GatewayConversationKind, GatewayMessage};
     use futures::stream;
 
-    use super::{DispatchedTurn, QueuedTurn, TurnExecutor, TurnExecutorRuntime};
+    use super::{
+        attachment_directory, build_user_input_with_attachments, cleanup_attachment_directory,
+        sanitize_attachment_filename, DispatchedTurn, QueuedTurn, TurnExecutor,
+        TurnExecutorRuntime,
+    };
     use crate::composition::compose_runtime_with_processes_and_queue_limit;
     use crate::test_support::{
         runtime_config_for_workspace_with_lanes, FakeCodexProcess, FakeOpenCodeProcess,
@@ -2791,6 +2883,7 @@ mod tests {
             thread_id: None,
             content: "ship ws15-t2".to_string(),
             conversation_kind: GatewayConversationKind::GuildChannel,
+            attachments: vec![],
         }
     }
 
@@ -2814,6 +2907,7 @@ mod tests {
             thread_id: None,
             content: content.to_string(),
             conversation_kind: GatewayConversationKind::DirectMessage,
+            attachments: vec![],
         }
     }
 
@@ -8430,5 +8524,206 @@ mod tests {
             .expect("run should exist");
         assert_eq!(run.user_input, "Check deployment status");
         assert_eq!(run.status, RunStatus::Queued);
+    }
+
+    fn temp_state_root(label: &str) -> PathBuf {
+        let workspace = TempWorkspace::new("turn-executor", label);
+        let root = workspace.path.join("state");
+        fs::create_dir_all(&root).expect("state root should be creatable");
+        std::mem::forget(workspace); // keep on disk for test lifetime
+        root
+    }
+
+    #[test]
+    fn build_user_input_with_attachments_returns_content_unchanged_without_attachments() {
+        let root = temp_state_root("attach-empty");
+        let result = build_user_input_with_attachments("hello world", &[], &root, "run-1");
+        assert_eq!(result, "hello world");
+        let _ = fs::remove_dir_all(root.parent().unwrap());
+    }
+
+    #[test]
+    fn build_user_input_with_attachments_prepends_annotation() {
+        let root = temp_state_root("attach-single");
+        let attachments = vec![GatewayAttachment {
+            url: "https://cdn.example.com/photo.png".to_string(),
+            filename: "photo.png".to_string(),
+            size: 1024,
+            content_type: Some("image/png".to_string()),
+        }];
+        let result =
+            build_user_input_with_attachments("describe this", &attachments, &root, "run-2");
+        assert!(result.starts_with("[attached file: photo.png (saved to "));
+        assert!(result.ends_with("describe this"));
+        assert!(result.contains("photo.png"));
+        let _ = fs::remove_dir_all(root.parent().unwrap());
+    }
+
+    #[test]
+    fn build_user_input_with_attachments_handles_empty_content() {
+        let root = temp_state_root("attach-no-text");
+        let attachments = vec![GatewayAttachment {
+            url: "https://cdn.example.com/data.bin".to_string(),
+            filename: "data.bin".to_string(),
+            size: 512,
+            content_type: None,
+        }];
+        let result = build_user_input_with_attachments("", &attachments, &root, "run-3");
+        assert!(result.contains("[attached file: data.bin (saved to "));
+        assert!(result.ends_with("(no text message provided)"));
+        let _ = fs::remove_dir_all(root.parent().unwrap());
+    }
+
+    #[test]
+    fn build_user_input_with_attachments_handles_multiple_attachments() {
+        let root = temp_state_root("attach-multi");
+        let attachments = vec![
+            GatewayAttachment {
+                url: "https://cdn.example.com/a.png".to_string(),
+                filename: "a.png".to_string(),
+                size: 100,
+                content_type: None,
+            },
+            GatewayAttachment {
+                url: "https://cdn.example.com/b.txt".to_string(),
+                filename: "b.txt".to_string(),
+                size: 200,
+                content_type: None,
+            },
+        ];
+        let result = build_user_input_with_attachments("two files", &attachments, &root, "run-4");
+        assert!(result.contains("[attached file: a.png"));
+        assert!(result.contains("[attached file: b.txt"));
+        assert!(result.ends_with("two files"));
+        let _ = fs::remove_dir_all(root.parent().unwrap());
+    }
+
+    #[test]
+    fn sanitize_attachment_filename_replaces_traversal_chars() {
+        assert_eq!(
+            sanitize_attachment_filename("../../../etc/passwd", 0),
+            ".._.._.._etc_passwd"
+        );
+        assert_eq!(
+            sanitize_attachment_filename("file\\name\0bad", 1),
+            "file_name_bad"
+        );
+    }
+
+    #[test]
+    fn sanitize_attachment_filename_handles_empty() {
+        assert_eq!(sanitize_attachment_filename("", 0), "attachment_0");
+        assert_eq!(sanitize_attachment_filename("   ", 5), "attachment_5");
+    }
+
+    #[test]
+    fn cleanup_attachment_directory_silent_on_missing() {
+        let root = temp_state_root("attach-cleanup-miss");
+        cleanup_attachment_directory(&root, "nonexistent-run");
+        let _ = fs::remove_dir_all(root.parent().unwrap());
+    }
+
+    #[test]
+    fn cleanup_attachment_directory_removes_existing() {
+        let root = temp_state_root("attach-cleanup-hit");
+        let dir = attachment_directory(&root, "run-cleanup");
+        fs::create_dir_all(&dir).expect("dir create should succeed");
+        fs::write(dir.join("test.txt"), "data").expect("file write should succeed");
+        assert!(dir.exists());
+        cleanup_attachment_directory(&root, "run-cleanup");
+        assert!(!dir.exists());
+        let _ = fs::remove_dir_all(root.parent().unwrap());
+    }
+
+    #[test]
+    fn process_gateway_message_with_attachments_annotates_user_input() {
+        let (workspace, mut executor) = build_executor_scenario(
+            "attach-integration",
+            FakeRuntime::with_backend_events(vec![], &[100, 200, 300, 400, 500]),
+            128,
+        );
+        let mut message = gateway_message("msg-attach-1");
+        message.attachments = vec![GatewayAttachment {
+            url: "https://cdn.example.com/screenshot.png".to_string(),
+            filename: "screenshot.png".to_string(),
+            size: 4096,
+            content_type: Some("image/png".to_string()),
+        }];
+
+        let queued = executor
+            .enqueue_gateway_message(message)
+            .expect("enqueue should succeed")
+            .expect("message should be queued");
+
+        let run = executor
+            .composition()
+            .state_stores
+            .run_store
+            .get_run("discord:channel:777", &queued.run_id)
+            .expect("run read should succeed")
+            .expect("run should exist");
+        assert!(
+            run.user_input
+                .contains("[attached file: screenshot.png (saved to "),
+            "user_input should contain attachment annotation, got: {}",
+            run.user_input
+        );
+        drop(workspace);
+    }
+
+    #[test]
+    fn process_gateway_message_with_attachments_cleans_up_after_run() {
+        let (workspace, mut executor) = build_executor_scenario(
+            "attach-cleanup-integ",
+            FakeRuntime::with_backend_events(
+                vec![],
+                &[
+                    100, 200, 300, 400, 500, 600, 700, 800, 900, 1000, 1100, 1200,
+                ],
+            ),
+            128,
+        );
+        let mut message = gateway_message("msg-attach-cleanup");
+        message.attachments = vec![GatewayAttachment {
+            url: "https://cdn.example.com/test.txt".to_string(),
+            filename: "test.txt".to_string(),
+            size: 64,
+            content_type: Some("text/plain".to_string()),
+        }];
+
+        let queued = executor
+            .enqueue_gateway_message(message)
+            .expect("enqueue should succeed")
+            .expect("message should be queued");
+
+        let state_root = &executor.composition().state_stores.root;
+        let att_dir = attachment_directory(state_root, &queued.run_id);
+        assert!(
+            att_dir.exists(),
+            "attachment dir should exist after enqueue"
+        );
+
+        let _ = executor.dispatch_next_run();
+        assert!(
+            !att_dir.exists(),
+            "attachment dir should be removed after dispatch"
+        );
+        drop(workspace);
+    }
+
+    #[test]
+    fn build_user_input_with_attachments_includes_download_failure_annotation() {
+        let root = temp_state_root("attach-fail-dl");
+        let attachments = vec![GatewayAttachment {
+            url: "https://cdn.example.com/FAIL_DOWNLOAD/broken.png".to_string(),
+            filename: "broken.png".to_string(),
+            size: 999,
+            content_type: None,
+        }];
+        let result =
+            build_user_input_with_attachments("check this", &attachments, &root, "run-fail");
+        assert!(result.contains("[attached file: broken.png (download failed:"));
+        assert!(result.ends_with("check this"));
+        let _ = fs::remove_dir_all(root.parent().unwrap());
     }
 }

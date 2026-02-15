@@ -3378,6 +3378,7 @@ mod tests {
             thread_id: None,
             content: content.to_string(),
             conversation_kind: GatewayConversationKind::GuildChannel,
+            attachments: vec![],
         }
     }
 
@@ -3391,6 +3392,7 @@ mod tests {
             thread_id: None,
             content: content.to_string(),
             conversation_kind: GatewayConversationKind::DirectMessage,
+            attachments: vec![],
         }
     }
 

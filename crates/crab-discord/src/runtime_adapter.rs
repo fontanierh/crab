@@ -333,6 +333,7 @@ mod tests {
             thread_id: None,
             content: "hello".to_string(),
             conversation_kind: GatewayConversationKind::GuildChannel,
+            attachments: vec![],
         }
     }
 

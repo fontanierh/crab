@@ -65,6 +65,17 @@ core modules are actually exercised in production flow.
     - completion writes managed profile files, updates `MEMORY.md`, and retires `BOOTSTRAP.md`
   - Coverage: daemon + turn executor onboarding gate/completion/rotation extraction tests
 
+- Discord file/image attachment support:
+  - Connector: `crates/crab-discord-connector/src/main.rs` (Serenity attachment extraction)
+  - Core types: `GatewayAttachment` in `crates/crab-discord/src/lib.rs`
+  - Runtime: `crates/crab-app/src/turn_executor.rs` (`build_user_input_with_attachments`,
+    `cleanup_attachment_directory`)
+  - Behavior:
+    - Attachments are downloaded to `state/attachments/{run_id}/` and annotated in `user_input`
+    - Claude Code reads files (including images) via Read tool
+    - Attachment directory cleaned up at run finalization
+  - Coverage: unit + integration tests in turn_executor + serde round-trip tests in crab-discord
+
 ## API Wiring Guardrail
 
 - Quality gate: `make public-api-check`

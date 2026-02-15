@@ -924,7 +924,7 @@ impl Drop for ChildCrabdIo {
 mod live_discord {
     use super::{DiscordApiError, DiscordIo};
     use crab_core::{CrabError, CrabResult};
-    use crab_discord::{GatewayConversationKind, GatewayMessage};
+    use crab_discord::{GatewayAttachment, GatewayConversationKind, GatewayMessage};
     use reqwest::blocking::Client;
     use reqwest::StatusCode;
     use serde_json::Value;
@@ -964,6 +964,16 @@ mod live_discord {
                 thread_id,
                 content: message.content,
                 conversation_kind,
+                attachments: message
+                    .attachments
+                    .iter()
+                    .map(|a| GatewayAttachment {
+                        url: a.url.clone(),
+                        filename: a.filename.clone(),
+                        size: u64::from(a.size),
+                        content_type: a.content_type.clone(),
+                    })
+                    .collect(),
             };
 
             let _ = self.tx.send(gateway_message);
@@ -1426,6 +1436,7 @@ mod tests {
             thread_id: None,
             content: content.to_string(),
             conversation_kind: GatewayConversationKind::GuildChannel,
+            attachments: vec![],
         }
     }
 

@@ -213,6 +213,7 @@ mod tests {
                 thread_id: None,
                 content: "ping".to_string(),
                 conversation_kind: GatewayConversationKind::GuildChannel,
+                attachments: vec![],
             })
             .expect("ingress should succeed")
             .expect("non-bot message should be accepted");
