@@ -101,22 +101,23 @@ Runtime sends raw user turn input only. It does not re-inject the full bootstrap
 4. `crabd` marks delivery sent only after positive receipt.
 5. On restart/replay, existing delivery records prevent duplicate sends and allow safe continuation of edits.
 
-## 8) Rotation/Compaction
+## 8) Rotation (Agent-Driven)
 
-After normal run finalization, runtime evaluates rotation triggers:
+Rotation is entirely agent-driven. The agent decides when to rotate based on its own assessment
+of context staleness, token pressure, or task boundaries.
 
-1. token threshold (`CRAB_COMPACTION_TOKEN_THRESHOLD`, default `120000`)
-2. inactivity timeout (`CRAB_INACTIVITY_TIMEOUT_SECS`, default `1800`)
-3. owner manual commands (`/compact confirm`, `/reset confirm`)
+1. Agent produces a checkpoint JSON document summarizing current state.
+2. Agent invokes the `crab-rotate` CLI, passing the checkpoint JSON.
+3. `crab-rotate` writes a pending rotation signal into the session state store.
+4. After the current turn completes, Crab picks up the pending rotation signal.
+5. Crab persists the checkpoint, ends the physical backend session, and clears the session handle.
+6. The next turn on that logical session starts a fresh physical session with the checkpoint
+   available as bootstrap context.
 
-If triggered, rotation sequence executes:
+The `rotate-session` skill (in `.agents/skills`) guides the agent through the rotation protocol.
 
-1. hidden memory-flush turn
-2. hidden checkpoint turn (strict JSON schema with retry policy)
-3. deterministic fallback checkpoint if hidden checkpoint turn fails/invalid
-4. checkpoint persistence
-5. physical session clear/rotate
-6. token accounting reset for next compaction cycle
+There are no hidden turns (no hidden memory flush, no hidden checkpoint extraction). The agent
+is fully responsible for producing the checkpoint content before calling `crab-rotate`.
 
 ## 9) Heartbeat + Stall Recovery
 
@@ -148,7 +149,6 @@ Visible:
 
 Not visible:
 
-- hidden maintenance turns (memory flush/checkpoint)
 - internal event envelopes and diagnostics
 - raw checkpoint JSON payloads
 

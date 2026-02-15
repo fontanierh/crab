@@ -1,8 +1,8 @@
-use std::fs;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::file_signal;
 use crate::{CrabError, CrabResult};
 
 pub const PENDING_TRIGGERS_DIR_NAME: &str = "pending_triggers";
@@ -32,121 +32,36 @@ pub fn validate_pending_trigger(trigger: &PendingTrigger) -> CrabResult<()> {
 
 pub fn write_pending_trigger(state_root: &Path, trigger: &PendingTrigger) -> CrabResult<PathBuf> {
     validate_pending_trigger(trigger)?;
-
-    let dir = state_root.join(PENDING_TRIGGERS_DIR_NAME);
-    fs::create_dir_all(&dir).map_err(|error| CrabError::Io {
-        context: "pending_trigger_write",
-        path: Some(dir.to_string_lossy().to_string()),
-        message: error.to_string(),
-    })?;
-
-    let json = serde_json::to_string(trigger).expect("PendingTrigger serialization is infallible");
-
-    let timestamp_ms = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis();
-    let random_suffix = format!("{:04x}", timestamp_ms as u16 ^ std::process::id() as u16);
-    let filename = format!("{timestamp_ms}-{random_suffix}.json");
-    let path = dir.join(&filename);
-
-    fs::write(&path, &json).map_err(|error| CrabError::Io {
-        context: "pending_trigger_write",
-        path: Some(path.to_string_lossy().to_string()),
-        message: error.to_string(),
-    })?;
-
-    Ok(path)
+    file_signal::write_signal_file(
+        state_root,
+        PENDING_TRIGGERS_DIR_NAME,
+        trigger,
+        "pending_trigger_write",
+    )
 }
 
 pub fn read_pending_triggers(state_root: &Path) -> CrabResult<Vec<(PathBuf, PendingTrigger)>> {
-    let dir = state_root.join(PENDING_TRIGGERS_DIR_NAME);
-    if !dir.is_dir() {
-        return Ok(Vec::new());
-    }
-
-    let entries = fs::read_dir(&dir).map_err(|error| CrabError::Io {
-        context: "pending_trigger_read",
-        path: Some(dir.to_string_lossy().to_string()),
-        message: error.to_string(),
-    })?;
-
-    let mut results = Vec::new();
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
-            continue;
-        }
-        let content = match fs::read_to_string(&path) {
-            Ok(content) => content,
-            Err(_) => continue,
-        };
-        let trigger: PendingTrigger = match serde_json::from_str(&content) {
-            Ok(trigger) => trigger,
-            Err(_) => continue,
-        };
-        results.push((path, trigger));
-    }
-
-    Ok(results)
+    file_signal::read_signal_files(
+        state_root,
+        PENDING_TRIGGERS_DIR_NAME,
+        "pending_trigger_read",
+    )
 }
 
 pub fn consume_pending_trigger(path: &Path) -> CrabResult<()> {
-    fs::remove_file(path).map_err(|error| CrabError::Io {
-        context: "pending_trigger_consume",
-        path: Some(path.to_string_lossy().to_string()),
-        message: error.to_string(),
-    })
+    file_signal::consume_signal_file(path, "pending_trigger_consume")
 }
 
 #[cfg(test)]
 mod tests {
     use std::fs;
-    use std::path::PathBuf;
-    use std::sync::atomic::{AtomicU64, Ordering};
 
     use super::{
         consume_pending_trigger, read_pending_triggers, validate_pending_trigger,
         write_pending_trigger, PendingTrigger, PENDING_TRIGGERS_DIR_NAME,
     };
+    use crate::test_support::TempDir;
     use crate::CrabError;
-
-    static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
-
-    struct TempDir {
-        root: PathBuf,
-    }
-
-    impl TempDir {
-        fn new(label: &str) -> Self {
-            let counter = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
-            let root = std::env::temp_dir().join(format!(
-                "crab-self-trigger-{label}-{}-{counter}",
-                std::process::id()
-            ));
-            let _ = fs::remove_dir_all(&root);
-            fs::create_dir_all(&root).expect("temp dir should be creatable");
-            Self { root }
-        }
-    }
-
-    impl Drop for TempDir {
-        fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.root);
-        }
-    }
-
-    #[cfg(unix)]
-    fn deny_access(path: &std::path::Path) {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(path, fs::Permissions::from_mode(0o000)).expect("chmod should succeed");
-    }
-
-    #[cfg(unix)]
-    fn restore_access(path: &std::path::Path, mode: u32) {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = fs::set_permissions(path, fs::Permissions::from_mode(mode));
-    }
 
     fn sample_trigger() -> PendingTrigger {
         PendingTrigger {
@@ -196,7 +111,7 @@ mod tests {
 
     #[test]
     fn write_and_read_round_trip() {
-        let temp = TempDir::new("write-read");
+        let temp = TempDir::new("self-trigger", "write-read");
         let trigger = sample_trigger();
 
         let path = write_pending_trigger(&temp.root, &trigger).expect("write should succeed");
@@ -211,7 +126,7 @@ mod tests {
 
     #[test]
     fn consume_deletes_file() {
-        let temp = TempDir::new("consume");
+        let temp = TempDir::new("self-trigger", "consume");
         let trigger = sample_trigger();
 
         let path = write_pending_trigger(&temp.root, &trigger).expect("write should succeed");
@@ -223,25 +138,27 @@ mod tests {
 
     #[test]
     fn read_returns_empty_when_directory_missing() {
-        let temp = TempDir::new("read-missing-dir");
+        let temp = TempDir::new("self-trigger", "read-missing-dir");
         let triggers = read_pending_triggers(&temp.root).expect("read should succeed");
         assert!(triggers.is_empty());
     }
 
-    #[test]
-    fn read_skips_malformed_files() {
-        let temp = TempDir::new("read-malformed");
+    /// Create a temp dir with one valid trigger file already written and the
+    /// signals subdirectory available for further sabotage.
+    fn temp_with_one_trigger(label: &str) -> (TempDir, std::path::PathBuf, PendingTrigger) {
+        let temp = TempDir::new("self-trigger", label);
         let dir = temp.root.join(PENDING_TRIGGERS_DIR_NAME);
         fs::create_dir_all(&dir).expect("dir should be creatable");
-
-        // Write a valid trigger
         let trigger = sample_trigger();
         write_pending_trigger(&temp.root, &trigger).expect("write should succeed");
+        (temp, dir, trigger)
+    }
 
-        // Write a malformed JSON file
+    #[test]
+    fn read_skips_malformed_and_non_json_files() {
+        let (temp, dir, trigger) = temp_with_one_trigger("read-malformed");
+
         fs::write(dir.join("bad-1.json"), "not-valid-json").expect("malformed write should work");
-
-        // Write a non-JSON file (should be skipped)
         fs::write(dir.join("readme.txt"), "not a trigger").expect("txt write should work");
 
         let triggers = read_pending_triggers(&temp.root).expect("read should succeed");
@@ -251,7 +168,7 @@ mod tests {
 
     #[test]
     fn write_creates_directory_if_missing() {
-        let temp = TempDir::new("write-creates-dir");
+        let temp = TempDir::new("self-trigger", "write-creates-dir");
         let dir = temp.root.join(PENDING_TRIGGERS_DIR_NAME);
         assert!(!dir.exists());
 
@@ -262,7 +179,7 @@ mod tests {
 
     #[test]
     fn write_rejects_invalid_trigger() {
-        let temp = TempDir::new("write-invalid");
+        let temp = TempDir::new("self-trigger", "write-invalid");
         let trigger = PendingTrigger {
             channel_id: "".to_string(),
             message: "hello".to_string(),
@@ -273,7 +190,7 @@ mod tests {
 
     #[test]
     fn consume_returns_error_for_missing_file() {
-        let temp = TempDir::new("consume-missing");
+        let temp = TempDir::new("self-trigger", "consume-missing");
         let path = temp.root.join("nonexistent.json");
         let error =
             consume_pending_trigger(&path).expect_err("consume of missing file should fail");
@@ -288,8 +205,7 @@ mod tests {
 
     #[test]
     fn write_propagates_create_dir_error() {
-        let temp = TempDir::new("write-create-dir-error");
-        // Make the state_root a file so create_dir_all fails.
+        let temp = TempDir::new("self-trigger", "write-create-dir-error");
         let fake_root = temp.root.join("file-not-dir");
         fs::write(&fake_root, "blocker").expect("write should succeed");
         let trigger = sample_trigger();
@@ -306,24 +222,15 @@ mod tests {
 
     #[test]
     fn write_propagates_file_write_error() {
-        let temp = TempDir::new("write-file-error");
-        // Create the pending_triggers path as a directory with a name collision:
-        // make the file-path itself a directory so fs::write to it fails.
+        let temp = TempDir::new("self-trigger", "write-file-error");
         let dir = temp.root.join(PENDING_TRIGGERS_DIR_NAME);
         fs::create_dir_all(&dir).expect("dir should be creatable");
-        // Write a valid trigger first to get the pattern, then sabotage.
         let trigger = sample_trigger();
         let path = write_pending_trigger(&temp.root, &trigger).expect("first write should succeed");
-        // Replace the written file with a directory to make the next write collide.
-        fs::remove_file(&path).expect("remove should succeed");
-        fs::create_dir_all(&path).expect("sabotage dir should be creatable");
-        // Next write will try a new filename, so we need to sabotage differently.
-        // Instead, make the pending_triggers dir read-only so file creation fails.
-        #[cfg(unix)]
-        deny_access(&dir);
+        crate::test_support::sabotage_signal_dir_for_write(&path, &dir);
         let result = write_pending_trigger(&temp.root, &trigger);
         #[cfg(unix)]
-        restore_access(&dir, 0o755);
+        crate::test_support::restore_access(&dir, 0o755);
         #[cfg(unix)]
         {
             let error = result.expect_err("should fail when file write fails");
@@ -339,14 +246,14 @@ mod tests {
 
     #[test]
     fn read_propagates_read_dir_error() {
-        let temp = TempDir::new("read-dir-error");
+        let temp = TempDir::new("self-trigger", "read-dir-error");
         let dir = temp.root.join(PENDING_TRIGGERS_DIR_NAME);
         fs::create_dir_all(&dir).expect("dir should be creatable");
         #[cfg(unix)]
-        deny_access(&dir);
+        crate::test_support::deny_access(&dir);
         let result = read_pending_triggers(&temp.root);
         #[cfg(unix)]
-        restore_access(&dir, 0o755);
+        crate::test_support::restore_access(&dir, 0o755);
         #[cfg(unix)]
         {
             let error = result.expect_err("should fail when read_dir fails");
@@ -362,27 +269,19 @@ mod tests {
 
     #[test]
     fn read_skips_unreadable_files() {
-        let temp = TempDir::new("read-unreadable");
-        let dir = temp.root.join(PENDING_TRIGGERS_DIR_NAME);
-        fs::create_dir_all(&dir).expect("dir should be creatable");
+        let (temp, dir, trigger) = temp_with_one_trigger("read-unreadable");
 
-        // Write a valid trigger.
-        let trigger = sample_trigger();
-        write_pending_trigger(&temp.root, &trigger).expect("write should succeed");
-
-        // Create an unreadable .json file.
         let unreadable_path = dir.join("unreadable.json");
         fs::write(&unreadable_path, "content").expect("write should succeed");
         #[cfg(unix)]
-        deny_access(&unreadable_path);
+        crate::test_support::deny_access(&unreadable_path);
 
         let triggers = read_pending_triggers(&temp.root).expect("read should succeed");
-        // The unreadable file should be skipped; only the valid trigger is returned.
         assert_eq!(triggers.len(), 1);
         assert_eq!(triggers[0].1, trigger);
 
         #[cfg(unix)]
-        restore_access(&unreadable_path, 0o644);
+        crate::test_support::restore_access(&unreadable_path, 0o644);
     }
 
     #[test]

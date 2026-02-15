@@ -3,7 +3,8 @@ use std::path::{Path, PathBuf};
 use crab_core::{
     ensure_workspace_git_repository, ensure_workspace_layout, CrabError, CrabResult, RuntimeConfig,
     WorkspaceBootstrapState, WorkspaceGitEnsureOutcome, AGENTS_SKILLS_ROOT_RELATIVE_PATH,
-    CLAUDE_SKILLS_LINK_RELATIVE_PATH, SKILL_AUTHORING_POLICY_FILE_RELATIVE_PATH,
+    CLAUDE_SKILLS_LINK_RELATIVE_PATH, ROTATE_SESSION_SKILL_FILE_RELATIVE_PATH,
+    SKILL_AUTHORING_POLICY_FILE_RELATIVE_PATH,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -59,6 +60,10 @@ fn render_startup_diagnostics(
     diagnostics.push(format!(
         "workspace.skills.policy:{}",
         SKILL_AUTHORING_POLICY_FILE_RELATIVE_PATH
+    ));
+    diagnostics.push(format!(
+        "workspace.skills.rotate_session:{}",
+        ROTATE_SESSION_SKILL_FILE_RELATIVE_PATH
     ));
     diagnostics.push(format!("workspace.git.enabled:{}", workspace_git.enabled));
 
@@ -230,6 +235,17 @@ mod tests {
             remote_bound,
             repository_root: Some("/tmp/workspace".to_string()),
         }
+    }
+
+    /// Common diagnostic prefix lines emitted by every `render_startup_diagnostics` call.
+    fn common_diagnostics_prefix(bootstrap_token: &str) -> Vec<String> {
+        vec![
+            format!("workspace.bootstrap_state:{bootstrap_token}"),
+            "workspace.skills.canonical:.agents/skills".to_string(),
+            "workspace.skills.compatibility:.claude/skills->.agents/skills".to_string(),
+            "workspace.skills.policy:.agents/skills/skill-authoring-policy/SKILL.md".to_string(),
+            "workspace.skills.rotate_session:.agents/skills/rotate-session/SKILL.md".to_string(),
+        ]
     }
 
     #[test]
@@ -425,20 +441,14 @@ mod tests {
             &["/tmp/workspace/CLAUDE.md".to_string()],
             &WorkspaceGitEnsureOutcome::disabled(),
         );
-        assert_eq!(
-            diagnostics,
-            vec![
-                "workspace.bootstrap_state:pending_bootstrap".to_string(),
-                "workspace.skills.canonical:.agents/skills".to_string(),
-                "workspace.skills.compatibility:.claude/skills->.agents/skills".to_string(),
-                "workspace.skills.policy:.agents/skills/skill-authoring-policy/SKILL.md"
-                    .to_string(),
-                "workspace.git.enabled:false".to_string(),
-                "workspace.git.ensure:disabled".to_string(),
-                "workspace.created:/tmp/workspace/AGENTS.md".to_string(),
-                "workspace.repaired:/tmp/workspace/CLAUDE.md".to_string(),
-            ]
-        );
+        let mut expected = common_diagnostics_prefix("pending_bootstrap");
+        expected.extend([
+            "workspace.git.enabled:false".to_string(),
+            "workspace.git.ensure:disabled".to_string(),
+            "workspace.created:/tmp/workspace/AGENTS.md".to_string(),
+            "workspace.repaired:/tmp/workspace/CLAUDE.md".to_string(),
+        ]);
+        assert_eq!(diagnostics, expected);
 
         let noop = render_startup_diagnostics(
             WorkspaceBootstrapState::Ready,
@@ -446,19 +456,13 @@ mod tests {
             &Vec::new(),
             &WorkspaceGitEnsureOutcome::disabled(),
         );
-        assert_eq!(
-            noop,
-            vec![
-                "workspace.bootstrap_state:ready".to_string(),
-                "workspace.skills.canonical:.agents/skills".to_string(),
-                "workspace.skills.compatibility:.claude/skills->.agents/skills".to_string(),
-                "workspace.skills.policy:.agents/skills/skill-authoring-policy/SKILL.md"
-                    .to_string(),
-                "workspace.git.enabled:false".to_string(),
-                "workspace.git.ensure:disabled".to_string(),
-                "workspace.ensure:noop".to_string(),
-            ]
-        );
+        let mut expected_noop = common_diagnostics_prefix("ready");
+        expected_noop.extend([
+            "workspace.git.enabled:false".to_string(),
+            "workspace.git.ensure:disabled".to_string(),
+            "workspace.ensure:noop".to_string(),
+        ]);
+        assert_eq!(noop, expected_noop);
     }
 
     #[test]
@@ -469,22 +473,16 @@ mod tests {
             &Vec::new(),
             &enabled_workspace_git_outcome(true, true, true),
         );
-        assert_eq!(
-            diagnostics,
-            vec![
-                "workspace.bootstrap_state:ready".to_string(),
-                "workspace.skills.canonical:.agents/skills".to_string(),
-                "workspace.skills.compatibility:.claude/skills->.agents/skills".to_string(),
-                "workspace.skills.policy:.agents/skills/skill-authoring-policy/SKILL.md"
-                    .to_string(),
-                "workspace.git.enabled:true".to_string(),
-                "workspace.git.repository_root:/tmp/workspace".to_string(),
-                "workspace.git.initialized:true".to_string(),
-                "workspace.git.branch_bootstrapped:true".to_string(),
-                "workspace.git.remote_bound:true".to_string(),
-                "workspace.ensure:noop".to_string(),
-            ]
-        );
+        let mut expected = common_diagnostics_prefix("ready");
+        expected.extend([
+            "workspace.git.enabled:true".to_string(),
+            "workspace.git.repository_root:/tmp/workspace".to_string(),
+            "workspace.git.initialized:true".to_string(),
+            "workspace.git.branch_bootstrapped:true".to_string(),
+            "workspace.git.remote_bound:true".to_string(),
+            "workspace.ensure:noop".to_string(),
+        ]);
+        assert_eq!(diagnostics, expected);
     }
 
     #[test]
@@ -495,19 +493,13 @@ mod tests {
             &Vec::new(),
             &enabled_workspace_git_outcome(false, false, false),
         );
-        assert_eq!(
-            diagnostics,
-            vec![
-                "workspace.bootstrap_state:ready".to_string(),
-                "workspace.skills.canonical:.agents/skills".to_string(),
-                "workspace.skills.compatibility:.claude/skills->.agents/skills".to_string(),
-                "workspace.skills.policy:.agents/skills/skill-authoring-policy/SKILL.md"
-                    .to_string(),
-                "workspace.git.enabled:true".to_string(),
-                "workspace.git.repository_root:/tmp/workspace".to_string(),
-                "workspace.git.ensure:validated".to_string(),
-                "workspace.ensure:noop".to_string(),
-            ]
-        );
+        let mut expected = common_diagnostics_prefix("ready");
+        expected.extend([
+            "workspace.git.enabled:true".to_string(),
+            "workspace.git.repository_root:/tmp/workspace".to_string(),
+            "workspace.git.ensure:validated".to_string(),
+            "workspace.ensure:noop".to_string(),
+        ]);
+        assert_eq!(diagnostics, expected);
     }
 }

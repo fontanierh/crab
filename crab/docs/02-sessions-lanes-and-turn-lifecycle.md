@@ -157,7 +157,8 @@ sequenceDiagram
 
 - Lane scheduling and dispatch pipeline are implemented and tested.
 - Idempotent output replay is implemented.
-- Rotation-trigger evaluation is implemented in turn finalization.
+- Rotation is agent-initiated via `crab-rotate` CLI; runtime picks up the pending rotation signal
+  after the current turn and persists the checkpoint, ends the physical session, and clears the handle.
 - Startup reconciliation + heartbeat maintenance entry points are implemented in `crab-app`.
 - Production runtime binary loop wiring is implemented (`crabd` + `crab-discord-connector`).
 - Remaining deployment blocker is target-machine acceptance checklist execution evidence (`WS18-T5`),

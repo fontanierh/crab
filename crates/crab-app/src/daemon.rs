@@ -67,9 +67,9 @@ Crab is a harness that sits between Discord and you:\n\
 - Your normal assistant text will be delivered back to Discord by Crab.\n\
 \n\
 Continuity:\n\
-- Crab typically keeps this same backend session alive across multiple Discord turns.\n\
-- Crab may occasionally rotate/restart you after maintenance (checkpoint/compaction).\n\
-- Crab can run hidden maintenance turns; those are not user-visible.\n\
+- Crab keeps this backend session alive across Discord turns.\n\
+- When your context gets large, use the rotate-session skill to checkpoint and rotate.\n\
+- CRAB_STATE_DIR is set in your environment.\n\
 \n\
 Workspace + memory:\n\
 - Use only Crab-managed workspace files for long-term context:\n\
@@ -5545,48 +5545,6 @@ mod tests {
                 .get("conflict_paths")
                 .is_some_and(|value| value.contains("IDENTITY.md")),
             "conflict payload should include the identity file path"
-        );
-    }
-
-    #[test]
-    fn daemon_loop_owner_manual_compact_command_rotates_with_checkpoint_response() {
-        let workspace = TempWorkspace::new("daemon", "manual-compact-owner");
-        let mut config = runtime_config_for_workspace_with_lanes(&workspace.path, 2);
-        config.owner.discord_user_ids = vec!["111".to_string()];
-        let daemon_config = DaemonConfig {
-            bot_user_id: "999".to_string(),
-            tick_interval_ms: 5,
-            max_iterations: Some(1),
-        };
-        let discord = ScriptedDiscordIo::with_state(DiscordIoState {
-            inbound: VecDeque::from([Ok(Some(gateway_message(
-                "m-manual-compact",
-                "111",
-                "/compact confirm",
-            )))]),
-            ..DiscordIoState::default()
-        });
-        let discord_state = discord.clone();
-        let codex = TrackingCodexProcess::new();
-        let opencode = TrackingOpenCodeProcess::new();
-        let mut control = ScriptedControl::with_now(vec![2_000_000_030_000, 2_000_000_030_001]);
-
-        let stats = run_daemon_loop_with_transport(
-            &config,
-            &daemon_config,
-            codex,
-            opencode,
-            discord,
-            &mut control,
-        )
-        .expect("owner manual compact command should execute in daemon loop");
-        assert_eq!(stats.dispatched_runs, 1);
-
-        let discord = discord_state.state();
-        assert_eq!(discord.posted.len(), 1);
-        assert!(
-            discord.posted[0].2.contains("checkpoint:"),
-            "manual compact response should include the emitted checkpoint id"
         );
     }
 

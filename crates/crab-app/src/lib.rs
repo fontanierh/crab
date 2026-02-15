@@ -1,11 +1,13 @@
 //! Application entry surfaces for Crab runtime wiring.
 
+mod cli_support;
 mod composition;
 mod daemon;
 mod daemon_backend_bridge;
 mod installer;
 mod maintenance;
 mod memory_cli;
+mod rotate_cli;
 mod startup;
 #[cfg(test)]
 mod test_support;
@@ -27,6 +29,7 @@ pub use maintenance::{
     run_startup_reconciliation_on_boot, BootRuntime, HeartbeatLoopState,
 };
 pub use memory_cli::{run_memory_get_cli, run_memory_search_cli};
+pub use rotate_cli::run_rotate_cli;
 pub use startup::{initialize_runtime_startup, AppStartupOutcome};
 pub use trigger_cli::run_trigger_cli;
 pub use turn_executor::{DispatchedTurn, QueuedTurn, TurnExecutor, TurnExecutorRuntime};

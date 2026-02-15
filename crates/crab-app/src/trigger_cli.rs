@@ -3,6 +3,8 @@ use std::path::PathBuf;
 
 use crab_core::{write_pending_trigger, PendingTrigger};
 
+use crate::cli_support;
+
 const USAGE: &str = "Usage:
   crab-trigger --state-dir <path> --channel <channel_id> --message <text>
 
@@ -18,72 +20,30 @@ where
     S: Into<String>,
 {
     let argv: Vec<String> = args.into_iter().map(Into::into).collect();
-    let command_args = argv.get(1..).unwrap_or(&[]);
-
-    if command_args.iter().any(|a| a == "--help" || a == "-h") {
-        let _ = writeln!(stdout, "{USAGE}");
-        return 0;
-    }
-
-    match execute(command_args) {
-        Ok(path) => match writeln!(stdout, "{}", path.display()) {
-            Ok(()) => 0,
-            Err(error) => {
-                let _ = writeln!(stderr, "error: failed to write output: {error}");
-                1
-            }
-        },
-        Err(message) => {
-            let _ = writeln!(stderr, "error: {message}");
-            let _ = writeln!(stderr);
-            let _ = writeln!(stderr, "{USAGE}");
-            1
-        }
-    }
+    cli_support::run_path_cli(&argv, USAGE, execute, stdout, stderr)
 }
 
 fn execute(args: &[String]) -> Result<PathBuf, String> {
     let mut state_dir: Option<String> = None;
     let mut channel: Option<String> = None;
     let mut message: Option<String> = None;
-    let mut index = 0usize;
 
-    while index < args.len() {
-        let flag = &args[index];
-        if !flag.starts_with("--") {
-            return Err(format!("unexpected positional argument {:?}", flag));
-        }
-        let slot = match flag.as_str() {
-            "--state-dir" => &mut state_dir,
-            "--channel" => &mut channel,
-            "--message" => &mut message,
-            other => return Err(format!("unknown flag {other}")),
-        };
-        let value = args
-            .get(index.saturating_add(1))
-            .ok_or_else(|| format!("missing value for flag {flag}"))?;
-        if value.starts_with("--") {
-            return Err(format!("missing value for flag {flag}"));
-        }
-        if slot.is_some() {
-            return Err(format!("duplicate flag {flag}"));
-        }
-        *slot = Some(value.clone());
-        index = index.saturating_add(2);
-    }
+    cli_support::parse_flag_pairs(
+        args,
+        |flag| matches!(flag, "--state-dir" | "--channel" | "--message"),
+        |flag, value| {
+            let slot = match flag {
+                "--state-dir" => &mut state_dir,
+                "--channel" => &mut channel,
+                _ => &mut message,
+            };
+            cli_support::assign_flag(slot, flag, value)
+        },
+    )?;
 
-    let state_dir = state_dir.ok_or("missing required flag --state-dir")?;
-    if state_dir.trim().is_empty() {
-        return Err("--state-dir must not be empty".to_string());
-    }
-    let channel = channel.ok_or("missing required flag --channel")?;
-    if channel.trim().is_empty() {
-        return Err("--channel must not be empty".to_string());
-    }
-    let message = message.ok_or("missing required flag --message")?;
-    if message.trim().is_empty() {
-        return Err("--message must not be empty".to_string());
-    }
+    let state_dir = cli_support::require_non_empty(state_dir, "--state-dir")?;
+    let channel = cli_support::require_non_empty(channel, "--channel")?;
+    let message = cli_support::require_non_empty(message, "--message")?;
 
     let trigger = PendingTrigger {
         channel_id: channel,
@@ -95,33 +55,13 @@ fn execute(args: &[String]) -> Result<PathBuf, String> {
 
 #[cfg(test)]
 mod tests {
-    use std::fs;
-    use std::io::{self, ErrorKind, Write};
     use std::path::PathBuf;
 
     use crab_core::PENDING_TRIGGERS_DIR_NAME;
 
     use super::run_trigger_cli;
+    use crate::cli_support::test_helpers::FailWriter;
     use crate::test_support::TempWorkspace;
-
-    #[derive(Default)]
-    struct FailWriter;
-
-    impl Write for FailWriter {
-        fn write(&mut self, _buf: &[u8]) -> io::Result<usize> {
-            Err(io::Error::new(
-                ErrorKind::BrokenPipe,
-                "intentional write failure",
-            ))
-        }
-
-        fn flush(&mut self) -> io::Result<()> {
-            Err(io::Error::new(
-                ErrorKind::BrokenPipe,
-                "intentional flush failure",
-            ))
-        }
-    }
 
     fn run(args: &[&str]) -> (i32, String, String) {
         let mut stdout = Vec::new();
@@ -351,11 +291,7 @@ mod tests {
     #[test]
     fn write_trigger_failure_returns_error() {
         let temp = TempWorkspace::new("trigger-cli", "write-fail");
-        fs::create_dir_all(&temp.path).expect("temp dir should be creatable");
-        // Make the state dir a file so create_dir_all in write_pending_trigger fails.
-        let fake_dir = temp.path.join("file-not-dir");
-        fs::write(&fake_dir, "blocker").expect("write should succeed");
-        let state_dir = fake_dir.to_string_lossy().to_string();
+        let state_dir = crate::cli_support::test_helpers::make_blocked_state_dir(&temp);
 
         let (status, _, stderr) = run(&[
             "crab-trigger",
@@ -368,12 +304,5 @@ mod tests {
         ]);
         assert_eq!(status, 1);
         assert!(stderr.contains("error:"));
-    }
-
-    #[test]
-    fn fail_writer_flush_path_is_exercised() {
-        let mut writer = FailWriter;
-        let error = writer.flush().expect_err("flush should fail");
-        assert_eq!(error.kind(), ErrorKind::BrokenPipe);
     }
 }

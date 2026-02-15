@@ -4,7 +4,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use crab_backends::{CodexAppServerProcess, CodexManager, OpenCodeManager, OpenCodeServerProcess};
 use crab_core::{
-    config::{HeartbeatConfig, RotationPolicyConfig, StartupReconciliationConfig},
+    config::{HeartbeatConfig, StartupReconciliationConfig},
     ensure_state_schema_version, CrabError, CrabResult, RuntimeConfig, StateSchemaMigrationOutcome,
     WorkspaceGitConfig,
 };
@@ -58,7 +58,6 @@ where
 {
     pub startup: AppStartupOutcome,
     pub workspace_git: WorkspaceGitConfig,
-    pub rotation_policy: RotationPolicyConfig,
     pub startup_reconciliation_policy: StartupReconciliationConfig,
     pub heartbeat_policy: HeartbeatConfig,
     pub state_schema_migration: StateSchemaMigrationOutcome,
@@ -124,7 +123,6 @@ where
     Ok(AppComposition {
         startup,
         workspace_git: config.workspace_git.clone(),
-        rotation_policy: config.rotation,
         startup_reconciliation_policy: config.startup_reconciliation,
         heartbeat_policy: config.heartbeat,
         state_schema_migration,

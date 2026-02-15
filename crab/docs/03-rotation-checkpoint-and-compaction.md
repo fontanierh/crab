@@ -1,74 +1,37 @@
-# Rotation, Checkpoint, And Compaction
+# Rotation and Checkpoint
 
 ## Scope
 
-This document covers the compaction/rotation protocol and the hidden turns used to preserve continuity.
+This document covers the agent-driven rotation protocol used to preserve continuity across backend session boundaries.
 
 ## Core Decision
 
-Compaction is harness-owned.
+Rotation is agent-driven.
 
-- Backends generate events and token usage telemetry.
-- Crab decides when to rotate.
-- Crab owns the hidden memory flush + checkpoint protocol.
+- The agent decides when to rotate (context too large, task boundary, operator request).
+- The agent produces the checkpoint itself (structured JSON).
+- The agent signals rotation via the `crab-rotate` CLI.
+- Crab executes the rotation sequence (persist checkpoint, end session, clear handle).
 
-This avoids backend-specific auto-summarization behavior controlling durable state transitions.
+This eliminates all automatic triggers, hidden turns, and harness-owned summarization.
 
-## Trigger Model
+## Agent Workflow
 
-Rotation triggers are defined by `evaluate_rotation_triggers` in `crates/crab-core/src/rotation.rs`.
+The `rotate-session` skill (bootstrapped at `.agents/skills/rotate-session/SKILL.md`) guides the agent through:
 
-Possible triggers:
+1. Persist important facts to memory files (`MEMORY.md`, `memory/` directory).
+2. Build a checkpoint JSON document.
+3. Call `crab-rotate` to signal rotation.
 
-- manual compact
-- manual reset
-- backend compaction (PreCompact hook signal)
-- inactivity timeout while lane is idle
-
-Trigger input includes:
-
-- current time
-- last activity time
-- lane idle status
-- backend compaction signaled (bool)
-- inactivity timeout
-- optional manual request
-
-Backend compaction signal mechanism:
-
-- Claude Code fires a `PreCompact` hook before auto-compacting context.
-- The hook writes a signal file at `<state_root>/compaction-signal` via
-  `touch state/compaction-signal` (configured in `.claude/settings.json`).
-- `TurnExecutor` checks for signal file existence before building rotation trigger input.
-- On successful rotation with `BackendCompaction` trigger, the signal file is consumed (deleted).
-- This replaces the previous token-threshold approach which was broken because cumulative
-  `cache_read_input_tokens` caused the threshold to fire after every single turn.
-
-## Hidden Step A: Memory Flush
-
-Memory flush contract (`crates/crab-core/src/memory_flush.rs`):
-
-- hidden turn prompt asks agent to persist durable memory facts
-- the last non-empty line of assistant output must be one of:
-  - `NO_REPLY`
-  - `MEMORY_FLUSH_DONE`
-- preceding text (reasoning, tool output deltas) is tolerated as long as the sentinel
-  appears on the final non-empty line
-- flush output is suppressed from user-visible chat
-
-Flush failures are non-blocking in rotation sequence; they are captured as rotation metadata.
-
-## Hidden Step B: Checkpoint Turn
-
-Checkpoint contract (`crates/crab-core/src/checkpoint_turn.rs`):
+## Checkpoint Schema
 
 ```json
 {
-  "summary": "string",
-  "decisions": ["string"],
-  "open_questions": ["string"],
-  "next_actions": ["string"],
-  "artifacts": [{"path": "string", "note": "string"}]
+  "summary": "string (required, non-empty)",
+  "decisions": ["string (non-empty)"],
+  "open_questions": ["string (non-empty)"],
+  "next_actions": ["string (non-empty)"],
+  "artifacts": [{"path": "string (non-empty)", "note": "string (non-empty)"}]
 }
 ```
 
@@ -78,33 +41,46 @@ Strictness:
 - required fields validated
 - strings must be non-empty
 
-Retry policy:
+Schema validation is in `crates/crab-core/src/checkpoint_turn.rs` (`parse_checkpoint_turn_document()`).
 
-- max attempts = 2 (one retry)
-- retry prompt includes parse/schema error and required schema
+## `crab-rotate` CLI
 
-Fallback policy:
+```
+Usage:
+  crab-rotate --state-dir <path> --checkpoint <json>
+  crab-rotate --state-dir <path> --checkpoint-file <path>
+  cat checkpoint.json | crab-rotate --state-dir <path>
+```
 
-- if checkpoint output remains invalid, Crab builds deterministic fallback checkpoint from transcript tail and durable metadata (`crates/crab-core/src/checkpoint_fallback.rs`)
+The CLI validates the checkpoint, builds a `PendingRotation` record, and writes it to `<state_dir>/pending_rotations/<id>.json`.
+
+Implementation: `crates/crab-app/src/rotate_cli.rs`.
+
+## Pending Rotation Signal
+
+The `pending_rotations/` directory under the state root holds JSON files signaling requested rotations. Each file contains a `PendingRotation` wrapping a validated `CheckpointTurnDocument`.
+
+Functions (`crates/crab-core/src/pending_rotation.rs`):
+
+- `write_pending_rotation()` — writes a timestamped signal file
+- `read_pending_rotations()` — reads all pending signal files (skips malformed)
+- `consume_pending_rotation()` — deletes a consumed signal file
 
 ## Rotation Sequence
 
-Sequence executor (`crates/crab-core/src/rotation_sequence.rs`):
+After each turn completes, `TurnExecutor` checks for pending rotation files. If found:
 
-1. run hidden memory flush (best effort)
-2. run hidden checkpoint turn (or fallback)
-3. persist checkpoint
-4. end physical session
-5. clear active physical handle
+1. Set lane state to `Rotating`.
+2. Emit `rotation_started` run-note event.
+3. Execute rotation sequence (`crates/crab-core/src/rotation_sequence.rs`):
+   a. Persist the agent-provided checkpoint.
+   b. End the physical backend session.
+   c. Clear the active physical session handle.
+4. Consume the pending rotation file.
+5. Emit `rotation_completed` run-note event with checkpoint ID.
+6. Set lane state back to `Idle`.
 
-Result includes:
-
-- checkpoint id
-- whether fallback was used
-- optional memory flush error
-- optional checkpoint-turn error
-
-## Checkpoint Persistence And Reuse
+## Checkpoint Persistence and Reuse
 
 Persistent checkpoint record (`Checkpoint`):
 
@@ -116,39 +92,14 @@ Persistent checkpoint record (`Checkpoint`):
 - `memory_digest`
 - `state` map
 
-Only latest checkpoint summary is injected by default into future context.
+Only the latest checkpoint summary is injected into future context.
 
-## Backend Responsibilities (Thin Glue)
+## Environment
 
-Per backend, only these pieces are backend-specific:
+The `CRAB_STATE_DIR` environment variable is set for the backend, pointing to the state directory. The agent uses this to call `crab-rotate`.
 
-- run hidden memory flush turn and return text output
-- run hidden checkpoint turn and return text output
-- extract text from backend event stream reliably
-- keep hidden-turn output out of user-visible Discord delivery
+## System Prompt
 
-All schema validation/retry/fallback logic is shared in `crab-core`.
+The system prompt (`CRAB_RUNTIME_BRIEF_BASE` in `crates/crab-app/src/daemon.rs`) tells the agent:
 
-## Current Status
-
-Implemented:
-
-- trigger evaluator primitives
-- hidden memory flush primitives and `TurnExecutor` backend wiring (memory flush turn
-  sends prompt to backend, drains stream, validates ack token; errors are non-blocking)
-- checkpoint parser/retry/fallback primitives
-- rotation sequence primitives
-- token accounting propagation from normalized backend usage payloads into
-  `LogicalSession.token_accounting` during run finalization
-- `TurnExecutor` post-run finalization wiring into
-  `evaluate_rotation_triggers` + `execute_rotation_sequence`
-- owner-only manual rotation commands:
-  - `/compact confirm`
-  - `/reset confirm`
-- auditable operator and rotation lifecycle run-note events for manual and automatic rotation
-
-Deployment note:
-
-- production runtime wiring is now implemented (`crabd` + `crab-discord-connector`).
-- remaining deployment blocker is execution evidence for the target-machine acceptance checklist
-  (Gap 2 in `crab/docs/08-deployment-readiness-gaps.md`).
+> When your context gets large, use the rotate-session skill to checkpoint and rotate.

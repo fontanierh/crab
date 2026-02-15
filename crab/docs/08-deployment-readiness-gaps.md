@@ -27,13 +27,12 @@ Implemented and validated in repository code/tests:
   - non-fast-forward/diverged push failures are classified as manual-recovery-required
   - queue entries are exhausted immediately for manual-recovery classes (no endless retries)
   - outcomes include `failure_kind` and deterministic recovery command guidance
-- Session token accounting aggregation from normalized backend usage payloads at turn finalization.
-- Rotation trigger execution in finalization (`evaluate_rotation_triggers` -> `execute_rotation_sequence`).
-- Token-threshold compaction is evaluated against session token usage since the last successful
-  rotation (token accounting is reset on rotation). Default threshold is `120000`.
-- Owner-only manual rotation commands:
-  - `/compact confirm`
-  - `/reset confirm`
+- Agent-driven rotation via `crab-rotate` CLI:
+  - agent produces checkpoint JSON and invokes `crab-rotate`
+  - runtime picks up pending rotation signal after the current turn completes
+  - checkpoint is persisted, physical session is ended, session handle is cleared
+  - `rotate-session` skill guides the agent through the rotation protocol
+  - no hidden turns, no automatic triggers, no operator rotation commands
 - Startup reconciliation and deterministic heartbeat scheduling:
   - `boot_runtime_with_processes*`
   - `run_startup_reconciliation_on_boot`
@@ -175,9 +174,7 @@ Run all checks on the target machine using production-like config:
 - [ ] Normal owner run processes end-to-end (`ingress -> lane -> backend -> Discord delivery`) with persisted run/event metadata.
 - [ ] Non-owner run obeys per-user memory scope and disclosure policy.
 - [ ] Restart during/after a run replays missing outbound delivery without duplicate messages/edits.
-- [ ] Token-threshold compaction trigger executes hidden memory flush + checkpoint + session rotation.
-- [ ] Inactivity trigger executes rotation behavior after configured timeout.
-- [ ] Manual `/compact confirm` and `/reset confirm` commands execute only for owner and are audited.
+- [ ] Agent-driven rotation via `crab-rotate` CLI executes checkpoint persistence + session rotation end-to-end.
 - [ ] Heartbeat escalates correctly for stalled run/backend/dispatcher scenarios.
 - [ ] Service restart/reboot persistence is validated by operations playbook steps (`crab/docs/10-target-machine-operations.md`).
 - [ ] `make quality` passes on deployment commit.
@@ -199,7 +196,7 @@ Go/no-go rule:
 
 - First-run onboarding path works end-to-end on cold workspace.
 - Normal run path plus replay survives process restart without duplicate Discord output.
-- Compaction triggers execute deterministic flush/checkpoint rotation.
+- Agent-driven rotation via `crab-rotate` CLI executes checkpoint persistence and session rotation.
 - Heartbeat handles stalled run/backend/dispatcher cases with expected escalation.
 - Documentation and runbooks match actual runtime behavior.
 - Deployment acceptance checklist is fully executed with recorded evidence.

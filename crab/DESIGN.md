@@ -29,7 +29,7 @@ Companion deep-dive architecture docs are tracked in `crab/docs/README.md`.
 - Autonomy first: default execution policy is auto-approve.
 - Deterministic control plane: explicit state machine for sessions, runs, and resets.
 - Durable events: every run is reconstructible from persisted envelopes.
-- Explicit memory lifecycle: memory flush and checkpoint are separate protocol steps.
+- Agent-driven rotation: the agent decides when to rotate and produces the checkpoint.
 - Trusted workspace model: users are trusted, but memory is still scoped per user.
 
 ## 3) High-Level Architecture
@@ -107,7 +107,7 @@ Lane state machine:
 - `Idle`: no active run.
 - `Running`: one active run streaming events.
 - `Cancelling`: interruption requested, awaiting backend confirmation/timeout.
-- `Rotating`: flush/checkpoint/session handoff in progress.
+- `Rotating`: agent-initiated rotation/session handoff in progress.
 
 This gives deterministic ordering while still allowing cross-channel parallelism.
 
@@ -382,51 +382,29 @@ skill-authoring tasks consistently follow this policy.
 9. Stream backend events -> normalize -> persist -> deliver.
 10. Finalize run:
    - update usage and last activity
-   - evaluate compaction/inactivity/reset rules
+   - check for pending agent-initiated rotation signal
+   - if rotation pending: persist checkpoint, end physical session, clear handle
    - ack completion in lane
 
-## 8) Memory Flush and Checkpoint Protocol (Explicit Spec)
+## 8) Rotation and Checkpoint Protocol
 
-Memory flush and checkpoint are separate hidden operations.
+Rotation is agent-driven. The agent decides when to rotate the physical session and produces the
+checkpoint data as part of a normal turn. There are no hidden turns, no harness-initiated memory
+flush steps, and no automatic triggers (token threshold, inactivity timeout, or operator commands).
 
-They run in this order whenever a rotation/reset requires state handoff.
+### 8.1 When the Agent Rotates
 
-### 8.1 Trigger Conditions
+The agent initiates rotation when it determines the physical session should end. Typical reasons:
 
-Run flush+checkpoint when:
+- Context is getting large and continued quality would degrade.
+- A natural task boundary has been reached.
+- The operator explicitly asks the agent to rotate.
 
-- Token budget compaction threshold exceeded.
-- Inactivity timeout expires and lane is idle.
-- Manual reset/compact command.
+The agent uses the `rotate-session` skill for guidance on when and how to rotate.
 
-Token budget source:
+### 8.2 Agent Checkpoint Production
 
-- Prefer backend-reported usage.
-- Fall back to local token estimation when a backend does not provide usage for a completed turn.
-
-### 8.2 Step A: Memory Flush Turn (hidden)
-
-Purpose: persist durable facts to memory files.
-
-Protocol:
-
-- Execute hidden turn with flush instructions.
-- Agent may write memory files using normal shell/file-edit primitives.
-- Expected text output is one of:
-  - `NO_REPLY`
-  - `MEMORY_FLUSH_DONE`
-
-Harness behavior:
-
-- Output is not posted to Discord.
-- Timeout/failure does not block checkpoint step; it is logged.
-- Only one flush per compaction cycle (`memory_flush_cycle_id`).
-
-### 8.3 Step B: Checkpoint Turn (hidden)
-
-Purpose: produce resumable handoff summary.
-
-Expected output: strict JSON object
+Before rotating, the agent produces a checkpoint as a strict JSON object:
 
 ```json
 {
@@ -438,16 +416,31 @@ Expected output: strict JSON object
 }
 ```
 
-Harness behavior:
+The agent then calls the `crab-rotate` CLI to signal rotation:
 
-- Validate JSON schema.
-- On parse/validation failure: retry once with corrective prompt.
-- If still invalid: write fallback checkpoint generated from transcript tail + durable metadata.
+```
+crab-rotate --state-dir "$CRAB_STATE_DIR" --checkpoint '<checkpoint_json>'
+```
 
-Checkpoint storage:
+This writes a pending rotation signal to the state directory. The harness does not inject hidden
+turns or prompts to produce the checkpoint; the agent owns the entire checkpoint lifecycle.
+
+### 8.3 Harness Rotation Sequence
+
+Crab picks up the pending rotation signal after the current turn completes (during run
+finalization, section 7 step 10). The sequence is:
+
+1. Validate and persist checkpoint JSON (append-only).
+2. End the physical session via the backend adapter.
+3. Clear the active physical session handle on the logical session.
+
+The next incoming message bootstraps a fresh physical session with the latest checkpoint
+injected (section 6.2).
+
+### 8.4 Checkpoint Storage
 
 - Persist every checkpoint (append-only).
-- Inject only latest checkpoint by default into new physical sessions.
+- Inject only the latest checkpoint by default into new physical sessions.
 
 ## 9) Event Envelope and Persistence
 
@@ -551,15 +544,17 @@ Behavior:
 
 ## 12) Reset and Rotation Policy
 
-A session rotates physical state when a trigger from section 8.1 fires, plus backend switches.
+A session rotates physical state when the agent initiates rotation (section 8) or when a backend
+switch requires a new physical session.
 
 Rotation sequence:
 
-1. Memory flush (hidden)
-2. Checkpoint (hidden)
-3. End physical session
-4. Clear active physical handle
-5. Next run bootstraps fresh physical session with latest checkpoint
+1. Agent produces checkpoint and calls `crab-rotate` during the turn.
+2. Harness detects pending rotation signal at turn finalization.
+3. Persist checkpoint.
+4. End physical session.
+5. Clear active physical handle.
+6. Next run bootstraps fresh physical session with latest checkpoint.
 
 ## 13) Crash Recovery
 
@@ -667,10 +662,8 @@ token = "${DISCORD_TOKEN}"
 
 [defaults]
 backend = "codex"
-inactivity_timeout_secs = 1800
 max_concurrent_lanes = 6
 lane_queue_limit = 32
-compaction_token_threshold = 120000
 startup_reconciliation_grace_period_secs = 90
 heartbeat_interval_secs = 10
 run_stall_timeout_secs = 90
@@ -723,7 +716,6 @@ push_policy = "on-commit"        # on-commit | manual
 backend = "claude"
 model = "auto"
 reasoning_level = "high"
-inactivity_timeout_secs = 3600
 ```
 
 Workspace git bootstrap policy (implemented in WS21-T2):

@@ -121,8 +121,6 @@ Strongly recommended keys:
 
 - `CRAB_WORKSPACE_ROOT=/var/lib/crab/workspace`
 - `CRAB_MAX_CONCURRENT_LANES`
-- `CRAB_COMPACTION_TOKEN_THRESHOLD`
-- `CRAB_INACTIVITY_TIMEOUT_SECS`
 - `CRAB_STARTUP_RECONCILIATION_GRACE_PERIOD_SECS`
 - `CRAB_HEARTBEAT_INTERVAL_SECS`
 - `CRAB_RUN_STALL_TIMEOUT_SECS`
@@ -154,8 +152,6 @@ CRAB_DISCORD_TOKEN=***redacted***
 CRAB_BOT_USER_ID=123456789012345678
 CRAB_WORKSPACE_ROOT=/var/lib/crab/workspace
 CRAB_MAX_CONCURRENT_LANES=4
-CRAB_COMPACTION_TOKEN_THRESHOLD=120000
-CRAB_INACTIVITY_TIMEOUT_SECS=1800
 CRAB_STARTUP_RECONCILIATION_GRACE_PERIOD_SECS=90
 CRAB_HEARTBEAT_INTERVAL_SECS=10
 CRAB_RUN_STALL_TIMEOUT_SECS=600
@@ -185,9 +181,6 @@ ssh "$CRAB_TARGET_USER@$CRAB_TARGET_HOST" \
 
 Timeout and heartbeat semantics:
 
-- `CRAB_INACTIVITY_TIMEOUT_SECS`:
-  per-logical-session idle duration before Crab triggers an inactivity rotation
-  (`flush -> checkpoint -> end physical session -> clear handle`). Default `1800` (30 minutes).
 - `CRAB_STARTUP_RECONCILIATION_GRACE_PERIOD_SECS`:
   startup grace window used to decide whether in-flight runs from before restart are stale and
   should be reconciled/cancelled. Default `90`.

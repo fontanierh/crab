@@ -21,10 +21,14 @@ core modules are actually exercised in production flow.
   - Guardrails: token-capped managed docs with explicit failure on budget overflow (no truncation)
   - Observability: bootstrap context size is logged (`injected_context_tokens`, `injected_context_chars`)
   - Coverage: daemon context wiring tests + full workspace integration tests
-- Rotation trigger + checkpoint persistence:
-  - Core: `rotation`, `rotation_sequence`, `checkpoint_fallback`
-  - Runtime: `crates/crab-app/src/turn_executor.rs` (`maybe_execute_rotation*`)
-  - Coverage: turn executor rotation tests
+- Agent-driven rotation + checkpoint persistence:
+  - Core: `pending_rotation`, `rotate_cli`, `checkpoint`
+  - Runtime: `crates/crab-app/src/turn_executor.rs` (pending rotation pickup after turn),
+    `crates/crab-app/src/rotate_cli.rs` (`crab-rotate` binary writes pending rotation signal)
+  - Behavior: agent produces checkpoint JSON, invokes `crab-rotate` CLI; runtime picks up
+    pending rotation signal after the current turn, persists checkpoint, ends physical session,
+    clears session handle. No hidden turns or automatic triggers.
+  - Coverage: turn executor rotation tests, rotate CLI tests
 - Startup reconciliation + heartbeat:
   - Core: `startup_reconciliation`, `heartbeat`
   - Runtime: `crates/crab-app/src/maintenance.rs`
@@ -39,12 +43,14 @@ core modules are actually exercised in production flow.
   - OpenCode path executes through `OpenCodeExecutionBridge` transport-backed runtime path.
   - Claude path executes through `DaemonClaudeExecutionBridge` in daemon runtime flow.
   - Coverage: daemon runtime integration tests
-- Hidden checkpoint backend turn:
-  - Core: `checkpoint_turn`, `checkpoint_fallback`, `rotation_sequence`
-  - Runtime: `crates/crab-app/src/turn_executor.rs` (`run_hidden_checkpoint_turn`)
-  - Uses the same runtime backend execution path as normal turns
-  - Enforces strict schema parse/retry behavior; fallback only when backend output/execution fails
-  - Coverage: turn executor rotation/checkpoint tests
+- `crab-rotate` CLI + `rotate-session` skill:
+  - Core: `rotate_cli`, `pending_rotation`
+  - Runtime: `crates/crab-app/src/rotate_cli.rs` (`crab-rotate` binary)
+  - Skill: `.agents/skills/rotate-session/` guides the agent through producing checkpoint JSON
+    and invoking `crab-rotate`
+  - Behavior: agent-produced checkpoint is written as a pending rotation signal; no hidden
+    checkpoint turns or hidden memory flush turns exist
+  - Coverage: rotate CLI tests
 - OpenCode recovery helper integration:
   - Core: `recover_opencode_session`
   - Runtime: `crates/crab-app/src/daemon.rs` (`OpenCodeExecutionBridge::recover_session_with_helper`)

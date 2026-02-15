@@ -1,7 +1,6 @@
 use std::fs;
 use std::path::Path;
 
-use crate::rotation::ManualRotationRequest;
 use crate::workspace::{bootstrap_template_contents, BOOTSTRAP_FILE_NAME};
 use crate::{apply_onboarding_transition, OnboardingLifecycle, OnboardingTransition};
 use crate::{
@@ -15,8 +14,6 @@ pub enum OperatorCommand {
     SetModel { model: String },
     SetReasoning { reasoning_level: ReasoningLevel },
     ShowProfile,
-    ManualCompact,
-    ManualReset,
     OnboardingRerun,
     OnboardingResetBootstrap,
 }
@@ -31,7 +28,6 @@ pub struct OperatorSessionState {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OperatorCommandOutcome {
     pub requires_rotation: bool,
-    pub manual_rotation_request: Option<ManualRotationRequest>,
     pub user_message: String,
 }
 
@@ -67,8 +63,6 @@ pub fn parse_operator_command(input: &str) -> CrabResult<Option<OperatorCommand>
         "/model" => parse_model_command(&args).map(Some),
         "/reasoning" => parse_reasoning_command(&args).map(Some),
         "/profile" => parse_profile_command(&args).map(Some),
-        "/compact" => parse_manual_compact_command(&args).map(Some),
-        "/reset" => parse_manual_reset_command(&args).map(Some),
         "/onboarding" => parse_onboarding_command(&args).map(Some),
         _ => Ok(None),
     }
@@ -90,7 +84,6 @@ pub fn apply_operator_command(
                 state.active_physical_session_id = None;
                 return Ok(OperatorCommandOutcome {
                     requires_rotation: true,
-                    manual_rotation_request: None,
                     user_message: format!(
                         "backend set to {}; active physical session cleared",
                         backend_label(*backend)
@@ -100,7 +93,6 @@ pub fn apply_operator_command(
 
             Ok(OperatorCommandOutcome {
                 requires_rotation: false,
-                manual_rotation_request: None,
                 user_message: format!("backend already {}", backend_label(*backend)),
             })
         }
@@ -109,7 +101,6 @@ pub fn apply_operator_command(
             state.active_profile.model = model.clone();
             Ok(OperatorCommandOutcome {
                 requires_rotation: false,
-                manual_rotation_request: None,
                 user_message: format!("model set to {}", state.active_profile.model),
             })
         }
@@ -117,7 +108,6 @@ pub fn apply_operator_command(
             state.active_profile.reasoning_level = *reasoning_level;
             Ok(OperatorCommandOutcome {
                 requires_rotation: false,
-                manual_rotation_request: None,
                 user_message: format!(
                     "reasoning set to {}",
                     reasoning_level_label(*reasoning_level)
@@ -126,18 +116,7 @@ pub fn apply_operator_command(
         }
         OperatorCommand::ShowProfile => Ok(OperatorCommandOutcome {
             requires_rotation: false,
-            manual_rotation_request: None,
             user_message: render_active_profile_summary(state),
-        }),
-        OperatorCommand::ManualCompact => Ok(OperatorCommandOutcome {
-            requires_rotation: true,
-            manual_rotation_request: Some(ManualRotationRequest::Compact),
-            user_message: "manual compact accepted; rotation requested".to_string(),
-        }),
-        OperatorCommand::ManualReset => Ok(OperatorCommandOutcome {
-            requires_rotation: true,
-            manual_rotation_request: Some(ManualRotationRequest::Reset),
-            user_message: "manual reset accepted; rotation requested".to_string(),
         }),
         OperatorCommand::OnboardingRerun | OperatorCommand::OnboardingResetBootstrap => {
             Err(CrabError::InvariantViolation {
@@ -265,30 +244,6 @@ fn parse_profile_command(args: &[&str]) -> CrabResult<OperatorCommand> {
         context: "operator_command_parse",
         message: "/profile does not accept arguments".to_string(),
     })
-}
-
-fn parse_manual_compact_command(args: &[&str]) -> CrabResult<OperatorCommand> {
-    parse_manual_rotation_command("/compact", args, OperatorCommand::ManualCompact)
-}
-
-fn parse_manual_reset_command(args: &[&str]) -> CrabResult<OperatorCommand> {
-    parse_manual_rotation_command("/reset", args, OperatorCommand::ManualReset)
-}
-
-fn parse_manual_rotation_command(
-    command_name: &'static str,
-    args: &[&str],
-    command: OperatorCommand,
-) -> CrabResult<OperatorCommand> {
-    let [confirmation_token] = args else {
-        return Err(CrabError::InvariantViolation {
-            context: "operator_command_parse",
-            message: format!("{command_name} requires exactly one argument: confirm"),
-        });
-    };
-
-    validate_confirmation_token(confirmation_token)?;
-    Ok(command)
 }
 
 fn parse_onboarding_command(args: &[&str]) -> CrabResult<OperatorCommand> {
@@ -427,9 +382,9 @@ mod tests {
     use std::os::unix::fs::PermissionsExt;
 
     use crate::{
-        apply_onboarding_transition, BackendKind, CrabError, InferenceProfile,
-        ManualRotationRequest, OnboardingLifecycle, OnboardingState, OnboardingTransition,
-        ProfileValueSource, ReasoningLevel, ResolvedInferenceProfile,
+        apply_onboarding_transition, BackendKind, CrabError, InferenceProfile, OnboardingLifecycle,
+        OnboardingState, OnboardingTransition, ProfileValueSource, ReasoningLevel,
+        ResolvedInferenceProfile,
     };
 
     use super::{
@@ -559,16 +514,6 @@ mod tests {
             .expect("profile command should parse")
             .expect("profile command should be recognized");
         assert_eq!(profile_command, OperatorCommand::ShowProfile);
-
-        let compact_command = parse_operator_command("/compact confirm")
-            .expect("compact command should parse")
-            .expect("compact command should be recognized");
-        assert_eq!(compact_command, OperatorCommand::ManualCompact);
-
-        let reset_command = parse_operator_command("/reset CONFIRM")
-            .expect("reset command should parse")
-            .expect("reset command should be recognized");
-        assert_eq!(reset_command, OperatorCommand::ManualReset);
     }
 
     #[test]
@@ -578,6 +523,13 @@ mod tests {
 
         let unknown = parse_operator_command("/help").expect("unknown command should parse");
         assert!(unknown.is_none());
+
+        let compact =
+            parse_operator_command("/compact confirm").expect("compact command should parse");
+        assert!(compact.is_none());
+
+        let reset = parse_operator_command("/reset confirm").expect("reset command should parse");
+        assert!(reset.is_none());
     }
 
     #[test]
@@ -623,27 +575,6 @@ mod tests {
             profile_args.to_string(),
             "operator_command_parse invariant violation: /profile does not accept arguments"
         );
-
-        let compact_missing = parse_operator_command("/compact")
-            .expect_err("compact command without confirmation should fail");
-        assert_eq!(
-            compact_missing.to_string(),
-            "operator_command_parse invariant violation: /compact requires exactly one argument: confirm"
-        );
-
-        let compact_bad_token = parse_operator_command("/compact yes")
-            .expect_err("compact command with wrong token should fail");
-        assert_eq!(
-            compact_bad_token.to_string(),
-            "operator_command_parse invariant violation: onboarding command requires confirmation token \"confirm\""
-        );
-
-        let reset_extra = parse_operator_command("/reset confirm now")
-            .expect_err("reset command with extra argument should fail");
-        assert_eq!(
-            reset_extra.to_string(),
-            "operator_command_parse invariant violation: /reset requires exactly one argument: confirm"
-        );
     }
 
     #[test]
@@ -663,7 +594,7 @@ mod tests {
         assert_eq!(state.active_profile.backend, BackendKind::Claude);
         assert_eq!(state.active_physical_session_id, None);
         assert!(outcome.requires_rotation);
-        assert_eq!(outcome.manual_rotation_request, None);
+
         assert_eq!(
             outcome.user_message,
             "backend set to claude; active physical session cleared"
@@ -688,7 +619,7 @@ mod tests {
             Some("thread-1".to_string())
         );
         assert!(!outcome.requires_rotation);
-        assert_eq!(outcome.manual_rotation_request, None);
+
         assert_eq!(outcome.user_message, "backend already codex");
     }
 
@@ -705,7 +636,7 @@ mod tests {
         )
         .expect("model update should apply");
         assert_eq!(state.active_profile.model, "auto");
-        assert_eq!(model_outcome.manual_rotation_request, None);
+
         assert_eq!(model_outcome.user_message, "model set to auto");
 
         let reasoning_outcome = apply_operator_command(
@@ -717,7 +648,7 @@ mod tests {
         )
         .expect("reasoning update should apply");
         assert_eq!(state.active_profile.reasoning_level, ReasoningLevel::XHigh);
-        assert_eq!(reasoning_outcome.manual_rotation_request, None);
+
         assert_eq!(reasoning_outcome.user_message, "reasoning set to xhigh");
     }
 
@@ -746,7 +677,7 @@ mod tests {
         let outcome = apply_operator_command(&mut state, &OperatorCommand::ShowProfile, &owner)
             .expect("show profile should apply");
         assert!(!outcome.requires_rotation);
-        assert_eq!(outcome.manual_rotation_request, None);
+
         assert_eq!(
             outcome.user_message,
             "backend=codex, model=gpt-5-codex, reasoning=medium"
@@ -767,8 +698,6 @@ mod tests {
                 reasoning_level: ReasoningLevel::Low,
             },
             OperatorCommand::ShowProfile,
-            OperatorCommand::ManualCompact,
-            OperatorCommand::ManualReset,
             OperatorCommand::OnboardingRerun,
             OperatorCommand::OnboardingResetBootstrap,
         ];
@@ -923,38 +852,6 @@ mod tests {
         assert_eq!(
             error.to_string(),
             "operator_command_apply invariant violation: onboarding commands require apply_onboarding_operator_command"
-        );
-    }
-
-    #[test]
-    fn apply_manual_rotation_commands_request_rotation_with_manual_trigger() {
-        let owner = owner_actor();
-        let mut compact_state = session_state();
-        let compact_outcome =
-            apply_operator_command(&mut compact_state, &OperatorCommand::ManualCompact, &owner)
-                .expect("manual compact should apply");
-        assert!(compact_outcome.requires_rotation);
-        assert_eq!(
-            compact_outcome.manual_rotation_request,
-            Some(ManualRotationRequest::Compact)
-        );
-        assert_eq!(
-            compact_outcome.user_message,
-            "manual compact accepted; rotation requested"
-        );
-
-        let mut reset_state = session_state();
-        let reset_outcome =
-            apply_operator_command(&mut reset_state, &OperatorCommand::ManualReset, &owner)
-                .expect("manual reset should apply");
-        assert!(reset_outcome.requires_rotation);
-        assert_eq!(
-            reset_outcome.manual_rotation_request,
-            Some(ManualRotationRequest::Reset)
-        );
-        assert_eq!(
-            reset_outcome.user_message,
-            "manual reset accepted; rotation requested"
         );
     }
 

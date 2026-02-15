@@ -25,9 +25,7 @@ The table below maps each acceptance item to currently available repository/stag
 | Normal owner run processes end-to-end (`ingress -> lane -> backend -> Discord delivery`) | `crates/crab-app/src/daemon.rs` tests (`daemon_loop_dispatches_claude_owner_turn_and_shuts_down_claude_session`), `crates/crab-app/src/turn_executor.rs` end-to-end dispatch tests |
 | Non-owner run obeys per-user memory scope and disclosure policy | `crates/crab-core/src/trust.rs` tests, `crates/crab-core/src/memory_snippets.rs` tests (`resolves_non_owner_scope_plus_recent_global_memory`) |
 | Restart during/after a run replays missing outbound delivery without duplicate messages/edits | `crates/crab-app/src/turn_executor.rs` tests (`restart_recovery_replays_missing_delivery_and_continues_next_run`, replay delivery tests) |
-| Token-threshold compaction trigger executes hidden memory flush + checkpoint + session rotation | `crates/crab-app/src/turn_executor.rs` tests (`token_trigger_rotation_uses_backend_hidden_checkpoint_turn_without_fallback`, fallback variants) |
-| Inactivity trigger executes rotation behavior after configured timeout | `crates/crab-core/src/rotation.rs` tests (`triggers_inactivity_when_idle_and_timeout_elapsed`) plus runtime wiring in turn executor tests |
-| Manual `/compact confirm` and `/reset confirm` commands execute only for owner and are audited | `crates/crab-app/src/turn_executor.rs` tests for owner-only enforcement and audit event behavior |
+| Agent-driven rotation via `crab-rotate` CLI executes checkpoint persistence + session rotation | `crates/crab-app/src/turn_executor.rs` rotation tests, `crates/crab-app/src/rotate_cli.rs` tests for pending rotation signal and checkpoint persistence |
 | Heartbeat escalates correctly for stalled run/backend/dispatcher scenarios | `crates/crab-app/src/daemon.rs` heartbeat-action tests and `crates/crab-app/src/maintenance.rs` escalation tests |
 | Service restart/reboot persistence is validated by operations playbook steps | Runbook exists (`crab/docs/10-target-machine-operations.md`), target-host execution still pending |
 | `make quality` passes on deployment commit | `make quality` is required in this readiness pass and must be rerun on the final deployment candidate commit before GO |
@@ -43,9 +41,7 @@ Record each checklist item with explicit pass/fail and evidence path.
 | Owner normal run E2E | pending |  |  |
 | Non-owner memory scope/disclosure behavior | pending |  |  |
 | Restart replay without duplicate output | pending |  |  |
-| Token-threshold compaction rotation | pending |  |  |
-| Inactivity-triggered rotation | pending |  |  |
-| Owner-only manual compact/reset commands | pending |  |  |
+| Agent-driven rotation via `crab-rotate` CLI | pending |  |  |
 | Heartbeat stall escalation | pending |  |  |
 | Service restart/reboot persistence | pending |  |  |
 | `make quality` on deployment commit | pending |  |  |

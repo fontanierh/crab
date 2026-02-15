@@ -1,6 +1,5 @@
 #![deny(warnings, dead_code, unused_imports, unused_variables)]
 
-pub mod checkpoint_fallback;
 pub mod checkpoint_turn;
 pub mod compatibility;
 pub mod config;
@@ -11,9 +10,9 @@ pub mod diagnostics;
 pub mod domain;
 pub mod error;
 pub mod fallback;
+pub(crate) mod file_signal;
 pub mod heartbeat;
 pub mod memory_citation;
-pub mod memory_flush;
 pub mod memory_get;
 pub mod memory_search;
 pub mod memory_snippets;
@@ -22,6 +21,7 @@ pub mod onboarding_completion;
 pub mod onboarding_profile_files;
 pub mod onboarding_state;
 pub mod operator_commands;
+pub mod pending_rotation;
 pub mod profile;
 pub mod prompt_contract;
 pub mod rotation;
@@ -30,19 +30,15 @@ pub mod self_trigger;
 pub mod sender_identity;
 pub mod startup_reconciliation;
 pub mod state_schema;
+#[cfg(test)]
+pub(crate) mod test_support;
 pub mod trust;
 mod validation;
 pub mod workspace;
 pub mod workspace_git;
 
-pub use checkpoint_fallback::{
-    build_fallback_checkpoint_document, TranscriptEntry, TranscriptEntryRole,
-    DEFAULT_FALLBACK_TRANSCRIPT_TAIL_LIMIT,
-};
 pub use checkpoint_turn::{
-    build_checkpoint_prompt, parse_checkpoint_turn_document, resolve_checkpoint_turn_output,
-    CheckpointTurnArtifact, CheckpointTurnDocument, CheckpointTurnResolution,
-    DEFAULT_CHECKPOINT_MAX_ATTEMPTS,
+    parse_checkpoint_turn_document, CheckpointTurnArtifact, CheckpointTurnDocument,
 };
 pub use compatibility::{
     evaluate_profile_compatibility, BackendCompatibilityCatalog, BackendCompatibilityRules,
@@ -90,10 +86,6 @@ pub use memory_citation::{
     MemoryCitationMode, MemoryCitationPolicyDecision, MemoryCitationPolicyInput,
     MemoryRecallSource, SHARED_CONTEXT_DISCLOSURE_TEXT,
 };
-pub use memory_flush::{
-    build_memory_flush_prompt, finalize_hidden_memory_flush, should_run_memory_flush_cycle,
-    HiddenMemoryFlushOutcome, MemoryFlushAck, MEMORY_FLUSH_DONE_TOKEN, MEMORY_FLUSH_NO_REPLY_TOKEN,
-};
 pub use memory_get::{
     get_memory, MemoryGetInput, MemoryGetResult, DEFAULT_MEMORY_GET_MAX_CHARS,
     DEFAULT_MEMORY_GET_MAX_LINES,
@@ -131,16 +123,17 @@ pub use operator_commands::{
     OnboardingOperatorCommandOutcome, OperatorActorContext, OperatorCommand,
     OperatorCommandOutcome, OperatorSessionState,
 };
+pub use pending_rotation::{
+    consume_pending_rotation, read_pending_rotations, validate_pending_rotation,
+    write_pending_rotation, PendingRotation, PENDING_ROTATIONS_DIR_NAME,
+};
 pub use profile::{
     resolve_inference_profile, BackendInferenceDefault, BackendInferenceDefaults,
     InferenceProfileOverride, InferenceProfileResolutionInput, ProfileValueSource,
     ResolvedInferenceProfile,
 };
 pub use prompt_contract::{compile_prompt_contract, PromptContractInput};
-pub use rotation::{
-    evaluate_rotation_triggers, ManualRotationRequest, RotationTrigger, RotationTriggerDecision,
-    RotationTriggerInput,
-};
+pub use rotation::RotationTrigger;
 pub use rotation_sequence::{
     execute_rotation_sequence, RotationSequenceOutcome, RotationSequenceRuntime,
 };
@@ -173,8 +166,9 @@ pub use workspace::{
     ensure_user_memory_scope, ensure_workspace_layout, WorkspaceBootstrapState,
     WorkspaceEnsureOutcome, WorkspaceTemplate, AGENTS_FILE_NAME, AGENTS_SKILLS_ROOT_RELATIVE_PATH,
     BOOTSTRAP_FILE_NAME, CLAUDE_LINK_NAME, CLAUDE_SKILLS_LINK_RELATIVE_PATH, IDENTITY_FILE_NAME,
-    MEMORY_FILE_NAME, SKILL_AUTHORING_POLICY_FILE_RELATIVE_PATH, SKILL_AUTHORING_POLICY_SKILL_NAME,
-    SOUL_FILE_NAME, USER_FILE_NAME,
+    MEMORY_FILE_NAME, ROTATE_SESSION_SKILL_FILE_RELATIVE_PATH, ROTATE_SESSION_SKILL_NAME,
+    SKILL_AUTHORING_POLICY_FILE_RELATIVE_PATH, SKILL_AUTHORING_POLICY_SKILL_NAME, SOUL_FILE_NAME,
+    USER_FILE_NAME,
 };
 pub use workspace_git::{
     enqueue_workspace_git_push_request, ensure_workspace_git_repository,

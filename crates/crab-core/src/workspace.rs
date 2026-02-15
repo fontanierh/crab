@@ -16,6 +16,8 @@ pub const CLAUDE_SKILLS_LINK_RELATIVE_PATH: &str = ".claude/skills";
 pub const SKILL_AUTHORING_POLICY_FILE_RELATIVE_PATH: &str =
     ".agents/skills/skill-authoring-policy/SKILL.md";
 pub const SKILL_AUTHORING_POLICY_SKILL_NAME: &str = "skill-authoring-policy";
+pub const ROTATE_SESSION_SKILL_FILE_RELATIVE_PATH: &str = ".agents/skills/rotate-session/SKILL.md";
+pub const ROTATE_SESSION_SKILL_NAME: &str = "rotate-session";
 
 const MEMORY_DIR_NAME: &str = "memory";
 const MEMORY_GLOBAL_DIR_NAME: &str = "global";
@@ -125,6 +127,70 @@ Guardrail for skill authoring in Crab workspaces.
 - Include explicit trigger guidance so agents can discover when to apply the skill.
 \n\
 - Keep instructions deterministic and implementation-focused.
+\n";
+
+const ROTATE_SESSION_SKILL_TEMPLATE: &str = "\
+# SKILL.md — rotate-session
+\n\
+## Purpose
+\n\
+Checkpoint the current session and rotate to a fresh backend context.
+\n\
+## When to Use
+\n\
+- Your context is getting large (many turns or heavy tool output).
+\n\
+- You are at a natural task boundary and want a clean slate.
+\n\
+- The operator asks you to rotate or checkpoint.
+\n\
+## How to Rotate
+\n\
+1. Persist any important facts to your memory files (MEMORY.md, memory/ directory).
+\n\
+2. Build a checkpoint JSON object:
+\n\
+```json
+{
+  \"summary\": \"Brief summary of what happened in this session.\",
+  \"decisions\": [\"Key decision 1\", \"Key decision 2\"],
+  \"open_questions\": [\"Unresolved question 1\"],
+  \"next_actions\": [\"Action to take next session\"],
+  \"artifacts\": [{\"path\": \"path/to/file\", \"note\": \"what changed\"}]
+}
+```
+\n\
+3. Call the `crab-rotate` CLI:
+\n\
+```bash
+crab-rotate --state-dir \"$CRAB_STATE_DIR\" --checkpoint '{...}'
+```
+\n\
+Or write the JSON to a file and use `--checkpoint-file`:
+\n\
+```bash
+crab-rotate --state-dir \"$CRAB_STATE_DIR\" --checkpoint-file /tmp/checkpoint.json
+```
+\n\
+## What Happens After Rotation
+\n\
+- Crab persists your checkpoint and ends the current backend session.
+\n\
+- The next message starts a fresh session with your checkpoint summary injected as context.
+\n\
+- Your memory files remain on disk and are available in the new session.
+\n\
+## Checkpoint Field Rules
+\n\
+- All string fields must be non-empty.
+\n\
+- `summary` is required.
+\n\
+- `decisions`, `open_questions`, `next_actions` are arrays of non-empty strings.
+\n\
+- `artifacts` is an array of objects with `path` and `note` fields (both non-empty).
+\n\
+- Unknown fields are rejected.
 \n";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -406,6 +472,13 @@ fn ensure_skills_layout(
     let policy_template = SKILL_AUTHORING_POLICY_TEMPLATE;
     ensure_template_file(&policy_skill_file, policy_template, created_paths)?;
 
+    let rotate_skill_root = agents_skills_root.join(ROTATE_SESSION_SKILL_NAME);
+    ensure_directory_exists(&rotate_skill_root, created_paths, skills_context)?;
+
+    let rotate_skill_file = rotate_skill_root.join(SKILL_FILE_NAME);
+    let rotate_template = ROTATE_SESSION_SKILL_TEMPLATE;
+    ensure_template_file(&rotate_skill_file, rotate_template, created_paths)?;
+
     let claude_root = workspace_root.join(CLAUDE_DIR_NAME);
     ensure_directory_exists(&claude_root, created_paths, skills_context)?;
     ensure_claude_skills_link(&claude_root, created_paths, repaired_paths)
@@ -604,7 +677,8 @@ mod tests {
         ensure_workspace_layout, wrap_io, WorkspaceBootstrapState, AGENTS_FILE_NAME,
         AGENTS_SKILLS_ROOT_RELATIVE_PATH, BOOTSTRAP_FILE_NAME, CLAUDE_LINK_NAME,
         CLAUDE_SKILLS_LINK_RELATIVE_PATH, IDENTITY_FILE_NAME, MEMORY_FILE_NAME,
-        SKILL_AUTHORING_POLICY_FILE_RELATIVE_PATH, SOUL_FILE_NAME, USER_FILE_NAME,
+        ROTATE_SESSION_SKILL_FILE_RELATIVE_PATH, SKILL_AUTHORING_POLICY_FILE_RELATIVE_PATH,
+        SOUL_FILE_NAME, USER_FILE_NAME,
     };
     use crate::CrabError;
 
@@ -721,6 +795,13 @@ mod tests {
         let skill_policy_contents =
             fs::read_to_string(&skill_policy_file).expect("policy skill should be readable");
         assert!(skill_policy_contents.contains("Canonical skills root is `.agents/skills`."));
+
+        let rotate_skill_file = workspace.path.join(ROTATE_SESSION_SKILL_FILE_RELATIVE_PATH);
+        assert!(rotate_skill_file.is_file());
+        let rotate_skill_contents =
+            fs::read_to_string(&rotate_skill_file).expect("rotate skill should be readable");
+        assert!(rotate_skill_contents.contains("rotate-session"));
+        assert!(rotate_skill_contents.contains("crab-rotate"));
 
         let claude_skills_link = workspace.path.join(CLAUDE_SKILLS_LINK_RELATIVE_PATH);
         let metadata =

@@ -8,27 +8,21 @@ use crab_backends::{
     CodexLifecycleManager, OpenCodeServerProcess,
 };
 use crab_core::{
-    apply_operator_command, build_checkpoint_prompt, build_fallback_checkpoint_document,
-    build_memory_flush_prompt, build_onboarding_extraction_prompt,
-    detect_workspace_bootstrap_state, enqueue_workspace_git_push_request,
-    evaluate_rotation_triggers, execute_onboarding_completion_protocol, execute_rotation_sequence,
-    finalize_hidden_memory_flush, maybe_commit_workspace_snapshot,
-    parse_onboarding_capture_document, parse_operator_command, persist_onboarding_profile_files,
-    resolve_checkpoint_turn_output, Checkpoint, CheckpointTurnDocument, CheckpointTurnResolution,
+    build_onboarding_extraction_prompt, consume_pending_rotation, detect_workspace_bootstrap_state,
+    enqueue_workspace_git_push_request, execute_onboarding_completion_protocol,
+    execute_rotation_sequence, maybe_commit_workspace_snapshot, parse_onboarding_capture_document,
+    persist_onboarding_profile_files, read_pending_rotations, Checkpoint, CheckpointTurnDocument,
     CrabError, CrabResult, EventEnvelope, EventKind, EventSource, InferenceProfile, LaneState,
-    LogicalSession, ManualRotationRequest, OnboardingCompletionEventRuntime,
-    OnboardingCompletionInput, OperatorActorContext, OperatorCommand, OperatorSessionState,
-    PhysicalSession, RotationSequenceRuntime, RotationTrigger, RotationTriggerInput, Run,
-    RunProfileTelemetry, RunStatus, TokenAccounting, TranscriptEntry, TranscriptEntryRole,
+    LogicalSession, OnboardingCompletionEventRuntime, OnboardingCompletionInput, PhysicalSession,
+    RotationSequenceRuntime, Run, RunProfileTelemetry, RunStatus, TokenAccounting,
     WorkspaceBootstrapState, WorkspaceGitCommitRequest, WorkspaceGitCommitTrigger,
-    WorkspaceGitPushRequest, DEFAULT_CHECKPOINT_MAX_ATTEMPTS,
-    DEFAULT_FALLBACK_TRANSCRIPT_TAIL_LIMIT, ONBOARDING_CAPTURE_INCOMPLETE_TOKEN,
+    WorkspaceGitPushRequest, ONBOARDING_CAPTURE_INCOMPLETE_TOKEN,
 };
 use crab_discord::{
     DeliveryAttempt, GatewayAttachment, GatewayMessage, RoutingKey, ShouldSendDecision,
 };
 use crab_scheduler::QueuedRun;
-use crab_store::{CheckpointStore, EventStore};
+use crab_store::CheckpointStore;
 use futures::executor::block_on;
 use futures::future::poll_fn;
 use futures::StreamExt;
@@ -405,34 +399,6 @@ where
             started_at_epoch_ms,
         )?;
 
-        // Pre-run inactivity check: evaluate whether the gap between the previous run's
-        // completion and this run's start exceeds the inactivity timeout. This runs while
-        // the session is still in Idle state (from the previous run's completion) so that
-        // `maybe_execute_rotation` sees `lane_is_idle = true` and fires the trigger.
-        if session.active_physical_session_id.is_some()
-            && started_at_epoch_ms > session.last_activity_epoch_ms
-        {
-            let decision = evaluate_rotation_triggers(&RotationTriggerInput {
-                now_epoch_ms: started_at_epoch_ms,
-                last_activity_epoch_ms: session.last_activity_epoch_ms,
-                lane_is_idle: true,
-                backend_compaction_signaled: false,
-                inactivity_timeout_secs: self.composition.rotation_policy.inactivity_timeout_secs,
-                manual_request: None,
-            })?;
-            if decision
-                .triggers
-                .iter()
-                .any(|t| matches!(t, RotationTrigger::InactivityTimeout))
-            {
-                self.maybe_execute_rotation(&run, &mut session, started_at_epoch_ms, None)?;
-                self.composition
-                    .state_stores
-                    .session_store
-                    .upsert_session(&session)?;
-            }
-        }
-
         session.lane_state = LaneState::Running;
         session.queued_run_count = self
             .composition
@@ -453,11 +419,6 @@ where
         let mut delivery = DiscordAssistantDelivery::new();
         let mut onboarding_gate_resolution =
             self.resolve_pending_onboarding_gate(&run, started_at_epoch_ms)?;
-        let mut manual_command_resolution = if onboarding_gate_resolution.is_some() {
-            None
-        } else {
-            self.resolve_manual_rotation_command(&run, &mut session)?
-        };
         let mut onboarding_completion_resolution = None;
         let mut supplemental_emitted_event_count = 0_usize;
         let mut rotation_onboarding_completion_resolution = None;
@@ -476,11 +437,10 @@ where
             backend = ?run.profile.resolved_profile.backend,
             model = %run.profile.resolved_profile.model,
             reasoning_level = %run.profile.resolved_profile.reasoning_level.as_token(),
-            manual_rotation_command = manual_command_resolution.is_some(),
             "run started"
         );
 
-        if manual_command_resolution.is_none() && onboarding_gate_resolution.is_none() {
+        if onboarding_gate_resolution.is_none() {
             onboarding_completion_resolution =
                 self.maybe_complete_pending_onboarding_capture(&run, started_at_epoch_ms)?;
             if let Some(ref resolution) = onboarding_completion_resolution {
@@ -490,10 +450,7 @@ where
         }
 
         let mut steered = false;
-        if manual_command_resolution.is_none()
-            && onboarding_completion_resolution.is_none()
-            && onboarding_gate_resolution.is_none()
-        {
+        if onboarding_completion_resolution.is_none() && onboarding_gate_resolution.is_none() {
             let mut physical_session = self.runtime.ensure_physical_session(
                 logical_session_id,
                 &run.profile.resolved_profile,
@@ -604,9 +561,7 @@ where
 
         let final_status = if steered {
             RunStatus::Cancelled
-        } else if manual_command_resolution.is_some()
-            || onboarding_completion_resolution.is_some()
-            || onboarding_gate_resolution.is_some()
+        } else if onboarding_completion_resolution.is_some() || onboarding_gate_resolution.is_some()
         {
             RunStatus::Succeeded
         } else {
@@ -653,18 +608,10 @@ where
             None,
         )?;
 
-        let manual_rotation_request = manual_command_resolution
-            .as_ref()
-            .and_then(|resolution| resolution.request);
         let rotation_outcome = if onboarding_gate_resolution.is_some() {
             None
         } else {
-            self.maybe_execute_rotation(
-                &run,
-                &mut session,
-                completed_at_epoch_ms,
-                manual_rotation_request,
-            )?
+            self.maybe_execute_cli_rotation(&run, &mut session, completed_at_epoch_ms)?
         };
         if let Some(rotation_outcome) = rotation_outcome.as_ref() {
             if let Some(ref resolution) = rotation_outcome.onboarding_completion_resolution {
@@ -690,23 +637,7 @@ where
             "run completed"
         );
 
-        if let Some(manual_command_resolution) = manual_command_resolution.take() {
-            let mut response = manual_command_resolution.user_message;
-            let rotation_outcome = rotation_outcome
-                .as_ref()
-                .expect("manual rotation command must produce rotation outcome");
-            response = format!(
-                "{} (checkpoint: {})",
-                response, rotation_outcome.checkpoint_id
-            );
-            let _ = self.deliver_rendered_assistant_output(
-                &run,
-                &delivery_message_id(&run.id, 0),
-                &response,
-                0,
-                completed_at_epoch_ms,
-            )?;
-        } else if let Some(onboarding_completion_resolution) = onboarding_completion_resolution {
+        if let Some(onboarding_completion_resolution) = onboarding_completion_resolution {
             let delivery_result = self.deliver_rendered_assistant_output(
                 &run,
                 &delivery_message_id(&run.id, 0),
@@ -737,8 +668,8 @@ where
             let _ = delivery_result?;
         } else if let Some(ref outcome) = rotation_outcome {
             let notification = format!(
-                "Crab: session rotated ({}). Context checkpointed.",
-                outcome.triggers_label
+                "Crab: session rotated (cli_rotation). Checkpoint: {}",
+                outcome.checkpoint_id
             );
             let notification_id = format!("delivery:{}:rotation-notification", run.id);
             // Keep on one line: multi-line call sites can produce llvm-cov line-mapping gaps.
@@ -893,10 +824,13 @@ where
     ) -> CrabResult<(Option<OnboardingCompletionResolution>, usize)> {
         let bootstrap_state =
             detect_workspace_bootstrap_state(&self.composition.startup.workspace_root)?;
-        if bootstrap_state != WorkspaceBootstrapState::PendingBootstrap {
-            return Ok((None, 0));
-        }
-        if !run.profile.sender_is_owner || !is_dm_logical_session_id(&run.logical_session_id) {
+        // Combine guards on a single arm: the second condition (sender/DM) is a defensive
+        // invariant that is currently unreachable in normal flow because the upstream
+        // onboarding gate already enforces owner+DM, but it protects against future gate changes.
+        if bootstrap_state != WorkspaceBootstrapState::PendingBootstrap
+            || !run.profile.sender_is_owner
+            || !is_dm_logical_session_id(&run.logical_session_id)
+        {
             return Ok((None, 0));
         }
 
@@ -1044,117 +978,31 @@ where
         })
     }
 
-    fn resolve_manual_rotation_command(
-        &mut self,
-        run: &Run,
-        session: &mut LogicalSession,
-    ) -> CrabResult<Option<ManualRotationCommandResolution>> {
-        let Some((command, manual_request)) = parse_manual_rotation_command(&run.user_input)?
-        else {
-            return Ok(None);
-        };
-
-        let mut operator_state = OperatorSessionState {
-            active_backend: session.active_backend,
-            active_profile: session.active_profile.clone(),
-            active_physical_session_id: session.active_physical_session_id.clone(),
-        };
-        let actor = OperatorActorContext {
-            sender_id: run.profile.sender_id.clone(),
-            sender_is_owner: run.profile.sender_is_owner,
-        };
-        let outcome = apply_operator_command(&mut operator_state, &command, &actor)?;
-
-        session.active_backend = operator_state.active_backend;
-        session.active_profile = operator_state.active_profile;
-        session.active_physical_session_id = operator_state.active_physical_session_id;
-
-        let mut payload = BTreeMap::new();
-        payload.insert(
-            "operator_command".to_string(),
-            operator_command_token(command).to_string(),
-        );
-        payload.insert(
-            "requires_rotation".to_string(),
-            outcome.requires_rotation.to_string(),
-        );
-        payload.insert(
-            "manual_rotation_request".to_string(),
-            manual_rotation_request_token(manual_request).to_string(),
-        );
-        payload.insert("sender_id".to_string(), run.profile.sender_id.clone());
-        payload.insert(
-            "sender_is_owner".to_string(),
-            run.profile.sender_is_owner.to_string(),
-        );
-        payload.insert("message".to_string(), outcome.user_message.clone());
-        let emitted_at_epoch_ms = self.runtime.now_epoch_ms()?;
-        self.append_run_event(
-            run,
-            EventKind::RunNote,
-            EventSource::System,
-            payload,
-            emitted_at_epoch_ms,
-        )?;
-
-        Ok(Some(ManualRotationCommandResolution {
-            request: Some(manual_request),
-            user_message: outcome.user_message,
-        }))
-    }
-
-    fn maybe_execute_rotation(
+    fn maybe_execute_cli_rotation(
         &mut self,
         run: &Run,
         session: &mut LogicalSession,
         now_epoch_ms: u64,
-        manual_request: Option<ManualRotationRequest>,
     ) -> CrabResult<Option<RotationExecutionOutcome>> {
-        self.maybe_execute_rotation_with_sabotage(run, session, now_epoch_ms, manual_request, None)
-    }
-
-    fn maybe_execute_rotation_with_sabotage(
-        &mut self,
-        run: &Run,
-        session: &mut LogicalSession,
-        now_epoch_ms: u64,
-        manual_request: Option<ManualRotationRequest>,
-        completed_event_log_sabotage_path: Option<PathBuf>,
-    ) -> CrabResult<Option<RotationExecutionOutcome>> {
-        let backend_compaction_signaled =
-            check_compaction_signal(&self.composition.state_stores.root);
-        let decision = evaluate_rotation_triggers(&RotationTriggerInput {
-            now_epoch_ms,
-            last_activity_epoch_ms: session.last_activity_epoch_ms,
-            lane_is_idle: session.lane_state == LaneState::Idle,
-            backend_compaction_signaled,
-            inactivity_timeout_secs: self.composition.rotation_policy.inactivity_timeout_secs,
-            manual_request,
-        })?;
-
-        if !decision.should_rotate {
+        let pending = read_pending_rotations(&self.composition.state_stores.root)?;
+        if pending.is_empty() {
             return Ok(None);
         }
 
+        let (first_path, first_rotation) = pending.into_iter().next().expect("checked non-empty");
+
         let mut started_payload = BTreeMap::new();
         started_payload.insert("rotation_event".to_string(), "started".to_string());
-        started_payload.insert(
-            "triggers".to_string(),
-            render_rotation_triggers(&decision.triggers),
-        );
-        self.append_run_event(
-            run,
-            EventKind::RunNote,
-            EventSource::System,
-            started_payload,
-            now_epoch_ms,
-        )?;
+        started_payload.insert("trigger".to_string(), "cli_rotation".to_string());
+        // Keep on one line: multi-line call sites can produce llvm-cov line-mapping gaps.
+        #[rustfmt::skip]
+        self.append_run_event(run, EventKind::RunNote, EventSource::System, started_payload, now_epoch_ms)?;
 
         #[cfg(not(coverage))]
         tracing::info!(
             logical_session_id = %run.logical_session_id,
             run_id = %run.id,
-            triggers = %render_rotation_triggers(&decision.triggers),
+            trigger = "cli_rotation",
             token_usage_total = session.token_accounting.context_window_tokens(),
             "rotation started"
         );
@@ -1168,99 +1016,40 @@ where
         let (onboarding_completion_resolution, onboarding_rotation_note_count) =
             self.maybe_complete_pending_onboarding_from_rotation(run, session, now_epoch_ms)?;
 
-        let event_store = self.composition.state_stores.event_store.clone();
         let checkpoint_store = self.composition.state_stores.checkpoint_store.clone();
         let mut rotation_runtime = TurnExecutorRotationRuntime {
             run,
             logical_session: session,
-            runtime: &mut self.runtime,
-            codex_lifecycle: &mut self.composition.backends.codex,
-            event_store,
             checkpoint_store,
             checkpoint_created_at_epoch_ms: now_epoch_ms,
-            trigger_tokens: decision
-                .triggers
-                .iter()
-                .map(|trigger| rotation_trigger_token(*trigger).to_string())
-                .collect(),
-            completed_event_log_sabotage_path,
         };
-        let outcome = execute_rotation_sequence(&mut rotation_runtime)?;
+        let outcome = execute_rotation_sequence(&mut rotation_runtime, &first_rotation.checkpoint)?;
+
+        // Consume the pending rotation file.
+        consume_pending_rotation(&first_path)?;
 
         session.last_successful_checkpoint_id = Some(outcome.checkpoint_id.clone());
         session.lane_state = LaneState::Idle;
 
-        let had_rotation_warnings = outcome.used_fallback_checkpoint
-            || outcome.memory_flush_error.is_some()
-            || outcome.checkpoint_turn_error.is_some();
-        if had_rotation_warnings {
-            #[cfg(not(coverage))]
-            tracing::warn!(
-                logical_session_id = %run.logical_session_id,
-                run_id = %run.id,
-                triggers = %render_rotation_triggers(&decision.triggers),
-                checkpoint_id = %outcome.checkpoint_id,
-                used_fallback_checkpoint = outcome.used_fallback_checkpoint,
-                memory_flush_error = ?outcome.memory_flush_error,
-                checkpoint_turn_error = ?outcome.checkpoint_turn_error,
-                "rotation completed with warnings"
-            );
-        } else {
-            #[cfg(not(coverage))]
-            tracing::info!(
-                logical_session_id = %run.logical_session_id,
-                run_id = %run.id,
-                triggers = %render_rotation_triggers(&decision.triggers),
-                checkpoint_id = %outcome.checkpoint_id,
-                "rotation completed"
-            );
-        }
+        #[cfg(not(coverage))]
+        tracing::info!(
+            logical_session_id = %run.logical_session_id,
+            run_id = %run.id,
+            trigger = "cli_rotation",
+            checkpoint_id = %outcome.checkpoint_id,
+            "rotation completed"
+        );
 
         let mut completed_payload = BTreeMap::new();
         completed_payload.insert("rotation_event".to_string(), "completed".to_string());
         completed_payload.insert("checkpoint_id".to_string(), outcome.checkpoint_id.clone());
-        completed_payload.insert(
-            "used_fallback_checkpoint".to_string(),
-            outcome.used_fallback_checkpoint.to_string(),
-        );
-        completed_payload.insert(
-            "memory_flush_error".to_string(),
-            outcome
-                .memory_flush_error
-                .clone()
-                .unwrap_or_else(|| "none".to_string()),
-        );
-        completed_payload.insert(
-            "checkpoint_turn_error".to_string(),
-            outcome
-                .checkpoint_turn_error
-                .clone()
-                .unwrap_or_else(|| "none".to_string()),
-        );
-        completed_payload.insert(
-            "triggers".to_string(),
-            render_rotation_triggers(&decision.triggers),
-        );
-        self.append_run_event(
-            run,
-            EventKind::RunNote,
-            EventSource::System,
-            completed_payload,
-            now_epoch_ms,
-        )?;
-
-        if decision
-            .triggers
-            .contains(&RotationTrigger::BackendCompaction)
-        {
-            consume_compaction_signal(&self.composition.state_stores.root);
-        }
-
-        let triggers_label = render_rotation_triggers(&decision.triggers);
+        completed_payload.insert("trigger".to_string(), "cli_rotation".to_string());
+        // Keep on one line: multi-line call sites can produce llvm-cov line-mapping gaps.
+        #[rustfmt::skip]
+        self.append_run_event(run, EventKind::RunNote, EventSource::System, completed_payload, now_epoch_ms)?;
 
         Ok(Some(RotationExecutionOutcome {
             checkpoint_id: outcome.checkpoint_id,
-            triggers_label,
             onboarding_completion_resolution,
             supplemental_emitted_event_count: onboarding_rotation_note_count,
         }))
@@ -1631,12 +1420,6 @@ where
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct ManualRotationCommandResolution {
-    request: Option<ManualRotationRequest>,
-    user_message: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
 struct OnboardingCompletionResolution {
     user_message: String,
     emitted_event_count: usize,
@@ -1651,172 +1434,18 @@ struct PendingOnboardingGateResolution {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct RotationExecutionOutcome {
     checkpoint_id: String,
-    triggers_label: String,
     onboarding_completion_resolution: Option<OnboardingCompletionResolution>,
     supplemental_emitted_event_count: usize,
 }
 
-struct TurnExecutorRotationRuntime<'a, R>
-where
-    R: TurnExecutorRuntime,
-{
+struct TurnExecutorRotationRuntime<'a> {
     run: &'a Run,
     logical_session: &'a mut LogicalSession,
-    runtime: &'a mut R,
-    codex_lifecycle: &'a mut dyn CodexLifecycleManager,
-    event_store: EventStore,
     checkpoint_store: CheckpointStore,
     checkpoint_created_at_epoch_ms: u64,
-    trigger_tokens: Vec<String>,
-    completed_event_log_sabotage_path: Option<PathBuf>,
 }
 
-impl<R> RotationSequenceRuntime for TurnExecutorRotationRuntime<'_, R>
-where
-    R: TurnExecutorRuntime,
-{
-    fn run_hidden_memory_flush(&mut self) -> CrabResult<()> {
-        let cycle_id = format!("{}:{}", self.run.id, self.checkpoint_created_at_epoch_ms);
-        let prompt = build_memory_flush_prompt(&cycle_id)
-            .expect("turn rotation runtime always uses a non-empty cycle id");
-
-        let mut physical_session = self.runtime.ensure_physical_session(
-            &self.run.logical_session_id,
-            &self.run.profile.resolved_profile,
-            self.logical_session.active_physical_session_id.as_deref(),
-        )?;
-        self.logical_session.active_backend = self.run.profile.resolved_profile.backend;
-        self.logical_session.active_profile = self.run.profile.resolved_profile.clone();
-        self.logical_session.active_physical_session_id = Some(physical_session.id.clone());
-
-        let mut hidden_flush_run = self.run.clone();
-        hidden_flush_run.user_input = prompt.clone();
-        hidden_flush_run.physical_session_id = Some(physical_session.id.clone());
-
-        let hidden_turn_id = format!("turn:{}:hidden-memory-flush", self.run.id);
-        let mut backend_event_stream = self.runtime.execute_backend_turn(
-            self.codex_lifecycle,
-            &mut physical_session,
-            &hidden_flush_run,
-            &hidden_turn_id,
-            &prompt,
-        )?;
-
-        let mut raw_output = String::new();
-        loop {
-            let next = block_on(poll_fn(|cx| backend_event_stream.as_mut().poll_next(cx)));
-            let Some(backend_event) = next else { break };
-            if let Some(delta) = extract_backend_text_delta(&backend_event) {
-                raw_output.push_str(delta);
-            }
-        }
-
-        let _outcome = finalize_hidden_memory_flush(&raw_output)?;
-        Ok(())
-    }
-
-    fn run_hidden_checkpoint_turn(&mut self) -> CrabResult<CheckpointTurnDocument> {
-        let mut physical_session = self.runtime.ensure_physical_session(
-            &self.run.logical_session_id,
-            &self.run.profile.resolved_profile,
-            self.logical_session.active_physical_session_id.as_deref(),
-        )?;
-        self.logical_session.active_backend = self.run.profile.resolved_profile.backend;
-        self.logical_session.active_profile = self.run.profile.resolved_profile.clone();
-        self.logical_session.active_physical_session_id = Some(physical_session.id.clone());
-
-        let max_attempts = DEFAULT_CHECKPOINT_MAX_ATTEMPTS;
-        let mut prompt = build_checkpoint_prompt();
-        let mut attempt = 1_u8;
-        loop {
-            let mut hidden_checkpoint_run = self.run.clone();
-            hidden_checkpoint_run.user_input = prompt.clone();
-            hidden_checkpoint_run.physical_session_id = Some(physical_session.id.clone());
-
-            let hidden_turn_id = format!("turn:{}:hidden-checkpoint:{attempt}", self.run.id);
-            let mut backend_event_stream = self.runtime.execute_backend_turn(
-                self.codex_lifecycle,
-                &mut physical_session,
-                &hidden_checkpoint_run,
-                &hidden_turn_id,
-                &prompt,
-            )?;
-            let mut raw_output = String::new();
-            loop {
-                let next = block_on(poll_fn(|cx| backend_event_stream.as_mut().poll_next(cx)));
-                let Some(backend_event) = next else {
-                    break;
-                };
-                if let Some(delta) = extract_backend_text_delta(&backend_event) {
-                    raw_output.push_str(delta);
-                }
-            }
-
-            let resolution = resolve_checkpoint_turn_output(&raw_output, attempt, max_attempts)?;
-            match resolution {
-                CheckpointTurnResolution::Parsed(document) => return Ok(document),
-                CheckpointTurnResolution::Retry {
-                    corrective_prompt, ..
-                } => {
-                    prompt = corrective_prompt;
-                    attempt = attempt.saturating_add(1);
-                }
-                CheckpointTurnResolution::Exhausted { error, .. } => {
-                    return Err(CrabError::InvariantViolation {
-                        context: "turn_executor_rotation_checkpoint_turn",
-                        message: format!(
-                            "hidden checkpoint backend output failed strict checkpoint schema validation: {error}"
-                        ),
-                    });
-                }
-            }
-        }
-    }
-
-    fn build_fallback_checkpoint(&mut self) -> CrabResult<CheckpointTurnDocument> {
-        let events = self
-            .event_store
-            .replay_run(&self.run.logical_session_id, &self.run.id)
-            .unwrap_or_default();
-        let transcript = build_fallback_transcript_entries(self.run, &events);
-
-        let mut metadata = BTreeMap::new();
-        metadata.insert(
-            "backend".to_string(),
-            backend_kind_token(self.run.profile.resolved_profile.backend).to_string(),
-        );
-        metadata.insert(
-            "model".to_string(),
-            self.run.profile.resolved_profile.model.clone(),
-        );
-        metadata.insert(
-            "reasoning_level".to_string(),
-            self.run
-                .profile
-                .resolved_profile
-                .reasoning_level
-                .as_token()
-                .to_string(),
-        );
-        metadata.insert(
-            "rotation_triggers".to_string(),
-            self.trigger_tokens.join(","),
-        );
-        metadata.insert(
-            "last_successful_checkpoint_id".to_string(),
-            self.logical_session
-                .last_successful_checkpoint_id
-                .clone()
-                .unwrap_or_else(|| "none".to_string()),
-        );
-
-        build_fallback_checkpoint_document(
-            &transcript,
-            &metadata,
-            DEFAULT_FALLBACK_TRANSCRIPT_TAIL_LIMIT,
-        )
-    }
-
+impl RotationSequenceRuntime for TurnExecutorRotationRuntime<'_> {
     fn persist_checkpoint(&mut self, checkpoint: &CheckpointTurnDocument) -> CrabResult<String> {
         let checkpoint_id = format!(
             "ckpt:{}:{}",
@@ -1839,10 +1468,7 @@ where
             "artifacts_count".to_string(),
             checkpoint.artifacts.len().to_string(),
         );
-        state.insert(
-            "rotation_triggers".to_string(),
-            self.trigger_tokens.join(","),
-        );
+        state.insert("trigger".to_string(), "cli_rotation".to_string());
 
         self.checkpoint_store.put_checkpoint(&Checkpoint {
             id: checkpoint_id.clone(),
@@ -1851,7 +1477,7 @@ where
             created_at_epoch_ms: self.checkpoint_created_at_epoch_ms,
             summary: checkpoint.summary.clone(),
             memory_digest: format!(
-                "fallback:{}:{}:{}",
+                "cli:{}:{}:{}",
                 checkpoint.summary.len(),
                 checkpoint.decisions.len(),
                 checkpoint.artifacts.len()
@@ -1867,18 +1493,8 @@ where
     }
 
     fn clear_active_physical_session(&mut self) -> CrabResult<()> {
-        if let Some(path) = self.completed_event_log_sabotage_path.take() {
-            let _ = std::fs::remove_file(&path);
-            let _ = std::fs::remove_dir_all(&path);
-            std::fs::create_dir_all(&path).map_err(|error| CrabError::Io {
-                context: "turn_executor_rotation_sabotage",
-                path: Some(path.to_string_lossy().into_owned()),
-                message: error.to_string(),
-            })?;
-        }
         self.logical_session.active_physical_session_id = None;
         self.logical_session.has_injected_bootstrap = false;
-        // Token-triggered compaction should be based on tokens since last successful rotation.
         self.logical_session.token_accounting = TokenAccounting {
             input_tokens: 0,
             output_tokens: 0,
@@ -1907,145 +1523,6 @@ fn looks_like_onboarding_capture_payload(input: &str) -> bool {
     trimmed.starts_with('{')
         && trimmed.contains("\"schema_version\"")
         && trimmed.contains("\"agent_identity\"")
-}
-
-fn parse_manual_rotation_command(
-    input: &str,
-) -> CrabResult<Option<(OperatorCommand, ManualRotationRequest)>> {
-    let trimmed = input.trim();
-    if trimmed.is_empty() {
-        return Ok(None);
-    }
-
-    let lowered = trimmed.to_ascii_lowercase();
-    if !lowered.starts_with("/compact") && !lowered.starts_with("/reset") {
-        return Ok(None);
-    }
-
-    let parsed = parse_operator_command(trimmed)?;
-    match parsed {
-        Some(OperatorCommand::ManualCompact) => Ok(Some((
-            OperatorCommand::ManualCompact,
-            ManualRotationRequest::Compact,
-        ))),
-        Some(OperatorCommand::ManualReset) => Ok(Some((
-            OperatorCommand::ManualReset,
-            ManualRotationRequest::Reset,
-        ))),
-        Some(_) | None => Ok(None),
-    }
-}
-
-fn operator_command_token(command: OperatorCommand) -> &'static str {
-    match command {
-        OperatorCommand::ManualCompact => "/compact",
-        OperatorCommand::ManualReset => "/reset",
-        OperatorCommand::SetBackend { .. }
-        | OperatorCommand::SetModel { .. }
-        | OperatorCommand::SetReasoning { .. }
-        | OperatorCommand::ShowProfile
-        | OperatorCommand::OnboardingRerun
-        | OperatorCommand::OnboardingResetBootstrap => "other",
-    }
-}
-
-fn manual_rotation_request_token(request: ManualRotationRequest) -> &'static str {
-    match request {
-        ManualRotationRequest::Compact => "compact",
-        ManualRotationRequest::Reset => "reset",
-    }
-}
-
-fn rotation_trigger_token(trigger: RotationTrigger) -> &'static str {
-    match trigger {
-        RotationTrigger::ManualCompact => "manual_compact",
-        RotationTrigger::ManualReset => "manual_reset",
-        RotationTrigger::BackendCompaction => "backend_compaction",
-        RotationTrigger::InactivityTimeout => "inactivity_timeout",
-    }
-}
-
-fn render_rotation_triggers(triggers: &[RotationTrigger]) -> String {
-    triggers
-        .iter()
-        .map(|trigger| rotation_trigger_token(*trigger))
-        .collect::<Vec<_>>()
-        .join(",")
-}
-
-fn compaction_signal_path(state_root: &Path) -> PathBuf {
-    state_root.join("compaction-signal")
-}
-
-fn check_compaction_signal(state_root: &Path) -> bool {
-    compaction_signal_path(state_root).exists()
-}
-
-fn consume_compaction_signal(state_root: &Path) {
-    let _ = std::fs::remove_file(compaction_signal_path(state_root));
-}
-
-fn backend_kind_token(backend: crab_core::BackendKind) -> &'static str {
-    match backend {
-        crab_core::BackendKind::Claude => "claude",
-        crab_core::BackendKind::Codex => "codex",
-        crab_core::BackendKind::OpenCode => "opencode",
-    }
-}
-
-fn build_fallback_transcript_entries(run: &Run, events: &[EventEnvelope]) -> Vec<TranscriptEntry> {
-    let mut transcript = vec![TranscriptEntry {
-        role: TranscriptEntryRole::User,
-        text: run.user_input.clone(),
-    }];
-
-    for event in events {
-        match event.kind {
-            EventKind::TextDelta => {
-                if let Some(delta) = extract_event_text_delta(event) {
-                    transcript.push(TranscriptEntry {
-                        role: TranscriptEntryRole::Assistant,
-                        text: delta.to_string(),
-                    });
-                }
-            }
-            EventKind::ToolCall | EventKind::ToolResult => {
-                let rendered = event
-                    .payload
-                    .iter()
-                    .map(|(key, value)| format!("{key}={value}"))
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                if !rendered.trim().is_empty() {
-                    transcript.push(TranscriptEntry {
-                        role: TranscriptEntryRole::Tool,
-                        text: rendered,
-                    });
-                }
-            }
-            EventKind::RunNote => {
-                let rendered = event
-                    .payload
-                    .iter()
-                    .map(|(key, value)| format!("{key}={value}"))
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                if !rendered.trim().is_empty() {
-                    transcript.push(TranscriptEntry {
-                        role: TranscriptEntryRole::System,
-                        text: rendered,
-                    });
-                }
-            }
-            EventKind::RunState
-            | EventKind::ApprovalRequest
-            | EventKind::ApprovalDecision
-            | EventKind::Heartbeat
-            | EventKind::Error => {}
-        }
-    }
-
-    transcript
 }
 
 fn run_status_token(status: RunStatus) -> &'static str {
@@ -2104,6 +1581,7 @@ fn extract_backend_text_delta(event: &BackendEvent) -> Option<&str> {
         .map(String::as_str)
 }
 
+#[cfg(test)]
 fn extract_event_text_delta(event: &EventEnvelope) -> Option<&str> {
     if event.kind != EventKind::TextDelta {
         return None;
@@ -2599,10 +2077,9 @@ mod tests {
 
     use crab_backends::BackendEventKind;
     use crab_core::{
-        build_checkpoint_prompt, build_memory_flush_prompt, BackendKind, CrabError, CrabResult,
-        EventKind, InferenceProfile, LaneState, OwnerProfileMetadata, ProfileValueSource,
-        ReasoningLevel, RunProfileTelemetry, RunStatus, WorkspaceGitPushPolicy,
-        MEMORY_FLUSH_DONE_TOKEN, ONBOARDING_CAPTURE_INCOMPLETE_TOKEN,
+        BackendKind, CrabError, CrabResult, EventKind, InferenceProfile, LaneState,
+        OwnerProfileMetadata, ProfileValueSource, ReasoningLevel, RunProfileTelemetry, RunStatus,
+        WorkspaceGitPushPolicy,
     };
     use crab_discord::{GatewayAttachment, GatewayConversationKind, GatewayMessage};
     use futures::stream;
@@ -3014,26 +2491,6 @@ mod tests {
                 .map(|(key, value)| (key.to_string(), value.to_string()))
                 .collect(),
         }
-    }
-
-    fn checkpoint_document_json(summary: &str) -> String {
-        format!(
-            r#"{{"summary":"{summary}","decisions":["keep runtime policy"],"open_questions":["none"],"next_actions":["continue"],"artifacts":[{{"path":"state/rotation","note":"checkpoint"}}]}}"#
-        )
-    }
-
-    fn hidden_checkpoint_backend_events(raw_output: &str) -> Vec<crab_backends::BackendEvent> {
-        vec![
-            backend_event(1, BackendEventKind::TextDelta, &[("text", raw_output)]),
-            backend_event(2, BackendEventKind::TurnCompleted, &[("finish", "done")]),
-        ]
-    }
-
-    fn hidden_memory_flush_backend_events(ack_token: &str) -> Vec<crab_backends::BackendEvent> {
-        vec![
-            backend_event(1, BackendEventKind::TextDelta, &[("text", ack_token)]),
-            backend_event(2, BackendEventKind::TurnCompleted, &[("finish", "done")]),
-        ]
     }
 
     fn build_executor_with_config(
@@ -3465,54 +2922,6 @@ mod tests {
     }
 
     #[test]
-    fn rotation_run_persists_workspace_git_commit_with_checkpoint_metadata() {
-        let workspace = TempWorkspace::new("turn-executor", "workspace-git-rotation-commit");
-        let mut runtime = FakeRuntime::with_backend_events(
-            vec![backend_event(
-                1,
-                BackendEventKind::TurnCompleted,
-                &[("stop_reason", "done")],
-            )],
-            &[1, 2, 3, 4, 5, 6, 7],
-        );
-        runtime.execute_turn_results = VecDeque::from(vec![
-            Ok(vec![backend_event(
-                1,
-                BackendEventKind::TurnCompleted,
-                &[("stop_reason", "done")],
-            )]),
-            Ok(hidden_memory_flush_backend_events("NO_REPLY")),
-            Ok(hidden_checkpoint_backend_events(&checkpoint_document_json(
-                "rotation checkpoint",
-            ))),
-        ]);
-        runtime.ensure_session_results = VecDeque::from(vec![
-            Ok(physical_session_fixture()),
-            Ok(physical_session_fixture()),
-        ]);
-        let mut config = runtime_config_for_workspace_with_lanes(&workspace.path, 2);
-        config.workspace_git.enabled = true;
-        config.workspace_git.push_policy = WorkspaceGitPushPolicy::Manual;
-        let mut executor = build_executor_with_config(runtime, 8, config);
-        let signal_path = workspace.path.join("state/compaction-signal");
-        fs::create_dir_all(signal_path.parent().unwrap()).expect("state dir should be creatable");
-        fs::write(&signal_path, "").expect("signal file should be writable");
-
-        executor
-            .process_gateway_message(gateway_message("m-git-rotation"))
-            .expect("rotation run should succeed")
-            .expect("run should dispatch");
-
-        let commit_count = run_git_output(&workspace.path, &["rev-list", "--count", "HEAD"]);
-        assert_eq!(commit_count.trim(), "1");
-        let head_message = run_git_output(&workspace.path, &["log", "-1", "--pretty=%B"]);
-        assert!(head_message.contains("Crab-Trigger: rotation_checkpoint"));
-        assert!(head_message.contains("Crab-Run-Id: run:discord:channel:777:m-git-rotation"));
-        assert!(head_message
-            .contains("Crab-Checkpoint-Id: ckpt:run:discord:channel:777:m-git-rotation:"));
-    }
-
-    #[test]
     fn successful_run_enqueues_workspace_git_push_request_when_on_commit_policy_is_enabled() {
         let workspace = TempWorkspace::new("turn-executor", "workspace-git-push-queue");
         let runtime = FakeRuntime::with_backend_events(
@@ -3764,252 +3173,6 @@ mod tests {
                     "ship ws15-t2".to_string()
                 ),
             ]
-        );
-    }
-
-    #[test]
-    fn process_gateway_message_rotates_when_backend_compaction_signal_is_present() {
-        let workspace = TempWorkspace::new("turn-executor", "rotation-backend-compaction");
-        let mut runtime = FakeRuntime::with_backend_events(
-            vec![backend_event(
-                1,
-                BackendEventKind::TurnCompleted,
-                &[("stop_reason", "done")],
-            )],
-            &[1, 2, 3, 4, 5, 6],
-        );
-        runtime.execute_turn_results = VecDeque::from(vec![
-            Ok(vec![backend_event(
-                1,
-                BackendEventKind::TurnCompleted,
-                &[("stop_reason", "done")],
-            )]),
-            Ok(hidden_memory_flush_backend_events("NO_REPLY")),
-            Ok(hidden_checkpoint_backend_events(&checkpoint_document_json(
-                "backend compaction checkpoint",
-            ))),
-        ]);
-        runtime.ensure_session_results = VecDeque::from(vec![
-            Ok(physical_session_fixture()),
-            Ok(physical_session_fixture()),
-        ]);
-        let mut executor = build_executor(&workspace, runtime, 8);
-
-        // Write the compaction signal file before processing
-        let signal_path = workspace.path.join("state/compaction-signal");
-        fs::create_dir_all(signal_path.parent().unwrap()).expect("state dir should be creatable");
-        fs::write(&signal_path, "").expect("signal file should be writable");
-
-        executor
-            .process_gateway_message(gateway_message("m-rotation-backend"))
-            .expect("backend-compaction run should succeed")
-            .expect("run should dispatch");
-
-        // Signal file should be consumed after rotation
-        assert!(
-            !signal_path.exists(),
-            "compaction signal file should be consumed after rotation"
-        );
-
-        let logical_session_id = "discord:channel:777";
-        let run_id = "run:discord:channel:777:m-rotation-backend";
-        let session = executor
-            .composition()
-            .state_stores
-            .session_store
-            .get_session(logical_session_id)
-            .expect("session lookup should succeed")
-            .expect("session should exist");
-        assert_eq!(session.token_accounting.total_tokens, 0);
-        assert_eq!(session.active_physical_session_id, None);
-        assert!(session.last_successful_checkpoint_id.is_some());
-
-        let checkpoint = executor
-            .composition()
-            .state_stores
-            .checkpoint_store
-            .latest_checkpoint(logical_session_id)
-            .expect("checkpoint lookup should succeed")
-            .expect("rotation should persist checkpoint");
-        assert_eq!(
-            Some(checkpoint.id.clone()),
-            session.last_successful_checkpoint_id
-        );
-        assert_eq!(checkpoint.run_id, run_id);
-
-        let events = executor
-            .composition()
-            .state_stores
-            .event_store
-            .replay_run(logical_session_id, run_id)
-            .expect("event replay should succeed");
-        assert!(events.iter().any(|event| {
-            event.kind == EventKind::RunNote
-                && event
-                    .payload
-                    .get("rotation_event")
-                    .is_some_and(|value| value == "completed")
-        }));
-
-        // Discord notification should be delivered for non-manual rotation
-        let runtime = executor.runtime_mut();
-        assert!(
-            runtime
-                .delivered_outputs
-                .iter()
-                .any(|output| output.4.contains("session rotated (backend_compaction)")),
-            "Discord notification should be delivered for backend compaction rotation"
-        );
-    }
-
-    #[test]
-    fn process_gateway_message_does_not_rotate_when_backend_compaction_signal_is_absent() {
-        let workspace = TempWorkspace::new("turn-executor", "rotation-no-signal");
-        let runtime = FakeRuntime::with_backend_events(
-            vec![
-                backend_event(1, BackendEventKind::TextDelta, &[("text", "no rotation")]),
-                backend_event(
-                    2,
-                    BackendEventKind::TurnCompleted,
-                    &[("stop_reason", "done")],
-                ),
-            ],
-            &[1, 2, 3, 4, 5],
-        );
-        let mut executor = build_executor(&workspace, runtime, 8);
-
-        // No signal file — should not rotate
-        executor
-            .process_gateway_message(gateway_message("m-no-rotation"))
-            .expect("run should succeed")
-            .expect("run should dispatch");
-
-        let logical_session_id = "discord:channel:777";
-        let session = executor
-            .composition()
-            .state_stores
-            .session_store
-            .get_session(logical_session_id)
-            .expect("session lookup should succeed")
-            .expect("session should exist");
-        assert!(
-            session.active_physical_session_id.is_some(),
-            "session should still have active physical session (no rotation)"
-        );
-        assert!(
-            session.last_successful_checkpoint_id.is_none(),
-            "no checkpoint should have been created"
-        );
-    }
-
-    #[test]
-    fn process_gateway_message_manual_compact_owner_rotates_with_hidden_checkpoint_backend_turn() {
-        let workspace = TempWorkspace::new("turn-executor", "manual-compact-owner");
-        let mut runtime = FakeRuntime::with_backend_events(Vec::new(), &[1, 2, 3, 4]);
-        runtime.resolve_profile_results = VecDeque::from(vec![Ok(owner_profile_telemetry())]);
-        runtime.execute_turn_results = VecDeque::from(vec![
-            Ok(hidden_memory_flush_backend_events("NO_REPLY")),
-            Ok(hidden_checkpoint_backend_events(&checkpoint_document_json(
-                "manual compact checkpoint",
-            ))),
-        ]);
-        runtime.ensure_session_results = VecDeque::from(vec![
-            Ok(physical_session_fixture()),
-            Ok(physical_session_fixture()),
-        ]);
-        let mut executor = build_executor(&workspace, runtime, 8);
-
-        let dispatched = executor
-            .process_gateway_message(gateway_message_with_content(
-                "m-manual-compact-owner",
-                "/compact confirm",
-            ))
-            .expect("manual compact should succeed")
-            .expect("manual compact should dispatch");
-        assert_eq!(dispatched.status, RunStatus::Succeeded);
-
-        let runtime = executor.runtime_mut();
-        assert!(runtime.steps.contains(&"resolve_run_profile".to_string()));
-        assert!(runtime
-            .steps
-            .contains(&"deliver_assistant_output".to_string()));
-        assert!(runtime
-            .steps
-            .contains(&"ensure_physical_session".to_string()));
-        assert!(!runtime.steps.contains(&"build_turn_context".to_string()));
-        assert!(runtime.steps.contains(&"execute_backend_turn".to_string()));
-        assert_eq!(runtime.delivered_outputs.len(), 1);
-        assert!(runtime.delivered_outputs[0]
-            .4
-            .contains("manual compact accepted"));
-
-        let logical_session_id = "discord:channel:777";
-        let run_id = "run:discord:channel:777:m-manual-compact-owner";
-        let session = executor
-            .composition()
-            .state_stores
-            .session_store
-            .get_session(logical_session_id)
-            .expect("session lookup should succeed")
-            .expect("session should exist");
-        assert_eq!(session.active_physical_session_id, None);
-        assert!(session.last_successful_checkpoint_id.is_some());
-
-        let events = executor
-            .composition()
-            .state_stores
-            .event_store
-            .replay_run(logical_session_id, run_id)
-            .expect("event replay should succeed");
-        assert!(events.iter().any(|event| {
-            event.kind == EventKind::RunNote
-                && event
-                    .payload
-                    .get("manual_rotation_request")
-                    .is_some_and(|value| value == "compact")
-        }));
-        assert!(events.iter().any(|event| {
-            event.kind == EventKind::RunNote
-                && event
-                    .payload
-                    .get("rotation_event")
-                    .is_some_and(|value| value == "completed")
-        }));
-    }
-
-    #[test]
-    fn manual_rotation_response_delivery_errors_are_propagated() {
-        let workspace = TempWorkspace::new("turn-executor", "manual-compact-delivery-error");
-        let mut runtime = FakeRuntime::with_backend_events(Vec::new(), &[1, 2, 3, 4, 5]);
-        runtime.resolve_profile_results = VecDeque::from(vec![Ok(owner_profile_telemetry())]);
-        runtime.execute_turn_results = VecDeque::from(vec![
-            Ok(hidden_memory_flush_backend_events("NO_REPLY")),
-            Ok(hidden_checkpoint_backend_events(&checkpoint_document_json(
-                "manual compact checkpoint",
-            ))),
-        ]);
-        runtime.ensure_session_results = VecDeque::from(vec![
-            Ok(physical_session_fixture()),
-            Ok(physical_session_fixture()),
-        ]);
-        runtime.deliver_results = VecDeque::from(vec![Err(CrabError::InvariantViolation {
-            context: "deliver_manual",
-            message: "manual response delivery failed".to_string(),
-        })]);
-        let mut executor = build_executor(&workspace, runtime, 8);
-
-        let error = executor
-            .process_gateway_message(gateway_message_with_content(
-                "m-manual-compact-delivery-error",
-                "/compact confirm",
-            ))
-            .expect_err("manual response delivery failures should bubble up");
-        assert_eq!(
-            error,
-            CrabError::InvariantViolation {
-                context: "deliver_manual",
-                message: "manual response delivery failed".to_string(),
-            }
         );
     }
 
@@ -4414,372 +3577,6 @@ mod tests {
     }
 
     #[test]
-    fn process_gateway_message_rejects_non_owner_manual_rotation_commands() {
-        let workspace = TempWorkspace::new("turn-executor", "manual-reset-non-owner");
-        let mut runtime = FakeRuntime::with_backend_events(Vec::new(), &[1, 2, 3]);
-        runtime.resolve_profile_results = VecDeque::from(vec![Ok(sample_profile_telemetry())]);
-        let mut executor = build_executor(&workspace, runtime, 8);
-
-        let error = executor
-            .process_gateway_message(gateway_message_with_content(
-                "m-manual-reset-non-owner",
-                "/reset confirm",
-            ))
-            .expect_err("non-owner manual reset should fail");
-        assert_eq!(
-            error,
-            CrabError::InvariantViolation {
-                context: "operator_command_authorize",
-                message: "sender 111111111111111111 is not authorized to run operator commands"
-                    .to_string(),
-            }
-        );
-
-        let run = executor
-            .composition()
-            .state_stores
-            .run_store
-            .get_run(
-                "discord:channel:777",
-                "run:discord:channel:777:m-manual-reset-non-owner",
-            )
-            .expect("run lookup should succeed")
-            .expect("run should be persisted");
-        assert_eq!(run.status, RunStatus::Failed);
-
-        let runtime = executor.runtime_mut();
-        assert!(runtime.steps.contains(&"resolve_run_profile".to_string()));
-        assert!(!runtime
-            .steps
-            .contains(&"ensure_physical_session".to_string()));
-        assert!(runtime.delivered_outputs.is_empty());
-    }
-
-    #[test]
-    fn process_gateway_message_rejects_manual_rotation_commands_without_confirm_token() {
-        let workspace = TempWorkspace::new("turn-executor", "manual-command-invalid-shape");
-        let runtime = FakeRuntime::with_backend_events(Vec::new(), &[1, 2, 3]);
-        let mut executor = build_executor(&workspace, runtime, 8);
-
-        let error = executor
-            .process_gateway_message(gateway_message_with_content(
-                "m-manual-invalid-shape",
-                "/compact now",
-            ))
-            .expect_err("invalid manual command shape should fail");
-        assert_eq!(
-            error,
-            CrabError::InvariantViolation {
-                context: "operator_command_parse",
-                message: "onboarding command requires confirmation token \"confirm\"".to_string(),
-            }
-        );
-
-        let run = executor
-            .composition()
-            .state_stores
-            .run_store
-            .get_run(
-                "discord:channel:777",
-                "run:discord:channel:777:m-manual-invalid-shape",
-            )
-            .expect("run lookup should succeed")
-            .expect("run should be persisted");
-        assert_eq!(run.status, RunStatus::Failed);
-    }
-
-    #[test]
-    fn manual_rotation_command_surfaces_clock_errors_during_operator_audit() {
-        let workspace = TempWorkspace::new("turn-executor", "manual-clock-error");
-        let mut runtime = FakeRuntime::with_backend_events(Vec::new(), &[1, 2]);
-        runtime.resolve_profile_results = VecDeque::from(vec![Ok(owner_profile_telemetry())]);
-        let mut executor = build_executor(&workspace, runtime, 8);
-
-        let error = executor
-            .process_gateway_message(gateway_message_with_content(
-                "m-manual-clock-error",
-                "/compact confirm",
-            ))
-            .expect_err("missing scripted timestamp should fail");
-        assert_eq!(
-            error,
-            CrabError::InvariantViolation {
-                context: "turn_executor_test_clock",
-                message: "missing scripted timestamp".to_string(),
-            }
-        );
-    }
-
-    #[test]
-    fn manual_rotation_command_surfaces_operator_audit_event_store_errors() {
-        let workspace = TempWorkspace::new("turn-executor", "manual-audit-event-store-error");
-        let state_root = state_root(&workspace);
-        let run_id = "run:discord:channel:777:m-manual-audit-event-store-error";
-        let blocked_log_path = event_log_path(&state_root, "discord:channel:777", run_id);
-        let mut runtime = FakeRuntime::with_backend_events(Vec::new(), &[1, 2, 3, 4]);
-        runtime.resolve_profile_results = VecDeque::from(vec![Ok(owner_profile_telemetry())]);
-        runtime = runtime.with_now_epoch_sabotage(3, blocked_log_path);
-        let mut executor = build_executor(&workspace, runtime, 8);
-
-        let error = executor
-            .process_gateway_message(gateway_message_with_content(
-                "m-manual-audit-event-store-error",
-                "/compact confirm",
-            ))
-            .expect_err("audit event append should fail when run log path is blocked");
-        assert!(matches!(
-            error,
-            CrabError::Io {
-                context: "event_replay_read",
-                ..
-            }
-        ));
-    }
-
-    #[test]
-    fn manual_rotation_command_surfaces_rotation_started_event_errors() {
-        let workspace = TempWorkspace::new("turn-executor", "manual-rotation-start-event-error");
-        let state_root = state_root(&workspace);
-        let run_id = "run:discord:channel:777:m-manual-rotation-start-event-error";
-        let blocked_log_path = event_log_path(&state_root, "discord:channel:777", run_id);
-        let mut runtime = FakeRuntime::with_backend_events(Vec::new(), &[1, 2, 3, 4, 5]);
-        runtime.resolve_profile_results = VecDeque::from(vec![Ok(owner_profile_telemetry())]);
-        runtime = runtime.with_now_epoch_sabotage(4, blocked_log_path);
-        let mut executor = build_executor(&workspace, runtime, 8);
-
-        let error = executor
-            .process_gateway_message(gateway_message_with_content(
-                "m-manual-rotation-start-event-error",
-                "/compact confirm",
-            ))
-            .expect_err("rotation started event append should fail when run log path is blocked");
-        assert!(matches!(
-            error,
-            CrabError::Io {
-                context: "event_replay_read",
-                ..
-            }
-        ));
-    }
-
-    #[test]
-    fn maybe_execute_rotation_surfaces_rotation_started_event_errors() {
-        let workspace = TempWorkspace::new("turn-executor", "rotation-start-event-direct-error");
-        let runtime = FakeRuntime::with_backend_events(Vec::new(), &[]);
-        let mut executor = build_executor(&workspace, runtime, 8);
-        let logical_session_id = "discord:channel:777";
-        let run_id = "run:discord:channel:777:rotation-start-event-direct-error";
-        let blocked_log_path = event_log_path(&state_root(&workspace), logical_session_id, run_id);
-        replace_path_with_directory(&blocked_log_path);
-
-        let run = rotation_test_run(logical_session_id, run_id, "/compact confirm");
-        let mut session = rotation_test_session(logical_session_id, &run.profile.resolved_profile);
-
-        let error = executor
-            .maybe_execute_rotation_with_sabotage(
-                &run,
-                &mut session,
-                4,
-                Some(crab_core::ManualRotationRequest::Compact),
-                None,
-            )
-            .expect_err("rotation started event append should fail when event log path is blocked");
-        assert!(matches!(
-            error,
-            CrabError::Io {
-                context: "event_replay_read",
-                ..
-            }
-        ));
-    }
-
-    #[test]
-    fn maybe_execute_rotation_surfaces_rotation_completed_event_errors() {
-        let workspace =
-            TempWorkspace::new("turn-executor", "rotation-completed-event-direct-error");
-        let mut runtime = FakeRuntime::with_backend_events(Vec::new(), &[]);
-        runtime.execute_turn_results = VecDeque::from(vec![
-            Ok(hidden_memory_flush_backend_events("NO_REPLY")),
-            Ok(hidden_checkpoint_backend_events(&checkpoint_document_json(
-                "rotation completed event",
-            ))),
-        ]);
-        runtime.ensure_session_results = VecDeque::from(vec![
-            Ok(physical_session_fixture()),
-            Ok(physical_session_fixture()),
-        ]);
-        let mut executor = build_executor(&workspace, runtime, 8);
-        let logical_session_id = "discord:channel:777";
-        let run_id = "run:discord:channel:777:rotation-completed-event-direct-error";
-        let sabotage_path = event_log_path(&state_root(&workspace), logical_session_id, run_id);
-
-        let run = rotation_test_run(logical_session_id, run_id, "/compact confirm");
-        let mut session = rotation_test_session(logical_session_id, &run.profile.resolved_profile);
-
-        let error = executor
-            .maybe_execute_rotation_with_sabotage(
-                &run,
-                &mut session,
-                4,
-                Some(crab_core::ManualRotationRequest::Compact),
-                Some(sabotage_path),
-            )
-            .expect_err(
-                "rotation completed event append should fail when event log path is sabotaged",
-            );
-        assert!(matches!(
-            error,
-            CrabError::Io {
-                context: "event_replay_read",
-                ..
-            }
-        ));
-    }
-
-    #[test]
-    fn maybe_execute_rotation_surfaces_rotation_sabotage_path_errors() {
-        let workspace = TempWorkspace::new("turn-executor", "rotation-sabotage-path-error");
-        let mut runtime = FakeRuntime::with_backend_events(Vec::new(), &[]);
-        runtime.execute_turn_results = VecDeque::from(vec![
-            Ok(hidden_memory_flush_backend_events("NO_REPLY")),
-            Ok(hidden_checkpoint_backend_events(&checkpoint_document_json(
-                "rotation sabotage",
-            ))),
-        ]);
-        runtime.ensure_session_results = VecDeque::from(vec![
-            Ok(physical_session_fixture()),
-            Ok(physical_session_fixture()),
-        ]);
-        let mut executor = build_executor(&workspace, runtime, 8);
-        let logical_session_id = "discord:channel:777";
-        let run_id = "run:discord:channel:777:rotation-sabotage-path-error";
-        let blocked_parent = state_root(&workspace).join("blocked-parent");
-        fs::write(&blocked_parent, "blocked parent").expect("fixture file should be writable");
-        let sabotage_path = blocked_parent.join("child");
-
-        let run = rotation_test_run(logical_session_id, run_id, "/compact confirm");
-        let mut session = rotation_test_session(logical_session_id, &run.profile.resolved_profile);
-
-        let error = executor
-            .maybe_execute_rotation_with_sabotage(
-                &run,
-                &mut session,
-                4,
-                Some(crab_core::ManualRotationRequest::Compact),
-                Some(sabotage_path),
-            )
-            .expect_err("invalid sabotage path parent should fail");
-        assert!(matches!(
-            error,
-            CrabError::Io {
-                context: "turn_executor_rotation_sabotage",
-                ..
-            }
-        ));
-    }
-
-    #[test]
-    fn manual_rotation_command_surfaces_rotation_session_persist_errors() {
-        let workspace = TempWorkspace::new("turn-executor", "manual-rotation-session-error");
-        let state_root = state_root(&workspace);
-        let session_path = session_file_path(&state_root, "discord:channel:777");
-        let mut runtime = FakeRuntime::with_backend_events(Vec::new(), &[1, 2, 3, 4, 5]);
-        runtime.resolve_profile_results = VecDeque::from(vec![Ok(owner_profile_telemetry())]);
-        runtime.execute_turn_results = VecDeque::from(vec![
-            Ok(hidden_memory_flush_backend_events("NO_REPLY")),
-            Ok(hidden_checkpoint_backend_events(&checkpoint_document_json(
-                "session persist failure checkpoint",
-            ))),
-        ]);
-        runtime.ensure_session_results = VecDeque::from(vec![
-            Ok(physical_session_fixture()),
-            Ok(physical_session_fixture()),
-        ]);
-        runtime = runtime.with_now_epoch_sabotage(4, session_path);
-        let mut executor = build_executor(&workspace, runtime, 8);
-
-        let error = executor
-            .process_gateway_message(gateway_message_with_content(
-                "m-manual-rotation-session-error",
-                "/compact confirm",
-            ))
-            .expect_err("rotation session persist should fail when session path is blocked");
-        assert!(matches!(
-            error,
-            CrabError::Io {
-                context: "session_read",
-                ..
-            }
-        ));
-    }
-
-    #[test]
-    fn manual_rotation_command_surfaces_checkpoint_persist_errors() {
-        let workspace = TempWorkspace::new("turn-executor", "manual-checkpoint-store-error");
-        let mut runtime = FakeRuntime::with_backend_events(Vec::new(), &[1, 2, 3, 4, 5]);
-        runtime.resolve_profile_results = VecDeque::from(vec![Ok(owner_profile_telemetry())]);
-        runtime.execute_turn_results = VecDeque::from(vec![
-            Ok(hidden_memory_flush_backend_events("NO_REPLY")),
-            Ok(hidden_checkpoint_backend_events(&checkpoint_document_json(
-                "checkpoint persist failure",
-            ))),
-        ]);
-        runtime.ensure_session_results = VecDeque::from(vec![
-            Ok(physical_session_fixture()),
-            Ok(physical_session_fixture()),
-        ]);
-        let mut executor = build_executor(&workspace, runtime, 8);
-
-        let checkpoints_root = state_root(&workspace).join("checkpoints");
-        fs::write(&checkpoints_root, "blocked checkpoints root")
-            .expect("fixture file should be writable");
-
-        let error = executor
-            .process_gateway_message(gateway_message_with_content(
-                "m-manual-checkpoint-store-error",
-                "/compact confirm",
-            ))
-            .expect_err("rotation checkpoint persistence should fail");
-        assert!(matches!(
-            error,
-            CrabError::Io {
-                context: "checkpoint_store_layout",
-                ..
-            }
-        ));
-    }
-
-    #[test]
-    fn rotation_trigger_evaluation_surfaces_invalid_runtime_policy_values() {
-        let workspace = TempWorkspace::new("turn-executor", "rotation-invalid-policy");
-        let runtime = FakeRuntime::with_backend_events(
-            vec![backend_event(
-                1,
-                BackendEventKind::TurnCompleted,
-                &[("stop_reason", "done")],
-            )],
-            &[1, 2, 3, 4, 5],
-        );
-        let mut executor = build_executor(&workspace, runtime, 8);
-        executor
-            .composition_mut()
-            .rotation_policy
-            .inactivity_timeout_secs = 0;
-
-        let error = executor
-            .process_gateway_message(gateway_message("m-rotation-invalid-policy"))
-            .expect_err("invalid runtime policy should fail rotation trigger evaluation");
-        assert_eq!(
-            error,
-            CrabError::InvalidConfig {
-                key: "CRAB_INACTIVITY_TIMEOUT_SECS",
-                value: "0".to_string(),
-                reason: "must be greater than 0",
-            }
-        );
-    }
-
-    #[test]
     fn process_gateway_message_rejects_invalid_usage_totals() {
         let workspace = TempWorkspace::new("turn-executor", "usage-invalid-total");
         let runtime = FakeRuntime::with_backend_events(
@@ -4812,244 +3609,6 @@ mod tests {
                 context: "turn_executor_usage_accounting",
                 message: "usage_total_tokens 11 must be greater than or equal to usage_input_tokens + usage_output_tokens 12".to_string(),
             }
-        );
-    }
-
-    #[test]
-    fn token_trigger_rotation_uses_backend_hidden_checkpoint_turn_without_fallback() {
-        let workspace = TempWorkspace::new("turn-executor", "rotation-backend-checkpoint");
-        let mut runtime = FakeRuntime::with_backend_events(
-            vec![backend_event(
-                1,
-                BackendEventKind::TurnCompleted,
-                &[("stop_reason", "done")],
-            )],
-            &[1, 2, 3, 4, 5],
-        );
-        runtime.execute_turn_results = VecDeque::from(vec![
-            Ok(vec![backend_event(
-                1,
-                BackendEventKind::TurnCompleted,
-                &[("stop_reason", "done")],
-            )]),
-            Ok(hidden_memory_flush_backend_events("NO_REPLY")),
-            Ok(hidden_checkpoint_backend_events(&checkpoint_document_json(
-                "Primary hidden checkpoint from backend",
-            ))),
-        ]);
-        runtime.ensure_session_results = VecDeque::from(vec![
-            Ok(physical_session_fixture()),
-            Ok(physical_session_fixture()),
-            Ok(physical_session_fixture()),
-        ]);
-        let mut executor = build_executor(&workspace, runtime, 8);
-        let signal_path = workspace.path.join("state/compaction-signal");
-        fs::create_dir_all(signal_path.parent().unwrap()).expect("state dir should be creatable");
-        fs::write(&signal_path, "").expect("signal file should be writable");
-
-        executor
-            .process_gateway_message(gateway_message("m-rotation-backend-checkpoint"))
-            .expect("backend checkpoint run should succeed")
-            .expect("backend checkpoint run should dispatch");
-        let runtime = executor.runtime_mut();
-        assert_eq!(runtime.executed_turn_contexts.len(), 3);
-        assert_eq!(
-            runtime.executed_turn_contexts[2].0,
-            "turn:run:discord:channel:777:m-rotation-backend-checkpoint:hidden-checkpoint:1"
-        );
-        assert_eq!(
-            runtime.executed_turn_contexts[2].1,
-            build_checkpoint_prompt()
-        );
-
-        let logical_session_id = "discord:channel:777";
-        let run_id = "run:discord:channel:777:m-rotation-backend-checkpoint";
-        let checkpoint = executor
-            .composition()
-            .state_stores
-            .checkpoint_store
-            .latest_checkpoint(logical_session_id)
-            .expect("checkpoint lookup should succeed")
-            .expect("rotation should persist checkpoint");
-        assert_eq!(checkpoint.summary, "Primary hidden checkpoint from backend");
-
-        let events = executor
-            .composition()
-            .state_stores
-            .event_store
-            .replay_run(logical_session_id, run_id)
-            .expect("event replay should succeed");
-        let rotation_completed = events
-            .iter()
-            .find(|event| {
-                event.kind == EventKind::RunNote
-                    && event
-                        .payload
-                        .get("rotation_event")
-                        .is_some_and(|value| value == "completed")
-            })
-            .expect("rotation completed run note should exist");
-        assert_eq!(
-            rotation_completed.payload.get("used_fallback_checkpoint"),
-            Some(&"false".to_string())
-        );
-        assert_eq!(
-            rotation_completed.payload.get("checkpoint_turn_error"),
-            Some(&"none".to_string())
-        );
-    }
-
-    #[test]
-    fn token_trigger_rotation_owner_dm_can_complete_onboarding_via_hidden_extraction() {
-        let workspace = TempWorkspace::new("turn-executor", "rotation-onboarding-success");
-        fs::create_dir_all(&workspace.path).expect("workspace root should be creatable");
-        fs::write(
-            workspace.path.join("BOOTSTRAP.md"),
-            "Bootstrap remains pending until owner onboarding capture is applied.",
-        )
-        .expect("bootstrap marker should be writable");
-        let mut runtime = FakeRuntime::with_backend_events(Vec::new(), &[1, 2, 3, 4, 5]);
-        runtime.resolve_profile_results = VecDeque::from(vec![Ok(owner_profile_telemetry())]);
-        runtime.execute_turn_results = VecDeque::from(vec![
-            Ok(vec![
-                backend_event(
-                    1,
-                    BackendEventKind::RunNote,
-                    &[
-                        ("run_usage_input_tokens", "5000"),
-                        ("run_usage_output_tokens", "20000"),
-                        ("run_usage_total_tokens", "25000"),
-                        ("run_usage_cache_read_input_tokens", "110000"),
-                        ("run_usage_cache_creation_input_tokens", "5000"),
-                    ],
-                ),
-                backend_event(
-                    2,
-                    BackendEventKind::TurnCompleted,
-                    &[("stop_reason", "done")],
-                ),
-            ]),
-            Ok(hidden_checkpoint_backend_events(
-                onboarding_capture_payload_json(),
-            )),
-            Ok(hidden_memory_flush_backend_events("NO_REPLY")),
-            Ok(hidden_checkpoint_backend_events(&checkpoint_document_json(
-                "rotation onboarding checkpoint",
-            ))),
-        ]);
-        runtime.ensure_session_results = VecDeque::from(vec![
-            Ok(physical_session_fixture_for(
-                "discord:dm:424242424242424242",
-            )),
-            Ok(physical_session_fixture_for(
-                "discord:dm:424242424242424242",
-            )),
-            Ok(physical_session_fixture_for(
-                "discord:dm:424242424242424242",
-            )),
-            Ok(physical_session_fixture_for(
-                "discord:dm:424242424242424242",
-            )),
-        ]);
-        let mut executor = build_executor(&workspace, runtime, 8);
-        fs::write(
-            workspace.path.join("BOOTSTRAP.md"),
-            "Bootstrap remains pending until owner onboarding capture is applied.",
-        )
-        .expect("bootstrap marker should be writable");
-        // Write compaction signal to trigger rotation
-        let signal_path = workspace.path.join("state/compaction-signal");
-        fs::create_dir_all(signal_path.parent().unwrap()).expect("state dir should be creatable");
-        fs::write(&signal_path, "").expect("signal file should be writable");
-
-        let dispatched = executor
-            .process_gateway_message(gateway_owner_dm_message_with_content(
-                "m-rotation-onboarding-success",
-                "let's keep going",
-            ))
-            .expect("rotation onboarding success should dispatch")
-            .expect("rotation onboarding success should produce a run");
-        assert_eq!(dispatched.status, RunStatus::Succeeded);
-        assert!(!workspace.path.join("BOOTSTRAP.md").exists());
-
-        let runtime = executor.runtime_mut();
-        assert_eq!(runtime.executed_turn_contexts.len(), 4);
-        assert!(runtime.executed_turn_contexts[1]
-            .1
-            .contains("Onboarding extraction session id: onboarding-rotation:run:discord:dm:424242424242424242:m-rotation-onboarding-success"));
-        assert_eq!(runtime.delivered_outputs.len(), 1);
-        assert!(runtime.delivered_outputs[0]
-            .4
-            .contains("Onboarding completed during checkpoint rotation."));
-
-        let logical_session_id = "discord:dm:424242424242424242";
-        let run_id = "run:discord:dm:424242424242424242:m-rotation-onboarding-success";
-        let events = executor
-            .composition()
-            .state_stores
-            .event_store
-            .replay_run(logical_session_id, run_id)
-            .expect("event replay should succeed");
-        assert!(events.iter().any(|event| {
-            event.kind == EventKind::RunNote
-                && event
-                    .payload
-                    .get("event")
-                    .is_some_and(|value| value == "onboarding_rotation_applied")
-        }));
-    }
-
-    #[test]
-    fn maybe_execute_rotation_pending_onboarding_skips_extraction_for_owner_non_dm() {
-        let workspace = TempWorkspace::new("turn-executor", "rotation-onboarding-owner-non-dm");
-        fs::create_dir_all(&workspace.path).expect("workspace root should be creatable");
-        fs::write(
-            workspace.path.join("BOOTSTRAP.md"),
-            "Bootstrap remains pending until owner onboarding capture is applied.",
-        )
-        .expect("bootstrap marker should be writable");
-        let mut runtime = FakeRuntime::with_backend_events(Vec::new(), &[]);
-        runtime.execute_turn_results = VecDeque::from(vec![
-            Ok(hidden_memory_flush_backend_events("NO_REPLY")),
-            Ok(hidden_checkpoint_backend_events(&checkpoint_document_json(
-                "rotation without onboarding extraction",
-            ))),
-        ]);
-        runtime.ensure_session_results = VecDeque::from(vec![
-            Ok(physical_session_fixture_for("discord:channel:777")),
-            Ok(physical_session_fixture_for("discord:channel:777")),
-        ]);
-        let mut executor = build_executor(&workspace, runtime, 8);
-        fs::write(
-            workspace.path.join("BOOTSTRAP.md"),
-            "Bootstrap remains pending until owner onboarding capture is applied.",
-        )
-        .expect("bootstrap marker should be writable");
-
-        let run = rotation_test_run(
-            "discord:channel:777",
-            "run:discord:channel:777:rotation-onboarding-owner-non-dm",
-            "/compact confirm",
-        );
-        let mut session =
-            rotation_test_session("discord:channel:777", &run.profile.resolved_profile);
-        let outcome = executor
-            .maybe_execute_rotation_with_sabotage(
-                &run,
-                &mut session,
-                4,
-                Some(crab_core::ManualRotationRequest::Compact),
-                None,
-            )
-            .expect("rotation should succeed")
-            .expect("rotation outcome should be present");
-        assert!(outcome.onboarding_completion_resolution.is_none());
-        assert_eq!(outcome.supplemental_emitted_event_count, 0);
-        let runtime = executor.runtime_mut();
-        assert_eq!(runtime.executed_turn_contexts.len(), 2);
-        assert_eq!(
-            runtime.executed_turn_contexts[1].1,
-            build_checkpoint_prompt()
         );
     }
 
@@ -5090,423 +3649,6 @@ mod tests {
             .maybe_complete_pending_onboarding_from_rotation(&run, &mut session, 4)
             .expect_err("backend execution error should propagate");
         assert_eq!(error, expected);
-    }
-
-    #[test]
-    fn maybe_execute_rotation_onboarding_extraction_incomplete_appends_run_note() {
-        let workspace = TempWorkspace::new("turn-executor", "rotation-onboarding-incomplete");
-        fs::create_dir_all(&workspace.path).expect("workspace root should be creatable");
-        fs::write(
-            workspace.path.join("BOOTSTRAP.md"),
-            "Bootstrap remains pending until owner onboarding capture is applied.",
-        )
-        .expect("bootstrap marker should be writable");
-        let mut runtime = FakeRuntime::with_backend_events(Vec::new(), &[]);
-        runtime.execute_turn_results = VecDeque::from(vec![
-            Ok(hidden_checkpoint_backend_events(
-                ONBOARDING_CAPTURE_INCOMPLETE_TOKEN,
-            )),
-            Ok(hidden_memory_flush_backend_events("NO_REPLY")),
-            Ok(hidden_checkpoint_backend_events(&checkpoint_document_json(
-                "rotation after incomplete onboarding extraction",
-            ))),
-        ]);
-        runtime.ensure_session_results = VecDeque::from(vec![
-            Ok(physical_session_fixture_for(
-                "discord:dm:424242424242424242",
-            )),
-            Ok(physical_session_fixture_for(
-                "discord:dm:424242424242424242",
-            )),
-            Ok(physical_session_fixture_for(
-                "discord:dm:424242424242424242",
-            )),
-        ]);
-        let mut executor = build_executor(&workspace, runtime, 8);
-        fs::write(
-            workspace.path.join("BOOTSTRAP.md"),
-            "Bootstrap remains pending until owner onboarding capture is applied.",
-        )
-        .expect("bootstrap marker should be writable");
-
-        let run = rotation_test_run(
-            "discord:dm:424242424242424242",
-            "run:discord:dm:424242424242424242:rotation-onboarding-incomplete",
-            "/compact confirm",
-        );
-        let mut session = rotation_test_session(
-            "discord:dm:424242424242424242",
-            &run.profile.resolved_profile,
-        );
-        let outcome = executor
-            .maybe_execute_rotation_with_sabotage(
-                &run,
-                &mut session,
-                4,
-                Some(crab_core::ManualRotationRequest::Compact),
-                None,
-            )
-            .expect("rotation should succeed")
-            .expect("rotation outcome should be present");
-        assert!(outcome.onboarding_completion_resolution.is_none());
-        assert_eq!(outcome.supplemental_emitted_event_count, 1);
-
-        let events = executor
-            .composition()
-            .state_stores
-            .event_store
-            .replay_run(
-                "discord:dm:424242424242424242",
-                "run:discord:dm:424242424242424242:rotation-onboarding-incomplete",
-            )
-            .expect("event replay should succeed");
-        assert!(events.iter().any(|event| {
-            event.kind == EventKind::RunNote
-                && event
-                    .payload
-                    .get("event")
-                    .is_some_and(|value| value == "onboarding_rotation_incomplete")
-        }));
-    }
-
-    #[test]
-    fn maybe_execute_rotation_onboarding_extraction_parse_error_appends_run_note() {
-        let workspace = TempWorkspace::new("turn-executor", "rotation-onboarding-parse-error");
-        fs::create_dir_all(&workspace.path).expect("workspace root should be creatable");
-        fs::write(
-            workspace.path.join("BOOTSTRAP.md"),
-            "Bootstrap remains pending until owner onboarding capture is applied.",
-        )
-        .expect("bootstrap marker should be writable");
-        let mut runtime = FakeRuntime::with_backend_events(Vec::new(), &[]);
-        runtime.execute_turn_results = VecDeque::from(vec![
-            Ok(hidden_checkpoint_backend_events("{")),
-            Ok(hidden_memory_flush_backend_events("NO_REPLY")),
-            Ok(hidden_checkpoint_backend_events(&checkpoint_document_json(
-                "rotation after parse error",
-            ))),
-        ]);
-        runtime.ensure_session_results = VecDeque::from(vec![
-            Ok(physical_session_fixture_for(
-                "discord:dm:424242424242424242",
-            )),
-            Ok(physical_session_fixture_for(
-                "discord:dm:424242424242424242",
-            )),
-            Ok(physical_session_fixture_for(
-                "discord:dm:424242424242424242",
-            )),
-        ]);
-        let mut executor = build_executor(&workspace, runtime, 8);
-        fs::write(
-            workspace.path.join("BOOTSTRAP.md"),
-            "Bootstrap remains pending until owner onboarding capture is applied.",
-        )
-        .expect("bootstrap marker should be writable");
-
-        let run = rotation_test_run(
-            "discord:dm:424242424242424242",
-            "run:discord:dm:424242424242424242:rotation-onboarding-parse-error",
-            "/compact confirm",
-        );
-        let mut session = rotation_test_session(
-            "discord:dm:424242424242424242",
-            &run.profile.resolved_profile,
-        );
-        let outcome = executor
-            .maybe_execute_rotation_with_sabotage(
-                &run,
-                &mut session,
-                4,
-                Some(crab_core::ManualRotationRequest::Compact),
-                None,
-            )
-            .expect("rotation should succeed")
-            .expect("rotation outcome should be present");
-        assert!(outcome.onboarding_completion_resolution.is_none());
-        assert_eq!(outcome.supplemental_emitted_event_count, 1);
-
-        let events = executor
-            .composition()
-            .state_stores
-            .event_store
-            .replay_run(
-                "discord:dm:424242424242424242",
-                "run:discord:dm:424242424242424242:rotation-onboarding-parse-error",
-            )
-            .expect("event replay should succeed");
-        assert!(events.iter().any(|event| {
-            event.kind == EventKind::RunNote
-                && event
-                    .payload
-                    .get("event")
-                    .is_some_and(|value| value == "onboarding_rotation_parse_error")
-        }));
-    }
-
-    #[test]
-    fn maybe_execute_rotation_onboarding_extraction_apply_error_appends_run_note() {
-        let workspace = TempWorkspace::new("turn-executor", "rotation-onboarding-apply-error");
-        fs::create_dir_all(&workspace.path).expect("workspace root should be creatable");
-        fs::write(
-            workspace.path.join("BOOTSTRAP.md"),
-            "Bootstrap remains pending until owner onboarding capture is applied.",
-        )
-        .expect("bootstrap marker should be writable");
-
-        let mut runtime = FakeRuntime::with_backend_events(Vec::new(), &[]);
-        runtime.execute_turn_results = VecDeque::from(vec![
-            Ok(hidden_checkpoint_backend_events(
-                onboarding_capture_payload_json(),
-            )),
-            Ok(hidden_memory_flush_backend_events("NO_REPLY")),
-            Ok(hidden_checkpoint_backend_events(&checkpoint_document_json(
-                "rotation after apply error",
-            ))),
-        ]);
-        runtime.ensure_session_results = VecDeque::from(vec![
-            Ok(physical_session_fixture_for(
-                "discord:dm:424242424242424242",
-            )),
-            Ok(physical_session_fixture_for(
-                "discord:dm:424242424242424242",
-            )),
-            Ok(physical_session_fixture_for(
-                "discord:dm:424242424242424242",
-            )),
-        ]);
-        let mut executor = build_executor(&workspace, runtime, 8);
-        fs::write(
-            workspace.path.join("BOOTSTRAP.md"),
-            "Bootstrap remains pending until owner onboarding capture is applied.",
-        )
-        .expect("bootstrap marker should be writable");
-        let soul_path = workspace.path.join("SOUL.md");
-        let _ = fs::remove_file(&soul_path);
-        fs::create_dir_all(&soul_path).expect("SOUL path directory should be creatable");
-
-        let run = rotation_test_run(
-            "discord:dm:424242424242424242",
-            "run:discord:dm:424242424242424242:rotation-onboarding-apply-error",
-            "/compact confirm",
-        );
-        let mut session = rotation_test_session(
-            "discord:dm:424242424242424242",
-            &run.profile.resolved_profile,
-        );
-        let outcome = executor
-            .maybe_execute_rotation_with_sabotage(
-                &run,
-                &mut session,
-                4,
-                Some(crab_core::ManualRotationRequest::Compact),
-                None,
-            )
-            .expect("rotation should succeed")
-            .expect("rotation outcome should be present");
-        assert!(outcome.onboarding_completion_resolution.is_none());
-        assert_eq!(outcome.supplemental_emitted_event_count, 1);
-        assert!(workspace.path.join("BOOTSTRAP.md").exists());
-
-        let events = executor
-            .composition()
-            .state_stores
-            .event_store
-            .replay_run(
-                "discord:dm:424242424242424242",
-                "run:discord:dm:424242424242424242:rotation-onboarding-apply-error",
-            )
-            .expect("event replay should succeed");
-        assert!(events.iter().any(|event| {
-            event.kind == EventKind::RunNote
-                && event
-                    .payload
-                    .get("event")
-                    .is_some_and(|value| value == "onboarding_rotation_apply_error")
-        }));
-    }
-
-    #[test]
-    fn token_trigger_rotation_falls_back_when_backend_checkpoint_schema_validation_fails() {
-        let workspace = TempWorkspace::new("turn-executor", "rotation-checkpoint-schema-failure");
-        let mut runtime = FakeRuntime::with_backend_events(
-            vec![backend_event(
-                1,
-                BackendEventKind::TurnCompleted,
-                &[("stop_reason", "done")],
-            )],
-            &[1, 2, 3, 4, 5],
-        );
-        let invalid_checkpoint_json = r#"{"summary":" ","decisions":["keep"],"open_questions":["none"],"next_actions":["continue"],"artifacts":[{"path":"state/rotation","note":"checkpoint"}]}"#;
-        runtime.execute_turn_results = VecDeque::from(vec![
-            Ok(vec![backend_event(
-                1,
-                BackendEventKind::TurnCompleted,
-                &[("stop_reason", "done")],
-            )]),
-            Ok(hidden_memory_flush_backend_events("NO_REPLY")),
-            Ok(hidden_checkpoint_backend_events(invalid_checkpoint_json)),
-            Ok(hidden_checkpoint_backend_events(invalid_checkpoint_json)),
-        ]);
-        runtime.ensure_session_results = VecDeque::from(vec![
-            Ok(physical_session_fixture()),
-            Ok(physical_session_fixture()),
-            Ok(physical_session_fixture()),
-        ]);
-        let mut executor = build_executor(&workspace, runtime, 8);
-        let signal_path = workspace.path.join("state/compaction-signal");
-        fs::create_dir_all(signal_path.parent().unwrap()).expect("state dir should be creatable");
-        fs::write(&signal_path, "").expect("signal file should be writable");
-
-        executor
-            .process_gateway_message(gateway_message("m-rotation-checkpoint-schema-failure"))
-            .expect("rotation should succeed with fallback checkpoint")
-            .expect("schema failure run should dispatch");
-        let runtime = executor.runtime_mut();
-        assert_eq!(runtime.executed_turn_contexts.len(), 4);
-        assert_eq!(
-            runtime.executed_turn_contexts[2].1,
-            build_checkpoint_prompt()
-        );
-        assert_eq!(
-            runtime.executed_turn_contexts[3].0,
-            "turn:run:discord:channel:777:m-rotation-checkpoint-schema-failure:hidden-checkpoint:2"
-        );
-        assert!(runtime.executed_turn_contexts[3]
-            .1
-            .contains("Your previous checkpoint response was invalid"));
-        assert_ne!(
-            runtime.executed_turn_contexts[3].1,
-            runtime.executed_turn_contexts[2].1
-        );
-
-        let logical_session_id = "discord:channel:777";
-        let run_id = "run:discord:channel:777:m-rotation-checkpoint-schema-failure";
-        let checkpoint = executor
-            .composition()
-            .state_stores
-            .checkpoint_store
-            .latest_checkpoint(logical_session_id)
-            .expect("checkpoint lookup should succeed")
-            .expect("rotation should persist checkpoint");
-        assert!(checkpoint
-            .summary
-            .starts_with("Fallback checkpoint generated"));
-
-        let events = executor
-            .composition()
-            .state_stores
-            .event_store
-            .replay_run(logical_session_id, run_id)
-            .expect("event replay should succeed");
-        let rotation_completed = events
-            .iter()
-            .find(|event| {
-                event.kind == EventKind::RunNote
-                    && event
-                        .payload
-                        .get("rotation_event")
-                        .is_some_and(|value| value == "completed")
-            })
-            .expect("rotation completed run note should exist");
-        assert_eq!(
-            rotation_completed.payload.get("used_fallback_checkpoint"),
-            Some(&"true".to_string())
-        );
-        let checkpoint_turn_error = rotation_completed
-            .payload
-            .get("checkpoint_turn_error")
-            .expect("checkpoint turn failure diagnostics should exist");
-        assert!(checkpoint_turn_error.contains("checkpoint_turn_schema"));
-    }
-
-    #[test]
-    fn token_trigger_rotation_falls_back_when_backend_checkpoint_turn_execution_fails() {
-        let workspace = TempWorkspace::new("turn-executor", "rotation-checkpoint-backend-failure");
-        let mut runtime = FakeRuntime::with_backend_events(
-            vec![backend_event(
-                1,
-                BackendEventKind::TurnCompleted,
-                &[("stop_reason", "done")],
-            )],
-            &[1, 2, 3, 4, 5],
-        );
-        runtime.execute_turn_results = VecDeque::from(vec![
-            Ok(vec![backend_event(
-                1,
-                BackendEventKind::TurnCompleted,
-                &[("stop_reason", "done")],
-            )]),
-            Ok(hidden_memory_flush_backend_events("NO_REPLY")),
-            Err(CrabError::InvariantViolation {
-                context: "checkpoint_backend_turn",
-                message: "backend unavailable".to_string(),
-            }),
-        ]);
-        runtime.ensure_session_results = VecDeque::from(vec![
-            Ok(physical_session_fixture()),
-            Ok(physical_session_fixture()),
-            Ok(physical_session_fixture()),
-        ]);
-        let mut executor = build_executor(&workspace, runtime, 8);
-        let signal_path = workspace.path.join("state/compaction-signal");
-        fs::create_dir_all(signal_path.parent().unwrap()).expect("state dir should be creatable");
-        fs::write(&signal_path, "").expect("signal file should be writable");
-
-        executor
-            .process_gateway_message(gateway_message("m-rotation-checkpoint-backend-failure"))
-            .expect("rotation should succeed with deterministic fallback")
-            .expect("backend failure run should dispatch");
-        let runtime = executor.runtime_mut();
-        assert_eq!(runtime.executed_turn_contexts.len(), 3);
-        assert_eq!(
-            runtime.executed_turn_contexts[2].0,
-            "turn:run:discord:channel:777:m-rotation-checkpoint-backend-failure:hidden-checkpoint:1"
-        );
-        assert_eq!(
-            runtime.executed_turn_contexts[2].1,
-            build_checkpoint_prompt()
-        );
-
-        let logical_session_id = "discord:channel:777";
-        let run_id = "run:discord:channel:777:m-rotation-checkpoint-backend-failure";
-        let checkpoint = executor
-            .composition()
-            .state_stores
-            .checkpoint_store
-            .latest_checkpoint(logical_session_id)
-            .expect("checkpoint lookup should succeed")
-            .expect("rotation should persist checkpoint");
-        assert!(checkpoint
-            .summary
-            .starts_with("Fallback checkpoint generated"));
-
-        let events = executor
-            .composition()
-            .state_stores
-            .event_store
-            .replay_run(logical_session_id, run_id)
-            .expect("event replay should succeed");
-        let rotation_completed = events
-            .iter()
-            .find(|event| {
-                event.kind == EventKind::RunNote
-                    && event
-                        .payload
-                        .get("rotation_event")
-                        .is_some_and(|value| value == "completed")
-            })
-            .expect("rotation completed run note should exist");
-        assert_eq!(
-            rotation_completed.payload.get("used_fallback_checkpoint"),
-            Some(&"true".to_string())
-        );
-        let checkpoint_turn_error = rotation_completed
-            .payload
-            .get("checkpoint_turn_error")
-            .expect("checkpoint turn failure diagnostics should exist");
-        assert!(checkpoint_turn_error.contains("checkpoint_backend_turn"));
-        assert!(checkpoint_turn_error.contains("backend unavailable"));
     }
 
     #[test]
@@ -7315,81 +5457,6 @@ mod tests {
         assert_eq!(super::run_status_token(RunStatus::Failed), "failed");
         assert_eq!(super::run_status_token(RunStatus::Cancelled), "cancelled");
         assert_eq!(
-            super::parse_manual_rotation_command("hello world").expect("non command should parse"),
-            None
-        );
-        assert_eq!(
-            super::parse_manual_rotation_command("   ").expect("blank input should parse"),
-            None
-        );
-        assert_eq!(
-            super::parse_manual_rotation_command("/compactx")
-                .expect("unknown compact-like command should parse"),
-            None
-        );
-        assert_eq!(
-            super::parse_manual_rotation_command("/compact confirm")
-                .expect("manual compact should parse"),
-            Some((
-                crab_core::OperatorCommand::ManualCompact,
-                crab_core::ManualRotationRequest::Compact
-            ))
-        );
-        assert_eq!(
-            super::parse_manual_rotation_command("/reset confirm")
-                .expect("manual reset should parse"),
-            Some((
-                crab_core::OperatorCommand::ManualReset,
-                crab_core::ManualRotationRequest::Reset
-            ))
-        );
-        assert_eq!(
-            super::operator_command_token(crab_core::OperatorCommand::ManualCompact),
-            "/compact"
-        );
-        assert_eq!(
-            super::operator_command_token(crab_core::OperatorCommand::ManualReset),
-            "/reset"
-        );
-        assert_eq!(
-            super::operator_command_token(crab_core::OperatorCommand::ShowProfile),
-            "other"
-        );
-        assert_eq!(
-            super::manual_rotation_request_token(crab_core::ManualRotationRequest::Compact),
-            "compact"
-        );
-        assert_eq!(
-            super::manual_rotation_request_token(crab_core::ManualRotationRequest::Reset),
-            "reset"
-        );
-        assert_eq!(
-            super::rotation_trigger_token(crab_core::RotationTrigger::ManualCompact),
-            "manual_compact"
-        );
-        assert_eq!(
-            super::rotation_trigger_token(crab_core::RotationTrigger::ManualReset),
-            "manual_reset"
-        );
-        assert_eq!(
-            super::rotation_trigger_token(crab_core::RotationTrigger::BackendCompaction),
-            "backend_compaction"
-        );
-        assert_eq!(
-            super::rotation_trigger_token(crab_core::RotationTrigger::InactivityTimeout),
-            "inactivity_timeout"
-        );
-        assert_eq!(
-            super::render_rotation_triggers(&[
-                crab_core::RotationTrigger::ManualCompact,
-                crab_core::RotationTrigger::BackendCompaction,
-            ]),
-            "manual_compact,backend_compaction".to_string()
-        );
-        assert_eq!(super::backend_kind_token(BackendKind::Claude), "claude");
-        assert_eq!(super::backend_kind_token(BackendKind::Codex), "codex");
-        assert_eq!(super::backend_kind_token(BackendKind::OpenCode), "opencode");
-        assert_eq!(
             super::delivery_message_id("run:discord:channel:777:msg", 0),
             "delivery:run:discord:channel:777:msg:chunk:0"
         );
@@ -7456,59 +5523,6 @@ mod tests {
         let mut non_delta_event = delta_event.clone();
         non_delta_event.kind = EventKind::ToolCall;
         assert_eq!(super::extract_event_text_delta(&non_delta_event), None);
-
-        let run = delivery_run("discord:channel:1", "run-1");
-        let transcript = super::build_fallback_transcript_entries(
-            &run,
-            &[
-                delta_event.clone(),
-                crab_core::EventEnvelope {
-                    kind: EventKind::TextDelta,
-                    payload: BTreeMap::new(),
-                    ..delta_event.clone()
-                },
-                crab_core::EventEnvelope {
-                    kind: EventKind::RunNote,
-                    payload: BTreeMap::from([("note".to_string(), "remember".to_string())]),
-                    ..delta_event.clone()
-                },
-                crab_core::EventEnvelope {
-                    kind: EventKind::RunNote,
-                    payload: BTreeMap::new(),
-                    ..delta_event.clone()
-                },
-                crab_core::EventEnvelope {
-                    kind: EventKind::ToolResult,
-                    payload: BTreeMap::from([("status".to_string(), "ok".to_string())]),
-                    ..delta_event.clone()
-                },
-                crab_core::EventEnvelope {
-                    kind: EventKind::ToolCall,
-                    payload: BTreeMap::new(),
-                    ..delta_event.clone()
-                },
-                crab_core::EventEnvelope {
-                    kind: EventKind::Error,
-                    payload: BTreeMap::from([("error".to_string(), "boom".to_string())]),
-                    ..delta_event.clone()
-                },
-            ],
-        );
-        assert_eq!(transcript[0].role, crab_core::TranscriptEntryRole::User);
-        assert_eq!(
-            transcript[1].role,
-            crab_core::TranscriptEntryRole::Assistant
-        );
-        assert!(transcript
-            .iter()
-            .any(|entry| entry.role == crab_core::TranscriptEntryRole::System));
-        assert!(transcript
-            .iter()
-            .any(|entry| entry.role == crab_core::TranscriptEntryRole::Tool));
-        assert!(!transcript
-            .iter()
-            .any(|entry| entry.text.contains("error=boom")));
-        assert!(!transcript.iter().any(|entry| entry.text.trim().is_empty()));
 
         let workspace_missing_profile =
             TempWorkspace::new("turn-executor", "missing-profile-script");
@@ -7763,220 +5777,6 @@ mod tests {
         assert_eq!(dispatch.status, RunStatus::Succeeded);
     }
 
-    // ── Bug 2: Inactivity timeout triggers rotation at run start ───────
-
-    #[test]
-    fn inactivity_timeout_triggers_rotation_at_run_start() {
-        // First run completes at t=100. Second run starts at t=100 + 1_800_001ms (>30 min).
-        // Default inactivity_timeout_secs = 1800. The pre-run check should detect inactivity
-        // and rotate before the second run's backend turn.
-        let workspace = TempWorkspace::new("turn-executor", "inactivity-rotation");
-        let mut runtime = FakeRuntime::with_backend_events(
-            vec![
-                backend_event(1, BackendEventKind::TextDelta, &[("text", "first run")]),
-                backend_event(
-                    2,
-                    BackendEventKind::TurnCompleted,
-                    &[("stop_reason", "done")],
-                ),
-            ],
-            // Timestamps: enqueue1, started1, event1, event2, completed1,
-            //             enqueue2, started2, event1, event2, completed2
-            &[
-                1, 2, 3, 4, 100, 200, 1_800_101, 1_800_102, 1_800_103, 1_800_200,
-            ],
-        );
-        runtime.execute_turn_results = VecDeque::from(vec![
-            Ok(vec![
-                backend_event(1, BackendEventKind::TextDelta, &[("text", "first run")]),
-                backend_event(
-                    2,
-                    BackendEventKind::TurnCompleted,
-                    &[("stop_reason", "done")],
-                ),
-            ]),
-            // Hidden memory flush turn during pre-run rotation
-            Ok(hidden_memory_flush_backend_events("NO_REPLY")),
-            // Hidden checkpoint turn during pre-run rotation
-            Ok(hidden_checkpoint_backend_events(&checkpoint_document_json(
-                "inactivity checkpoint",
-            ))),
-            // Second run's actual backend turn
-            Ok(vec![
-                backend_event(1, BackendEventKind::TextDelta, &[("text", "second run")]),
-                backend_event(
-                    2,
-                    BackendEventKind::TurnCompleted,
-                    &[("stop_reason", "done")],
-                ),
-            ]),
-        ]);
-        runtime.resolve_profile_results = VecDeque::from(vec![
-            Ok(sample_profile_telemetry()),
-            Ok(sample_profile_telemetry()),
-        ]);
-        runtime.ensure_session_results = VecDeque::from(vec![
-            Ok(physical_session_fixture()),
-            // ensure_physical_session for hidden memory flush turn during rotation
-            Ok(physical_session_fixture()),
-            // ensure_physical_session for hidden checkpoint turn during rotation
-            Ok(physical_session_fixture()),
-            // ensure_physical_session for second run (new physical session after rotation)
-            Ok(crab_core::PhysicalSession {
-                id: "physical-2".to_string(),
-                logical_session_id: "discord:channel:777".to_string(),
-                backend: BackendKind::Codex,
-                backend_session_id: "thread-def".to_string(),
-                created_at_epoch_ms: 1_800_101,
-                last_turn_id: None,
-            }),
-        ]);
-        runtime.build_context_results = VecDeque::from(vec![
-            Ok("context-1".to_string()),
-            Ok("context-2".to_string()),
-        ]);
-        let mut executor = build_executor(&workspace, runtime, 8);
-
-        executor
-            .process_gateway_message(gateway_message("m-inactivity-1"))
-            .expect("first run should succeed")
-            .expect("first run should dispatch");
-
-        executor
-            .process_gateway_message(gateway_message("m-inactivity-2"))
-            .expect("second run should succeed")
-            .expect("second run should dispatch");
-
-        let logical_session_id = "discord:channel:777";
-        let session = executor
-            .composition()
-            .state_stores
-            .session_store
-            .get_session(logical_session_id)
-            .expect("session lookup should succeed")
-            .expect("session should exist");
-
-        // After rotation, token accounting should have been reset and a checkpoint persisted.
-        assert!(
-            session.last_successful_checkpoint_id.is_some(),
-            "inactivity rotation should produce a checkpoint"
-        );
-
-        // Verify the rotation event was emitted on the second run.
-        let run_id = "run:discord:channel:777:m-inactivity-2";
-        let events = executor
-            .composition()
-            .state_stores
-            .event_store
-            .replay_run(logical_session_id, run_id)
-            .expect("event replay should succeed");
-        assert!(
-            events.iter().any(|event| {
-                event.kind == EventKind::RunNote
-                    && event
-                        .payload
-                        .get("rotation_event")
-                        .is_some_and(|v| v == "completed")
-            }),
-            "inactivity rotation should emit a rotation completed event"
-        );
-    }
-
-    #[test]
-    fn no_inactivity_rotation_when_gap_is_below_threshold() {
-        // Second run starts 10 seconds after first run completes — well below 30 min threshold.
-        let workspace = TempWorkspace::new("turn-executor", "no-inactivity-rotation");
-        let mut runtime = FakeRuntime::with_backend_events(
-            vec![backend_event(
-                1,
-                BackendEventKind::TurnCompleted,
-                &[("stop_reason", "done")],
-            )],
-            // Timestamps: enqueue1, started1, event1, completed1,
-            //             enqueue2, started2, event1, completed2
-            &[1, 2, 3, 100, 200, 10_100, 10_101, 10_200],
-        );
-        runtime.execute_turn_results = VecDeque::from(vec![
-            Ok(vec![backend_event(
-                1,
-                BackendEventKind::TurnCompleted,
-                &[("stop_reason", "done")],
-            )]),
-            Ok(vec![backend_event(
-                1,
-                BackendEventKind::TurnCompleted,
-                &[("stop_reason", "done")],
-            )]),
-        ]);
-        runtime.resolve_profile_results = VecDeque::from(vec![
-            Ok(sample_profile_telemetry()),
-            Ok(sample_profile_telemetry()),
-        ]);
-        runtime.ensure_session_results = VecDeque::from(vec![
-            Ok(physical_session_fixture()),
-            Ok(crab_core::PhysicalSession {
-                last_turn_id: Some("turn-previous".to_string()),
-                ..physical_session_fixture()
-            }),
-        ]);
-        runtime.build_context_results = VecDeque::from(vec![Ok("context".to_string())]);
-        let mut executor = build_executor(&workspace, runtime, 8);
-
-        executor
-            .process_gateway_message(gateway_message("m-no-inact-1"))
-            .expect("first run should succeed")
-            .expect("first run should dispatch");
-
-        executor
-            .process_gateway_message(gateway_message("m-no-inact-2"))
-            .expect("second run should succeed")
-            .expect("second run should dispatch");
-
-        let session = executor
-            .composition()
-            .state_stores
-            .session_store
-            .get_session("discord:channel:777")
-            .expect("session lookup should succeed")
-            .expect("session should exist");
-
-        assert!(
-            session.last_successful_checkpoint_id.is_none(),
-            "no rotation should occur when inactivity gap is below threshold"
-        );
-    }
-
-    #[test]
-    fn no_inactivity_rotation_on_first_ever_run() {
-        // First run for a brand-new session — no prior activity, should not trigger rotation.
-        let backend_events = vec![backend_event(
-            1,
-            BackendEventKind::TurnCompleted,
-            &[("stop_reason", "done")],
-        )];
-        let runtime = FakeRuntime::with_backend_events(backend_events, &[1, 2, 3, 4]);
-        let (_workspace, mut executor) =
-            build_executor_scenario("no-inactivity-first-run", runtime, 8);
-
-        let dispatch = executor
-            .process_gateway_message(gateway_message("m-first"))
-            .expect("pipeline should succeed")
-            .expect("message should dispatch");
-
-        assert_eq!(dispatch.status, RunStatus::Succeeded);
-        let session = executor
-            .composition()
-            .state_stores
-            .session_store
-            .get_session("discord:channel:777")
-            .expect("session lookup should succeed")
-            .expect("session should exist");
-        assert!(
-            session.last_successful_checkpoint_id.is_none(),
-            "first-ever run should not trigger inactivity rotation"
-        );
-    }
-
     // ── Bug 3: Bootstrap re-injection flag survives daemon restart ──────
 
     #[test]
@@ -8049,46 +5849,6 @@ mod tests {
             executor2.runtime_mut().build_context_bootstrap_flags,
             vec![false],
             "second turn after restart should NOT re-inject bootstrap"
-        );
-    }
-
-    #[test]
-    fn bootstrap_injection_flag_resets_after_rotation() {
-        // After rotation, has_injected_bootstrap should be false, so the next turn
-        // re-injects bootstrap into the new physical session.
-        let workspace = TempWorkspace::new("turn-executor", "bootstrap-flag-reset");
-        let mut runtime = FakeRuntime::with_backend_events(Vec::new(), &[1, 2, 3, 4]);
-        runtime.resolve_profile_results = VecDeque::from(vec![Ok(owner_profile_telemetry())]);
-        runtime.execute_turn_results = VecDeque::from(vec![
-            Ok(hidden_memory_flush_backend_events("NO_REPLY")),
-            Ok(hidden_checkpoint_backend_events(&checkpoint_document_json(
-                "manual compact checkpoint",
-            ))),
-        ]);
-        runtime.ensure_session_results = VecDeque::from(vec![
-            Ok(physical_session_fixture()),
-            Ok(physical_session_fixture()),
-        ]);
-        let mut executor = build_executor(&workspace, runtime, 8);
-
-        executor
-            .process_gateway_message(gateway_message_with_content(
-                "m-bootstrap-reset",
-                "/compact confirm",
-            ))
-            .expect("manual compact should succeed")
-            .expect("manual compact should dispatch");
-
-        let session = executor
-            .composition()
-            .state_stores
-            .session_store
-            .get_session("discord:channel:777")
-            .expect("session lookup should succeed")
-            .expect("session should exist");
-        assert!(
-            !session.has_injected_bootstrap,
-            "has_injected_bootstrap should be false after rotation"
         );
     }
 
@@ -8219,279 +5979,6 @@ mod tests {
             missing_usage_count, 0,
             "no missing usage diagnostic should be emitted on failed runs"
         );
-    }
-
-    // ── Memory flush hidden turn tests ───────────────────────────────────
-
-    #[test]
-    fn memory_flush_hidden_turn_sends_prompt_to_backend() {
-        let workspace = TempWorkspace::new("turn-executor", "memory-flush-prompt-delivery");
-        let mut runtime = FakeRuntime::with_backend_events(Vec::new(), &[1, 2, 3, 4]);
-        runtime.resolve_profile_results = VecDeque::from(vec![Ok(owner_profile_telemetry())]);
-        runtime.execute_turn_results = VecDeque::from(vec![
-            Ok(hidden_memory_flush_backend_events("NO_REPLY")),
-            Ok(hidden_checkpoint_backend_events(&checkpoint_document_json(
-                "flush prompt test checkpoint",
-            ))),
-        ]);
-        runtime.ensure_session_results = VecDeque::from(vec![
-            Ok(physical_session_fixture()),
-            Ok(physical_session_fixture()),
-        ]);
-        let mut executor = build_executor(&workspace, runtime, 8);
-
-        executor
-            .process_gateway_message(gateway_message_with_content(
-                "m-flush-prompt-delivery",
-                "/compact confirm",
-            ))
-            .expect("compact should succeed")
-            .expect("compact should dispatch");
-
-        let runtime = executor.runtime_mut();
-        assert!(runtime.executed_turn_contexts.len() >= 2);
-        let (flush_turn_id, flush_prompt) = &runtime.executed_turn_contexts[0];
-        assert_eq!(
-            flush_turn_id,
-            "turn:run:discord:channel:777:m-flush-prompt-delivery:hidden-memory-flush"
-        );
-        let expected_prompt =
-            build_memory_flush_prompt("run:discord:channel:777:m-flush-prompt-delivery:4")
-                .expect("prompt builder should succeed");
-        assert_eq!(flush_prompt, &expected_prompt);
-    }
-
-    #[test]
-    fn memory_flush_done_ack_does_not_block_rotation() {
-        let workspace = TempWorkspace::new("turn-executor", "memory-flush-done-ack");
-        let mut runtime = FakeRuntime::with_backend_events(Vec::new(), &[1, 2, 3, 4]);
-        runtime.resolve_profile_results = VecDeque::from(vec![Ok(owner_profile_telemetry())]);
-        runtime.execute_turn_results = VecDeque::from(vec![
-            Ok(hidden_memory_flush_backend_events(MEMORY_FLUSH_DONE_TOKEN)),
-            Ok(hidden_checkpoint_backend_events(&checkpoint_document_json(
-                "flush done checkpoint",
-            ))),
-        ]);
-        runtime.ensure_session_results = VecDeque::from(vec![
-            Ok(physical_session_fixture()),
-            Ok(physical_session_fixture()),
-        ]);
-        let mut executor = build_executor(&workspace, runtime, 8);
-
-        let dispatched = executor
-            .process_gateway_message(gateway_message_with_content(
-                "m-flush-done-ack",
-                "/compact confirm",
-            ))
-            .expect("compact should succeed")
-            .expect("compact should dispatch");
-        assert_eq!(dispatched.status, RunStatus::Succeeded);
-
-        let session = executor
-            .composition()
-            .state_stores
-            .session_store
-            .get_session("discord:channel:777")
-            .expect("session lookup should succeed")
-            .expect("session should exist");
-        assert!(session.last_successful_checkpoint_id.is_some());
-
-        let events = executor
-            .composition()
-            .state_stores
-            .event_store
-            .replay_run(
-                "discord:channel:777",
-                "run:discord:channel:777:m-flush-done-ack",
-            )
-            .expect("event replay should succeed");
-        let rotation_completed = events
-            .iter()
-            .find(|event| {
-                event.kind == EventKind::RunNote
-                    && event
-                        .payload
-                        .get("rotation_event")
-                        .is_some_and(|value| value == "completed")
-            })
-            .expect("rotation completed event should exist");
-        assert_eq!(
-            rotation_completed.payload.get("memory_flush_error"),
-            Some(&"none".to_string())
-        );
-    }
-
-    #[test]
-    fn memory_flush_backend_error_is_non_blocking() {
-        let workspace = TempWorkspace::new("turn-executor", "memory-flush-backend-error");
-        let mut runtime = FakeRuntime::with_backend_events(Vec::new(), &[1, 2, 3, 4]);
-        runtime.resolve_profile_results = VecDeque::from(vec![Ok(owner_profile_telemetry())]);
-        runtime.execute_turn_results = VecDeque::from(vec![
-            Err(CrabError::InvariantViolation {
-                context: "memory_flush_backend",
-                message: "backend unavailable for flush".to_string(),
-            }),
-            Ok(hidden_checkpoint_backend_events(&checkpoint_document_json(
-                "flush error checkpoint",
-            ))),
-        ]);
-        runtime.ensure_session_results = VecDeque::from(vec![
-            Ok(physical_session_fixture()),
-            Ok(physical_session_fixture()),
-        ]);
-        let mut executor = build_executor(&workspace, runtime, 8);
-
-        let dispatched = executor
-            .process_gateway_message(gateway_message_with_content(
-                "m-flush-backend-error",
-                "/compact confirm",
-            ))
-            .expect("compact should succeed despite flush error")
-            .expect("compact should dispatch");
-        assert_eq!(dispatched.status, RunStatus::Succeeded);
-
-        let session = executor
-            .composition()
-            .state_stores
-            .session_store
-            .get_session("discord:channel:777")
-            .expect("session lookup should succeed")
-            .expect("session should exist");
-        assert!(session.last_successful_checkpoint_id.is_some());
-
-        let events = executor
-            .composition()
-            .state_stores
-            .event_store
-            .replay_run(
-                "discord:channel:777",
-                "run:discord:channel:777:m-flush-backend-error",
-            )
-            .expect("event replay should succeed");
-        let rotation_completed = events
-            .iter()
-            .find(|event| {
-                event.kind == EventKind::RunNote
-                    && event
-                        .payload
-                        .get("rotation_event")
-                        .is_some_and(|value| value == "completed")
-            })
-            .expect("rotation completed event should exist");
-        let flush_error = rotation_completed
-            .payload
-            .get("memory_flush_error")
-            .expect("memory flush error should be recorded");
-        assert!(flush_error.contains("hidden memory flush failed and was ignored"));
-        assert!(flush_error.contains("backend unavailable for flush"));
-    }
-
-    #[test]
-    fn memory_flush_invalid_ack_is_non_blocking() {
-        let workspace = TempWorkspace::new("turn-executor", "memory-flush-invalid-ack");
-        let mut runtime = FakeRuntime::with_backend_events(Vec::new(), &[1, 2, 3, 4]);
-        runtime.resolve_profile_results = VecDeque::from(vec![Ok(owner_profile_telemetry())]);
-        runtime.execute_turn_results = VecDeque::from(vec![
-            Ok(hidden_memory_flush_backend_events("UNEXPECTED_RESPONSE")),
-            Ok(hidden_checkpoint_backend_events(&checkpoint_document_json(
-                "flush invalid ack checkpoint",
-            ))),
-        ]);
-        runtime.ensure_session_results = VecDeque::from(vec![
-            Ok(physical_session_fixture()),
-            Ok(physical_session_fixture()),
-        ]);
-        let mut executor = build_executor(&workspace, runtime, 8);
-
-        let dispatched = executor
-            .process_gateway_message(gateway_message_with_content(
-                "m-flush-invalid-ack",
-                "/compact confirm",
-            ))
-            .expect("compact should succeed despite invalid ack")
-            .expect("compact should dispatch");
-        assert_eq!(dispatched.status, RunStatus::Succeeded);
-
-        let events = executor
-            .composition()
-            .state_stores
-            .event_store
-            .replay_run(
-                "discord:channel:777",
-                "run:discord:channel:777:m-flush-invalid-ack",
-            )
-            .expect("event replay should succeed");
-        let rotation_completed = events
-            .iter()
-            .find(|event| {
-                event.kind == EventKind::RunNote
-                    && event
-                        .payload
-                        .get("rotation_event")
-                        .is_some_and(|value| value == "completed")
-            })
-            .expect("rotation completed event should exist");
-        let flush_error = rotation_completed
-            .payload
-            .get("memory_flush_error")
-            .expect("memory flush error should be recorded");
-        assert!(flush_error.contains("hidden memory flush failed and was ignored"));
-        assert!(flush_error.contains("UNEXPECTED_RESPONSE"));
-    }
-
-    #[test]
-    fn memory_flush_ensure_session_error_is_non_blocking() {
-        let workspace = TempWorkspace::new("turn-executor", "memory-flush-session-error");
-        let mut runtime = FakeRuntime::with_backend_events(Vec::new(), &[1, 2, 3, 4]);
-        runtime.resolve_profile_results = VecDeque::from(vec![Ok(owner_profile_telemetry())]);
-        // Memory flush ensure_physical_session fails; checkpoint succeeds.
-        runtime.ensure_session_results = VecDeque::from(vec![
-            Err(CrabError::InvariantViolation {
-                context: "ensure_session_flush",
-                message: "session unavailable for flush".to_string(),
-            }),
-            Ok(physical_session_fixture()),
-        ]);
-        // Only checkpoint consumes execute_backend_turn (flush never reaches it).
-        runtime.execute_turn_results = VecDeque::from(vec![Ok(hidden_checkpoint_backend_events(
-            &checkpoint_document_json("flush session error checkpoint"),
-        ))]);
-        let mut executor = build_executor(&workspace, runtime, 8);
-
-        let dispatched = executor
-            .process_gateway_message(gateway_message_with_content(
-                "m-flush-session-error",
-                "/compact confirm",
-            ))
-            .expect("compact should succeed despite flush session error")
-            .expect("compact should dispatch");
-        assert_eq!(dispatched.status, RunStatus::Succeeded);
-
-        let events = executor
-            .composition()
-            .state_stores
-            .event_store
-            .replay_run(
-                "discord:channel:777",
-                "run:discord:channel:777:m-flush-session-error",
-            )
-            .expect("event replay should succeed");
-        let rotation_completed = events
-            .iter()
-            .find(|event| {
-                event.kind == EventKind::RunNote
-                    && event
-                        .payload
-                        .get("rotation_event")
-                        .is_some_and(|value| value == "completed")
-            })
-            .expect("rotation completed event should exist");
-        let flush_error = rotation_completed
-            .payload
-            .get("memory_flush_error")
-            .expect("memory flush error should be recorded");
-        assert!(flush_error.contains("hidden memory flush failed and was ignored"));
-        assert!(flush_error.contains("session unavailable for flush"));
     }
 
     #[test]
@@ -8725,5 +6212,725 @@ mod tests {
         assert!(result.contains("[attached file: broken.png (download failed:"));
         assert!(result.ends_with("check this"));
         let _ = fs::remove_dir_all(root.parent().unwrap());
+    }
+
+    #[test]
+    fn process_gateway_message_executes_cli_rotation_and_delivers_notification() {
+        use crab_core::{
+            write_pending_rotation, CheckpointTurnArtifact, CheckpointTurnDocument,
+            PendingRotation, PENDING_ROTATIONS_DIR_NAME,
+        };
+
+        // Backend events: text + completion, simple success.
+        let runtime = FakeRuntime::with_backend_events(
+            vec![
+                backend_event(1, BackendEventKind::TextDelta, &[("text", "reply")]),
+                backend_event(2, BackendEventKind::TurnCompleted, &[("finish", "done")]),
+            ],
+            // 8 now_epoch_ms calls:
+            // 1=queued_at, 2=started_at, 3=emitted(event1), 4=emitted(event2),
+            // 5=completed_at (also used for rotation and notification delivery)
+            // NOTE: additional timestamps for the missing_usage_data note which
+            // does NOT consume a now_epoch_ms call (it reuses completed_at_epoch_ms),
+            // and for the final upsert_session. We pad extra just in case.
+            &[100, 200, 300, 400, 500, 600, 700, 800],
+        );
+        let (workspace, mut executor) = build_executor_scenario("cli-rotation-integ", runtime, 128);
+
+        // Write a pending rotation file BEFORE dispatching the run.
+        let sr = state_root(&workspace);
+        let rotation = PendingRotation {
+            checkpoint: CheckpointTurnDocument {
+                summary: "CLI rotation checkpoint summary".to_string(),
+                decisions: vec!["decision-A".to_string()],
+                open_questions: vec!["question-B".to_string()],
+                next_actions: vec!["action-C".to_string()],
+                artifacts: vec![CheckpointTurnArtifact {
+                    path: "src/lib.rs".to_string(),
+                    note: "updated library".to_string(),
+                }],
+            },
+        };
+        let pending_path =
+            write_pending_rotation(&sr, &rotation).expect("write pending rotation should succeed");
+        assert!(
+            pending_path.exists(),
+            "pending rotation file should exist before run"
+        );
+
+        // Dispatch the message through the full pipeline.
+        let dispatch = executor
+            .process_gateway_message(gateway_message("m-rot"))
+            .expect("pipeline should succeed")
+            .expect("message should dispatch");
+        assert_eq!(dispatch.status, RunStatus::Succeeded);
+
+        let logical_session_id = "discord:channel:777";
+        let run_id = "run:discord:channel:777:m-rot";
+
+        // 1) Verify the pending rotation file was consumed.
+        assert!(
+            !pending_path.exists(),
+            "pending rotation file should be consumed after run"
+        );
+        let remaining = sr.join(PENDING_ROTATIONS_DIR_NAME);
+        let dir_entries: Vec<_> = fs::read_dir(&remaining)
+            .expect("pending_rotations dir should be readable")
+            .flatten()
+            .collect();
+        assert!(
+            dir_entries.is_empty(),
+            "no pending rotation files should remain"
+        );
+
+        // 2) Verify checkpoint was persisted.
+        let checkpoint = executor
+            .composition()
+            .state_stores
+            .checkpoint_store
+            .latest_checkpoint(logical_session_id)
+            .expect("checkpoint lookup should succeed")
+            .expect("checkpoint should exist after rotation");
+        assert_eq!(checkpoint.logical_session_id, logical_session_id);
+        assert_eq!(checkpoint.run_id, run_id);
+        assert_eq!(checkpoint.summary, "CLI rotation checkpoint summary");
+        assert!(
+            checkpoint.state.get("trigger") == Some(&"cli_rotation".to_string()),
+            "checkpoint state should record cli_rotation trigger"
+        );
+
+        // 3) Verify the session handle was cleared (physical session removed, tokens zeroed).
+        let session = executor
+            .composition()
+            .state_stores
+            .session_store
+            .get_session(logical_session_id)
+            .expect("session lookup should succeed")
+            .expect("session should exist");
+        assert_eq!(
+            session.active_physical_session_id, None,
+            "active_physical_session_id should be cleared after rotation"
+        );
+        assert_eq!(session.lane_state, LaneState::Idle);
+        assert_eq!(
+            session.token_accounting.total_tokens, 0,
+            "token accounting should be zeroed after rotation"
+        );
+        assert!(
+            !session.has_injected_bootstrap,
+            "has_injected_bootstrap should be false after rotation"
+        );
+        assert_eq!(
+            session.last_successful_checkpoint_id,
+            Some(checkpoint.id.clone()),
+            "session should reference the new checkpoint"
+        );
+
+        // 4) Verify rotation notification was delivered to Discord.
+        let runtime = executor.runtime_mut();
+        let rotation_delivery = runtime
+            .delivered_outputs
+            .iter()
+            .find(|(_, _, msg_id, _, _)| msg_id.contains("rotation-notification"));
+        assert!(
+            rotation_delivery.is_some(),
+            "rotation notification should be delivered to Discord"
+        );
+        let (_, _, notification_msg_id, _, notification_content) = rotation_delivery.unwrap();
+        assert!(
+            notification_content.contains("session rotated"),
+            "notification should mention session rotated, got: {notification_content}"
+        );
+        assert!(
+            notification_content.contains("cli_rotation"),
+            "notification should mention cli_rotation trigger, got: {notification_content}"
+        );
+        assert!(
+            notification_content.contains(&checkpoint.id),
+            "notification should include the checkpoint ID, got: {notification_content}"
+        );
+        assert!(
+            notification_msg_id.contains(run_id),
+            "notification message ID should include the run ID"
+        );
+
+        // 5) Verify rotation events were emitted in the event log.
+        let events = executor
+            .composition()
+            .state_stores
+            .event_store
+            .replay_run(logical_session_id, run_id)
+            .expect("event replay should succeed");
+
+        let rotation_started_events: Vec<_> = events
+            .iter()
+            .filter(|e| {
+                e.kind == EventKind::RunNote
+                    && e.payload.get("rotation_event") == Some(&"started".to_string())
+            })
+            .collect();
+        assert_eq!(
+            rotation_started_events.len(),
+            1,
+            "exactly one rotation started event should be emitted"
+        );
+        assert_eq!(
+            rotation_started_events[0].payload.get("trigger"),
+            Some(&"cli_rotation".to_string())
+        );
+
+        let rotation_completed_events: Vec<_> = events
+            .iter()
+            .filter(|e| {
+                e.kind == EventKind::RunNote
+                    && e.payload.get("rotation_event") == Some(&"completed".to_string())
+            })
+            .collect();
+        assert_eq!(
+            rotation_completed_events.len(),
+            1,
+            "exactly one rotation completed event should be emitted"
+        );
+        assert_eq!(
+            rotation_completed_events[0].payload.get("checkpoint_id"),
+            Some(&checkpoint.id)
+        );
+        assert_eq!(
+            rotation_completed_events[0].payload.get("trigger"),
+            Some(&"cli_rotation".to_string())
+        );
+
+        drop(workspace);
+    }
+
+    #[test]
+    fn cli_rotation_during_pending_onboarding_completes_onboarding_and_delivers_message() {
+        use crab_core::{
+            write_pending_rotation, CheckpointTurnArtifact, CheckpointTurnDocument, PendingRotation,
+        };
+
+        let onboarding_json = onboarding_capture_payload_json();
+
+        // Normal turn: completion only (no text delta to avoid delivery slot collision with
+        // the rotation onboarding completion message at delivery_message_id(run_id, 0)).
+        let normal_turn_events = vec![backend_event(
+            1,
+            BackendEventKind::TurnCompleted,
+            &[("finish", "done")],
+        )];
+        // Hidden onboarding turn: return valid onboarding capture JSON as text deltas.
+        let hidden_turn_events = vec![backend_event(
+            1,
+            BackendEventKind::TextDelta,
+            &[("text", onboarding_json)],
+        )];
+
+        let dm_session_id = "discord:dm:424242424242424242";
+        let dm_physical_session = physical_session_fixture_for(dm_session_id);
+
+        // now_epoch_ms calls: queued_at, started_at, emitted(TurnCompleted), completed_at, plus padding.
+        let mut runtime = FakeRuntime::with_backend_events(
+            Vec::new(),
+            &[100, 200, 300, 400, 500, 600, 700, 800, 900, 1000],
+        );
+        runtime.resolve_profile_results = VecDeque::from(vec![Ok(owner_profile_telemetry())]);
+        runtime.ensure_session_results = VecDeque::from(vec![
+            Ok(dm_physical_session.clone()), // normal turn
+            Ok(dm_physical_session),         // hidden onboarding turn inside rotation
+        ]);
+        runtime.execute_turn_results = VecDeque::from(vec![
+            Ok(normal_turn_events), // normal turn
+            Ok(hidden_turn_events), // hidden onboarding extraction turn
+        ]);
+
+        let workspace = TempWorkspace::new("turn-executor", "cli-rotation-onboarding-complete");
+        // Create BOOTSTRAP.md before build_executor (which removes it), then recreate it.
+        fs::create_dir_all(&workspace.path)
+            .expect("workspace root should be creatable for onboarding setup");
+        fs::write(
+            workspace.path.join("BOOTSTRAP.md"),
+            "Bootstrap remains pending until owner onboarding capture is applied.",
+        )
+        .expect("bootstrap marker should be writable");
+        let mut executor = build_executor(&workspace, runtime, 128);
+        // Recreate BOOTSTRAP.md after build_executor removes it.
+        fs::write(
+            workspace.path.join("BOOTSTRAP.md"),
+            "Bootstrap remains pending until owner onboarding capture is applied.",
+        )
+        .expect("bootstrap marker should be writable after executor build");
+
+        // Write a pending rotation file before dispatching.
+        let sr = state_root(&workspace);
+        let rotation = PendingRotation {
+            checkpoint: CheckpointTurnDocument {
+                summary: "Rotation checkpoint during onboarding".to_string(),
+                decisions: vec!["decision-1".to_string()],
+                open_questions: vec![],
+                next_actions: vec!["action-1".to_string()],
+                artifacts: vec![CheckpointTurnArtifact {
+                    path: "src/main.rs".to_string(),
+                    note: "updated main".to_string(),
+                }],
+            },
+        };
+        let pending_path =
+            write_pending_rotation(&sr, &rotation).expect("write pending rotation should succeed");
+        assert!(pending_path.exists(), "pending rotation file should exist");
+
+        // Dispatch via owner DM with normal (non-onboarding-capture) content.
+        let dispatch = executor
+            .process_gateway_message(gateway_owner_dm_message_with_content(
+                "m-rot-onboard",
+                "hello from owner",
+            ))
+            .expect("pipeline should succeed")
+            .expect("message should dispatch");
+        assert_eq!(dispatch.status, RunStatus::Succeeded);
+
+        let run_id = "run:discord:dm:424242424242424242:m-rot-onboard";
+
+        // 1) Pending rotation consumed.
+        assert!(
+            !pending_path.exists(),
+            "pending rotation file should be consumed"
+        );
+
+        // 2) Checkpoint persisted.
+        let checkpoint = executor
+            .composition()
+            .state_stores
+            .checkpoint_store
+            .latest_checkpoint(dm_session_id)
+            .expect("checkpoint lookup should succeed")
+            .expect("checkpoint should exist after rotation");
+        assert_eq!(checkpoint.logical_session_id, dm_session_id);
+        assert_eq!(checkpoint.run_id, run_id);
+
+        // 3) BOOTSTRAP.md should be removed (onboarding completed).
+        assert!(
+            !workspace.path.join("BOOTSTRAP.md").exists(),
+            "BOOTSTRAP.md should be removed after onboarding completion during rotation"
+        );
+
+        // 4) Onboarding profile files should be written.
+        let soul = fs::read_to_string(workspace.path.join("SOUL.md"))
+            .expect("SOUL profile should be written");
+        assert!(
+            soul.contains("Managed Mission Profile"),
+            "SOUL.md should contain mission profile"
+        );
+
+        // 5) Verify onboarding completion delivery (not rotation notification).
+        let runtime = executor.runtime_mut();
+        let onboarding_delivery = runtime
+            .delivered_outputs
+            .iter()
+            .find(|(_, _, _, _, content)| {
+                content.contains("Onboarding completed during checkpoint rotation.")
+            });
+        assert!(
+            onboarding_delivery.is_some(),
+            "onboarding completion message should be delivered, got: {:?}",
+            runtime.delivered_outputs
+        );
+
+        // 6) Verify rotation events were emitted in the event log.
+        let events = executor
+            .composition()
+            .state_stores
+            .event_store
+            .replay_run(dm_session_id, run_id)
+            .expect("event replay should succeed");
+
+        let rotation_started: Vec<_> = events
+            .iter()
+            .filter(|e| {
+                e.kind == EventKind::RunNote
+                    && e.payload.get("rotation_event") == Some(&"started".to_string())
+            })
+            .collect();
+        assert_eq!(rotation_started.len(), 1);
+
+        let rotation_completed: Vec<_> = events
+            .iter()
+            .filter(|e| {
+                e.kind == EventKind::RunNote
+                    && e.payload.get("rotation_event") == Some(&"completed".to_string())
+            })
+            .collect();
+        assert_eq!(rotation_completed.len(), 1);
+
+        let onboarding_applied: Vec<_> = events
+            .iter()
+            .filter(|e| {
+                e.kind == EventKind::RunNote
+                    && e.payload.get("event") == Some(&"onboarding_rotation_applied".to_string())
+            })
+            .collect();
+        assert_eq!(
+            onboarding_applied.len(),
+            1,
+            "onboarding_rotation_applied event should be emitted"
+        );
+
+        drop(workspace);
+    }
+
+    #[test]
+    fn cli_rotation_during_pending_onboarding_handles_incomplete_token() {
+        use crab_core::{
+            write_pending_rotation, CheckpointTurnArtifact, CheckpointTurnDocument,
+            PendingRotation, ONBOARDING_CAPTURE_INCOMPLETE_TOKEN,
+        };
+
+        // Normal turn: text + completion.
+        let normal_turn_events = vec![
+            backend_event(1, BackendEventKind::TextDelta, &[("text", "reply")]),
+            backend_event(2, BackendEventKind::TurnCompleted, &[("finish", "done")]),
+        ];
+        // Hidden onboarding turn: return INCOMPLETE token.
+        let hidden_turn_events = vec![backend_event(
+            1,
+            BackendEventKind::TextDelta,
+            &[("text", ONBOARDING_CAPTURE_INCOMPLETE_TOKEN)],
+        )];
+
+        let dm_session_id = "discord:dm:424242424242424242";
+        let dm_physical_session = physical_session_fixture_for(dm_session_id);
+
+        let mut runtime = FakeRuntime::with_backend_events(
+            Vec::new(),
+            &[100, 200, 300, 400, 500, 600, 700, 800, 900, 1000],
+        );
+        runtime.resolve_profile_results = VecDeque::from(vec![Ok(owner_profile_telemetry())]);
+        runtime.ensure_session_results = VecDeque::from(vec![
+            Ok(dm_physical_session.clone()),
+            Ok(dm_physical_session),
+        ]);
+        runtime.execute_turn_results =
+            VecDeque::from(vec![Ok(normal_turn_events), Ok(hidden_turn_events)]);
+
+        let workspace = TempWorkspace::new("turn-executor", "cli-rotation-onboarding-incomplete");
+        fs::create_dir_all(&workspace.path)
+            .expect("workspace root should be creatable for onboarding setup");
+        fs::write(
+            workspace.path.join("BOOTSTRAP.md"),
+            "Bootstrap remains pending until owner onboarding capture is applied.",
+        )
+        .expect("bootstrap marker should be writable");
+        let mut executor = build_executor(&workspace, runtime, 128);
+        fs::write(
+            workspace.path.join("BOOTSTRAP.md"),
+            "Bootstrap remains pending until owner onboarding capture is applied.",
+        )
+        .expect("bootstrap marker should be writable after executor build");
+
+        let sr = state_root(&workspace);
+        let rotation = PendingRotation {
+            checkpoint: CheckpointTurnDocument {
+                summary: "Rotation checkpoint during incomplete onboarding".to_string(),
+                decisions: vec![],
+                open_questions: vec![],
+                next_actions: vec![],
+                artifacts: vec![CheckpointTurnArtifact {
+                    path: "src/lib.rs".to_string(),
+                    note: "partial".to_string(),
+                }],
+            },
+        };
+        let pending_path =
+            write_pending_rotation(&sr, &rotation).expect("write pending rotation should succeed");
+        assert!(pending_path.exists());
+
+        let dispatch = executor
+            .process_gateway_message(gateway_owner_dm_message_with_content(
+                "m-rot-incomplete",
+                "hello from owner",
+            ))
+            .expect("pipeline should succeed")
+            .expect("message should dispatch");
+        assert_eq!(dispatch.status, RunStatus::Succeeded);
+
+        let run_id = "run:discord:dm:424242424242424242:m-rot-incomplete";
+        let dm_session_id = "discord:dm:424242424242424242";
+
+        // Pending rotation consumed.
+        assert!(!pending_path.exists());
+
+        // Checkpoint still persisted (rotation completed).
+        let checkpoint = executor
+            .composition()
+            .state_stores
+            .checkpoint_store
+            .latest_checkpoint(dm_session_id)
+            .expect("checkpoint lookup should succeed")
+            .expect("checkpoint should exist");
+        assert_eq!(checkpoint.run_id, run_id);
+
+        // BOOTSTRAP.md should still exist (onboarding NOT completed).
+        assert!(
+            workspace.path.join("BOOTSTRAP.md").exists(),
+            "BOOTSTRAP.md should remain when onboarding is incomplete"
+        );
+
+        // Verify rotation notification (not onboarding message) was delivered.
+        let runtime = executor.runtime_mut();
+        let rotation_delivery = runtime
+            .delivered_outputs
+            .iter()
+            .find(|(_, _, msg_id, _, _)| msg_id.contains("rotation-notification"));
+        assert!(
+            rotation_delivery.is_some(),
+            "rotation notification should be delivered when onboarding is incomplete"
+        );
+
+        // Verify incomplete onboarding event was recorded.
+        let events = executor
+            .composition()
+            .state_stores
+            .event_store
+            .replay_run(dm_session_id, run_id)
+            .expect("event replay should succeed");
+        let incomplete_events: Vec<_> = events
+            .iter()
+            .filter(|e| {
+                e.kind == EventKind::RunNote
+                    && e.payload.get("event") == Some(&"onboarding_rotation_incomplete".to_string())
+            })
+            .collect();
+        assert_eq!(
+            incomplete_events.len(),
+            1,
+            "onboarding_rotation_incomplete event should be emitted"
+        );
+
+        drop(workspace);
+    }
+
+    #[test]
+    fn cli_rotation_during_pending_onboarding_handles_parse_error() {
+        use crab_core::{
+            write_pending_rotation, CheckpointTurnArtifact, CheckpointTurnDocument, PendingRotation,
+        };
+
+        // Normal turn: completion only.
+        let normal_turn_events = vec![backend_event(
+            1,
+            BackendEventKind::TurnCompleted,
+            &[("finish", "done")],
+        )];
+        // Hidden onboarding turn: return garbage (not INCOMPLETE token, not valid JSON).
+        let hidden_turn_events = vec![backend_event(
+            1,
+            BackendEventKind::TextDelta,
+            &[("text", "this is not valid json at all")],
+        )];
+
+        let dm_session_id = "discord:dm:424242424242424242";
+        let dm_physical_session = physical_session_fixture_for(dm_session_id);
+
+        let mut runtime = FakeRuntime::with_backend_events(
+            Vec::new(),
+            &[100, 200, 300, 400, 500, 600, 700, 800, 900, 1000],
+        );
+        runtime.resolve_profile_results = VecDeque::from(vec![Ok(owner_profile_telemetry())]);
+        runtime.ensure_session_results = VecDeque::from(vec![
+            Ok(dm_physical_session.clone()),
+            Ok(dm_physical_session),
+        ]);
+        runtime.execute_turn_results =
+            VecDeque::from(vec![Ok(normal_turn_events), Ok(hidden_turn_events)]);
+
+        let workspace = TempWorkspace::new("turn-executor", "cli-rotation-onboarding-parse-error");
+        fs::create_dir_all(&workspace.path)
+            .expect("workspace root should be creatable for onboarding setup");
+        fs::write(
+            workspace.path.join("BOOTSTRAP.md"),
+            "Bootstrap remains pending until owner onboarding capture is applied.",
+        )
+        .expect("bootstrap marker should be writable");
+        let mut executor = build_executor(&workspace, runtime, 128);
+        fs::write(
+            workspace.path.join("BOOTSTRAP.md"),
+            "Bootstrap remains pending until owner onboarding capture is applied.",
+        )
+        .expect("bootstrap marker should be writable after executor build");
+
+        let sr = state_root(&workspace);
+        let rotation = PendingRotation {
+            checkpoint: CheckpointTurnDocument {
+                summary: "Rotation with parse error".to_string(),
+                decisions: vec![],
+                open_questions: vec![],
+                next_actions: vec![],
+                artifacts: vec![CheckpointTurnArtifact {
+                    path: "src/lib.rs".to_string(),
+                    note: "updated".to_string(),
+                }],
+            },
+        };
+        write_pending_rotation(&sr, &rotation).expect("write pending rotation should succeed");
+
+        let dispatch = executor
+            .process_gateway_message(gateway_owner_dm_message_with_content(
+                "m-rot-parse-err",
+                "hello from owner",
+            ))
+            .expect("pipeline should succeed")
+            .expect("message should dispatch");
+        assert_eq!(dispatch.status, RunStatus::Succeeded);
+
+        let run_id = "run:discord:dm:424242424242424242:m-rot-parse-err";
+
+        // BOOTSTRAP.md should still exist (onboarding NOT completed due to parse error).
+        assert!(
+            workspace.path.join("BOOTSTRAP.md").exists(),
+            "BOOTSTRAP.md should remain when onboarding extraction produces invalid JSON"
+        );
+
+        // Verify parse error event was recorded.
+        let events = executor
+            .composition()
+            .state_stores
+            .event_store
+            .replay_run(dm_session_id, run_id)
+            .expect("event replay should succeed");
+        let parse_error_events: Vec<_> = events
+            .iter()
+            .filter(|e| {
+                e.kind == EventKind::RunNote
+                    && e.payload.get("event")
+                        == Some(&"onboarding_rotation_parse_error".to_string())
+            })
+            .collect();
+        assert_eq!(
+            parse_error_events.len(),
+            1,
+            "onboarding_rotation_parse_error event should be emitted"
+        );
+        assert!(
+            parse_error_events[0].payload.contains_key("error"),
+            "parse error event should include the error details"
+        );
+
+        drop(workspace);
+    }
+
+    #[test]
+    fn cli_rotation_during_pending_onboarding_handles_apply_error() {
+        use crab_core::{
+            write_pending_rotation, CheckpointTurnArtifact, CheckpointTurnDocument, PendingRotation,
+        };
+
+        let onboarding_json = onboarding_capture_payload_json();
+
+        // Normal turn: completion only.
+        let normal_turn_events = vec![backend_event(
+            1,
+            BackendEventKind::TurnCompleted,
+            &[("finish", "done")],
+        )];
+        // Hidden onboarding turn: return valid onboarding JSON (schema v1, all fields present).
+        let hidden_turn_events = vec![backend_event(
+            1,
+            BackendEventKind::TextDelta,
+            &[("text", onboarding_json)],
+        )];
+
+        let dm_session_id = "discord:dm:424242424242424242";
+        let dm_physical_session = physical_session_fixture_for(dm_session_id);
+
+        let mut runtime = FakeRuntime::with_backend_events(
+            Vec::new(),
+            &[100, 200, 300, 400, 500, 600, 700, 800, 900, 1000],
+        );
+        runtime.resolve_profile_results = VecDeque::from(vec![Ok(owner_profile_telemetry())]);
+        runtime.ensure_session_results = VecDeque::from(vec![
+            Ok(dm_physical_session.clone()),
+            Ok(dm_physical_session),
+        ]);
+        runtime.execute_turn_results =
+            VecDeque::from(vec![Ok(normal_turn_events), Ok(hidden_turn_events)]);
+
+        let workspace = TempWorkspace::new("turn-executor", "cli-rotation-onboarding-apply-error");
+        fs::create_dir_all(&workspace.path)
+            .expect("workspace root should be creatable for onboarding setup");
+        fs::write(
+            workspace.path.join("BOOTSTRAP.md"),
+            "Bootstrap remains pending until owner onboarding capture is applied.",
+        )
+        .expect("bootstrap marker should be writable");
+        let mut executor = build_executor(&workspace, runtime, 128);
+        fs::write(
+            workspace.path.join("BOOTSTRAP.md"),
+            "Bootstrap remains pending until owner onboarding capture is applied.",
+        )
+        .expect("bootstrap marker should be writable after executor build");
+
+        // Sabotage: replace IDENTITY.md with a directory so persist_onboarding_profile_files
+        // fails during apply_onboarding_capture_document.
+        let identity_path = workspace.path.join("IDENTITY.md");
+        let _ = fs::remove_file(&identity_path);
+        fs::create_dir_all(&identity_path).expect("IDENTITY.md directory sabotage should succeed");
+
+        let sr = state_root(&workspace);
+        let rotation = PendingRotation {
+            checkpoint: CheckpointTurnDocument {
+                summary: "Rotation with apply error".to_string(),
+                decisions: vec![],
+                open_questions: vec![],
+                next_actions: vec![],
+                artifacts: vec![CheckpointTurnArtifact {
+                    path: "src/lib.rs".to_string(),
+                    note: "updated".to_string(),
+                }],
+            },
+        };
+        write_pending_rotation(&sr, &rotation).expect("write pending rotation should succeed");
+
+        let dispatch = executor
+            .process_gateway_message(gateway_owner_dm_message_with_content(
+                "m-rot-apply-err",
+                "hello from owner",
+            ))
+            .expect("pipeline should succeed")
+            .expect("message should dispatch");
+        assert_eq!(dispatch.status, RunStatus::Succeeded);
+
+        let run_id = "run:discord:dm:424242424242424242:m-rot-apply-err";
+
+        // BOOTSTRAP.md should still exist.
+        assert!(
+            workspace.path.join("BOOTSTRAP.md").exists(),
+            "BOOTSTRAP.md should remain when onboarding apply fails"
+        );
+
+        // Verify apply error event was recorded.
+        let events = executor
+            .composition()
+            .state_stores
+            .event_store
+            .replay_run(dm_session_id, run_id)
+            .expect("event replay should succeed");
+        let apply_error_events: Vec<_> = events
+            .iter()
+            .filter(|e| {
+                e.kind == EventKind::RunNote
+                    && e.payload.get("event")
+                        == Some(&"onboarding_rotation_apply_error".to_string())
+            })
+            .collect();
+        assert_eq!(
+            apply_error_events.len(),
+            1,
+            "onboarding_rotation_apply_error event should be emitted"
+        );
+        assert!(
+            apply_error_events[0].payload.contains_key("error"),
+            "apply error event should include the error details"
+        );
+
+        drop(workspace);
     }
 }
