@@ -14,11 +14,16 @@ mkdir -p "$OUT_DIR"
 
 cd "$ROOT_DIR"
 
+CARGO_EXIT=0
 cargo llvm-cov --workspace --all-features --locked \
   --ignore-filename-regex "$IGNORE_REGEX" \
   --fail-under-functions 100 \
   --fail-uncovered-functions 0 \
-  --lcov --output-path "$LCOV_PATH"
+  --lcov --output-path "$LCOV_PATH" || CARGO_EXIT=$?
+
+if [ "$CARGO_EXIT" -ne 0 ]; then
+  echo "cargo llvm-cov exited with code $CARGO_EXIT (function coverage gate failed)"
+fi
 
 GATE_SCRIPT="$OUT_DIR/_coverage_gate.py"
 cat > "$GATE_SCRIPT" <<'PY'
