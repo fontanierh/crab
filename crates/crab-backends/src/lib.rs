@@ -87,15 +87,6 @@ impl<B: Backend> BackendHarness<B> {
                 ),
             });
         }
-        if session.backend != context.profile.backend {
-            return Err(CrabError::InvariantViolation {
-                context: "backend_contract_create_session",
-                message: format!(
-                    "session backend {:?} does not match profile backend {:?}",
-                    session.backend, context.profile.backend
-                ),
-            });
-        }
         Ok(session)
     }
 

@@ -914,4 +914,51 @@ mod tests {
                 .expect_err("dispatcher fetch failures should propagate");
         assert_eq!(dispatcher_error, boom("dispatcher_heartbeat"));
     }
+
+    #[test]
+    fn backend_sort_key_maps_claude() {
+        assert_eq!(super::backend_sort_key(BackendKind::Claude), 0);
+    }
+
+    #[test]
+    fn heartbeat_skips_unhealthy_backend_below_stall_timeout() {
+        let policy = policy();
+        let stall_timeout_ms = policy.backend_stall_timeout_secs * 1_000;
+        let now = 100_000u64;
+        let last_healthy = now - stall_timeout_ms + 1; // just under threshold
+
+        let mut runtime = FakeRuntime::new();
+        runtime.list_backend_heartbeats_result = Ok(vec![backend_heartbeat(
+            BackendKind::Claude,
+            true,  // persistent
+            false, // unhealthy
+            last_healthy,
+        )]);
+
+        let outcome = execute_heartbeat_cycle(&mut runtime, &policy, now).unwrap();
+        assert!(
+            outcome.restarted_backends.is_empty(),
+            "backend below stall threshold should not be restarted"
+        );
+    }
+
+    #[test]
+    fn heartbeat_restarts_persistent_unhealthy_backend_past_timeout() {
+        let policy = policy();
+        let stall_timeout_ms = policy.backend_stall_timeout_secs * 1_000;
+        let now = 100_000u64;
+        let last_healthy = now - stall_timeout_ms; // exactly at threshold
+
+        let mut runtime = FakeRuntime::new();
+        runtime.list_backend_heartbeats_result = Ok(vec![backend_heartbeat(
+            BackendKind::Claude,
+            true,  // persistent
+            false, // unhealthy
+            last_healthy,
+        )]);
+
+        let outcome = execute_heartbeat_cycle(&mut runtime, &policy, now).unwrap();
+        assert_eq!(outcome.restarted_backends, vec![BackendKind::Claude]);
+        assert_eq!(runtime.restart_calls, vec![BackendKind::Claude]);
+    }
 }

@@ -5673,6 +5673,24 @@ mod tests {
         assert_eq!(run.status, RunStatus::Queued);
     }
 
+    #[test]
+    fn enqueue_pending_trigger_rejects_blank_channel_id() {
+        let workspace = TempWorkspace::new("turn-executor", "trigger-blank-channel");
+        let runtime = FakeRuntime::with_backend_events(Vec::new(), &[42_000]);
+        let mut executor = build_executor(&workspace, runtime, 8);
+
+        let error = executor
+            .enqueue_pending_trigger("  ", "hello")
+            .expect_err("blank channel_id should fail");
+        assert_eq!(
+            error,
+            CrabError::InvariantViolation {
+                context: "pending_trigger_enqueue",
+                message: "channel_id must not be empty".to_string(),
+            }
+        );
+    }
+
     fn temp_state_root(label: &str) -> PathBuf {
         let workspace = TempWorkspace::new("turn-executor", label);
         let root = workspace.path.join("state");

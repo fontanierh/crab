@@ -1112,7 +1112,6 @@ impl DaemonLoopControl for SystemDaemonLoopControl {
 pub struct DaemonTurnRuntime<D: DaemonDiscordIo> {
     discord: D,
     owner: OwnerConfig,
-    next_session_sequence: u64,
     physical_sessions: BTreeMap<String, crab_core::PhysicalSession>,
     turn_context_runtime: Option<TurnContextRuntimeState>,
     claude_bridge: DaemonClaudeExecutionBridge,
@@ -1158,7 +1157,6 @@ impl<D: DaemonDiscordIo> DaemonTurnRuntime<D> {
         Ok(Self {
             discord,
             owner,
-            next_session_sequence: 0,
             physical_sessions: BTreeMap::new(),
             turn_context_runtime: None,
             claude_bridge: DaemonClaudeExecutionBridge::with_process(Arc::new(claude_process)),
@@ -1207,14 +1205,6 @@ impl<D: DaemonDiscordIo> DaemonTurnRuntime<D> {
 
     pub fn next_gateway_message(&mut self) -> CrabResult<Option<GatewayMessage>> {
         self.discord.next_gateway_message()
-    }
-
-    fn next_physical_session_id(&mut self, logical_session_id: &str) -> String {
-        self.next_session_sequence = self.next_session_sequence.saturating_add(1);
-        format!(
-            "physical:{logical_session_id}:{}",
-            self.next_session_sequence
-        )
     }
 
     fn build_runtime_turn_context(
@@ -1400,67 +1390,44 @@ impl<D: DaemonDiscordIo> TurnExecutorRuntime for DaemonTurnRuntime<D> {
         profile: &InferenceProfile,
         active_physical_session_id: Option<&str>,
     ) -> CrabResult<crab_core::PhysicalSession> {
-        if profile.backend == BackendKind::Claude {
-            let has_cached_active_session = active_physical_session_id
-                .is_some_and(|active_id| self.physical_sessions.contains_key(active_id));
-            match resolve_claude_session_strategy(
-                active_physical_session_id,
-                has_cached_active_session,
-            ) {
-                ClaudeSessionStrategy::ReuseCached { active_id } => {
-                    let existing =
-                        self.physical_sessions.get(active_id).cloned().expect(
-                            "resolve_claude_session_strategy guarantees cached session exists",
-                        );
-                    return Ok(existing);
-                }
-                ClaudeSessionStrategy::RestoreFromActiveId {
-                    active_id,
-                    backend_session_id,
-                } => {
-                    let session = crab_core::PhysicalSession {
-                        id: active_id.to_string(),
-                        logical_session_id: logical_session_id.to_string(),
-                        backend: BackendKind::Claude,
-                        backend_session_id: backend_session_id.to_string(),
-                        created_at_epoch_ms: Self::session_now_epoch_ms()?,
-                        last_turn_id: None,
-                    };
-                    self.physical_sessions
-                        .insert(active_id.to_string(), session.clone());
-                    return Ok(session);
-                }
-                ClaudeSessionStrategy::CreateNew => {}
+        let has_cached_active_session = active_physical_session_id
+            .is_some_and(|active_id| self.physical_sessions.contains_key(active_id));
+        match resolve_claude_session_strategy(active_physical_session_id, has_cached_active_session)
+        {
+            ClaudeSessionStrategy::ReuseCached { active_id } => {
+                let existing = self
+                    .physical_sessions
+                    .get(active_id)
+                    .cloned()
+                    .expect("resolve_claude_session_strategy guarantees cached session exists");
+                return Ok(existing);
             }
-
-            let session_context = SessionContext {
-                logical_session_id: logical_session_id.to_string(),
-                profile: profile.clone(),
-            };
-            let session = block_on(self.claude_bridge.harness.create_session(&session_context))?;
-            self.physical_sessions
-                .insert(session.id.clone(), session.clone());
-            return Ok(session);
+            ClaudeSessionStrategy::RestoreFromActiveId {
+                active_id,
+                backend_session_id,
+            } => {
+                let session = crab_core::PhysicalSession {
+                    id: active_id.to_string(),
+                    logical_session_id: logical_session_id.to_string(),
+                    backend: BackendKind::Claude,
+                    backend_session_id: backend_session_id.to_string(),
+                    created_at_epoch_ms: Self::session_now_epoch_ms()?,
+                    last_turn_id: None,
+                };
+                self.physical_sessions
+                    .insert(active_id.to_string(), session.clone());
+                return Ok(session);
+            }
+            ClaudeSessionStrategy::CreateNew => {}
         }
 
-        if let Some(active_id) = active_physical_session_id {
-            if let Some(existing) = self.physical_sessions.get(active_id) {
-                return Ok(existing.clone());
-            }
-        }
-
-        let id = active_physical_session_id
-            .map(ToOwned::to_owned)
-            .unwrap_or_else(|| self.next_physical_session_id(logical_session_id));
-        let session = crab_core::PhysicalSession {
-            id: id.clone(),
+        let session_context = SessionContext {
             logical_session_id: logical_session_id.to_string(),
-            backend: profile.backend,
-            backend_session_id: format!("backend-session:{id}"),
-            created_at_epoch_ms: Self::session_now_epoch_ms()?,
-            last_turn_id: None,
+            profile: profile.clone(),
         };
-        self.physical_sessions.insert(id, session.clone());
+        let session = block_on(self.claude_bridge.harness.create_session(&session_context))?;
+        self.physical_sessions
+            .insert(session.id.clone(), session.clone());
         Ok(session)
     }
 
@@ -1685,32 +1652,35 @@ where
 
         let now_epoch_ms = control.now_epoch_ms()?;
 
-        if let Some(outcome) = run_heartbeat_if_due(
+        let heartbeat_outcome = run_heartbeat_if_due(
             executor.composition_mut(),
             &mut heartbeat_loop_state,
             now_epoch_ms,
-        )? {
+        );
+        if let Some(outcome) = heartbeat_outcome? {
             stats.heartbeat_cycles = stats.heartbeat_cycles.saturating_add(1);
+            #[cfg(coverage)]
+            let _ = &outcome;
 
-            let had_actions = !outcome.cancelled_runs.is_empty()
-                || !outcome.hard_stopped_runs.is_empty()
-                || !outcome.restarted_backends.is_empty()
-                || outcome.dispatcher_nudged;
-            if had_actions {
-                #[cfg(not(coverage))]
-                tracing::warn!(
-                    cancelled_runs = outcome.cancelled_runs.len(),
-                    hard_stopped_runs = outcome.hard_stopped_runs.len(),
-                    restarted_backends = outcome.restarted_backends.len(),
-                    dispatcher_nudged = outcome.dispatcher_nudged,
-                    events = outcome.events.len(),
-                    "heartbeat took corrective action"
-                );
-                #[cfg(not(coverage))]
-                tracing::debug!(?outcome, "heartbeat outcome details");
-            } else {
-                #[cfg(not(coverage))]
-                tracing::debug!(events = outcome.events.len(), "heartbeat cycle complete");
+            #[cfg(not(coverage))]
+            {
+                let had_actions = !outcome.cancelled_runs.is_empty()
+                    || !outcome.hard_stopped_runs.is_empty()
+                    || !outcome.restarted_backends.is_empty()
+                    || outcome.dispatcher_nudged;
+                if had_actions {
+                    tracing::warn!(
+                        cancelled_runs = outcome.cancelled_runs.len(),
+                        hard_stopped_runs = outcome.hard_stopped_runs.len(),
+                        restarted_backends = outcome.restarted_backends.len(),
+                        dispatcher_nudged = outcome.dispatcher_nudged,
+                        events = outcome.events.len(),
+                        "heartbeat took corrective action"
+                    );
+                    tracing::debug!(?outcome, "heartbeat outcome details");
+                } else {
+                    tracing::debug!(events = outcome.events.len(), "heartbeat cycle complete");
+                }
             }
         }
 
@@ -3559,6 +3529,379 @@ mod tests {
                 context: "daemon_clock_now",
                 message: "epoch milliseconds overflow u64".to_string(),
             }
+        );
+    }
+
+    #[test]
+    fn notify_startup_recovered_runs_sends_discord_messages() {
+        let workspace = TempWorkspace::new("daemon", "startup-reconcile-happy-path");
+        let state_root = workspace.path.join("state");
+        let run_store = RunStore::new(&state_root);
+
+        let mut run = sample_claude_run("111");
+        run.id = "run:discord:dm:111:stale-with-channel".to_string();
+        run.logical_session_id = "discord:dm:111".to_string();
+        run.status = RunStatus::Cancelled;
+        run.delivery_channel_id = Some("999".to_string());
+        run_store.upsert_run(&run).expect("seed run should persist");
+
+        let recovered = crab_core::startup_reconciliation::StartupReconciliationRecoveredRun {
+            logical_session_id: run.logical_session_id.clone(),
+            run_id: run.id.clone(),
+            previous_status: RunStatus::Running,
+            recovered_status: RunStatus::Cancelled,
+        };
+
+        let mut discord = ScriptedDiscordIo::with_state(DiscordIoState::default());
+        let sent = notify_startup_recovered_runs(&run_store, &[recovered], &mut discord)
+            .expect("notification should succeed");
+
+        assert_eq!(sent, 1);
+        let state = discord.state();
+        assert_eq!(state.posted.len(), 1);
+        assert_eq!(state.posted[0].0, "999");
+        assert!(state.posted[0].1.starts_with("startup:recovered:"));
+        assert!(state.posted[0].2.contains("Crab restarted"));
+        assert!(state.posted[0].2.contains(&run.id));
+    }
+
+    #[test]
+    fn civil_from_days_covers_january() {
+        // 1704067200000 ms = 2024-01-01T00:00:00Z
+        let date = epoch_ms_to_yyyy_mm_dd(1_704_067_200_000).expect("January date should convert");
+        assert_eq!(date, "2024-01-01");
+    }
+
+    #[test]
+    fn civil_from_days_covers_february() {
+        // 1706745600000 ms = 2024-02-01T00:00:00Z
+        let date = epoch_ms_to_yyyy_mm_dd(1_706_745_600_000).expect("February date should convert");
+        assert_eq!(date, "2024-02-01");
+    }
+
+    #[test]
+    fn scripted_discord_io_next_gateway_message_returns_queued_messages() {
+        let msg1 = GatewayMessage {
+            message_id: "m1".to_string(),
+            author_id: "222".to_string(),
+            author_is_bot: false,
+            channel_id: "111".to_string(),
+            guild_id: None,
+            thread_id: None,
+            content: "hello".to_string(),
+            conversation_kind: crab_discord::GatewayConversationKind::GuildChannel,
+            attachments: Vec::new(),
+        };
+        let msg2 = GatewayMessage {
+            message_id: "m2".to_string(),
+            author_id: "444".to_string(),
+            author_is_bot: false,
+            channel_id: "333".to_string(),
+            guild_id: None,
+            thread_id: None,
+            content: "world".to_string(),
+            conversation_kind: crab_discord::GatewayConversationKind::GuildChannel,
+            attachments: Vec::new(),
+        };
+        let mut discord = ScriptedDiscordIo::with_state(DiscordIoState {
+            inbound: VecDeque::from([Ok(Some(msg1.clone())), Ok(Some(msg2.clone()))]),
+            ..DiscordIoState::default()
+        });
+
+        let first = discord
+            .next_gateway_message()
+            .expect("first call should succeed")
+            .expect("first message should be present");
+        assert_eq!(first, msg1);
+
+        let second = discord
+            .next_gateway_message()
+            .expect("second call should succeed")
+            .expect("second message should be present");
+        assert_eq!(second, msg2);
+
+        let empty = discord
+            .next_gateway_message()
+            .expect("drained call should succeed");
+        assert!(empty.is_none());
+    }
+
+    // ---- Daemon loop integration tests ----
+
+    struct OneShotControl {
+        now: u64,
+        shutdown: bool,
+    }
+
+    impl DaemonLoopControl for OneShotControl {
+        fn now_epoch_ms(&mut self) -> CrabResult<u64> {
+            Ok(self.now)
+        }
+        fn should_shutdown(&self) -> bool {
+            self.shutdown
+        }
+        fn sleep_tick(&mut self, _tick_interval_ms: u64) -> CrabResult<()> {
+            Ok(())
+        }
+    }
+
+    fn daemon_loop_config() -> DaemonConfig {
+        DaemonConfig {
+            bot_user_id: "999".to_string(),
+            tick_interval_ms: 1,
+            max_iterations: Some(1),
+        }
+    }
+
+    #[test]
+    fn daemon_loop_runs_single_iteration_with_empty_state() {
+        let workspace = TempWorkspace::new("daemon", "loop-empty");
+        let config = runtime_config_for_workspace_with_lanes(&workspace.path, 1);
+        let discord = ScriptedDiscordIo::with_state(DiscordIoState::default());
+        let mut control = OneShotControl {
+            now: 1_739_173_200_000,
+            shutdown: false,
+        };
+
+        let stats = super::run_daemon_loop_with_transport(
+            &config,
+            &daemon_loop_config(),
+            discord,
+            &mut control,
+        )
+        .expect("daemon loop should succeed with empty state");
+
+        assert_eq!(stats.iterations, 1);
+        assert_eq!(stats.ingested_messages, 0);
+        assert_eq!(stats.ingested_triggers, 0);
+    }
+
+    #[test]
+    fn daemon_loop_exits_on_shutdown_signal() {
+        let workspace = TempWorkspace::new("daemon", "loop-shutdown");
+        let config = runtime_config_for_workspace_with_lanes(&workspace.path, 1);
+        let discord = ScriptedDiscordIo::with_state(DiscordIoState::default());
+
+        let mut control = OneShotControl {
+            now: 1_739_173_200_000,
+            shutdown: true,
+        };
+
+        let daemon_config = DaemonConfig {
+            bot_user_id: "999".to_string(),
+            tick_interval_ms: 1,
+            max_iterations: None, // no iteration limit - shutdown signal should stop it
+        };
+
+        let stats =
+            super::run_daemon_loop_with_transport(&config, &daemon_config, discord, &mut control)
+                .expect("daemon loop should exit cleanly on shutdown");
+
+        assert_eq!(stats.iterations, 0);
+    }
+
+    #[test]
+    fn daemon_loop_ingests_gateway_messages() {
+        let workspace = TempWorkspace::new("daemon", "loop-gateway");
+        let config = runtime_config_for_workspace_with_lanes(&workspace.path, 1);
+        let msg = GatewayMessage {
+            message_id: "m1".to_string(),
+            author_id: "222".to_string(),
+            author_is_bot: false,
+            channel_id: "333".to_string(),
+            guild_id: None,
+            thread_id: None,
+            content: "hello".to_string(),
+            conversation_kind: crab_discord::GatewayConversationKind::DirectMessage,
+            attachments: Vec::new(),
+        };
+        let discord = ScriptedDiscordIo::with_state(DiscordIoState {
+            inbound: VecDeque::from([Ok(Some(msg))]),
+            ..DiscordIoState::default()
+        });
+        let mut control = OneShotControl {
+            now: 1_739_173_200_000,
+            shutdown: false,
+        };
+
+        let stats = super::run_daemon_loop_with_transport(
+            &config,
+            &daemon_loop_config(),
+            discord,
+            &mut control,
+        )
+        .expect("daemon loop should succeed");
+
+        assert_eq!(stats.iterations, 1);
+        assert_eq!(stats.ingested_messages, 1);
+    }
+
+    #[test]
+    fn daemon_loop_ingests_trigger_and_handles_trigger_error() {
+        let workspace = TempWorkspace::new("daemon", "loop-triggers");
+        let config = runtime_config_for_workspace_with_lanes(&workspace.path, 1);
+        let state_root = workspace.path.join("state");
+        std::fs::create_dir_all(&state_root).expect("state root should be creatable");
+
+        // Good trigger
+        crab_core::write_pending_trigger(
+            &state_root,
+            &crab_core::PendingTrigger {
+                channel_id: "888".to_string(),
+                message: "good trigger".to_string(),
+            },
+        )
+        .expect("trigger should be written");
+
+        // Write a trigger file directly with a blank channel_id to bypass write
+        // validation and exercise the enqueue error branch in the daemon loop.
+        let triggers_dir = state_root.join("pending_triggers");
+        std::fs::create_dir_all(&triggers_dir).expect("triggers dir should be creatable");
+        std::fs::write(
+            triggers_dir.join("bad_trigger.json"),
+            r#"{"channel_id":"  ","message":"bad trigger"}"#,
+        )
+        .expect("bad trigger file should be writable");
+
+        let discord = ScriptedDiscordIo::with_state(DiscordIoState::default());
+        let mut control = OneShotControl {
+            now: 1_739_173_200_000,
+            shutdown: false,
+        };
+
+        let stats = super::run_daemon_loop_with_transport(
+            &config,
+            &daemon_loop_config(),
+            discord,
+            &mut control,
+        )
+        .expect("daemon loop should succeed even with trigger error");
+
+        assert_eq!(stats.iterations, 1);
+        // At least the good trigger should be ingested; the bad one should hit the error path
+        assert!(stats.ingested_triggers >= 1);
+    }
+
+    #[test]
+    fn daemon_loop_exercises_startup_reconciliation_notification() {
+        let workspace = TempWorkspace::new("daemon", "loop-reconcile");
+        let config = runtime_config_for_workspace_with_lanes(&workspace.path, 1);
+        let state_root = workspace.path.join("state");
+        std::fs::create_dir_all(&state_root).expect("state root should be creatable");
+
+        // Seed a "Running" run so startup reconciliation recovers it.
+        let run_store = RunStore::new(&state_root);
+        let mut stale_run = sample_claude_run("111");
+        stale_run.id = "run:discord:dm:111:stale".to_string();
+        stale_run.logical_session_id = "discord:dm:111".to_string();
+        stale_run.status = RunStatus::Running;
+        stale_run.delivery_channel_id = Some("999".to_string());
+        stale_run.started_at_epoch_ms = Some(1);
+        stale_run.queued_at_epoch_ms = 1;
+        run_store
+            .upsert_run(&stale_run)
+            .expect("stale run should persist");
+
+        // Seed a matching logical session so reconciliation can find the run.
+        let session_store = crab_store::SessionStore::new(&state_root);
+        let mut session = sample_session(LaneState::Running, None);
+        session.id = "discord:dm:111".to_string();
+        session_store
+            .upsert_session(&session)
+            .expect("session should persist");
+
+        let discord = ScriptedDiscordIo::with_state(DiscordIoState::default());
+        let discord_state = discord.clone();
+
+        let mut control = OneShotControl {
+            now: 1_739_173_200_000,
+            shutdown: false,
+        };
+
+        let stats = super::run_daemon_loop_with_transport(
+            &config,
+            &daemon_loop_config(),
+            discord,
+            &mut control,
+        )
+        .expect("daemon loop should succeed with reconciliation");
+
+        assert_eq!(stats.iterations, 1);
+
+        // The startup recovery notification should have been posted to the delivery channel.
+        let state = discord_state.state();
+        assert!(
+            state
+                .posted
+                .iter()
+                .any(|(ch, _, content)| { ch == "999" && content.contains("Crab restarted") }),
+            "expected startup recovery Discord message, got: {:?}",
+            state.posted
+        );
+    }
+
+    #[test]
+    fn daemon_loop_exercises_heartbeat_cycle() {
+        let workspace = TempWorkspace::new("daemon", "loop-heartbeat");
+        let config = runtime_config_for_workspace_with_lanes(&workspace.path, 1);
+        let state_root = workspace.path.join("state");
+        std::fs::create_dir_all(&state_root).expect("state root should be creatable");
+
+        // Seed a stale running run so heartbeat has work to do.
+        let run_store = RunStore::new(&state_root);
+        let mut stale = sample_claude_run("111");
+        stale.id = "run:discord:channel:777:heartbeat-stale".to_string();
+        stale.logical_session_id = "discord:channel:777".to_string();
+        stale.status = RunStatus::Running;
+        stale.started_at_epoch_ms = Some(1);
+        stale.queued_at_epoch_ms = 1;
+        run_store.upsert_run(&stale).expect("run should persist");
+
+        let session_store = crab_store::SessionStore::new(&state_root);
+        let mut session = sample_session(LaneState::Running, None);
+        session.id = "discord:channel:777".to_string();
+        session_store
+            .upsert_session(&session)
+            .expect("session should persist");
+
+        let discord = ScriptedDiscordIo::with_state(DiscordIoState::default());
+
+        // Advance clock to trigger heartbeat (interval is typically 120s).
+        struct AdvancingControl {
+            call: u64,
+            base: u64,
+        }
+        impl DaemonLoopControl for AdvancingControl {
+            fn now_epoch_ms(&mut self) -> CrabResult<u64> {
+                self.call += 1;
+                Ok(self.base + self.call * 120_000)
+            }
+            fn should_shutdown(&self) -> bool {
+                false
+            }
+            fn sleep_tick(&mut self, _: u64) -> CrabResult<()> {
+                Ok(())
+            }
+        }
+
+        let daemon_config = DaemonConfig {
+            bot_user_id: "999".to_string(),
+            tick_interval_ms: 1,
+            max_iterations: Some(3),
+        };
+
+        let mut control = AdvancingControl {
+            call: 0,
+            base: 1_739_173_200_000,
+        };
+
+        let stats =
+            super::run_daemon_loop_with_transport(&config, &daemon_config, discord, &mut control)
+                .expect("daemon loop with heartbeat should complete");
+
+        assert!(
+            stats.heartbeat_cycles >= 1,
+            "expected at least one heartbeat cycle"
         );
     }
 }

@@ -76,20 +76,8 @@ pub fn apply_operator_command(
     authorize_operator_command(actor)?;
     match command {
         OperatorCommand::SetBackend { backend } => {
-            let backend_changed = state.active_backend != *backend;
             state.active_backend = *backend;
             state.active_profile.backend = *backend;
-
-            if backend_changed {
-                state.active_physical_session_id = None;
-                return Ok(OperatorCommandOutcome {
-                    requires_rotation: true,
-                    user_message: format!(
-                        "backend set to {}; active physical session cleared",
-                        backend_label(*backend)
-                    ),
-                });
-            }
 
             Ok(OperatorCommandOutcome {
                 requires_rotation: false,

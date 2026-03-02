@@ -209,6 +209,17 @@ mod tests {
     }
 
     #[test]
+    fn empty_model_catalog_is_a_wildcard() {
+        let mut rules = catalog();
+        rules.claude.supported_models = Vec::new();
+
+        let input = profile(BackendKind::Claude, "any-model", ReasoningLevel::Medium);
+        let report = evaluate_profile_compatibility(&input, &rules)
+            .expect("compatibility check should succeed");
+        assert!(report.is_compatible());
+    }
+
+    #[test]
     fn empty_reasoning_catalog_is_a_wildcard() {
         let mut rules = catalog();
         rules.claude.supported_reasoning_levels = Vec::new();

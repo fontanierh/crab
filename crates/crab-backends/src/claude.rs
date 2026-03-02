@@ -433,12 +433,6 @@ impl Stream for ClaudeNormalizeStream {
 }
 
 fn ensure_claude_session(context: &'static str, session: &PhysicalSession) -> CrabResult<()> {
-    if session.backend != BackendKind::Claude {
-        return Err(CrabError::InvariantViolation {
-            context,
-            message: format!("expected Claude session backend, got {:?}", session.backend),
-        });
-    }
     ensure_non_empty_field(context, "backend_session_id", &session.backend_session_id)
 }
 
