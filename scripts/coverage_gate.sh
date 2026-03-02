@@ -65,12 +65,12 @@ if uncovered_lines == 0:
     )
     raise SystemExit(0)
 
-print(
-    "coverage-gate: failed " f"(uncovered lines={uncovered_lines})",
-    file=sys.stderr,
-)
+msg = "coverage-gate: failed " f"(uncovered lines={uncovered_lines})"
+print(msg)
+print(msg, file=sys.stderr)
 
 if uncovered_lines:
+    print("Top uncovered line locations:")
     print("Top uncovered line locations:", file=sys.stderr)
     rows = [
         (path, sorted(lines))
@@ -82,7 +82,9 @@ if uncovered_lines:
         preview = ", ".join(str(line) for line in lines[:20])
         if len(lines) > 20:
             preview += ", ..."
-        print(f"- {path}: {len(lines)} uncovered line(s) [{preview}]", file=sys.stderr)
+        detail = f"- {path}: {len(lines)} uncovered line(s) [{preview}]"
+        print(detail)
+        print(detail, file=sys.stderr)
 
 raise SystemExit(1)
 PY
