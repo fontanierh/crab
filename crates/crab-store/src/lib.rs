@@ -1325,10 +1325,10 @@ mod tests {
     fn sample_session(id: &str, last_activity: u64) -> LogicalSession {
         LogicalSession {
             id: id.to_string(),
-            active_backend: BackendKind::Codex,
+            active_backend: BackendKind::Claude,
             active_profile: InferenceProfile {
-                backend: BackendKind::Codex,
-                model: "gpt-5-codex".to_string(),
+                backend: BackendKind::Claude,
+                model: "claude-sonnet-4-20250514".to_string(),
                 reasoning_level: ReasoningLevel::Medium,
             },
             active_physical_session_id: Some("thread_1".to_string()),
@@ -1711,7 +1711,7 @@ mod tests {
 
         let mut missing_requested_model = sample_run("discord:channel:runs", "run-1");
         missing_requested_model.profile.requested_profile = Some(InferenceProfile {
-            backend: BackendKind::Codex,
+            backend: BackendKind::Claude,
             model: " ".to_string(),
             reasoning_level: ReasoningLevel::Low,
         });
@@ -3663,8 +3663,8 @@ mod tests {
             lane_id: Some(logical_session_id.to_string()),
             logical_session_id: logical_session_id.to_string(),
             physical_session_id: Some("physical-1".to_string()),
-            backend: Some(BackendKind::Codex),
-            resolved_model: Some("gpt-5-codex".to_string()),
+            backend: Some(BackendKind::Claude),
+            resolved_model: Some("claude-sonnet-4-20250514".to_string()),
             resolved_reasoning_level: Some("high".to_string()),
             profile_source: Some("fallback".to_string()),
             sequence,
@@ -3695,27 +3695,27 @@ mod tests {
     fn sample_run_profile_telemetry() -> RunProfileTelemetry {
         RunProfileTelemetry {
             requested_profile: Some(InferenceProfile {
-                backend: BackendKind::Codex,
-                model: "legacy-codex".to_string(),
+                backend: BackendKind::Claude,
+                model: "claude-haiku-4-5-20251001".to_string(),
                 reasoning_level: ReasoningLevel::XHigh,
             }),
             resolved_profile: InferenceProfile {
-                backend: BackendKind::Codex,
-                model: "gpt-5-codex".to_string(),
+                backend: BackendKind::Claude,
+                model: "claude-sonnet-4-20250514".to_string(),
                 reasoning_level: ReasoningLevel::High,
             },
             backend_source: ProfileValueSource::SessionProfile,
             model_source: ProfileValueSource::BackendDefault,
             reasoning_level_source: ProfileValueSource::TurnOverride,
             fallback_applied: true,
-            fallback_notes: vec!["legacy-codex replaced with gpt-5-codex".to_string()],
+            fallback_notes: vec!["claude-haiku-4-5-20251001 replaced with claude-sonnet-4-20250514".to_string()],
             sender_id: "123456789012345678".to_string(),
             sender_is_owner: true,
             resolved_owner_profile: Some(OwnerProfileMetadata {
                 machine_location: Some("Paris, France".to_string()),
                 machine_timezone: Some("Europe/Paris".to_string()),
-                default_backend: Some(BackendKind::Codex),
-                default_model: Some("gpt-5-codex".to_string()),
+                default_backend: Some(BackendKind::Claude),
+                default_model: Some("claude-sonnet-4-20250514".to_string()),
                 default_reasoning_level: Some(ReasoningLevel::High),
             }),
         }

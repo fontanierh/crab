@@ -2,11 +2,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crab_backends::{CodexAppServerProcess, CodexManager, OpenCodeManager, OpenCodeServerProcess};
 use crab_core::{
     config::{HeartbeatConfig, StartupReconciliationConfig},
     ensure_state_schema_version, CrabError, CrabResult, RuntimeConfig, StateSchemaMigrationOutcome,
-    WorkspaceGitConfig,
 };
 use crab_discord::{GatewayIngress, IdempotentDeliveryLedger};
 use crab_scheduler::LaneScheduler;
@@ -42,22 +40,8 @@ impl AppStateStores {
     }
 }
 
-pub struct AppBackendManagers<CP, OP>
-where
-    CP: CodexAppServerProcess,
-    OP: OpenCodeServerProcess,
-{
-    pub codex: CodexManager<CP>,
-    pub opencode: OpenCodeManager<OP>,
-}
-
-pub struct AppComposition<CP, OP>
-where
-    CP: CodexAppServerProcess,
-    OP: OpenCodeServerProcess,
-{
+pub struct AppComposition {
     pub startup: AppStartupOutcome,
-    pub workspace_git: WorkspaceGitConfig,
     pub startup_reconciliation_policy: StartupReconciliationConfig,
     pub heartbeat_policy: HeartbeatConfig,
     pub state_schema_migration: StateSchemaMigrationOutcome,
@@ -65,39 +49,21 @@ where
     pub scheduler: LaneScheduler,
     pub gateway_ingress: GatewayIngress,
     pub delivery_ledger: IdempotentDeliveryLedger,
-    pub backends: AppBackendManagers<CP, OP>,
 }
 
-pub fn compose_runtime_with_processes<CP, OP>(
+#[cfg(test)]
+pub(crate) fn compose_runtime(
     config: &RuntimeConfig,
     bot_user_id: &str,
-    codex_process: CP,
-    opencode_process: OP,
-) -> CrabResult<AppComposition<CP, OP>>
-where
-    CP: CodexAppServerProcess,
-    OP: OpenCodeServerProcess,
-{
-    compose_runtime_with_processes_and_queue_limit(
-        config,
-        bot_user_id,
-        codex_process,
-        opencode_process,
-        DEFAULT_LANE_QUEUE_LIMIT,
-    )
+) -> CrabResult<AppComposition> {
+    compose_runtime_with_queue_limit(config, bot_user_id, DEFAULT_LANE_QUEUE_LIMIT)
 }
 
-pub fn compose_runtime_with_processes_and_queue_limit<CP, OP>(
+pub fn compose_runtime_with_queue_limit(
     config: &RuntimeConfig,
     bot_user_id: &str,
-    codex_process: CP,
-    opencode_process: OP,
     lane_queue_limit: usize,
-) -> CrabResult<AppComposition<CP, OP>>
-where
-    CP: CodexAppServerProcess,
-    OP: OpenCodeServerProcess,
-{
+) -> CrabResult<AppComposition> {
     let startup = initialize_runtime_startup(config)?;
     let state_root = startup.workspace_root.join(STATE_DIRECTORY_NAME);
     ensure_state_root(&state_root)?;
@@ -115,14 +81,8 @@ where
     let gateway_ingress = GatewayIngress::new(bot_user_id.to_string())?;
     let delivery_ledger = IdempotentDeliveryLedger::new(state_stores.outbound_record_store.clone());
 
-    let backends = AppBackendManagers {
-        codex: CodexManager::new(codex_process),
-        opencode: OpenCodeManager::new(opencode_process),
-    };
-
     Ok(AppComposition {
         startup,
-        workspace_git: config.workspace_git.clone(),
         startup_reconciliation_policy: config.startup_reconciliation,
         heartbeat_policy: config.heartbeat,
         state_schema_migration,
@@ -130,7 +90,6 @@ where
         scheduler,
         gateway_ingress,
         delivery_ledger,
-        backends,
     })
 }
 
@@ -156,19 +115,13 @@ mod tests {
     use crab_scheduler::QueuedRun;
 
     use super::{
-        compose_runtime_with_processes, compose_runtime_with_processes_and_queue_limit,
-        AppComposition, DEFAULT_LANE_QUEUE_LIMIT,
+        compose_runtime, compose_runtime_with_queue_limit, AppComposition, DEFAULT_LANE_QUEUE_LIMIT,
     };
-    use crate::test_support::{
-        runtime_config_for_workspace_with_lanes, FakeCodexProcess, FakeOpenCodeProcess,
-        TempWorkspace,
-    };
+    use crate::test_support::{runtime_config_for_workspace_with_lanes, TempWorkspace};
 
-    fn compose_default(
-        workspace: &TempWorkspace,
-    ) -> crab_core::CrabResult<AppComposition<FakeCodexProcess, FakeOpenCodeProcess>> {
+    fn compose_default(workspace: &TempWorkspace) -> crab_core::CrabResult<AppComposition> {
         let config = runtime_config_for_workspace_with_lanes(&workspace.path, 3);
-        compose_runtime_with_processes(&config, "999", FakeCodexProcess, FakeOpenCodeProcess)
+        compose_runtime(&config, "999")
     }
 
     #[test]
@@ -222,54 +175,6 @@ mod tests {
             }
         );
 
-        let codex_handle = composition
-            .backends
-            .codex
-            .ensure_started()
-            .expect("codex manager should start");
-        assert_eq!(codex_handle.process_id, 101);
-        let codex_reuse = composition
-            .backends
-            .codex
-            .ensure_started()
-            .expect("codex manager should reuse healthy process");
-        assert_eq!(codex_reuse.process_id, 101);
-        let codex_restart = composition
-            .backends
-            .codex
-            .restart()
-            .expect("codex manager should restart process");
-        assert_eq!(codex_restart.process_id, 101);
-        composition
-            .backends
-            .codex
-            .stop()
-            .expect("codex manager stop should succeed");
-
-        let opencode_handle = composition
-            .backends
-            .opencode
-            .ensure_running()
-            .expect("opencode manager should start");
-        assert_eq!(opencode_handle.process_id, 202);
-        let opencode_reuse = composition
-            .backends
-            .opencode
-            .ensure_running()
-            .expect("opencode manager should reuse healthy process");
-        assert_eq!(opencode_reuse.process_id, 202);
-        let opencode_restart = composition
-            .backends
-            .opencode
-            .restart()
-            .expect("opencode manager should restart process");
-        assert_eq!(opencode_restart.process_id, 202);
-        composition
-            .backends
-            .opencode
-            .stop()
-            .expect("opencode manager stop should succeed");
-
         let attempt = DeliveryAttempt {
             logical_session_id: "discord:channel:777".to_string(),
             run_id: "run-1".to_string(),
@@ -306,13 +211,7 @@ mod tests {
         let workspace = TempWorkspace::new("composition", "validation");
         let config = runtime_config_for_workspace_with_lanes(&workspace.path, 3);
 
-        let queue_result = compose_runtime_with_processes_and_queue_limit(
-            &config,
-            "999",
-            FakeCodexProcess,
-            FakeOpenCodeProcess,
-            0,
-        );
+        let queue_result = compose_runtime_with_queue_limit(&config, "999", 0);
         let queue_error = queue_result.err().expect("queue limit 0 should fail");
         assert_eq!(
             queue_error,
@@ -323,8 +222,7 @@ mod tests {
             }
         );
 
-        let bot_result =
-            compose_runtime_with_processes(&config, " ", FakeCodexProcess, FakeOpenCodeProcess);
+        let bot_result = compose_runtime(&config, " ");
         let bot_error = bot_result.err().expect("blank bot id should fail");
         assert_eq!(
             bot_error,
@@ -342,8 +240,7 @@ mod tests {
             .expect("fixture file should be writable");
         let config = runtime_config_for_workspace_with_lanes(&workspace.path, 3);
 
-        let result =
-            compose_runtime_with_processes(&config, "999", FakeCodexProcess, FakeOpenCodeProcess);
+        let result = compose_runtime(&config, "999");
         let error = result.err().expect("workspace file root should fail");
         assert_eq!(
             error,
@@ -362,10 +259,9 @@ mod tests {
             .expect("state collision file should be writable");
         let config = runtime_config_for_workspace_with_lanes(&workspace.path, 3);
 
-        let error =
-            compose_runtime_with_processes(&config, "999", FakeCodexProcess, FakeOpenCodeProcess)
-                .err()
-                .expect("state root collision should fail");
+        let error = compose_runtime(&config, "999")
+            .err()
+            .expect("state root collision should fail");
         assert!(matches!(
             error,
             CrabError::InvariantViolation {

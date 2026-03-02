@@ -136,9 +136,9 @@ mod tests {
     use super::{apply_fallback_policy, FallbackPolicyMode};
     use crate::{InferenceProfile, ReasoningLevel, AUTO_MODEL_ALIAS};
 
-    fn codex_profile(model: &str, reasoning_level: ReasoningLevel) -> InferenceProfile {
+    fn claude_profile(model: &str, reasoning_level: ReasoningLevel) -> InferenceProfile {
         InferenceProfile {
-            backend: BackendKind::Codex,
+            backend: BackendKind::Claude,
             model: model.to_string(),
             reasoning_level,
         }
@@ -146,22 +146,20 @@ mod tests {
 
     fn policy_catalog() -> BackendCompatibilityCatalog {
         BackendCompatibilityCatalog {
-            claude: BackendCompatibilityRules::default(),
-            codex: BackendCompatibilityRules {
-                supported_models: vec!["gpt-5-codex".to_string()],
+            claude: BackendCompatibilityRules {
+                supported_models: vec!["claude-sonnet".to_string()],
                 supported_reasoning_levels: vec![
                     ReasoningLevel::Low,
                     ReasoningLevel::Medium,
                     ReasoningLevel::High,
                 ],
             },
-            opencode: BackendCompatibilityRules::default(),
         }
     }
 
     #[test]
     fn strict_mode_rejects_incompatible_profiles() {
-        let requested = codex_profile("unsupported-model", ReasoningLevel::XHigh);
+        let requested = claude_profile("unsupported-model", ReasoningLevel::XHigh);
         let decision =
             apply_fallback_policy(&requested, &policy_catalog(), FallbackPolicyMode::Strict)
                 .expect("policy evaluation should succeed");
@@ -177,7 +175,7 @@ mod tests {
 
     #[test]
     fn strict_mode_accepts_compatible_profiles() {
-        let requested = codex_profile("gpt-5-codex", ReasoningLevel::Medium);
+        let requested = claude_profile("claude-sonnet", ReasoningLevel::Medium);
         let decision =
             apply_fallback_policy(&requested, &policy_catalog(), FallbackPolicyMode::Strict)
                 .expect("policy evaluation should succeed");
@@ -192,7 +190,7 @@ mod tests {
 
     #[test]
     fn compatible_mode_applies_model_and_reasoning_fallbacks() {
-        let requested = codex_profile("legacy-model", ReasoningLevel::XHigh);
+        let requested = claude_profile("legacy-model", ReasoningLevel::XHigh);
         let decision = apply_fallback_policy(
             &requested,
             &policy_catalog(),
@@ -204,7 +202,7 @@ mod tests {
         assert!(!decision.rejected);
         assert!(decision.fallback_applied);
         assert_eq!(decision.issues.len(), 2);
-        assert_eq!(decision.effective_profile.model, "gpt-5-codex");
+        assert_eq!(decision.effective_profile.model, "claude-sonnet");
         assert_eq!(
             decision.effective_profile.reasoning_level,
             ReasoningLevel::High
@@ -215,9 +213,9 @@ mod tests {
     #[test]
     fn compatible_mode_breaks_nearest_reasoning_ties_toward_lower_level() {
         let mut catalog = policy_catalog();
-        catalog.codex.supported_reasoning_levels = vec![ReasoningLevel::Low, ReasoningLevel::High];
+        catalog.claude.supported_reasoning_levels = vec![ReasoningLevel::Low, ReasoningLevel::High];
 
-        let requested = codex_profile("gpt-5-codex", ReasoningLevel::Medium);
+        let requested = claude_profile("claude-sonnet", ReasoningLevel::Medium);
         let decision = apply_fallback_policy(&requested, &catalog, FallbackPolicyMode::Compatible)
             .expect("policy evaluation should succeed");
 
@@ -232,9 +230,9 @@ mod tests {
     #[test]
     fn compatible_mode_can_shift_from_none_to_minimal() {
         let mut catalog = policy_catalog();
-        catalog.codex.supported_reasoning_levels = vec![ReasoningLevel::Minimal];
+        catalog.claude.supported_reasoning_levels = vec![ReasoningLevel::Minimal];
 
-        let requested = codex_profile("gpt-5-codex", ReasoningLevel::None);
+        let requested = claude_profile("claude-sonnet", ReasoningLevel::None);
         let decision = apply_fallback_policy(&requested, &catalog, FallbackPolicyMode::Compatible)
             .expect("policy evaluation should succeed");
 
@@ -248,7 +246,7 @@ mod tests {
 
     #[test]
     fn compatible_mode_treats_auto_model_as_compatible() {
-        let requested = codex_profile(AUTO_MODEL_ALIAS, ReasoningLevel::High);
+        let requested = claude_profile(AUTO_MODEL_ALIAS, ReasoningLevel::High);
         let decision = apply_fallback_policy(
             &requested,
             &policy_catalog(),
@@ -265,7 +263,7 @@ mod tests {
 
     #[test]
     fn invalid_profile_input_propagates_validation_errors() {
-        let requested = codex_profile(" ", ReasoningLevel::Low);
+        let requested = claude_profile(" ", ReasoningLevel::Low);
         let error =
             apply_fallback_policy(&requested, &policy_catalog(), FallbackPolicyMode::Strict)
                 .expect_err("blank model should fail");

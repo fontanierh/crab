@@ -198,8 +198,6 @@ fn render_messaging_semantics_section() -> String {
 fn backend_token(backend: BackendKind) -> &'static str {
     match backend {
         BackendKind::Claude => "claude",
-        BackendKind::Codex => "codex",
-        BackendKind::OpenCode => "opencode",
     }
 }
 
@@ -244,12 +242,12 @@ mod tests {
                 expected_for("claude", "claude-sonnet-4", "high"),
             ),
             (
-                input_for(BackendKind::Codex, "gpt-5-codex", ReasoningLevel::Medium),
-                expected_for("codex", "gpt-5-codex", "medium"),
+                input_for(BackendKind::Claude, "claude-opus-4", ReasoningLevel::Medium),
+                expected_for("claude", "claude-opus-4", "medium"),
             ),
             (
-                input_for(BackendKind::OpenCode, "qwen2.5-coder", ReasoningLevel::Low),
-                expected_for("opencode", "qwen2.5-coder", "low"),
+                input_for(BackendKind::Claude, "claude-haiku-3-5", ReasoningLevel::Low),
+                expected_for("claude", "claude-haiku-3-5", "low"),
             ),
         ];
 
@@ -261,7 +259,7 @@ mod tests {
 
     #[test]
     fn owner_profile_section_includes_owner_metadata_when_present() {
-        let mut input = input_for(BackendKind::Codex, "gpt-5-codex", ReasoningLevel::High);
+        let mut input = input_for(BackendKind::Claude, "claude-sonnet-4", ReasoningLevel::High);
         input.sender_is_owner = true;
         let mut owner_profile = OwnerProfileMetadata {
             machine_location: None,
@@ -272,8 +270,8 @@ mod tests {
         };
         owner_profile.machine_location = Some("Paris, France".to_string());
         owner_profile.machine_timezone = Some("Europe/Paris".to_string());
-        owner_profile.default_backend = Some(BackendKind::Codex);
-        owner_profile.default_model = Some("gpt-5-codex".to_string());
+        owner_profile.default_backend = Some(BackendKind::Claude);
+        owner_profile.default_model = Some("claude-sonnet-4".to_string());
         owner_profile.default_reasoning_level = Some(ReasoningLevel::High);
         input.owner_profile = Some(owner_profile);
 
@@ -281,8 +279,8 @@ mod tests {
         assert!(rendered.contains("- sender_is_owner: true"));
         assert!(rendered.contains("- owner.machine_location: Paris, France"));
         assert!(rendered.contains("- owner.machine_timezone: Europe/Paris"));
-        assert!(rendered.contains("- owner.default_backend: codex"));
-        assert!(rendered.contains("- owner.default_model: gpt-5-codex"));
+        assert!(rendered.contains("- owner.default_backend: claude"));
+        assert!(rendered.contains("- owner.default_model: claude-sonnet-4"));
         assert!(rendered.contains("- owner.default_reasoning_level: high"));
     }
 
@@ -323,7 +321,7 @@ mod tests {
 
     #[test]
     fn citation_mode_off_hides_citations_in_prompt_contract() {
-        let mut input = input_for(BackendKind::Codex, "gpt-5-codex", ReasoningLevel::Medium);
+        let mut input = input_for(BackendKind::Claude, "claude-sonnet-4", ReasoningLevel::Medium);
         input.memory_citation_mode = MemoryCitationMode::Off;
 
         let rendered = compile_prompt_contract(&input).expect("prompt contract should compile");
@@ -337,7 +335,7 @@ mod tests {
 
     #[test]
     fn citation_mode_on_for_shared_context_still_requires_citations() {
-        let mut input = input_for(BackendKind::Codex, "gpt-5-codex", ReasoningLevel::Medium);
+        let mut input = input_for(BackendKind::Claude, "claude-sonnet-4", ReasoningLevel::Medium);
         input.memory_citation_mode = MemoryCitationMode::On;
         input.memory_recall_surface = TrustSurface::SharedDiscord;
 
@@ -375,7 +373,7 @@ mod tests {
 
     #[test]
     fn compiler_rejects_blank_required_inputs() {
-        let mut blank_model = input_for(BackendKind::Codex, "gpt-5-codex", ReasoningLevel::Medium);
+        let mut blank_model = input_for(BackendKind::Claude, "claude-sonnet-4", ReasoningLevel::Medium);
         blank_model.model = " ".to_string();
         let model_error =
             compile_prompt_contract(&blank_model).expect_err("blank model should fail");
@@ -387,7 +385,7 @@ mod tests {
             }
         );
 
-        let mut blank_sender = input_for(BackendKind::Codex, "gpt-5-codex", ReasoningLevel::Medium);
+        let mut blank_sender = input_for(BackendKind::Claude, "claude-sonnet-4", ReasoningLevel::Medium);
         blank_sender.sender_id = " ".to_string();
         let sender_error =
             compile_prompt_contract(&blank_sender).expect_err("blank sender id should fail");
@@ -403,7 +401,7 @@ mod tests {
     #[test]
     fn compiler_rejects_blank_owner_profile_fields() {
         let mut blank_location =
-            input_for(BackendKind::Codex, "gpt-5-codex", ReasoningLevel::Medium);
+            input_for(BackendKind::Claude, "claude-sonnet-4", ReasoningLevel::Medium);
         blank_location.owner_profile = Some(OwnerProfileMetadata {
             machine_location: Some(" ".to_string()),
             machine_timezone: None,
@@ -422,7 +420,7 @@ mod tests {
         );
 
         let mut blank_timezone =
-            input_for(BackendKind::Codex, "gpt-5-codex", ReasoningLevel::Medium);
+            input_for(BackendKind::Claude, "claude-sonnet-4", ReasoningLevel::Medium);
         blank_timezone.owner_profile = Some(OwnerProfileMetadata {
             machine_location: None,
             machine_timezone: Some(" ".to_string()),
@@ -440,7 +438,7 @@ mod tests {
             }
         );
 
-        let mut blank_model = input_for(BackendKind::Codex, "gpt-5-codex", ReasoningLevel::Medium);
+        let mut blank_model = input_for(BackendKind::Claude, "claude-sonnet-4", ReasoningLevel::Medium);
         blank_model.owner_profile = Some(OwnerProfileMetadata {
             machine_location: None,
             machine_timezone: None,
@@ -461,7 +459,7 @@ mod tests {
 
     #[test]
     fn owner_profile_optional_fields_render_none_tokens_when_missing() {
-        let mut input = input_for(BackendKind::OpenCode, "qwen2.5-coder", ReasoningLevel::Low);
+        let mut input = input_for(BackendKind::Claude, "claude-sonnet-4", ReasoningLevel::Low);
         input.sender_is_owner = true;
         input.owner_profile = Some(OwnerProfileMetadata {
             machine_location: None,

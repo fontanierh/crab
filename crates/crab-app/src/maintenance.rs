@@ -1,6 +1,5 @@
 use std::collections::BTreeMap;
 
-use crab_backends::{CodexAppServerProcess, OpenCodeServerProcess};
 use crab_core::{
     execute_heartbeat_cycle, execute_startup_reconciliation, ActiveRunHeartbeat, BackendHeartbeat,
     BackendKind, CrabError, CrabResult, DispatcherHeartbeat, EventEnvelope, EventKind, EventSource,
@@ -8,9 +7,7 @@ use crab_core::{
     StartupReconciliationOutcome, StartupReconciliationRuntime,
 };
 
-use crate::{
-    compose_runtime_with_processes_and_queue_limit, AppComposition, DEFAULT_LANE_QUEUE_LIMIT,
-};
+use crate::{compose_runtime_with_queue_limit, AppComposition, DEFAULT_LANE_QUEUE_LIMIT};
 
 const STARTUP_GRACE_PERIOD_KEY: &str = "CRAB_STARTUP_RECONCILIATION_GRACE_PERIOD_SECS";
 const HEARTBEAT_INTERVAL_KEY: &str = "CRAB_HEARTBEAT_INTERVAL_SECS";
@@ -91,56 +88,28 @@ impl HeartbeatLoopState {
     }
 }
 
-pub struct BootRuntime<CP, OP>
-where
-    CP: CodexAppServerProcess,
-    OP: OpenCodeServerProcess,
-{
-    pub composition: AppComposition<CP, OP>,
+pub struct BootRuntime {
+    pub composition: AppComposition,
     pub startup_reconciliation: StartupReconciliationOutcome,
     pub heartbeat_loop_state: HeartbeatLoopState,
 }
 
-pub fn boot_runtime_with_processes<CP, OP>(
+pub fn boot_runtime(
     config: &crab_core::RuntimeConfig,
     bot_user_id: &str,
-    codex_process: CP,
-    opencode_process: OP,
     now_epoch_ms: u64,
-) -> CrabResult<BootRuntime<CP, OP>>
-where
-    CP: CodexAppServerProcess,
-    OP: OpenCodeServerProcess,
-{
-    boot_runtime_with_processes_and_queue_limit(
-        config,
-        bot_user_id,
-        codex_process,
-        opencode_process,
-        DEFAULT_LANE_QUEUE_LIMIT,
-        now_epoch_ms,
-    )
+) -> CrabResult<BootRuntime> {
+    boot_runtime_with_queue_limit(config, bot_user_id, DEFAULT_LANE_QUEUE_LIMIT, now_epoch_ms)
 }
 
-pub fn boot_runtime_with_processes_and_queue_limit<CP, OP>(
+pub fn boot_runtime_with_queue_limit(
     config: &crab_core::RuntimeConfig,
     bot_user_id: &str,
-    codex_process: CP,
-    opencode_process: OP,
     lane_queue_limit: usize,
     now_epoch_ms: u64,
-) -> CrabResult<BootRuntime<CP, OP>>
-where
-    CP: CodexAppServerProcess,
-    OP: OpenCodeServerProcess,
-{
-    let mut composition = compose_runtime_with_processes_and_queue_limit(
-        config,
-        bot_user_id,
-        codex_process,
-        opencode_process,
-        lane_queue_limit,
-    )?;
+) -> CrabResult<BootRuntime> {
+    let mut composition =
+        compose_runtime_with_queue_limit(config, bot_user_id, lane_queue_limit)?;
     let startup_reconciliation =
         run_startup_reconciliation_on_boot(&mut composition, now_epoch_ms)?;
     let heartbeat_loop_state =
@@ -153,14 +122,10 @@ where
     })
 }
 
-pub fn run_startup_reconciliation_on_boot<CP, OP>(
-    composition: &mut AppComposition<CP, OP>,
+pub fn run_startup_reconciliation_on_boot(
+    composition: &mut AppComposition,
     now_epoch_ms: u64,
-) -> CrabResult<StartupReconciliationOutcome>
-where
-    CP: CodexAppServerProcess,
-    OP: OpenCodeServerProcess,
-{
+) -> CrabResult<StartupReconciliationOutcome> {
     let grace_period_ms = seconds_to_millis(
         STARTUP_GRACE_PERIOD_KEY,
         composition.startup_reconciliation_policy.grace_period_secs,
@@ -169,15 +134,11 @@ where
     execute_startup_reconciliation(&mut runtime, now_epoch_ms, grace_period_ms)
 }
 
-pub fn run_heartbeat_if_due<CP, OP>(
-    composition: &mut AppComposition<CP, OP>,
+pub fn run_heartbeat_if_due(
+    composition: &mut AppComposition,
     loop_state: &mut HeartbeatLoopState,
     now_epoch_ms: u64,
-) -> CrabResult<Option<HeartbeatOutcome>>
-where
-    CP: CodexAppServerProcess,
-    OP: OpenCodeServerProcess,
-{
+) -> CrabResult<Option<HeartbeatOutcome>> {
     if now_epoch_ms == 0 {
         return Err(CrabError::InvariantViolation {
             context: "runtime_heartbeat_tick",
@@ -205,22 +166,12 @@ where
     Ok(Some(outcome))
 }
 
-struct StartupRuntimeAdapter<'a, CP, OP>
-where
-    CP: CodexAppServerProcess,
-    OP: OpenCodeServerProcess,
-{
-    composition: &'a mut AppComposition<CP, OP>,
+struct StartupRuntimeAdapter<'a> {
+    composition: &'a mut AppComposition,
 }
 
-impl<CP, OP> StartupReconciliationRuntime for StartupRuntimeAdapter<'_, CP, OP>
-where
-    CP: CodexAppServerProcess,
-    OP: OpenCodeServerProcess,
-{
+impl StartupReconciliationRuntime for StartupRuntimeAdapter<'_> {
     fn restart_backend_managers(&mut self) -> CrabResult<()> {
-        let _ = self.composition.backends.codex.restart()?;
-        let _ = self.composition.backends.opencode.restart()?;
         Ok(())
     }
 
@@ -300,21 +251,13 @@ where
     }
 }
 
-struct HeartbeatRuntimeAdapter<'a, CP, OP>
-where
-    CP: CodexAppServerProcess,
-    OP: OpenCodeServerProcess,
-{
-    composition: &'a mut AppComposition<CP, OP>,
+struct HeartbeatRuntimeAdapter<'a> {
+    composition: &'a mut AppComposition,
     now_epoch_ms: u64,
     last_dispatch_at_epoch_ms: &'a mut u64,
 }
 
-impl<CP, OP> HeartbeatRuntime for HeartbeatRuntimeAdapter<'_, CP, OP>
-where
-    CP: CodexAppServerProcess,
-    OP: OpenCodeServerProcess,
-{
+impl HeartbeatRuntime for HeartbeatRuntimeAdapter<'_> {
     fn list_active_runs(&self) -> CrabResult<Vec<ActiveRunHeartbeat>> {
         let sessions = load_sessions(&self.composition.state_stores.session_store)?;
         let mut active = Vec::new();
@@ -495,41 +438,15 @@ where
     }
 
     fn list_backend_heartbeats(&self) -> CrabResult<Vec<BackendHeartbeat>> {
-        let codex_state = self.composition.backends.codex.state();
-        let opencode_state = self.composition.backends.opencode.state();
-
-        Ok(vec![
-            BackendHeartbeat {
-                backend: BackendKind::Codex,
-                is_persistent: true,
-                is_healthy: codex_state.active_process_id.is_some(),
-                last_healthy_at_epoch_ms: codex_state.active_started_at_epoch_ms.unwrap_or(0),
-            },
-            BackendHeartbeat {
-                backend: BackendKind::OpenCode,
-                is_persistent: true,
-                is_healthy: opencode_state.active_process_id.is_some(),
-                last_healthy_at_epoch_ms: opencode_state.active_started_at_epoch_ms.unwrap_or(0),
-            },
-            BackendHeartbeat {
-                backend: BackendKind::Claude,
-                is_persistent: false,
-                is_healthy: true,
-                last_healthy_at_epoch_ms: self.now_epoch_ms,
-            },
-        ])
+        Ok(vec![BackendHeartbeat {
+            backend: BackendKind::Claude,
+            is_persistent: false,
+            is_healthy: true,
+            last_healthy_at_epoch_ms: self.now_epoch_ms,
+        }])
     }
 
-    fn restart_backend_manager(&mut self, backend: BackendKind) -> CrabResult<()> {
-        match backend {
-            BackendKind::Codex => {
-                let _ = self.composition.backends.codex.restart()?;
-            }
-            BackendKind::OpenCode => {
-                let _ = self.composition.backends.opencode.restart()?;
-            }
-            BackendKind::Claude => {}
-        }
+    fn restart_backend_manager(&mut self, _backend: BackendKind) -> CrabResult<()> {
         Ok(())
     }
 
@@ -704,35 +621,28 @@ fn append_runtime_event(
 
 #[cfg(test)]
 mod tests {
-    use std::collections::{BTreeMap, HashMap, VecDeque};
+    use std::collections::{BTreeMap, HashMap};
     use std::fs;
     use std::path::{Path, PathBuf};
-    use std::sync::{Arc, Mutex};
 
-    use crab_backends::{
-        CodexAppServerProcess, CodexProcessHandle, OpenCodeServerHandle, OpenCodeServerProcess,
-    };
     use crab_core::{
-        BackendKind, CrabError, CrabResult, HeartbeatRuntime, InferenceProfile, LaneState,
+        BackendKind, CrabError, HeartbeatRuntime, InferenceProfile, LaneState,
         OwnerProfileMetadata, ProfileValueSource, ReasoningLevel, Run, RunProfileTelemetry,
         RunStatus, StartupReconciliationRuntime, TokenAccounting,
     };
     use crab_scheduler::QueuedRun;
 
     use super::{
-        boot_runtime_with_processes, run_heartbeat_if_due, run_startup_reconciliation_on_boot,
-        seconds_to_millis, HeartbeatLoopState,
+        boot_runtime, run_heartbeat_if_due, run_startup_reconciliation_on_boot, seconds_to_millis,
+        HeartbeatLoopState,
     };
-    use crate::compose_runtime_with_processes;
-    use crate::test_support::{
-        runtime_config_for_workspace_with_lanes, FakeCodexProcess, FakeOpenCodeProcess,
-        TempWorkspace,
-    };
+    use crate::composition::compose_runtime;
+    use crate::test_support::{runtime_config_for_workspace_with_lanes, TempWorkspace};
 
     fn sample_profile() -> InferenceProfile {
         InferenceProfile {
-            backend: BackendKind::Codex,
-            model: "gpt-5-codex".to_string(),
+            backend: BackendKind::Claude,
+            model: "claude-sonnet-4-5".to_string(),
             reasoning_level: ReasoningLevel::Medium,
         }
     }
@@ -751,8 +661,8 @@ mod tests {
             resolved_owner_profile: Some(OwnerProfileMetadata {
                 machine_location: Some("Paris, France".to_string()),
                 machine_timezone: Some("Europe/Paris".to_string()),
-                default_backend: Some(BackendKind::Codex),
-                default_model: Some("gpt-5-codex".to_string()),
+                default_backend: Some(BackendKind::Claude),
+                default_model: Some("claude-sonnet-4-5".to_string()),
                 default_reasoning_level: Some(ReasoningLevel::Medium),
             }),
         }
@@ -771,7 +681,7 @@ mod tests {
     fn running_session(logical_session_id: &str, now_epoch_ms: u64) -> crab_core::LogicalSession {
         crab_core::LogicalSession {
             id: logical_session_id.to_string(),
-            active_backend: BackendKind::Codex,
+            active_backend: BackendKind::Claude,
             active_profile: sample_profile(),
             active_physical_session_id: Some("physical-1".to_string()),
             last_successful_checkpoint_id: None,
@@ -795,78 +705,6 @@ mod tests {
             queued_at_epoch_ms: started_at_epoch_ms.saturating_sub(500),
             started_at_epoch_ms: Some(started_at_epoch_ms),
             completed_at_epoch_ms: None,
-        }
-    }
-
-    #[derive(Debug, Clone)]
-    struct ScriptedCodexProcess {
-        scripted_spawns: Arc<Mutex<VecDeque<CrabResult<CodexProcessHandle>>>>,
-    }
-
-    impl ScriptedCodexProcess {
-        fn from_spawns(spawns: Vec<CrabResult<CodexProcessHandle>>) -> Self {
-            Self {
-                scripted_spawns: Arc::new(Mutex::new(VecDeque::from(spawns))),
-            }
-        }
-    }
-
-    impl CodexAppServerProcess for ScriptedCodexProcess {
-        fn spawn_app_server(&self) -> CrabResult<CodexProcessHandle> {
-            self.scripted_spawns
-                .lock()
-                .expect("lock should succeed")
-                .pop_front()
-                .unwrap_or_else(|| {
-                    Err(CrabError::InvariantViolation {
-                        context: "scripted_codex_spawn",
-                        message: "no scripted codex spawn remaining".to_string(),
-                    })
-                })
-        }
-
-        fn is_healthy(&self, _handle: &CodexProcessHandle) -> bool {
-            true
-        }
-
-        fn terminate_app_server(&self, _handle: &CodexProcessHandle) -> CrabResult<()> {
-            Ok(())
-        }
-    }
-
-    #[derive(Debug, Clone)]
-    struct ScriptedOpenCodeProcess {
-        scripted_spawns: Arc<Mutex<VecDeque<CrabResult<OpenCodeServerHandle>>>>,
-    }
-
-    impl ScriptedOpenCodeProcess {
-        fn from_spawns(spawns: Vec<CrabResult<OpenCodeServerHandle>>) -> Self {
-            Self {
-                scripted_spawns: Arc::new(Mutex::new(VecDeque::from(spawns))),
-            }
-        }
-    }
-
-    impl OpenCodeServerProcess for ScriptedOpenCodeProcess {
-        fn spawn_server(&self) -> CrabResult<OpenCodeServerHandle> {
-            self.scripted_spawns
-                .lock()
-                .expect("lock should succeed")
-                .pop_front()
-                .unwrap_or_else(|| {
-                    Err(CrabError::InvariantViolation {
-                        context: "scripted_opencode_spawn",
-                        message: "no scripted opencode spawn remaining".to_string(),
-                    })
-                })
-        }
-
-        fn is_server_healthy(&self, _handle: &OpenCodeServerHandle) -> bool {
-            true
-        }
-
-        fn terminate_server(&self, _handle: &OpenCodeServerHandle) -> CrabResult<()> {
-            Ok(())
         }
     }
 
@@ -944,50 +782,6 @@ mod tests {
 
     #[cfg(not(unix))]
     fn set_unix_mode(_path: &Path, _mode: u32) {}
-
-    #[test]
-    fn scripted_process_helpers_cover_depletion_and_noop_paths() {
-        let codex = ScriptedCodexProcess::from_spawns(Vec::new());
-        let codex_error = codex
-            .spawn_app_server()
-            .expect_err("empty scripted codex spawn queue should fail");
-        assert_eq!(
-            codex_error,
-            CrabError::InvariantViolation {
-                context: "scripted_codex_spawn",
-                message: "no scripted codex spawn remaining".to_string(),
-            }
-        );
-        let codex_handle = CodexProcessHandle {
-            process_id: 123,
-            started_at_epoch_ms: 1_739_173_400_000,
-        };
-        assert!(codex.is_healthy(&codex_handle));
-        codex
-            .terminate_app_server(&codex_handle)
-            .expect("terminate should be a no-op");
-
-        let opencode = ScriptedOpenCodeProcess::from_spawns(Vec::new());
-        let opencode_error = opencode
-            .spawn_server()
-            .expect_err("empty scripted opencode spawn queue should fail");
-        assert_eq!(
-            opencode_error,
-            CrabError::InvariantViolation {
-                context: "scripted_opencode_spawn",
-                message: "no scripted opencode spawn remaining".to_string(),
-            }
-        );
-        let opencode_handle = OpenCodeServerHandle {
-            process_id: 456,
-            started_at_epoch_ms: 1_739_173_400_001,
-            server_base_url: "http://127.0.0.1:4456".to_string(),
-        };
-        assert!(opencode.is_server_healthy(&opencode_handle));
-        opencode
-            .terminate_server(&opencode_handle)
-            .expect("terminate should be a no-op");
-    }
 
     #[test]
     fn heartbeat_loop_state_validates_inputs_and_tracks_dispatch() {
@@ -1077,7 +871,7 @@ mod tests {
         let workspace = TempWorkspace::new("maintenance", "heartbeat-schedule-overflow");
         let config = runtime_config_for_workspace_with_lanes(&workspace.path, 1);
         let mut composition =
-            compose_runtime_with_processes(&config, "999", FakeCodexProcess, FakeOpenCodeProcess)
+            compose_runtime(&config, "999")
                 .expect("composition should succeed");
         let mut runtime_state = HeartbeatLoopState {
             heartbeat_interval_ms: 1,
@@ -1100,7 +894,7 @@ mod tests {
         let workspace = TempWorkspace::new("maintenance", "startup-reconciliation");
         let config = runtime_config_for_workspace_with_lanes(&workspace.path, 2);
         let mut composition =
-            compose_runtime_with_processes(&config, "999", FakeCodexProcess, FakeOpenCodeProcess)
+            compose_runtime(&config, "999")
                 .expect("composition should succeed");
 
         let logical_session_id = "discord:channel:777";
@@ -1169,7 +963,7 @@ mod tests {
         let workspace = TempWorkspace::new("maintenance", "startup-repair-orphan-physical");
         let config = runtime_config_for_workspace_with_lanes(&workspace.path, 1);
         let mut composition =
-            compose_runtime_with_processes(&config, "999", FakeCodexProcess, FakeOpenCodeProcess)
+            compose_runtime(&config, "999")
                 .expect("composition should succeed");
 
         let logical_session_id = "discord:channel:orphan";
@@ -1180,7 +974,7 @@ mod tests {
             .session_store
             .upsert_session(&crab_core::LogicalSession {
                 id: logical_session_id.to_string(),
-                active_backend: BackendKind::Codex,
+                active_backend: BackendKind::Claude,
                 active_profile: sample_profile(),
                 active_physical_session_id: Some("physical-orphan".to_string()),
                 last_successful_checkpoint_id: None,
@@ -1257,7 +1051,7 @@ mod tests {
         let workspace = TempWorkspace::new("maintenance", "startup-overflow");
         let config = runtime_config_for_workspace_with_lanes(&workspace.path, 1);
         let mut composition =
-            compose_runtime_with_processes(&config, "999", FakeCodexProcess, FakeOpenCodeProcess)
+            compose_runtime(&config, "999")
                 .expect("composition should succeed");
         composition.startup_reconciliation_policy.grace_period_secs = u64::MAX;
 
@@ -1278,14 +1072,7 @@ mod tests {
         let workspace = TempWorkspace::new("maintenance", "boot-runtime");
         let config = runtime_config_for_workspace_with_lanes(&workspace.path, 2);
 
-        let booted = boot_runtime_with_processes(
-            &config,
-            "999",
-            FakeCodexProcess,
-            FakeOpenCodeProcess,
-            1_739_173_300_000,
-        )
-        .expect("boot should succeed");
+        let booted = boot_runtime(&config, "999", 1_739_173_300_000).expect("boot should succeed");
 
         assert!(booted.startup_reconciliation.recovered_runs.is_empty());
         assert!(booted
@@ -1307,7 +1094,7 @@ mod tests {
         let workspace = TempWorkspace::new("maintenance", "heartbeat-due");
         let config = runtime_config_for_workspace_with_lanes(&workspace.path, 2);
         let mut composition =
-            compose_runtime_with_processes(&config, "999", FakeCodexProcess, FakeOpenCodeProcess)
+            compose_runtime(&config, "999")
                 .expect("composition should succeed");
         let mut state =
             HeartbeatLoopState::new(10, 1_739_173_300_000).expect("state should initialize");
@@ -1320,8 +1107,7 @@ mod tests {
         let first = run_heartbeat_if_due(&mut composition, &mut state, 1_739_173_331_000)
             .expect("due heartbeat should run")
             .expect("due heartbeat should produce outcome");
-        assert!(first.restarted_backends.contains(&BackendKind::Codex));
-        assert!(first.restarted_backends.contains(&BackendKind::OpenCode));
+        assert!(first.restarted_backends.is_empty());
         assert_eq!(state.next_heartbeat_due_at_epoch_ms(), 1_739_173_340_000);
 
         let second = run_heartbeat_if_due(&mut composition, &mut state, 1_739_173_350_000)
@@ -1346,7 +1132,7 @@ mod tests {
         let workspace = TempWorkspace::new("maintenance", "heartbeat-escalation");
         let config = runtime_config_for_workspace_with_lanes(&workspace.path, 1);
         let mut composition =
-            compose_runtime_with_processes(&config, "999", FakeCodexProcess, FakeOpenCodeProcess)
+            compose_runtime(&config, "999")
                 .expect("composition should succeed");
 
         let logical_session_id = "discord:channel:escalation";
@@ -1426,7 +1212,7 @@ mod tests {
         let workspace = TempWorkspace::new("maintenance", "heartbeat-dispatcher");
         let config = runtime_config_for_workspace_with_lanes(&workspace.path, 2);
         let mut composition =
-            compose_runtime_with_processes(&config, "999", FakeCodexProcess, FakeOpenCodeProcess)
+            compose_runtime(&config, "999")
                 .expect("composition should succeed");
 
         composition
@@ -1454,7 +1240,7 @@ mod tests {
         let workspace = TempWorkspace::new("maintenance", "heartbeat-invariants");
         let config = runtime_config_for_workspace_with_lanes(&workspace.path, 1);
         let mut composition =
-            compose_runtime_with_processes(&config, "999", FakeCodexProcess, FakeOpenCodeProcess)
+            compose_runtime(&config, "999")
                 .expect("composition should succeed");
 
         let logical_session_id = "discord:channel:broken";
@@ -1484,7 +1270,7 @@ mod tests {
         let workspace = TempWorkspace::new("maintenance", "startup-repair-missing");
         let config = runtime_config_for_workspace_with_lanes(&workspace.path, 1);
         let mut composition =
-            compose_runtime_with_processes(&config, "999", FakeCodexProcess, FakeOpenCodeProcess)
+            compose_runtime(&config, "999")
                 .expect("composition should succeed");
 
         let mut runtime = super::StartupRuntimeAdapter {
@@ -1507,7 +1293,7 @@ mod tests {
         let workspace = TempWorkspace::new("maintenance", "startup-repair-active-missing");
         let config = runtime_config_for_workspace_with_lanes(&workspace.path, 1);
         let mut composition =
-            compose_runtime_with_processes(&config, "999", FakeCodexProcess, FakeOpenCodeProcess)
+            compose_runtime(&config, "999")
                 .expect("composition should succeed");
         let mut runtime = super::StartupRuntimeAdapter {
             composition: &mut composition,
@@ -1529,13 +1315,8 @@ mod tests {
         {
             let workspace = TempWorkspace::new("maintenance", "startup-restart-backends");
             let config = runtime_config_for_workspace_with_lanes(&workspace.path, 1);
-            let mut composition = compose_runtime_with_processes(
-                &config,
-                "999",
-                FakeCodexProcess,
-                FakeOpenCodeProcess,
-            )
-            .expect("composition should succeed");
+            let mut composition = compose_runtime(&config, "999")
+                .expect("composition should succeed");
             let mut runtime = super::StartupRuntimeAdapter {
                 composition: &mut composition,
             };
@@ -1546,13 +1327,8 @@ mod tests {
         {
             let workspace = TempWorkspace::new("maintenance", "startup-repair-session-store-io");
             let config = runtime_config_for_workspace_with_lanes(&workspace.path, 1);
-            let mut composition = compose_runtime_with_processes(
-                &config,
-                "999",
-                FakeCodexProcess,
-                FakeOpenCodeProcess,
-            )
-            .expect("composition should succeed");
+            let mut composition = compose_runtime(&config, "999")
+                .expect("composition should succeed");
             let sessions_dir = state_root(&workspace).join("sessions");
             replace_path_with_file(&sessions_dir);
 
@@ -1570,13 +1346,8 @@ mod tests {
         {
             let workspace = TempWorkspace::new("maintenance", "startup-repair-queued-run-io");
             let config = runtime_config_for_workspace_with_lanes(&workspace.path, 1);
-            let mut composition = compose_runtime_with_processes(
-                &config,
-                "999",
-                FakeCodexProcess,
-                FakeOpenCodeProcess,
-            )
-            .expect("composition should succeed");
+            let mut composition = compose_runtime(&config, "999")
+                .expect("composition should succeed");
             let logical_session_id = "discord:channel:queued-run-io";
             composition
                 .state_stores
@@ -1600,115 +1371,11 @@ mod tests {
     }
 
     #[test]
-    fn startup_runtime_restart_backend_managers_propagates_restart_errors() {
-        {
-            let workspace = TempWorkspace::new("maintenance", "startup-restart-codex-error");
-            let config = runtime_config_for_workspace_with_lanes(&workspace.path, 1);
-            let codex_process = ScriptedCodexProcess::from_spawns(vec![
-                Ok(CodexProcessHandle {
-                    process_id: 701,
-                    started_at_epoch_ms: 1_739_173_200_000,
-                }),
-                Err(CrabError::InvariantViolation {
-                    context: "scripted_codex_restart",
-                    message: "forced codex restart failure".to_string(),
-                }),
-            ]);
-            let mut composition =
-                compose_runtime_with_processes(&config, "999", codex_process, FakeOpenCodeProcess)
-                    .expect("composition should succeed");
-
-            let mut runtime = super::StartupRuntimeAdapter {
-                composition: &mut composition,
-            };
-            StartupReconciliationRuntime::restart_backend_managers(&mut runtime)
-                .expect("first restart should succeed");
-            let error = StartupReconciliationRuntime::restart_backend_managers(&mut runtime)
-                .expect_err("codex restart failure should surface");
-            assert_eq!(
-                error,
-                CrabError::InvariantViolation {
-                    context: "scripted_codex_restart",
-                    message: "forced codex restart failure".to_string(),
-                }
-            );
-        }
-
-        {
-            let workspace = TempWorkspace::new("maintenance", "startup-restart-opencode-error");
-            let config = runtime_config_for_workspace_with_lanes(&workspace.path, 1);
-            let opencode_process = ScriptedOpenCodeProcess::from_spawns(vec![
-                Ok(OpenCodeServerHandle {
-                    process_id: 801,
-                    started_at_epoch_ms: 1_739_173_200_001,
-                    server_base_url: "http://127.0.0.1:4801".to_string(),
-                }),
-                Err(CrabError::InvariantViolation {
-                    context: "scripted_opencode_restart",
-                    message: "forced opencode restart failure".to_string(),
-                }),
-            ]);
-            let mut composition =
-                compose_runtime_with_processes(&config, "999", FakeCodexProcess, opencode_process)
-                    .expect("composition should succeed");
-
-            let mut runtime = super::StartupRuntimeAdapter {
-                composition: &mut composition,
-            };
-            StartupReconciliationRuntime::restart_backend_managers(&mut runtime)
-                .expect("first restart should succeed");
-            let error = StartupReconciliationRuntime::restart_backend_managers(&mut runtime)
-                .expect_err("opencode restart failure should surface");
-            assert_eq!(
-                error,
-                CrabError::InvariantViolation {
-                    context: "scripted_opencode_restart",
-                    message: "forced opencode restart failure".to_string(),
-                }
-            );
-        }
-    }
-
-    #[test]
-    fn startup_runtime_restart_backend_managers_propagates_fake_process_failures() {
-        let workspace = TempWorkspace::new("maintenance", "startup-restart-fake-process-errors");
-        let config = runtime_config_for_workspace_with_lanes(&workspace.path, 1);
-        let mut composition =
-            compose_runtime_with_processes(&config, "999", FakeCodexProcess, FakeOpenCodeProcess)
-                .expect("composition should succeed");
-        let mut runtime = super::StartupRuntimeAdapter {
-            composition: &mut composition,
-        };
-
-        FakeCodexProcess::fail_next_spawn_on_current_thread();
-        let codex_error = StartupReconciliationRuntime::restart_backend_managers(&mut runtime)
-            .expect_err("fake codex restart failure should surface");
-        assert_eq!(
-            codex_error,
-            CrabError::InvariantViolation {
-                context: "fake_codex_spawn",
-                message: "forced fake codex spawn failure".to_string(),
-            }
-        );
-
-        FakeOpenCodeProcess::fail_next_spawn_on_current_thread();
-        let opencode_error = StartupReconciliationRuntime::restart_backend_managers(&mut runtime)
-            .expect_err("fake opencode restart failure should surface");
-        assert_eq!(
-            opencode_error,
-            CrabError::InvariantViolation {
-                context: "fake_opencode_spawn",
-                message: "forced fake opencode spawn failure".to_string(),
-            }
-        );
-    }
-
-    #[test]
     fn heartbeat_rejects_running_run_when_lane_is_idle() {
         let workspace = TempWorkspace::new("maintenance", "heartbeat-idle-running-mismatch");
         let config = runtime_config_for_workspace_with_lanes(&workspace.path, 1);
         let mut composition =
-            compose_runtime_with_processes(&config, "999", FakeCodexProcess, FakeOpenCodeProcess)
+            compose_runtime(&config, "999")
                 .expect("composition should succeed");
         let logical_session_id = "discord:channel:idle";
         let run_id = "run-idle";
@@ -1747,7 +1414,7 @@ mod tests {
         let workspace = TempWorkspace::new("maintenance", "heartbeat-idle-no-run");
         let config = runtime_config_for_workspace_with_lanes(&workspace.path, 1);
         let mut composition =
-            compose_runtime_with_processes(&config, "999", FakeCodexProcess, FakeOpenCodeProcess)
+            compose_runtime(&config, "999")
                 .expect("composition should succeed");
         let logical_session_id = "discord:channel:idle-empty";
         let mut session = running_session(logical_session_id, 1_739_173_300_000);
@@ -1773,13 +1440,8 @@ mod tests {
         {
             let workspace = TempWorkspace::new("maintenance", "heartbeat-list-sessions-io");
             let config = runtime_config_for_workspace_with_lanes(&workspace.path, 1);
-            let mut composition = compose_runtime_with_processes(
-                &config,
-                "999",
-                FakeCodexProcess,
-                FakeOpenCodeProcess,
-            )
-            .expect("composition should succeed");
+            let mut composition = compose_runtime(&config, "999")
+                .expect("composition should succeed");
             let sessions_dir = state_root(&workspace).join("sessions");
             replace_path_with_file(&sessions_dir);
 
@@ -1800,13 +1462,8 @@ mod tests {
         {
             let workspace = TempWorkspace::new("maintenance", "heartbeat-list-runs-io");
             let config = runtime_config_for_workspace_with_lanes(&workspace.path, 1);
-            let mut composition = compose_runtime_with_processes(
-                &config,
-                "999",
-                FakeCodexProcess,
-                FakeOpenCodeProcess,
-            )
-            .expect("composition should succeed");
+            let mut composition = compose_runtime(&config, "999")
+                .expect("composition should succeed");
             let logical_session_id = "discord:channel:runs-io";
             composition
                 .state_stores
@@ -1834,13 +1491,8 @@ mod tests {
         {
             let workspace = TempWorkspace::new("maintenance", "heartbeat-list-multiple-running");
             let config = runtime_config_for_workspace_with_lanes(&workspace.path, 1);
-            let mut composition = compose_runtime_with_processes(
-                &config,
-                "999",
-                FakeCodexProcess,
-                FakeOpenCodeProcess,
-            )
-            .expect("composition should succeed");
+            let mut composition = compose_runtime(&config, "999")
+                .expect("composition should succeed");
             let logical_session_id = "discord:channel:multiple-running";
             composition
                 .state_stores
@@ -1877,13 +1529,8 @@ mod tests {
         {
             let workspace = TempWorkspace::new("maintenance", "heartbeat-list-events-io");
             let config = runtime_config_for_workspace_with_lanes(&workspace.path, 1);
-            let mut composition = compose_runtime_with_processes(
-                &config,
-                "999",
-                FakeCodexProcess,
-                FakeOpenCodeProcess,
-            )
-            .expect("composition should succeed");
+            let mut composition = compose_runtime(&config, "999")
+                .expect("composition should succeed");
             let logical_session_id = "discord:channel:event-io";
             let run_id = "run-event-io";
             composition
@@ -1920,7 +1567,7 @@ mod tests {
         let workspace = TempWorkspace::new("maintenance", "heartbeat-cancel-guards");
         let config = runtime_config_for_workspace_with_lanes(&workspace.path, 1);
         let mut composition =
-            compose_runtime_with_processes(&config, "999", FakeCodexProcess, FakeOpenCodeProcess)
+            compose_runtime(&config, "999")
                 .expect("composition should succeed");
         let logical_session_id = "discord:channel:cancel-guard";
         let run_id = "run-cancel-guard";
@@ -2001,7 +1648,7 @@ mod tests {
         let workspace = TempWorkspace::new("maintenance", "heartbeat-restart-claude");
         let config = runtime_config_for_workspace_with_lanes(&workspace.path, 1);
         let mut composition =
-            compose_runtime_with_processes(&config, "999", FakeCodexProcess, FakeOpenCodeProcess)
+            compose_runtime(&config, "999")
                 .expect("composition should succeed");
         let mut dispatch_clock = 1_739_173_400_000;
 
@@ -2016,171 +1663,12 @@ mod tests {
     }
 
     #[test]
-    fn heartbeat_runtime_restart_backend_manager_handles_codex_and_opencode() {
-        let workspace = TempWorkspace::new("maintenance", "heartbeat-restart-persistent");
-        let config = runtime_config_for_workspace_with_lanes(&workspace.path, 1);
-        let mut composition =
-            compose_runtime_with_processes(&config, "999", FakeCodexProcess, FakeOpenCodeProcess)
-                .expect("composition should succeed");
-        let mut dispatch_clock = 1_739_173_400_000;
-
-        let mut runtime = super::HeartbeatRuntimeAdapter {
-            composition: &mut composition,
-            now_epoch_ms: 1_739_173_400_000,
-            last_dispatch_at_epoch_ms: &mut dispatch_clock,
-        };
-        runtime
-            .restart_backend_manager(BackendKind::Codex)
-            .expect("codex restart should succeed");
-        runtime
-            .restart_backend_manager(BackendKind::OpenCode)
-            .expect("opencode restart should succeed");
-    }
-
-    #[test]
-    fn heartbeat_runtime_restart_backend_manager_propagates_restart_errors() {
-        {
-            let workspace = TempWorkspace::new("maintenance", "heartbeat-restart-codex-error");
-            let config = runtime_config_for_workspace_with_lanes(&workspace.path, 1);
-            let codex_process = ScriptedCodexProcess::from_spawns(vec![
-                Ok(CodexProcessHandle {
-                    process_id: 711,
-                    started_at_epoch_ms: 1_739_173_200_010,
-                }),
-                Err(CrabError::InvariantViolation {
-                    context: "scripted_codex_restart",
-                    message: "forced codex restart failure".to_string(),
-                }),
-            ]);
-            let mut composition =
-                compose_runtime_with_processes(&config, "999", codex_process, FakeOpenCodeProcess)
-                    .expect("composition should succeed");
-            let mut dispatch_clock = 1_739_173_400_000;
-
-            let mut runtime = super::HeartbeatRuntimeAdapter {
-                composition: &mut composition,
-                now_epoch_ms: 1_739_173_400_000,
-                last_dispatch_at_epoch_ms: &mut dispatch_clock,
-            };
-            runtime
-                .restart_backend_manager(BackendKind::OpenCode)
-                .expect("opencode restart should succeed");
-            runtime
-                .restart_backend_manager(BackendKind::Claude)
-                .expect("claude restart should no-op");
-            runtime
-                .restart_backend_manager(BackendKind::Codex)
-                .expect("first codex restart should succeed");
-            let error = runtime
-                .restart_backend_manager(BackendKind::Codex)
-                .expect_err("codex restart failure should surface");
-            assert_eq!(
-                error,
-                CrabError::InvariantViolation {
-                    context: "scripted_codex_restart",
-                    message: "forced codex restart failure".to_string(),
-                }
-            );
-        }
-
-        {
-            let workspace = TempWorkspace::new("maintenance", "heartbeat-restart-opencode-error");
-            let config = runtime_config_for_workspace_with_lanes(&workspace.path, 1);
-            let opencode_process = ScriptedOpenCodeProcess::from_spawns(vec![
-                Ok(OpenCodeServerHandle {
-                    process_id: 811,
-                    started_at_epoch_ms: 1_739_173_200_011,
-                    server_base_url: "http://127.0.0.1:4811".to_string(),
-                }),
-                Err(CrabError::InvariantViolation {
-                    context: "scripted_opencode_restart",
-                    message: "forced opencode restart failure".to_string(),
-                }),
-            ]);
-            let mut composition =
-                compose_runtime_with_processes(&config, "999", FakeCodexProcess, opencode_process)
-                    .expect("composition should succeed");
-            let mut dispatch_clock = 1_739_173_400_000;
-
-            let mut runtime = super::HeartbeatRuntimeAdapter {
-                composition: &mut composition,
-                now_epoch_ms: 1_739_173_400_000,
-                last_dispatch_at_epoch_ms: &mut dispatch_clock,
-            };
-            runtime
-                .restart_backend_manager(BackendKind::Codex)
-                .expect("codex restart should succeed");
-            runtime
-                .restart_backend_manager(BackendKind::Claude)
-                .expect("claude restart should no-op");
-            runtime
-                .restart_backend_manager(BackendKind::OpenCode)
-                .expect("first opencode restart should succeed");
-            let error = runtime
-                .restart_backend_manager(BackendKind::OpenCode)
-                .expect_err("opencode restart failure should surface");
-            assert_eq!(
-                error,
-                CrabError::InvariantViolation {
-                    context: "scripted_opencode_restart",
-                    message: "forced opencode restart failure".to_string(),
-                }
-            );
-        }
-    }
-
-    #[test]
-    fn heartbeat_runtime_restart_backend_manager_propagates_fake_process_failures() {
-        let workspace = TempWorkspace::new("maintenance", "heartbeat-restart-fake-process-errors");
-        let config = runtime_config_for_workspace_with_lanes(&workspace.path, 1);
-        let mut composition =
-            compose_runtime_with_processes(&config, "999", FakeCodexProcess, FakeOpenCodeProcess)
-                .expect("composition should succeed");
-        let mut dispatch_clock = 1_739_173_400_000;
-
-        let mut runtime = super::HeartbeatRuntimeAdapter {
-            composition: &mut composition,
-            now_epoch_ms: 1_739_173_400_000,
-            last_dispatch_at_epoch_ms: &mut dispatch_clock,
-        };
-
-        FakeCodexProcess::fail_next_spawn_on_current_thread();
-        let codex_error = runtime
-            .restart_backend_manager(BackendKind::Codex)
-            .expect_err("fake codex restart failure should surface");
-        assert_eq!(
-            codex_error,
-            CrabError::InvariantViolation {
-                context: "fake_codex_spawn",
-                message: "forced fake codex spawn failure".to_string(),
-            }
-        );
-
-        FakeOpenCodeProcess::fail_next_spawn_on_current_thread();
-        let opencode_error = runtime
-            .restart_backend_manager(BackendKind::OpenCode)
-            .expect_err("fake opencode restart failure should surface");
-        assert_eq!(
-            opencode_error,
-            CrabError::InvariantViolation {
-                context: "fake_opencode_spawn",
-                message: "forced fake opencode spawn failure".to_string(),
-            }
-        );
-    }
-
-    #[test]
     fn heartbeat_runtime_request_cancel_surfaces_missing_and_io_paths() {
         {
             let workspace = TempWorkspace::new("maintenance", "heartbeat-cancel-missing-session");
             let config = runtime_config_for_workspace_with_lanes(&workspace.path, 1);
-            let mut composition = compose_runtime_with_processes(
-                &config,
-                "999",
-                FakeCodexProcess,
-                FakeOpenCodeProcess,
-            )
-            .expect("composition should succeed");
+            let mut composition = compose_runtime(&config, "999")
+                .expect("composition should succeed");
             let mut dispatch_clock = 1_739_173_400_000;
             let mut runtime = super::HeartbeatRuntimeAdapter {
                 composition: &mut composition,
@@ -2202,13 +1690,8 @@ mod tests {
         {
             let workspace = TempWorkspace::new("maintenance", "heartbeat-cancel-missing-run");
             let config = runtime_config_for_workspace_with_lanes(&workspace.path, 1);
-            let mut composition = compose_runtime_with_processes(
-                &config,
-                "999",
-                FakeCodexProcess,
-                FakeOpenCodeProcess,
-            )
-            .expect("composition should succeed");
+            let mut composition = compose_runtime(&config, "999")
+                .expect("composition should succeed");
             let logical_session_id = "discord:channel:cancel-missing-run";
             composition
                 .state_stores
@@ -2236,13 +1719,8 @@ mod tests {
         {
             let workspace = TempWorkspace::new("maintenance", "heartbeat-cancel-session-upsert-io");
             let config = runtime_config_for_workspace_with_lanes(&workspace.path, 1);
-            let mut composition = compose_runtime_with_processes(
-                &config,
-                "999",
-                FakeCodexProcess,
-                FakeOpenCodeProcess,
-            )
-            .expect("composition should succeed");
+            let mut composition = compose_runtime(&config, "999")
+                .expect("composition should succeed");
             let logical_session_id = "discord:channel:cancel-session-upsert-io";
             let run_id = "run-cancel-session-upsert-io";
             composition
@@ -2276,13 +1754,8 @@ mod tests {
         {
             let workspace = TempWorkspace::new("maintenance", "heartbeat-cancel-event-io");
             let config = runtime_config_for_workspace_with_lanes(&workspace.path, 1);
-            let mut composition = compose_runtime_with_processes(
-                &config,
-                "999",
-                FakeCodexProcess,
-                FakeOpenCodeProcess,
-            )
-            .expect("composition should succeed");
+            let mut composition = compose_runtime(&config, "999")
+                .expect("composition should succeed");
             let logical_session_id = "discord:channel:cancel-event-io";
             let run_id = "run-cancel-event-io";
             composition
@@ -2321,13 +1794,8 @@ mod tests {
             let workspace =
                 TempWorkspace::new("maintenance", "heartbeat-hard-stop-missing-session");
             let config = runtime_config_for_workspace_with_lanes(&workspace.path, 1);
-            let mut composition = compose_runtime_with_processes(
-                &config,
-                "999",
-                FakeCodexProcess,
-                FakeOpenCodeProcess,
-            )
-            .expect("composition should succeed");
+            let mut composition = compose_runtime(&config, "999")
+                .expect("composition should succeed");
             let mut dispatch_clock = 1_739_173_400_000;
             let mut runtime = super::HeartbeatRuntimeAdapter {
                 composition: &mut composition,
@@ -2349,13 +1817,8 @@ mod tests {
         {
             let workspace = TempWorkspace::new("maintenance", "heartbeat-hard-stop-missing-run");
             let config = runtime_config_for_workspace_with_lanes(&workspace.path, 1);
-            let mut composition = compose_runtime_with_processes(
-                &config,
-                "999",
-                FakeCodexProcess,
-                FakeOpenCodeProcess,
-            )
-            .expect("composition should succeed");
+            let mut composition = compose_runtime(&config, "999")
+                .expect("composition should succeed");
             let logical_session_id = "discord:channel:hard-stop-missing-run";
             composition
                 .state_stores
@@ -2385,13 +1848,8 @@ mod tests {
         {
             let workspace = TempWorkspace::new("maintenance", "heartbeat-hard-stop-run-upsert-io");
             let config = runtime_config_for_workspace_with_lanes(&workspace.path, 1);
-            let mut composition = compose_runtime_with_processes(
-                &config,
-                "999",
-                FakeCodexProcess,
-                FakeOpenCodeProcess,
-            )
-            .expect("composition should succeed");
+            let mut composition = compose_runtime(&config, "999")
+                .expect("composition should succeed");
             let logical_session_id = "discord:channel:hard-stop-run-upsert-io";
             let run_id = "run-hard-stop-run-upsert-io";
             composition
@@ -2424,13 +1882,8 @@ mod tests {
         {
             let workspace = TempWorkspace::new("maintenance", "heartbeat-hard-stop-event-io");
             let config = runtime_config_for_workspace_with_lanes(&workspace.path, 1);
-            let mut composition = compose_runtime_with_processes(
-                &config,
-                "999",
-                FakeCodexProcess,
-                FakeOpenCodeProcess,
-            )
-            .expect("composition should succeed");
+            let mut composition = compose_runtime(&config, "999")
+                .expect("composition should succeed");
             let logical_session_id = "discord:channel:hard-stop-event-io";
             let run_id = "run-hard-stop-event-io";
             composition
@@ -2465,13 +1918,8 @@ mod tests {
             let workspace =
                 TempWorkspace::new("maintenance", "heartbeat-hard-stop-session-upsert-io");
             let config = runtime_config_for_workspace_with_lanes(&workspace.path, 1);
-            let mut composition = compose_runtime_with_processes(
-                &config,
-                "999",
-                FakeCodexProcess,
-                FakeOpenCodeProcess,
-            )
-            .expect("composition should succeed");
+            let mut composition = compose_runtime(&config, "999")
+                .expect("composition should succeed");
             let logical_session_id = "discord:channel:hard-stop-session-upsert-io";
             let run_id = "run-hard-stop-session-upsert-io";
             composition
@@ -2507,7 +1955,7 @@ mod tests {
         let workspace = TempWorkspace::new("maintenance", "require-helpers");
         let config = runtime_config_for_workspace_with_lanes(&workspace.path, 1);
         let composition =
-            compose_runtime_with_processes(&config, "999", FakeCodexProcess, FakeOpenCodeProcess)
+            compose_runtime(&config, "999")
                 .expect("composition should succeed");
 
         let missing_session = super::require_session(
@@ -2763,7 +2211,7 @@ mod tests {
         let workspace = TempWorkspace::new("maintenance", "load-helpers-sort");
         let config = runtime_config_for_workspace_with_lanes(&workspace.path, 1);
         let composition =
-            compose_runtime_with_processes(&config, "999", FakeCodexProcess, FakeOpenCodeProcess)
+            compose_runtime(&config, "999")
                 .expect("composition should succeed");
         let now_epoch_ms = 1_739_173_400_000;
 
@@ -2836,14 +2284,7 @@ mod tests {
         );
         let config = crab_core::RuntimeConfig::from_map(&values).expect("config should parse");
 
-        let result = super::boot_runtime_with_processes_and_queue_limit(
-            &config,
-            "999",
-            FakeCodexProcess,
-            FakeOpenCodeProcess,
-            0,
-            1_000,
-        );
+        let result = super::boot_runtime_with_queue_limit(&config, "999", 0, 1_000);
         assert!(result.is_err());
         let error = result.err().expect("error should be present");
 
@@ -2872,14 +2313,7 @@ mod tests {
         );
         let config = crab_core::RuntimeConfig::from_map(&values).expect("config should parse");
 
-        let result = super::boot_runtime_with_processes_and_queue_limit(
-            &config,
-            "999",
-            FakeCodexProcess,
-            FakeOpenCodeProcess,
-            1,
-            1_000,
-        );
+        let result = super::boot_runtime_with_queue_limit(&config, "999", 1, 1_000);
         assert!(result.is_err());
         let error = result.err().expect("error should be present");
         assert_eq!(
@@ -2897,8 +2331,7 @@ mod tests {
         let workspace = TempWorkspace::new("maintenance", "boot-zero-now");
         let config = runtime_config_for_workspace_with_lanes(&workspace.path, 1);
 
-        let result =
-            boot_runtime_with_processes(&config, "999", FakeCodexProcess, FakeOpenCodeProcess, 0);
+        let result = boot_runtime(&config, "999", 0);
         assert!(result.is_err());
         let error = result.err().expect("error should be present");
 

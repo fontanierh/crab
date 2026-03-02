@@ -130,14 +130,6 @@ pub fn execute_heartbeat_cycle<R: HeartbeatRuntime>(
             continue;
         }
 
-        // Claude is invoked as a per-turn CLI and can be silent for long periods while thinking.
-        // Run cancellation here is both noisy and ineffective (we cannot reliably interrupt an
-        // in-flight Claude CLI turn). Claude turns are guarded by the transport-level stall
-        // timeout (`CRAB_BACKEND_STALL_TIMEOUT_SECS`).
-        if run.backend == BackendKind::Claude {
-            continue;
-        }
-
         let stalled_reason = "stalled_no_progress".to_string();
         match runtime.request_cancel_active_run(&run.logical_session_id, &run.run_id) {
             Ok(()) => {
@@ -318,8 +310,6 @@ fn validate_dispatcher_heartbeat(
 fn backend_sort_key(backend: BackendKind) -> u8 {
     match backend {
         BackendKind::Claude => 0,
-        BackendKind::Codex => 1,
-        BackendKind::OpenCode => 2,
     }
 }
 
@@ -440,23 +430,7 @@ mod tests {
             logical_session_id: logical_session_id.to_string(),
             run_id: run_id.to_string(),
             lane_state,
-            backend: BackendKind::Codex,
-            last_progress_at_epoch_ms,
-        }
-    }
-
-    fn active_run_with_backend(
-        logical_session_id: &str,
-        run_id: &str,
-        lane_state: LaneState,
-        backend: BackendKind,
-        last_progress_at_epoch_ms: u64,
-    ) -> ActiveRunHeartbeat {
-        ActiveRunHeartbeat {
-            logical_session_id: logical_session_id.to_string(),
-            run_id: run_id.to_string(),
-            lane_state,
-            backend,
+            backend: BackendKind::Claude,
             last_progress_at_epoch_ms,
         }
     }
@@ -497,8 +471,6 @@ mod tests {
     fn backend_name(backend: BackendKind) -> &'static str {
         match backend {
             BackendKind::Claude => "claude",
-            BackendKind::Codex => "codex",
-            BackendKind::OpenCode => "opencode",
         }
     }
 
@@ -540,24 +512,6 @@ mod tests {
             outcome.events[0].action,
             "cancel_requested_due_to_stall".to_string()
         );
-    }
-
-    #[test]
-    fn skips_run_cancellation_for_claude_turns() {
-        let mut runtime = FakeRuntime::new();
-        runtime.list_active_runs_result = Ok(vec![active_run_with_backend(
-            "discord:dm:henry",
-            "run-claude",
-            LaneState::Running,
-            BackendKind::Claude,
-            1_000,
-        )]);
-
-        let outcome = execute_heartbeat_cycle(&mut runtime, &policy(), 100_000)
-            .expect("heartbeat cycle should succeed");
-
-        assert!(runtime.cancel_calls.is_empty());
-        assert_no_actions(&outcome);
     }
 
     #[test]
@@ -680,21 +634,19 @@ mod tests {
     #[test]
     fn restarts_unhealthy_persistent_backends_in_sorted_order() {
         let mut runtime = FakeRuntime::new();
-        runtime.list_backend_heartbeats_result = Ok(vec![
-            backend_heartbeat(BackendKind::OpenCode, true, false, 1_000),
-            backend_heartbeat(BackendKind::Codex, true, false, 2_000),
-            backend_heartbeat(BackendKind::Claude, false, false, 1_000),
-        ]);
+        runtime.list_backend_heartbeats_result = Ok(vec![backend_heartbeat(
+            BackendKind::Claude,
+            true,
+            false,
+            1_000,
+        )]);
 
         let outcome = execute_heartbeat_cycle(&mut runtime, &policy(), 100_000)
             .expect("stale unhealthy backends should restart");
 
-        assert_eq!(
-            runtime.restart_calls,
-            vec![BackendKind::Codex, BackendKind::OpenCode]
-        );
+        assert_eq!(runtime.restart_calls, vec![BackendKind::Claude]);
         assert_eq!(outcome.restarted_backends, runtime.restart_calls);
-        assert_eq!(outcome.events.len(), 2);
+        assert_eq!(outcome.events.len(), 1);
         assert_eq!(
             outcome.events[0].action,
             "backend_restart_due_to_stall".to_string()
@@ -704,14 +656,15 @@ mod tests {
     #[test]
     fn skips_backend_restart_for_healthy_recent_or_non_persistent_backends() {
         let mut runtime = FakeRuntime::new();
-        runtime.list_backend_heartbeats_result = Ok(vec![
-            backend_heartbeat(BackendKind::Codex, true, true, 1_000),
-            backend_heartbeat(BackendKind::OpenCode, true, false, 99_000),
-            backend_heartbeat(BackendKind::Claude, false, false, 1_000),
-        ]);
+        runtime.list_backend_heartbeats_result = Ok(vec![backend_heartbeat(
+            BackendKind::Claude,
+            false,
+            false,
+            1_000,
+        )]);
 
         let outcome = execute_heartbeat_cycle(&mut runtime, &policy(), 100_000)
-            .expect("non-stale or unsupported backends should be ignored");
+            .expect("healthy backends should be ignored");
         assert_no_actions(&outcome);
         assert!(runtime.restart_calls.is_empty());
     }
@@ -720,14 +673,14 @@ mod tests {
     fn propagates_backend_restart_failures() {
         let mut runtime = FakeRuntime::new();
         runtime.list_backend_heartbeats_result = Ok(vec![backend_heartbeat(
-            BackendKind::Codex,
+            BackendKind::Claude,
             true,
             false,
             1_000,
         )]);
         runtime
             .restart_errors
-            .insert("codex".to_string(), boom("restart_backend"));
+            .insert("claude".to_string(), boom("restart_backend"));
 
         let error = execute_heartbeat_cycle(&mut runtime, &policy(), 100_000)
             .expect_err("backend restart failure should fail cycle");
@@ -844,7 +797,7 @@ mod tests {
 
         let mut backend_clock_skew_runtime = FakeRuntime::new();
         backend_clock_skew_runtime.list_backend_heartbeats_result = Ok(vec![backend_heartbeat(
-            BackendKind::Codex,
+            BackendKind::Claude,
             true,
             false,
             2_000,
@@ -856,7 +809,7 @@ mod tests {
             backend_clock_skew_error,
             CrabError::InvariantViolation {
                 context: "heartbeat_cycle",
-                message: "backend Codex has last_healthy_at_epoch_ms 2000 in the future relative to now_epoch_ms 1000".to_string(),
+                message: "backend Claude has last_healthy_at_epoch_ms 2000 in the future relative to now_epoch_ms 1000".to_string(),
             }
         );
 

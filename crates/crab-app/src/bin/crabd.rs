@@ -14,7 +14,6 @@ use crab_app::{
     run_daemon_loop_with_transport, DaemonConfig, DaemonDiscordIo, DaemonLoopControl,
     DaemonLoopStats, DEFAULT_DAEMON_TICK_INTERVAL_MS,
 };
-use crab_backends::{CodexAppServerProcess, CodexProcessHandle, OpenCodeServerHandle};
 use crab_core::{CrabError, CrabResult, RuntimeConfig};
 use crab_discord::{
     CrabdInboundFrame, CrabdOutboundOp, CrabdOutboundReceipt, CrabdOutboundReceiptStatus,
@@ -23,90 +22,6 @@ use crab_discord::{
 #[cfg(not(test))]
 use crab_telemetry::init_tracing_stderr;
 
-#[derive(Debug, Clone, Default)]
-struct LocalCodexProcess;
-
-#[cfg(test)]
-type LocalCodexSpawnOverride = fn() -> CrabResult<CodexProcessHandle>;
-
-#[cfg(test)]
-thread_local! {
-    static LOCAL_CODEX_SPAWN_OVERRIDE: RefCell<Option<LocalCodexSpawnOverride>> = RefCell::new(None);
-}
-
-impl CodexAppServerProcess for LocalCodexProcess {
-    fn spawn_app_server(&self) -> CrabResult<CodexProcessHandle> {
-        #[cfg(test)]
-        if let Some(spawn_override) = LOCAL_CODEX_SPAWN_OVERRIDE.with(|cell| *cell.borrow()) {
-            return spawn_override();
-        }
-
-        Ok(CodexProcessHandle {
-            process_id: 1,
-            started_at_epoch_ms: 1,
-        })
-    }
-
-    fn is_healthy(&self, _handle: &CodexProcessHandle) -> bool {
-        true
-    }
-
-    fn terminate_app_server(&self, _handle: &CodexProcessHandle) -> CrabResult<()> {
-        Ok(())
-    }
-}
-
-impl LocalCodexProcess {
-    #[cfg(test)]
-    fn set_spawn_override(spawn_override: Option<LocalCodexSpawnOverride>) {
-        LOCAL_CODEX_SPAWN_OVERRIDE.with(|cell| {
-            *cell.borrow_mut() = spawn_override;
-        });
-    }
-}
-
-#[derive(Debug, Clone, Default)]
-struct LocalOpenCodeProcess;
-
-#[cfg(test)]
-type LocalOpenCodeSpawnOverride = fn() -> CrabResult<OpenCodeServerHandle>;
-
-#[cfg(test)]
-thread_local! {
-    static LOCAL_OPENCODE_SPAWN_OVERRIDE: RefCell<Option<LocalOpenCodeSpawnOverride>> = RefCell::new(None);
-}
-
-impl crab_backends::OpenCodeServerProcess for LocalOpenCodeProcess {
-    fn spawn_server(&self) -> CrabResult<OpenCodeServerHandle> {
-        #[cfg(test)]
-        if let Some(spawn_override) = LOCAL_OPENCODE_SPAWN_OVERRIDE.with(|cell| *cell.borrow()) {
-            return spawn_override();
-        }
-
-        Ok(OpenCodeServerHandle {
-            process_id: 2,
-            started_at_epoch_ms: 1,
-            server_base_url: "http://127.0.0.1:4210".to_string(),
-        })
-    }
-
-    fn is_server_healthy(&self, _handle: &OpenCodeServerHandle) -> bool {
-        true
-    }
-
-    fn terminate_server(&self, _handle: &OpenCodeServerHandle) -> CrabResult<()> {
-        Ok(())
-    }
-}
-
-impl LocalOpenCodeProcess {
-    #[cfg(test)]
-    fn set_spawn_override(spawn_override: Option<LocalOpenCodeSpawnOverride>) {
-        LOCAL_OPENCODE_SPAWN_OVERRIDE.with(|cell| {
-            *cell.borrow_mut() = spawn_override;
-        });
-    }
-}
 
 const DEFAULT_OUTBOUND_RECEIPT_TIMEOUT_MS: u64 = 120_000;
 
@@ -526,8 +441,6 @@ fn run_with_values_and_discord_and_control(
     run_daemon_loop_with_transport(
         &runtime_config,
         &daemon_config,
-        LocalCodexProcess,
-        LocalOpenCodeProcess,
         discord,
         control,
     )
@@ -625,13 +538,10 @@ mod tests {
     use super::{
         main, parse_daemon_config, parse_optional_u64, parse_required_u64, run_main_with_runner,
         run_with_env_and_reader_and_control_installer, run_with_reader_and_control,
-        LocalCodexProcess, LocalOpenCodeProcess, StdioDiscordIo,
+        StdioDiscordIo,
     };
     use crab_app::{DaemonClaudeProcess, DaemonDiscordIo, DaemonLoopControl, DaemonLoopStats};
-    use crab_backends::{
-        ClaudeProcess, CodexAppServerProcess, CodexProcessHandle, OpenCodeServerHandle,
-        OpenCodeServerProcess,
-    };
+    use crab_backends::ClaudeProcess;
     use crab_core::{CrabError, CrabResult};
     use crab_discord::{
         CrabdInboundFrame, CrabdOutboundOp, CrabdOutboundReceipt, CrabdOutboundReceiptStatus,
@@ -756,20 +666,6 @@ mod tests {
         Err(CrabError::InvariantViolation {
             context: "crabd_control_install",
             message: "forced install failure".to_string(),
-        })
-    }
-
-    fn fail_local_codex_spawn() -> CrabResult<CodexProcessHandle> {
-        Err(CrabError::InvariantViolation {
-            context: "crabd_local_codex_spawn",
-            message: "forced codex spawn failure".to_string(),
-        })
-    }
-
-    fn fail_local_opencode_spawn() -> CrabResult<OpenCodeServerHandle> {
-        Err(CrabError::InvariantViolation {
-            context: "crabd_local_opencode_spawn",
-            message: "forced opencode spawn failure".to_string(),
         })
     }
 
@@ -955,25 +851,6 @@ mod tests {
     {
         let _guard = env_lock().lock().expect("env lock should succeed");
         with_test_env_locked(values, f);
-    }
-
-    #[test]
-    fn local_backend_process_stubs_are_healthy_and_terminable() {
-        let codex = LocalCodexProcess;
-        let codex_handle = codex
-            .spawn_app_server()
-            .expect("codex process should spawn");
-        assert!(codex.is_healthy(&codex_handle));
-        codex
-            .terminate_app_server(&codex_handle)
-            .expect("codex process should stop");
-
-        let opencode = LocalOpenCodeProcess;
-        let opencode_handle = opencode.spawn_server().expect("opencode should spawn");
-        assert!(opencode.is_server_healthy(&opencode_handle));
-        opencode
-            .terminate_server(&opencode_handle)
-            .expect("opencode should stop");
     }
 
     #[test]
@@ -1766,44 +1643,6 @@ mod tests {
                 ..
             }
         ));
-    }
-
-    #[test]
-    fn run_with_reader_and_control_propagates_codex_start_errors() {
-        let workspace_root = temp_workspace_root("run-codex-start-error");
-        let values = runtime_values(&workspace_root);
-        let mut control = ScriptedControl::with_now(vec![1_000]);
-        let mut reader = Cursor::new("");
-        LocalCodexProcess::set_spawn_override(Some(fail_local_codex_spawn));
-        let error = run_with_reader_and_control(&values, &mut reader, &mut control)
-            .expect_err("codex startup errors should surface");
-        LocalCodexProcess::set_spawn_override(None);
-        assert_eq!(
-            error,
-            CrabError::InvariantViolation {
-                context: "crabd_local_codex_spawn",
-                message: "forced codex spawn failure".to_string(),
-            }
-        );
-    }
-
-    #[test]
-    fn run_with_reader_and_control_propagates_opencode_start_errors() {
-        let workspace_root = temp_workspace_root("run-opencode-start-error");
-        let values = runtime_values(&workspace_root);
-        let mut control = ScriptedControl::with_now(vec![1_000]);
-        let mut reader = Cursor::new("");
-        LocalOpenCodeProcess::set_spawn_override(Some(fail_local_opencode_spawn));
-        let error = run_with_reader_and_control(&values, &mut reader, &mut control)
-            .expect_err("opencode startup errors should surface");
-        LocalOpenCodeProcess::set_spawn_override(None);
-        assert_eq!(
-            error,
-            CrabError::InvariantViolation {
-                context: "crabd_local_opencode_spawn",
-                message: "forced opencode spawn failure".to_string(),
-            }
-        );
     }
 
     #[test]

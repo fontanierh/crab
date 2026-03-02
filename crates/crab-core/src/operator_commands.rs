@@ -209,7 +209,7 @@ fn parse_backend_command(args: &[&str]) -> CrabResult<OperatorCommand> {
     let Some(backend) = parse_backend(value) else {
         return Err(CrabError::InvariantViolation {
             context: "operator_command_parse",
-            message: format!("invalid backend {value:?}; expected claude|codex|opencode"),
+            message: format!("invalid backend {value:?}; expected claude"),
         });
     };
     Ok(OperatorCommand::SetBackend { backend })
@@ -344,8 +344,6 @@ fn display_path(path: &Path) -> String {
 fn parse_backend(value: &str) -> Option<BackendKind> {
     match value.to_ascii_lowercase().as_str() {
         "claude" => Some(BackendKind::Claude),
-        "codex" => Some(BackendKind::Codex),
-        "opencode" => Some(BackendKind::OpenCode),
         _ => None,
     }
 }
@@ -353,8 +351,6 @@ fn parse_backend(value: &str) -> Option<BackendKind> {
 fn backend_label(backend: BackendKind) -> &'static str {
     match backend {
         BackendKind::Claude => "claude",
-        BackendKind::Codex => "codex",
-        BackendKind::OpenCode => "opencode",
     }
 }
 
@@ -397,10 +393,10 @@ mod tests {
 
     fn session_state() -> OperatorSessionState {
         OperatorSessionState {
-            active_backend: BackendKind::Codex,
+            active_backend: BackendKind::Claude,
             active_profile: InferenceProfile {
-                backend: BackendKind::Codex,
-                model: "gpt-5-codex".to_string(),
+                backend: BackendKind::Claude,
+                model: "claude-sonnet".to_string(),
                 reasoning_level: ReasoningLevel::Medium,
             },
             active_physical_session_id: Some("thread-1".to_string()),
@@ -460,9 +456,7 @@ mod tests {
     fn parses_supported_backend_commands() {
         let cases = [
             ("/backend claude", BackendKind::Claude),
-            ("/backend codex", BackendKind::Codex),
-            ("/backend opencode", BackendKind::OpenCode),
-            ("/BACKEND CoDeX", BackendKind::Codex),
+            ("/BACKEND CLAUDE", BackendKind::Claude),
         ];
 
         for (input, expected_backend) in cases {
@@ -552,7 +546,7 @@ mod tests {
             parse_operator_command("/backend pi").expect_err("invalid backend should fail");
         assert_eq!(
             invalid_backend.to_string(),
-            "operator_command_parse invariant violation: invalid backend \"pi\"; expected claude|codex|opencode"
+            "operator_command_parse invariant violation: invalid backend \"pi\"; expected claude"
         );
 
         let invalid_reasoning =
@@ -578,7 +572,7 @@ mod tests {
     }
 
     #[test]
-    fn applies_backend_command_with_rotation_semantics() {
+    fn backend_command_is_idempotent_when_value_matches() {
         let mut state = session_state();
         let owner = owner_actor();
         let outcome = apply_operator_command(
@@ -590,37 +584,13 @@ mod tests {
         )
         .expect("backend update should apply");
 
-        assert_eq!(state.active_backend, BackendKind::Claude);
-        assert_eq!(state.active_profile.backend, BackendKind::Claude);
-        assert_eq!(state.active_physical_session_id, None);
-        assert!(outcome.requires_rotation);
-
-        assert_eq!(
-            outcome.user_message,
-            "backend set to claude; active physical session cleared"
-        );
-    }
-
-    #[test]
-    fn backend_command_is_idempotent_when_value_matches() {
-        let mut state = session_state();
-        let owner = owner_actor();
-        let outcome = apply_operator_command(
-            &mut state,
-            &OperatorCommand::SetBackend {
-                backend: BackendKind::Codex,
-            },
-            &owner,
-        )
-        .expect("backend update should apply");
-
         assert_eq!(
             state.active_physical_session_id,
             Some("thread-1".to_string())
         );
         assert!(!outcome.requires_rotation);
 
-        assert_eq!(outcome.user_message, "backend already codex");
+        assert_eq!(outcome.user_message, "backend already claude");
     }
 
     #[test]
@@ -680,7 +650,7 @@ mod tests {
 
         assert_eq!(
             outcome.user_message,
-            "backend=codex, model=gpt-5-codex, reasoning=medium"
+            "backend=claude, model=claude-sonnet, reasoning=medium"
         );
         assert_eq!(render_active_profile_summary(&state), outcome.user_message);
     }
@@ -737,7 +707,7 @@ mod tests {
     fn resolved_profile_summary_renders_sources() {
         let resolved = ResolvedInferenceProfile {
             profile: InferenceProfile {
-                backend: BackendKind::OpenCode,
+                backend: BackendKind::Claude,
                 model: "auto".to_string(),
                 reasoning_level: ReasoningLevel::Low,
             },
@@ -749,7 +719,7 @@ mod tests {
         let summary = render_resolved_profile_summary(&resolved);
         assert_eq!(
             summary,
-            "backend=opencode (source=turn_override), model=auto (source=channel_override), reasoning=low (source=backend_default)"
+            "backend=claude (source=turn_override), model=auto (source=channel_override), reasoning=low (source=backend_default)"
         );
 
         let source_labels = [
@@ -762,7 +732,7 @@ mod tests {
         for source in source_labels {
             let resolved = ResolvedInferenceProfile {
                 profile: InferenceProfile {
-                    backend: BackendKind::Codex,
+                    backend: BackendKind::Claude,
                     model: "auto".to_string(),
                     reasoning_level: ReasoningLevel::Medium,
                 },

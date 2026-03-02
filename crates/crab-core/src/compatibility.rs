@@ -32,16 +32,12 @@ impl BackendCompatibilityRules {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct BackendCompatibilityCatalog {
     pub claude: BackendCompatibilityRules,
-    pub codex: BackendCompatibilityRules,
-    pub opencode: BackendCompatibilityRules,
 }
 
 impl BackendCompatibilityCatalog {
     pub fn rules_for_backend(&self, backend: BackendKind) -> &BackendCompatibilityRules {
         match backend {
             BackendKind::Claude => &self.claude,
-            BackendKind::Codex => &self.codex,
-            BackendKind::OpenCode => &self.opencode,
         }
     }
 }
@@ -103,12 +99,6 @@ fn validate_compatibility_inputs(
     validate_non_empty_text(context, "profile.model", &profile.model)?;
 
     validate_supported_models(context, "catalog.claude.supported_models", &catalog.claude)?;
-    validate_supported_models(context, "catalog.codex.supported_models", &catalog.codex)?;
-    validate_supported_models(
-        context,
-        "catalog.opencode.supported_models",
-        &catalog.opencode,
-    )?;
 
     Ok(())
 }
@@ -156,21 +146,6 @@ mod tests {
                     ReasoningLevel::High,
                 ],
             },
-            codex: BackendCompatibilityRules {
-                supported_models: Vec::new(),
-                supported_reasoning_levels: vec![
-                    ReasoningLevel::None,
-                    ReasoningLevel::Minimal,
-                    ReasoningLevel::Low,
-                    ReasoningLevel::Medium,
-                    ReasoningLevel::High,
-                    ReasoningLevel::XHigh,
-                ],
-            },
-            opencode: BackendCompatibilityRules {
-                supported_models: vec!["o4-mini".to_string()],
-                supported_reasoning_levels: vec![ReasoningLevel::Low, ReasoningLevel::Medium],
-            },
         }
     }
 
@@ -187,8 +162,6 @@ mod tests {
         if let Some(field_backend) = field_backend {
             match field_backend {
                 BackendKind::Claude => catalog.claude.supported_models = vec![" ".to_string()],
-                BackendKind::Codex => catalog.codex.supported_models = vec![" ".to_string()],
-                BackendKind::OpenCode => catalog.opencode.supported_models = vec![" ".to_string()],
             }
         }
 
@@ -204,27 +177,13 @@ mod tests {
     }
 
     #[test]
-    fn rules_lookup_and_wildcards_work_for_all_backends() {
+    fn rules_lookup_and_wildcards_work_for_claude() {
         let source = catalog();
         let cases = [
             (
                 BackendKind::Claude,
                 "claude-sonnet",
                 ReasoningLevel::Medium,
-                true,
-                true,
-            ),
-            (
-                BackendKind::Codex,
-                "gpt-5-codex",
-                ReasoningLevel::XHigh,
-                true,
-                true,
-            ),
-            (
-                BackendKind::OpenCode,
-                "o4-mini",
-                ReasoningLevel::Low,
                 true,
                 true,
             ),
@@ -242,7 +201,7 @@ mod tests {
     #[test]
     fn auto_model_alias_is_always_compatible() {
         let input = profile(
-            BackendKind::OpenCode,
+            BackendKind::Claude,
             AUTO_MODEL_ALIAS,
             ReasoningLevel::Medium,
         );
@@ -254,9 +213,9 @@ mod tests {
     #[test]
     fn empty_reasoning_catalog_is_a_wildcard() {
         let mut rules = catalog();
-        rules.opencode.supported_reasoning_levels = Vec::new();
+        rules.claude.supported_reasoning_levels = Vec::new();
 
-        let input = profile(BackendKind::OpenCode, "o4-mini", ReasoningLevel::XHigh);
+        let input = profile(BackendKind::Claude, "claude-sonnet", ReasoningLevel::XHigh);
         let report = evaluate_profile_compatibility(&input, &rules)
             .expect("compatibility check should succeed");
         assert!(report.is_compatible());
@@ -273,21 +232,14 @@ mod tests {
                 }],
             ),
             (
-                profile(BackendKind::OpenCode, "o4-mini", ReasoningLevel::XHigh),
-                vec![CompatibilityIssue::UnsupportedReasoningLevel {
-                    backend: BackendKind::OpenCode,
-                    reasoning_level: ReasoningLevel::XHigh,
-                }],
-            ),
-            (
-                profile(BackendKind::OpenCode, "bad", ReasoningLevel::XHigh),
+                profile(BackendKind::Claude, "bad", ReasoningLevel::XHigh),
                 vec![
                     CompatibilityIssue::UnsupportedModel {
-                        backend: BackendKind::OpenCode,
+                        backend: BackendKind::Claude,
                         model: "bad".to_string(),
                     },
                     CompatibilityIssue::UnsupportedReasoningLevel {
-                        backend: BackendKind::OpenCode,
+                        backend: BackendKind::Claude,
                         reasoning_level: ReasoningLevel::XHigh,
                     },
                 ],
@@ -306,8 +258,7 @@ mod tests {
     fn accepts_fully_compatible_profiles() {
         let cases = [
             profile(BackendKind::Claude, "claude-sonnet", ReasoningLevel::Low),
-            profile(BackendKind::Codex, "any-model", ReasoningLevel::XHigh),
-            profile(BackendKind::OpenCode, "o4-mini", ReasoningLevel::Medium),
+            profile(BackendKind::Claude, "claude-opus", ReasoningLevel::Medium),
         ];
         for input in cases {
             let report = evaluate_profile_compatibility(&input, &catalog())
@@ -332,20 +283,6 @@ mod tests {
             None,
             Some(BackendKind::Claude),
             "catalog.claude.supported_models must not be empty",
-        );
-        assert_input_error(
-            profile(BackendKind::Codex, "gpt-5-codex", ReasoningLevel::High),
-            catalog(),
-            None,
-            Some(BackendKind::Codex),
-            "catalog.codex.supported_models must not be empty",
-        );
-        assert_input_error(
-            profile(BackendKind::OpenCode, "o4-mini", ReasoningLevel::Medium),
-            catalog(),
-            None,
-            Some(BackendKind::OpenCode),
-            "catalog.opencode.supported_models must not be empty",
         );
     }
 }

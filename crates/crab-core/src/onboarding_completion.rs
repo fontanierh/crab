@@ -485,8 +485,8 @@ mod tests {
         RunProfileTelemetry {
             requested_profile: None,
             resolved_profile: InferenceProfile {
-                backend: BackendKind::Codex,
-                model: "gpt-5-codex".to_string(),
+                backend: BackendKind::Claude,
+                model: "claude-opus-4-6".to_string(),
                 reasoning_level: ReasoningLevel::Medium,
             },
             backend_source: ProfileValueSource::GlobalDefault,
@@ -584,8 +584,8 @@ mod tests {
             lane_id: Some("discord:channel:1".to_string()),
             logical_session_id: "discord:channel:1".to_string(),
             physical_session_id: Some("physical-1".to_string()),
-            backend: Some(BackendKind::Codex),
-            resolved_model: Some("gpt-5-codex".to_string()),
+            backend: Some(BackendKind::Claude),
+            resolved_model: Some("claude-opus-4-6".to_string()),
             resolved_reasoning_level: Some("medium".to_string()),
             profile_source: Some("global_default".to_string()),
             sequence: 1,
@@ -693,10 +693,10 @@ mod tests {
                 Some("discord:channel:1".to_string())
             );
             assert_eq!(outcome.emitted_event.physical_session_id, None);
-            assert_eq!(outcome.emitted_event.backend, Some(BackendKind::Codex));
+            assert_eq!(outcome.emitted_event.backend, Some(BackendKind::Claude));
             assert_eq!(
                 outcome.emitted_event.resolved_model,
-                Some("gpt-5-codex".to_string())
+                Some("claude-opus-4-6".to_string())
             );
             assert_eq!(
                 outcome.emitted_event.resolved_reasoning_level,
