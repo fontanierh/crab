@@ -169,8 +169,7 @@ pub fn execute_heartbeat_cycle<R: HeartbeatRuntime>(
         }
     }
 
-    let mut backend_heartbeats = runtime.list_backend_heartbeats()?;
-    backend_heartbeats.sort_by_key(|heartbeat| backend_sort_key(heartbeat.backend));
+    let backend_heartbeats = runtime.list_backend_heartbeats()?;
     for backend_heartbeat in backend_heartbeats {
         validate_backend_heartbeat(backend_heartbeat, now_epoch_ms)?;
         if !backend_heartbeat.is_persistent || backend_heartbeat.is_healthy {
@@ -305,12 +304,6 @@ fn validate_dispatcher_heartbeat(
         });
     }
     Ok(())
-}
-
-fn backend_sort_key(backend: BackendKind) -> u8 {
-    match backend {
-        BackendKind::Claude => 0,
-    }
 }
 
 #[cfg(test)]
@@ -875,24 +868,6 @@ mod tests {
     }
 
     #[test]
-    fn restart_error_lookup_supports_claude_branch() {
-        let mut runtime = FakeRuntime::new();
-        runtime.list_backend_heartbeats_result = Ok(vec![backend_heartbeat(
-            BackendKind::Claude,
-            true,
-            false,
-            1_000,
-        )]);
-        runtime
-            .restart_errors
-            .insert("claude".to_string(), boom("restart_claude"));
-
-        let error = execute_heartbeat_cycle(&mut runtime, &policy(), 100_000)
-            .expect_err("claude restart error should propagate when configured as persistent");
-        assert_eq!(error, boom("restart_claude"));
-    }
-
-    #[test]
     fn propagates_runtime_snapshot_errors() {
         let mut active_runs_error_runtime = FakeRuntime::new();
         active_runs_error_runtime.list_active_runs_result = Err(boom("list_active_runs"));
@@ -916,49 +891,35 @@ mod tests {
     }
 
     #[test]
-    fn backend_sort_key_maps_claude() {
-        assert_eq!(super::backend_sort_key(BackendKind::Claude), 0);
-    }
-
-    #[test]
-    fn heartbeat_skips_unhealthy_backend_below_stall_timeout() {
+    fn heartbeat_backend_stall_boundary_below_and_at_threshold() {
         let policy = policy();
         let stall_timeout_ms = policy.backend_stall_timeout_secs * 1_000;
         let now = 100_000u64;
-        let last_healthy = now - stall_timeout_ms + 1; // just under threshold
 
-        let mut runtime = FakeRuntime::new();
-        runtime.list_backend_heartbeats_result = Ok(vec![backend_heartbeat(
+        // Just under threshold: backend should NOT be restarted.
+        let mut below = FakeRuntime::new();
+        below.list_backend_heartbeats_result = Ok(vec![backend_heartbeat(
             BackendKind::Claude,
-            true,  // persistent
-            false, // unhealthy
-            last_healthy,
+            true,
+            false,
+            now - stall_timeout_ms + 1,
         )]);
-
-        let outcome = execute_heartbeat_cycle(&mut runtime, &policy, now).unwrap();
+        let below_outcome = execute_heartbeat_cycle(&mut below, &policy, now).unwrap();
         assert!(
-            outcome.restarted_backends.is_empty(),
+            below_outcome.restarted_backends.is_empty(),
             "backend below stall threshold should not be restarted"
         );
-    }
 
-    #[test]
-    fn heartbeat_restarts_persistent_unhealthy_backend_past_timeout() {
-        let policy = policy();
-        let stall_timeout_ms = policy.backend_stall_timeout_secs * 1_000;
-        let now = 100_000u64;
-        let last_healthy = now - stall_timeout_ms; // exactly at threshold
-
-        let mut runtime = FakeRuntime::new();
-        runtime.list_backend_heartbeats_result = Ok(vec![backend_heartbeat(
+        // Exactly at threshold: backend SHOULD be restarted.
+        let mut at = FakeRuntime::new();
+        at.list_backend_heartbeats_result = Ok(vec![backend_heartbeat(
             BackendKind::Claude,
-            true,  // persistent
-            false, // unhealthy
-            last_healthy,
+            true,
+            false,
+            now - stall_timeout_ms,
         )]);
-
-        let outcome = execute_heartbeat_cycle(&mut runtime, &policy, now).unwrap();
-        assert_eq!(outcome.restarted_backends, vec![BackendKind::Claude]);
-        assert_eq!(runtime.restart_calls, vec![BackendKind::Claude]);
+        let at_outcome = execute_heartbeat_cycle(&mut at, &policy, now).unwrap();
+        assert_eq!(at_outcome.restarted_backends, vec![BackendKind::Claude]);
+        assert_eq!(at.restart_calls, vec![BackendKind::Claude]);
     }
 }

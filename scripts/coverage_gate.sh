@@ -34,6 +34,8 @@ from collections import defaultdict
 from pathlib import Path
 
 lcov_path = Path(sys.argv[1])
+cargo_exit = int(sys.argv[2]) if len(sys.argv) > 2 else 0
+
 if not lcov_path.exists():
     print(f"coverage gate failed: missing {lcov_path}")
     sys.exit(1)
@@ -64,16 +66,21 @@ for raw in lcov_path.read_text(encoding="utf-8", errors="replace").splitlines():
 
 uncovered_lines = line_totals - line_covered
 
-if uncovered_lines == 0:
+if uncovered_lines == 0 and cargo_exit == 0:
     print(
         "coverage-gate: ok "
         f"(lines {line_covered}/{line_totals}, uncovered lines=0)"
     )
     sys.exit(0)
 
-print(f"coverage-gate: failed (uncovered lines={uncovered_lines})")
+if cargo_exit != 0:
+    print(
+        f"coverage-gate: failed "
+        f"(cargo llvm-cov exited {cargo_exit}, function coverage gate failed)"
+    )
 
 if uncovered_lines:
+    print(f"coverage-gate: failed (uncovered lines={uncovered_lines})")
     print("Top uncovered line locations:")
     rows = [
         (path, sorted(lines))
@@ -90,4 +97,4 @@ if uncovered_lines:
 sys.exit(1)
 PY
 
-python3 "$GATE_SCRIPT" "$LCOV_PATH" 2>&1
+python3 "$GATE_SCRIPT" "$LCOV_PATH" "$CARGO_EXIT"
