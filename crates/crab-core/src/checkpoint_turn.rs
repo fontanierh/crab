@@ -68,7 +68,7 @@ mod tests {
     fn valid_json() -> &'static str {
         r#"{
   "summary": "Session summary",
-  "decisions": ["Use codex backend"],
+  "decisions": ["Use claude backend"],
   "open_questions": ["Need model override?"],
   "next_actions": ["Implement checkpoint writer"],
   "artifacts": [{"path": "src/main.rs", "note": "entrypoint updated"}]
@@ -79,7 +79,7 @@ mod tests {
     fn parses_valid_document() {
         let parsed = parse_checkpoint_turn_document(valid_json()).expect("valid json should parse");
         assert_eq!(parsed.summary, "Session summary");
-        assert_eq!(parsed.decisions, vec!["Use codex backend".to_string()]);
+        assert_eq!(parsed.decisions, vec!["Use claude backend".to_string()]);
         assert_eq!(
             parsed.open_questions,
             vec!["Need model override?".to_string()]

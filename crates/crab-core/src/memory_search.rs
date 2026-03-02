@@ -1241,7 +1241,7 @@ mod tests {
         let workspace = TestWorkspace::create("case-phrase");
         workspace.write(
             "memory/users/111/2026-02-10.md",
-            "The Owner Default Backend Is Codex for this machine.",
+            "The Owner Default Backend Is Claude for this machine.",
         );
 
         let results = search_memory(&workspace.input("owner default backend"))

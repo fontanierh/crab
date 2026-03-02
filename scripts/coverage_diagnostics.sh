@@ -10,14 +10,11 @@ OUT_DIR="$ROOT_DIR/coverage"
 LCOV_OUT="$OUT_DIR/lcov.info"
 RAW_OUT="$OUT_DIR/coverage_diagnostics.txt"
 MISSING_OUT="$OUT_DIR/uncovered_locations.txt"
-IGNORE_REGEX='crates/crab-app/src/installer.rs'
-
 mkdir -p "$OUT_DIR"
 
 cd "$ROOT_DIR"
 
 cargo llvm-cov --workspace --all-features --locked \
-  --ignore-filename-regex "$IGNORE_REGEX" \
   --lcov --output-path "$LCOV_OUT" \
   >"$RAW_OUT" 2>&1
 

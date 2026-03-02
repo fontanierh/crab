@@ -3,7 +3,6 @@
 mod cli_support;
 mod composition;
 mod daemon;
-mod installer;
 mod maintenance;
 mod memory_cli;
 mod rotate_cli;
@@ -21,7 +20,6 @@ pub use daemon::{
     DaemonLoopControl, DaemonLoopStats, DaemonTurnRuntime, SystemDaemonLoopControl,
     DEFAULT_DAEMON_TICK_INTERVAL_MS,
 };
-pub use installer::run_installer_cli;
 pub use maintenance::{
     boot_runtime, boot_runtime_with_queue_limit, run_heartbeat_if_due,
     run_startup_reconciliation_on_boot, BootRuntime, HeartbeatLoopState,

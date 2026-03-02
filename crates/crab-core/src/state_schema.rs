@@ -72,13 +72,6 @@ pub struct StateSchemaCompatibilityReport {
     pub status: StateSchemaCompatibilityStatus,
 }
 
-impl StateSchemaCompatibilityReport {
-    #[must_use]
-    pub fn is_compatible(&self) -> bool {
-        self.status == StateSchemaCompatibilityStatus::Compatible
-    }
-}
-
 pub fn state_schema_marker_path(state_root: &Path) -> PathBuf {
     state_root.join(STATE_SCHEMA_MARKER_FILE_NAME)
 }
@@ -505,7 +498,7 @@ mod tests {
         assert_eq!(report.detected_version, 0);
         assert_eq!(report.supported_max_version, CURRENT_STATE_SCHEMA_VERSION);
         assert_eq!(report.status, StateSchemaCompatibilityStatus::Compatible);
-        assert!(report.is_compatible());
+        assert_eq!(report.status, StateSchemaCompatibilityStatus::Compatible);
     }
 
     #[test]
@@ -527,7 +520,7 @@ mod tests {
             report.status,
             StateSchemaCompatibilityStatus::UnsupportedTooNew
         );
-        assert!(!report.is_compatible());
+        assert_ne!(report.status, StateSchemaCompatibilityStatus::Compatible);
     }
 
     #[test]

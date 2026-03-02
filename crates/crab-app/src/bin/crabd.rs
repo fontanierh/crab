@@ -446,8 +446,6 @@ fn run_with_reader_and_control(
     reader: &mut dyn BufRead,
     control: &mut dyn DaemonLoopControl,
 ) -> CrabResult<DaemonLoopStats> {
-    const TEST_DETERMINISTIC_TRANSPORT_ENV: &str =
-        "CRAB_DAEMON_FORCE_DETERMINISTIC_CODEX_TRANSPORT";
     const TEST_DETERMINISTIC_CLAUDE_ENV: &str = "CRAB_DAEMON_FORCE_DETERMINISTIC_CLAUDE_PROCESS";
     static TEST_ENV_LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
 
@@ -456,7 +454,6 @@ fn run_with_reader_and_control(
         .lock()
         .expect("test env lock should succeed");
 
-    std::env::set_var(TEST_DETERMINISTIC_TRANSPORT_ENV, "1");
     std::env::set_var(TEST_DETERMINISTIC_CLAUDE_ENV, "1");
 
     let result = (|| {
@@ -465,7 +462,6 @@ fn run_with_reader_and_control(
         run_with_values_and_discord_and_control(values, discord, control)
     })();
 
-    std::env::remove_var(TEST_DETERMINISTIC_TRANSPORT_ENV);
     std::env::remove_var(TEST_DETERMINISTIC_CLAUDE_ENV);
     result
 }

@@ -8,15 +8,12 @@ ROOT_DIR="$(
 
 OUT_DIR="$ROOT_DIR/coverage"
 LCOV_PATH="$OUT_DIR/lcov.info"
-IGNORE_REGEX='crates/crab-app/src/installer.rs'
-
 mkdir -p "$OUT_DIR"
 
 cd "$ROOT_DIR"
 
 CARGO_EXIT=0
 cargo llvm-cov --workspace --all-features --locked \
-  --ignore-filename-regex "$IGNORE_REGEX" \
   --fail-under-functions 100 \
   --fail-uncovered-functions 0 \
   --lcov --output-path "$LCOV_PATH" || CARGO_EXIT=$?

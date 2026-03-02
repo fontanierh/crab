@@ -9,7 +9,6 @@ pub mod context_diagnostics;
 pub mod diagnostics;
 pub mod domain;
 pub mod error;
-pub mod fallback;
 pub(crate) mod file_signal;
 pub mod heartbeat;
 pub mod memory_citation;
@@ -24,7 +23,6 @@ pub mod operator_commands;
 pub mod pending_rotation;
 pub mod profile;
 pub mod prompt_contract;
-pub mod rotation;
 pub mod rotation_sequence;
 pub mod self_trigger;
 pub mod sender_identity;
@@ -39,10 +37,7 @@ pub mod workspace;
 pub use checkpoint_turn::{
     parse_checkpoint_turn_document, CheckpointTurnArtifact, CheckpointTurnDocument,
 };
-pub use compatibility::{
-    evaluate_profile_compatibility, BackendCompatibilityCatalog, BackendCompatibilityRules,
-    CompatibilityIssue, CompatibilityReport, AUTO_MODEL_ALIAS,
-};
+pub use compatibility::AUTO_MODEL_ALIAS;
 pub use config::{OwnerConfig, OwnerProfileDefaults, RuntimeConfig};
 pub use context_assembly::{
     assemble_turn_context, ContextAssemblyInput, ContextMemorySnippet, CONTEXT_INJECTION_ORDER,
@@ -72,7 +67,6 @@ pub use domain::{
     RunProfileTelemetry, RunStatus, TokenAccounting,
 };
 pub use error::{CrabError, CrabResult};
-pub use fallback::{apply_fallback_policy, FallbackDecision, FallbackPolicyMode};
 pub use heartbeat::{
     execute_heartbeat_cycle, ActiveRunHeartbeat, BackendHeartbeat, DispatcherHeartbeat,
     HeartbeatComponent, HeartbeatEvent, HeartbeatOutcome, HeartbeatPolicy, HeartbeatRunAction,
@@ -130,7 +124,6 @@ pub use profile::{
     ResolvedInferenceProfile,
 };
 pub use prompt_contract::{compile_prompt_contract, PromptContractInput};
-pub use rotation::RotationTrigger;
 pub use rotation_sequence::{
     execute_rotation_sequence, RotationSequenceOutcome, RotationSequenceRuntime,
 };
