@@ -506,16 +506,16 @@ mod tests {
             DiagnosticEvent::RunStarted {
                 logical_session_id: "discord:channel:123".to_string(),
                 run_id: "run-2".to_string(),
-                backend: BackendKind::OpenCode,
-                model: "o4-mini".to_string(),
+                backend: BackendKind::Claude,
+                model: "claude-sonnet-4".to_string(),
                 reasoning_level: ReasoningLevel::High,
             },
             DiagnosticSeverity::Info,
             DiagnosticCategory::RunLifecycle,
             "run_started",
         );
-        assert_eq!(started.fields["backend"], "opencode");
-        assert_eq!(started.fields["model"], "o4-mini");
+        assert_eq!(started.fields["backend"], "claude");
+        assert_eq!(started.fields["model"], "claude-sonnet-4");
         assert_eq!(started.fields["reasoning_level"], "high");
 
         let completed_ok = assert_record(
@@ -560,7 +560,7 @@ mod tests {
         let backend_restarted = build_diagnostic_record(
             1_739_281_600_000,
             DiagnosticEvent::BackendRestarted {
-                backend: BackendKind::Codex,
+                backend: BackendKind::Claude,
                 reason: "heartbeat_unhealthy".to_string(),
                 logical_session_id: None,
                 run_id: None,
@@ -574,7 +574,7 @@ mod tests {
         );
         assert_eq!(backend_restarted.logical_session_id, None);
         assert_eq!(backend_restarted.run_id, None);
-        assert_eq!(backend_restarted.fields["backend"], "codex");
+        assert_eq!(backend_restarted.fields["backend"], "claude");
 
         let rotation_started = assert_record(
             DiagnosticEvent::RotationStarted {
@@ -613,14 +613,14 @@ mod tests {
         let operator_applied = assert_record(
             DiagnosticEvent::OperatorCommandApplied {
                 logical_session_id: "discord:channel:123".to_string(),
-                command_name: "/backend codex".to_string(),
+                command_name: "/backend claude".to_string(),
                 requires_rotation: true,
             },
             DiagnosticSeverity::Info,
             DiagnosticCategory::Operator,
             "operator_command_applied",
         );
-        assert_eq!(operator_applied.fields["command_name"], "/backend codex");
+        assert_eq!(operator_applied.fields["command_name"], "/backend claude");
         assert_eq!(operator_applied.fields["requires_rotation"], "true");
     }
 
@@ -686,8 +686,8 @@ mod tests {
             DiagnosticEvent::RunStarted {
                 logical_session_id: "discord:channel:123".to_string(),
                 run_id: "run-7".to_string(),
-                backend: BackendKind::Codex,
-                model: "gpt-5-codex".to_string(),
+                backend: BackendKind::Claude,
+                model: "claude-sonnet-4".to_string(),
                 reasoning_level: ReasoningLevel::Medium,
             },
         )
@@ -880,7 +880,7 @@ mod tests {
         let mut blank_session = build_diagnostic_record(
             1_739_281_600_303,
             DiagnosticEvent::BackendRestarted {
-                backend: BackendKind::Codex,
+                backend: BackendKind::Claude,
                 reason: "restart".to_string(),
                 logical_session_id: Some("discord:channel:123".to_string()),
                 run_id: None,
@@ -901,7 +901,7 @@ mod tests {
         let mut blank_run = build_diagnostic_record(
             1_739_281_600_304,
             DiagnosticEvent::BackendRestarted {
-                backend: BackendKind::Codex,
+                backend: BackendKind::Claude,
                 reason: "restart".to_string(),
                 logical_session_id: Some("discord:channel:123".to_string()),
                 run_id: Some("run-16".to_string()),
@@ -921,7 +921,7 @@ mod tests {
         let mut blank_physical = build_diagnostic_record(
             1_739_281_600_305,
             DiagnosticEvent::BackendRestarted {
-                backend: BackendKind::Codex,
+                backend: BackendKind::Claude,
                 reason: "restart".to_string(),
                 logical_session_id: Some("discord:channel:123".to_string()),
                 run_id: None,

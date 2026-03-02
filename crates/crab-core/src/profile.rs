@@ -29,16 +29,12 @@ pub struct BackendInferenceDefault {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct BackendInferenceDefaults {
     pub claude: BackendInferenceDefault,
-    pub codex: BackendInferenceDefault,
-    pub opencode: BackendInferenceDefault,
 }
 
 impl BackendInferenceDefaults {
     fn for_backend(&self, backend: BackendKind) -> &BackendInferenceDefault {
         match backend {
             BackendKind::Claude => &self.claude,
-            BackendKind::Codex => &self.codex,
-            BackendKind::OpenCode => &self.opencode,
         }
     }
 }
@@ -157,12 +153,6 @@ fn validate_resolution_input(input: &InferenceProfileResolutionInput) -> CrabRes
     if let Some(model) = input.backend_defaults.claude.model.as_deref() {
         validate_non_empty_text(context, "backend_defaults.claude.model", model)?;
     }
-    if let Some(model) = input.backend_defaults.codex.model.as_deref() {
-        validate_non_empty_text(context, "backend_defaults.codex.model", model)?;
-    }
-    if let Some(model) = input.backend_defaults.opencode.model.as_deref() {
-        validate_non_empty_text(context, "backend_defaults.opencode.model", model)?;
-    }
 
     if let Some(session_profile) = input.session_profile.as_ref() {
         validate_non_empty_text(context, "session_profile.model", &session_profile.model)?;
@@ -196,7 +186,7 @@ mod tests {
 
     fn global_default() -> InferenceProfile {
         InferenceProfile {
-            backend: BackendKind::Codex,
+            backend: BackendKind::Claude,
             model: "global-model".to_string(),
             reasoning_level: ReasoningLevel::Medium,
         }
@@ -207,14 +197,6 @@ mod tests {
             claude: BackendInferenceDefault {
                 model: Some("claude-default".to_string()),
                 reasoning_level: Some(ReasoningLevel::Low),
-            },
-            codex: BackendInferenceDefault {
-                model: Some("codex-default".to_string()),
-                reasoning_level: Some(ReasoningLevel::High),
-            },
-            opencode: BackendInferenceDefault {
-                model: Some("opencode-default".to_string()),
-                reasoning_level: Some(ReasoningLevel::Minimal),
             },
         }
     }
@@ -264,31 +246,31 @@ mod tests {
     fn backend_precedence_matrix() {
         let cases = [
             (
-                Some(BackendKind::OpenCode),
+                Some(BackendKind::Claude),
                 true,
                 Some(BackendKind::Claude),
-                BackendKind::OpenCode,
+                BackendKind::Claude,
                 ProfileValueSource::TurnOverride,
             ),
             (
                 None,
                 true,
-                Some(BackendKind::OpenCode),
+                Some(BackendKind::Claude),
                 BackendKind::Claude,
                 ProfileValueSource::SessionProfile,
             ),
             (
                 None,
                 false,
-                Some(BackendKind::OpenCode),
-                BackendKind::OpenCode,
+                Some(BackendKind::Claude),
+                BackendKind::Claude,
                 ProfileValueSource::ChannelOverride,
             ),
             (
                 None,
                 false,
                 None,
-                BackendKind::Codex,
+                BackendKind::Claude,
                 ProfileValueSource::GlobalDefault,
             ),
         ];
@@ -315,7 +297,7 @@ mod tests {
                 Some("turn-model"),
                 true,
                 Some("channel-model"),
-                Some("codex-default"),
+                Some("claude-default"),
                 "turn-model",
                 ProfileValueSource::TurnOverride,
             ),
@@ -323,7 +305,7 @@ mod tests {
                 None,
                 true,
                 Some("channel-model"),
-                Some("codex-default"),
+                Some("claude-default"),
                 "session-model",
                 ProfileValueSource::SessionProfile,
             ),
@@ -331,7 +313,7 @@ mod tests {
                 None,
                 false,
                 Some("channel-model"),
-                Some("codex-default"),
+                Some("claude-default"),
                 "channel-model",
                 ProfileValueSource::ChannelOverride,
             ),
@@ -339,8 +321,8 @@ mod tests {
                 None,
                 false,
                 None,
-                Some("codex-default"),
-                "codex-default",
+                Some("claude-default"),
+                "claude-default",
                 ProfileValueSource::BackendDefault,
             ),
             (
@@ -367,7 +349,7 @@ mod tests {
             input.channel_override =
                 channel_model.map(|model| profile_override(None, Some(model), None));
             input.session_profile = has_session.then(session_profile);
-            input.backend_defaults.codex.model = backend_default_model.map(str::to_string);
+            input.backend_defaults.claude.model = backend_default_model.map(str::to_string);
 
             let resolved = resolve_inference_profile(&input).expect("resolution should succeed");
             assert_eq!(resolved.profile.model, expected_model);
@@ -435,7 +417,7 @@ mod tests {
             input.channel_override =
                 channel_reasoning.map(|value| profile_override(None, None, Some(value)));
             input.session_profile = has_session.then(session_profile);
-            input.backend_defaults.codex.reasoning_level = backend_default_reasoning;
+            input.backend_defaults.claude.reasoning_level = backend_default_reasoning;
 
             let resolved = resolve_inference_profile(&input).expect("resolution should succeed");
             assert_eq!(resolved.profile.reasoning_level, expected_reasoning);
@@ -445,15 +427,7 @@ mod tests {
 
     #[test]
     fn backend_defaults_follow_resolved_backend() {
-        let cases = [
-            (BackendKind::Claude, "claude-default", ReasoningLevel::Low),
-            (BackendKind::Codex, "codex-default", ReasoningLevel::High),
-            (
-                BackendKind::OpenCode,
-                "opencode-default",
-                ReasoningLevel::Minimal,
-            ),
-        ];
+        let cases = [(BackendKind::Claude, "claude-default", ReasoningLevel::Low)];
 
         for (backend, expected_model, expected_reasoning) in cases {
             let mut input = base_input();
@@ -487,33 +461,19 @@ mod tests {
         channel_input.channel_override = Some(profile_override(None, Some(" "), None));
         assert_blank_model_error(channel_input, "channel_override.model");
 
-        let backend_fields = [
-            ("backend_defaults.claude.model", BackendKind::Claude),
-            ("backend_defaults.codex.model", BackendKind::Codex),
-            ("backend_defaults.opencode.model", BackendKind::OpenCode),
-        ];
-        for (field, backend) in backend_fields {
-            let mut input = base_input();
-            match backend {
-                BackendKind::Claude => input.backend_defaults.claude.model = Some(" ".to_string()),
-                BackendKind::Codex => input.backend_defaults.codex.model = Some(" ".to_string()),
-                BackendKind::OpenCode => {
-                    input.backend_defaults.opencode.model = Some(" ".to_string())
-                }
-            }
-            assert_blank_model_error(input, field);
-        }
+        let mut claude_input = base_input();
+        claude_input.backend_defaults.claude.model = Some(" ".to_string());
+        assert_blank_model_error(claude_input, "backend_defaults.claude.model");
     }
 
     #[test]
     fn allows_missing_optional_backend_default_models() {
         let mut input = base_input();
         input.backend_defaults.claude.model = None;
-        input.backend_defaults.opencode.model = None;
 
         let resolved = resolve_inference_profile(&input).expect("resolution should succeed");
-        assert_eq!(resolved.profile.backend, BackendKind::Codex);
-        assert_eq!(resolved.profile.model, "codex-default");
-        assert_eq!(resolved.model_source, ProfileValueSource::BackendDefault);
+        assert_eq!(resolved.profile.backend, BackendKind::Claude);
+        assert_eq!(resolved.profile.model, "global-model");
+        assert_eq!(resolved.model_source, ProfileValueSource::GlobalDefault);
     }
 }

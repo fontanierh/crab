@@ -182,8 +182,8 @@ mod tests {
     fn owner_config_with_defaults() -> OwnerConfig {
         let mut owner = empty_owner_config();
         owner.aliases = vec!["captain-crab".to_string()];
-        owner.profile_defaults.backend = Some(BackendKind::Codex);
-        owner.profile_defaults.model = Some("gpt-5-codex".to_string());
+        owner.profile_defaults.backend = Some(BackendKind::Claude);
+        owner.profile_defaults.model = Some("claude-opus-4-6".to_string());
         owner.profile_defaults.reasoning_level = Some(ReasoningLevel::High);
         owner.machine_location = Some("Paris, France".to_string());
         owner.machine_timezone = Some("Europe/Paris".to_string());
@@ -264,8 +264,11 @@ mod tests {
             owner_profile.machine_timezone,
             Some("Europe/Paris".to_string())
         );
-        assert_eq!(owner_profile.default_backend, Some(BackendKind::Codex));
-        assert_eq!(owner_profile.default_model, Some("gpt-5-codex".to_string()));
+        assert_eq!(owner_profile.default_backend, Some(BackendKind::Claude));
+        assert_eq!(
+            owner_profile.default_model,
+            Some("claude-opus-4-6".to_string())
+        );
         assert_eq!(
             owner_profile.default_reasoning_level,
             Some(ReasoningLevel::High)

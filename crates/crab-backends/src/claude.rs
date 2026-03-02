@@ -433,12 +433,6 @@ impl Stream for ClaudeNormalizeStream {
 }
 
 fn ensure_claude_session(context: &'static str, session: &PhysicalSession) -> CrabResult<()> {
-    if session.backend != BackendKind::Claude {
-        return Err(CrabError::InvariantViolation {
-            context,
-            message: format!("expected Claude session backend, got {:?}", session.backend),
-        });
-    }
     ensure_non_empty_field(context, "backend_session_id", &session.backend_session_id)
 }
 
@@ -601,13 +595,6 @@ mod tests {
             backend_session_id: "resume-1".to_string(),
             created_at_epoch_ms: 1,
             last_turn_id: None,
-        }
-    }
-
-    fn codex_session() -> PhysicalSession {
-        PhysicalSession {
-            backend: BackendKind::Codex,
-            ..claude_session()
         }
     }
 
@@ -1000,58 +987,6 @@ mod tests {
             CrabError::InvariantViolation {
                 context: "claude_backend_create_session",
                 message: "backend_session_id must not be empty".to_string()
-            }
-        );
-    }
-
-    #[test]
-    fn send_turn_requires_claude_session_backend() {
-        let process = FakeProcess::new("resume-1", vec![]);
-        let backend = ClaudeBackend::new(process);
-        let mut session = codex_session();
-
-        let err = block_on(backend.send_turn(&mut session, turn_input()))
-            .err()
-            .expect("non-claude session should fail");
-        assert_eq!(
-            err,
-            CrabError::InvariantViolation {
-                context: "claude_backend_send_turn",
-                message: "expected Claude session backend, got Codex".to_string()
-            }
-        );
-    }
-
-    #[test]
-    fn interrupt_turn_requires_claude_session_backend() {
-        let process = FakeProcess::new("resume-1", vec![]);
-        let backend = ClaudeBackend::new(process);
-        let session = codex_session();
-
-        let err = block_on(backend.interrupt_turn(&session, "turn-7"))
-            .expect_err("non-claude session should fail");
-        assert_eq!(
-            err,
-            CrabError::InvariantViolation {
-                context: "claude_backend_interrupt_turn",
-                message: "expected Claude session backend, got Codex".to_string()
-            }
-        );
-    }
-
-    #[test]
-    fn end_session_requires_claude_session_backend() {
-        let process = FakeProcess::new("resume-1", vec![]);
-        let backend = ClaudeBackend::new(process);
-        let session = codex_session();
-
-        let err =
-            block_on(backend.end_session(&session)).expect_err("non-claude session should fail");
-        assert_eq!(
-            err,
-            CrabError::InvariantViolation {
-                context: "claude_backend_end_session",
-                message: "expected Claude session backend, got Codex".to_string()
             }
         );
     }

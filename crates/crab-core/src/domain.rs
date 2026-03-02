@@ -8,8 +8,6 @@ use crate::profile::ProfileValueSource;
 #[serde(rename_all = "snake_case")]
 pub enum BackendKind {
     Claude,
-    Codex,
-    OpenCode,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -293,8 +291,8 @@ mod tests {
 
     fn sample_profile() -> InferenceProfile {
         InferenceProfile {
-            backend: BackendKind::Codex,
-            model: "gpt-5-codex".to_string(),
+            backend: BackendKind::Claude,
+            model: "claude-sonnet".to_string(),
             reasoning_level: ReasoningLevel::High,
         }
     }
@@ -312,7 +310,7 @@ mod tests {
     fn sample_run_profile_telemetry() -> RunProfileTelemetry {
         RunProfileTelemetry {
             requested_profile: Some(InferenceProfile {
-                backend: BackendKind::Codex,
+                backend: BackendKind::Claude,
                 model: "legacy".to_string(),
                 reasoning_level: ReasoningLevel::XHigh,
             }),
@@ -327,8 +325,8 @@ mod tests {
             resolved_owner_profile: Some(OwnerProfileMetadata {
                 machine_location: Some("Paris, France".to_string()),
                 machine_timezone: Some("Europe/Paris".to_string()),
-                default_backend: Some(BackendKind::Codex),
-                default_model: Some("gpt-5-codex".to_string()),
+                default_backend: Some(BackendKind::Claude),
+                default_model: Some("claude-sonnet".to_string()),
                 default_reasoning_level: Some(ReasoningLevel::High),
             }),
         }
@@ -338,7 +336,7 @@ mod tests {
     fn logical_session_round_trip() {
         let session = LogicalSession {
             id: "discord:channel:123".to_string(),
-            active_backend: BackendKind::Codex,
+            active_backend: BackendKind::Claude,
             active_profile: sample_profile(),
             active_physical_session_id: Some("thread_abc".to_string()),
             last_successful_checkpoint_id: Some("ckpt_9".to_string()),
@@ -414,8 +412,8 @@ mod tests {
             lane_id: Some("discord:channel:123".to_string()),
             logical_session_id: "discord:channel:123".to_string(),
             physical_session_id: Some("physical_1".to_string()),
-            backend: Some(BackendKind::Codex),
-            resolved_model: Some("gpt-5-codex".to_string()),
+            backend: Some(BackendKind::Claude),
+            resolved_model: Some("claude-sonnet".to_string()),
             resolved_reasoning_level: Some("high".to_string()),
             profile_source: Some("fallback".to_string()),
             sequence: 7,

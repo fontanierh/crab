@@ -3,20 +3,15 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::RecvTimeoutError;
 use std::time::Duration;
 
-use crab_backends::{
-    BackendEvent, BackendEventKind, BackendEventStream, CodexAppServerProcess,
-    CodexLifecycleManager, OpenCodeServerProcess,
-};
+use crab_backends::{BackendEvent, BackendEventKind, BackendEventStream};
 use crab_core::{
     build_onboarding_extraction_prompt, consume_pending_rotation, detect_workspace_bootstrap_state,
-    enqueue_workspace_git_push_request, execute_onboarding_completion_protocol,
-    execute_rotation_sequence, maybe_commit_workspace_snapshot, parse_onboarding_capture_document,
-    persist_onboarding_profile_files, read_pending_rotations, Checkpoint, CheckpointTurnDocument,
-    CrabError, CrabResult, EventEnvelope, EventKind, EventSource, InferenceProfile, LaneState,
-    LogicalSession, OnboardingCompletionEventRuntime, OnboardingCompletionInput, PhysicalSession,
-    RotationSequenceRuntime, Run, RunProfileTelemetry, RunStatus, TokenAccounting,
-    WorkspaceBootstrapState, WorkspaceGitCommitRequest, WorkspaceGitCommitTrigger,
-    WorkspaceGitPushRequest, ONBOARDING_CAPTURE_INCOMPLETE_TOKEN,
+    execute_onboarding_completion_protocol, execute_rotation_sequence,
+    parse_onboarding_capture_document, persist_onboarding_profile_files, read_pending_rotations,
+    Checkpoint, CheckpointTurnDocument, CrabError, CrabResult, EventEnvelope, EventKind,
+    EventSource, InferenceProfile, LaneState, LogicalSession, OnboardingCompletionEventRuntime,
+    OnboardingCompletionInput, PhysicalSession, RotationSequenceRuntime, Run, RunProfileTelemetry,
+    RunStatus, TokenAccounting, WorkspaceBootstrapState, ONBOARDING_CAPTURE_INCOMPLETE_TOKEN,
 };
 use crab_discord::{
     DeliveryAttempt, GatewayAttachment, GatewayMessage, RoutingKey, ShouldSendDecision,
@@ -75,7 +70,6 @@ pub trait TurnExecutorRuntime {
 
     fn execute_backend_turn(
         &mut self,
-        codex_lifecycle: &mut dyn CodexLifecycleManager,
         physical_session: &mut PhysicalSession,
         run: &Run,
         turn_id: &str,
@@ -100,24 +94,14 @@ pub trait TurnExecutorRuntime {
     ) -> CrabResult<()>;
 }
 
-pub struct TurnExecutor<CP, OP, R>
-where
-    CP: CodexAppServerProcess,
-    OP: OpenCodeServerProcess,
-    R: TurnExecutorRuntime,
-{
-    composition: AppComposition<CP, OP>,
+pub struct TurnExecutor<R: TurnExecutorRuntime> {
+    composition: AppComposition,
     runtime: R,
 }
 
-impl<CP, OP, R> TurnExecutor<CP, OP, R>
-where
-    CP: CodexAppServerProcess,
-    OP: OpenCodeServerProcess,
-    R: TurnExecutorRuntime,
-{
+impl<R: TurnExecutorRuntime> TurnExecutor<R> {
     #[must_use]
-    pub fn new(composition: AppComposition<CP, OP>, runtime: R) -> Self {
+    pub fn new(composition: AppComposition, runtime: R) -> Self {
         Self {
             composition,
             runtime,
@@ -125,12 +109,12 @@ where
     }
 
     #[must_use]
-    pub fn composition(&self) -> &AppComposition<CP, OP> {
+    pub fn composition(&self) -> &AppComposition {
         &self.composition
     }
 
     #[must_use]
-    pub fn composition_mut(&mut self) -> &mut AppComposition<CP, OP> {
+    pub fn composition_mut(&mut self) -> &mut AppComposition {
         &mut self.composition
     }
 
@@ -482,7 +466,6 @@ where
                     .upsert_session(&session)?;
             }
             let backend_event_stream = self.runtime.execute_backend_turn(
-                &mut self.composition.backends.codex,
                 &mut physical_session,
                 &run,
                 &turn_id,
@@ -693,12 +676,6 @@ where
             .state_stores
             .session_store
             .upsert_session(&session)?;
-        self.maybe_persist_workspace_git_commits(
-            &run,
-            final_status,
-            completed_at_epoch_ms,
-            rotation_outcome.as_ref(),
-        );
 
         cleanup_attachment_directory(&self.composition.state_stores.root, &run.id);
 
@@ -855,7 +832,6 @@ where
         hidden_onboarding_run.physical_session_id = Some(physical_session.id.clone());
         let hidden_turn_id = format!("turn:{}:hidden-onboarding-capture", run.id);
         let mut backend_event_stream = self.runtime.execute_backend_turn(
-            &mut self.composition.backends.codex,
             &mut physical_session,
             &hidden_onboarding_run,
             &hidden_turn_id,
@@ -1086,131 +1062,6 @@ where
             .upsert_session(&session)?;
 
         self.append_run_state_event(&run, "failed", now_epoch_ms, Some(cause.to_string()))
-    }
-
-    fn maybe_persist_workspace_git_commits(
-        &self,
-        run: &Run,
-        final_status: RunStatus,
-        completed_at_epoch_ms: u64,
-        rotation_outcome: Option<&RotationExecutionOutcome>,
-    ) {
-        if final_status != RunStatus::Succeeded {
-            return;
-        }
-
-        if let Some(rotation_outcome) = rotation_outcome {
-            self.try_persist_workspace_git_commit(
-                run,
-                WorkspaceGitCommitTrigger::RotationCheckpoint,
-                Some(rotation_outcome.checkpoint_id.as_str()),
-                Some(run_status_token(final_status)),
-                completed_at_epoch_ms,
-            );
-        }
-
-        self.try_persist_workspace_git_commit(
-            run,
-            WorkspaceGitCommitTrigger::RunFinalized,
-            None,
-            Some(run_status_token(final_status)),
-            completed_at_epoch_ms,
-        );
-    }
-
-    fn try_persist_workspace_git_commit(
-        &self,
-        run: &Run,
-        trigger: WorkspaceGitCommitTrigger,
-        checkpoint_id: Option<&str>,
-        run_status: Option<&str>,
-        emitted_at_epoch_ms: u64,
-    ) {
-        let request = WorkspaceGitCommitRequest {
-            logical_session_id: run.logical_session_id.clone(),
-            run_id: run.id.clone(),
-            trigger,
-            checkpoint_id: checkpoint_id.map(ToOwned::to_owned),
-            run_status: run_status.map(ToOwned::to_owned),
-            emitted_at_epoch_ms,
-        };
-
-        let result = maybe_commit_workspace_snapshot(
-            &self.composition.startup.workspace_root,
-            &self.composition.workspace_git,
-            &request,
-        );
-        let _ = result.as_ref().map(|outcome| {
-            self.maybe_enqueue_workspace_git_push(run, trigger, emitted_at_epoch_ms, outcome);
-            #[cfg(not(coverage))]
-            if !outcome.staging_skipped_paths.is_empty() {
-                tracing::info!(
-                    logical_session_id = %run.logical_session_id,
-                    run_id = %run.id,
-                    trigger = %trigger.as_token(),
-                    skipped_paths = ?outcome.staging_skipped_paths,
-                    "workspace git staging policy skipped paths"
-                );
-            }
-        });
-        #[cfg(not(coverage))]
-        if let Err(_error) = &result {
-            tracing::warn!(
-                logical_session_id = %run.logical_session_id,
-                run_id = %run.id,
-                trigger = %trigger.as_token(),
-                error = %_error,
-                "workspace git commit persistence failed"
-            );
-        }
-    }
-
-    fn maybe_enqueue_workspace_git_push(
-        &self,
-        run: &Run,
-        trigger: WorkspaceGitCommitTrigger,
-        emitted_at_epoch_ms: u64,
-        commit_outcome: &crab_core::WorkspaceGitCommitOutcome,
-    ) {
-        #[cfg(coverage)]
-        let _ = (run, trigger);
-
-        if !commit_outcome.enabled {
-            return;
-        }
-        if self.composition.workspace_git.push_policy != crab_core::WorkspaceGitPushPolicy::OnCommit
-        {
-            return;
-        }
-
-        let Some(commit_key) = commit_outcome.commit_key.as_deref() else {
-            return;
-        };
-        let Some(commit_id) = commit_outcome.commit_id.as_deref() else {
-            return;
-        };
-
-        let push_request = WorkspaceGitPushRequest {
-            commit_key: commit_key.to_string(),
-            commit_id: commit_id.to_string(),
-            enqueued_at_epoch_ms: emitted_at_epoch_ms,
-        };
-        let enqueue_result = enqueue_workspace_git_push_request(
-            &self.composition.state_stores.root,
-            &self.composition.workspace_git,
-            &push_request,
-        );
-        if let Err(_error) = enqueue_result {
-            #[cfg(not(coverage))]
-            tracing::warn!(
-                logical_session_id = %run.logical_session_id,
-                run_id = %run.id,
-                trigger = %trigger.as_token(),
-                commit_key = %commit_key,
-                error = %_error,
-                "workspace git push queue enqueue failed"
-            );
-        }
     }
 
     fn load_required_run(&self, logical_session_id: &str, run_id: &str) -> CrabResult<Run> {
@@ -1972,12 +1823,7 @@ fn split_at_char_limit(value: &str, limit: usize) -> (String, String) {
     (prefix.to_string(), remainder.to_string())
 }
 
-impl<CP, OP, R> OnboardingCompletionEventRuntime for TurnExecutor<CP, OP, R>
-where
-    CP: CodexAppServerProcess,
-    OP: OpenCodeServerProcess,
-    R: TurnExecutorRuntime,
-{
+impl<R: TurnExecutorRuntime> OnboardingCompletionEventRuntime for TurnExecutor<R> {
     fn next_event_sequence(&self, logical_session_id: &str, run_id: &str) -> CrabResult<u64> {
         TurnExecutor::next_event_sequence(self, logical_session_id, run_id)
     }
@@ -2079,7 +1925,6 @@ mod tests {
     use crab_core::{
         BackendKind, CrabError, CrabResult, EventKind, InferenceProfile, LaneState,
         OwnerProfileMetadata, ProfileValueSource, ReasoningLevel, RunProfileTelemetry, RunStatus,
-        WorkspaceGitPushPolicy,
     };
     use crab_discord::{GatewayAttachment, GatewayConversationKind, GatewayMessage};
     use futures::stream;
@@ -2089,11 +1934,8 @@ mod tests {
         sanitize_attachment_filename, DispatchedTurn, QueuedTurn, TurnExecutor,
         TurnExecutorRuntime,
     };
-    use crate::composition::compose_runtime_with_processes_and_queue_limit;
-    use crate::test_support::{
-        runtime_config_for_workspace_with_lanes, FakeCodexProcess, FakeOpenCodeProcess,
-        TempWorkspace,
-    };
+    use crate::composition::compose_runtime_with_queue_limit;
+    use crate::test_support::{runtime_config_for_workspace_with_lanes, TempWorkspace};
 
     #[derive(Debug, Clone)]
     struct FakeRuntime {
@@ -2249,7 +2091,6 @@ mod tests {
 
         fn execute_backend_turn(
             &mut self,
-            _codex_lifecycle: &mut dyn crab_backends::CodexLifecycleManager,
             _physical_session: &mut crab_core::PhysicalSession,
             _run: &crab_core::Run,
             turn_id: &str,
@@ -2321,8 +2162,8 @@ mod tests {
         RunProfileTelemetry {
             requested_profile: None,
             resolved_profile: InferenceProfile {
-                backend: BackendKind::Codex,
-                model: "gpt-5-codex".to_string(),
+                backend: BackendKind::Claude,
+                model: "claude-sonnet-4-5".to_string(),
                 reasoning_level: ReasoningLevel::Medium,
             },
             backend_source: ProfileValueSource::GlobalDefault,
@@ -2343,8 +2184,8 @@ mod tests {
         telemetry.resolved_owner_profile = Some(OwnerProfileMetadata {
             machine_location: Some("Paris, France".to_string()),
             machine_timezone: Some("Europe/Paris".to_string()),
-            default_backend: Some(BackendKind::Codex),
-            default_model: Some("gpt-5-codex".to_string()),
+            default_backend: Some(BackendKind::Claude),
+            default_model: Some("claude-sonnet-4-5".to_string()),
             default_reasoning_level: Some(ReasoningLevel::High),
         });
         telemetry
@@ -2443,7 +2284,7 @@ mod tests {
     ) -> crab_core::LogicalSession {
         crab_core::LogicalSession {
             id: logical_session_id.to_string(),
-            active_backend: BackendKind::Codex,
+            active_backend: BackendKind::Claude,
             active_profile: profile.clone(),
             active_physical_session_id: Some("physical-1".to_string()),
             last_successful_checkpoint_id: None,
@@ -2465,7 +2306,7 @@ mod tests {
         crab_core::PhysicalSession {
             id: "physical-1".to_string(),
             logical_session_id: "discord:channel:777".to_string(),
-            backend: BackendKind::Codex,
+            backend: BackendKind::Claude,
             backend_session_id: "thread-abc".to_string(),
             created_at_epoch_ms: 1_739_173_200_000,
             last_turn_id: None,
@@ -2497,16 +2338,11 @@ mod tests {
         runtime: FakeRuntime,
         lane_queue_limit: usize,
         config: crab_core::RuntimeConfig,
-    ) -> TurnExecutor<FakeCodexProcess, FakeOpenCodeProcess, FakeRuntime> {
+    ) -> TurnExecutor<FakeRuntime> {
         let bootstrap_path = Path::new(config.workspace_root.as_str()).join("BOOTSTRAP.md");
-        let composition = compose_runtime_with_processes_and_queue_limit(
-            &config,
-            "999999999999999999",
-            FakeCodexProcess,
-            FakeOpenCodeProcess,
-            lane_queue_limit,
-        )
-        .expect("composition should build");
+        let composition =
+            compose_runtime_with_queue_limit(&config, "999999999999999999", lane_queue_limit)
+                .expect("composition should build");
         let _ = std::fs::remove_file(&bootstrap_path);
         TurnExecutor::new(composition, runtime)
     }
@@ -2515,7 +2351,7 @@ mod tests {
         workspace: &TempWorkspace,
         runtime: FakeRuntime,
         lane_queue_limit: usize,
-    ) -> TurnExecutor<FakeCodexProcess, FakeOpenCodeProcess, FakeRuntime> {
+    ) -> TurnExecutor<FakeRuntime> {
         let config = runtime_config_for_workspace_with_lanes(&workspace.path, 2);
         build_executor_with_config(runtime, lane_queue_limit, config)
     }
@@ -2524,24 +2360,10 @@ mod tests {
         label: &str,
         runtime: FakeRuntime,
         lane_queue_limit: usize,
-    ) -> (
-        TempWorkspace,
-        TurnExecutor<FakeCodexProcess, FakeOpenCodeProcess, FakeRuntime>,
-    ) {
+    ) -> (TempWorkspace, TurnExecutor<FakeRuntime>) {
         let workspace = TempWorkspace::new("turn-executor", label);
         let executor = build_executor(&workspace, runtime, lane_queue_limit);
         (workspace, executor)
-    }
-
-    fn run_git_output(workspace_root: &Path, args: &[&str]) -> String {
-        let output = std::process::Command::new("git")
-            .arg("-C")
-            .arg(workspace_root)
-            .args(args)
-            .output()
-            .expect("git command should be executable");
-        assert!(output.status.success());
-        String::from_utf8_lossy(&output.stdout).into_owned()
     }
 
     fn invalid_sender_profile_telemetry() -> RunProfileTelemetry {
@@ -2699,8 +2521,8 @@ mod tests {
                 Some("turn:run:discord:channel:777:m-1".to_string())
             );
             assert_eq!(event.lane_id, Some("discord:channel:777".to_string()));
-            assert_eq!(event.backend, Some(BackendKind::Codex));
-            assert_eq!(event.resolved_model, Some("gpt-5-codex".to_string()));
+            assert_eq!(event.backend, Some(BackendKind::Claude));
+            assert_eq!(event.resolved_model, Some("claude-sonnet-4-5".to_string()));
             assert_eq!(event.resolved_reasoning_level, Some("medium".to_string()));
             assert_eq!(event.profile_source, Some("global_default".to_string()));
         }
@@ -2893,168 +2715,6 @@ mod tests {
     }
 
     #[test]
-    fn successful_run_persists_workspace_git_commit_with_run_metadata() {
-        let workspace = TempWorkspace::new("turn-executor", "workspace-git-run-commit");
-        let runtime = FakeRuntime::with_backend_events(
-            vec![
-                backend_event(1, BackendEventKind::TextDelta, &[("text", "hello")]),
-                backend_event(2, BackendEventKind::TurnCompleted, &[("finish", "done")]),
-            ],
-            &[1, 2, 3, 4, 5, 6],
-        );
-        let mut config = runtime_config_for_workspace_with_lanes(&workspace.path, 2);
-        config.workspace_git.enabled = true;
-        config.workspace_git.push_policy = WorkspaceGitPushPolicy::Manual;
-        let mut executor = build_executor_with_config(runtime, 8, config);
-
-        executor
-            .process_gateway_message(gateway_message("m-git-run"))
-            .expect("run should succeed")
-            .expect("run should dispatch");
-
-        let commit_count = run_git_output(&workspace.path, &["rev-list", "--count", "HEAD"]);
-        assert_eq!(commit_count.trim(), "1");
-        let head_message = run_git_output(&workspace.path, &["log", "-1", "--pretty=%B"]);
-        assert!(head_message.contains("Crab-Trigger: run_finalized"));
-        assert!(head_message.contains("Crab-Logical-Session-Id: discord:channel:777"));
-        assert!(head_message.contains("Crab-Run-Id: run:discord:channel:777:m-git-run"));
-        assert!(head_message.contains("Crab-Run-Status: succeeded"));
-    }
-
-    #[test]
-    fn successful_run_enqueues_workspace_git_push_request_when_on_commit_policy_is_enabled() {
-        let workspace = TempWorkspace::new("turn-executor", "workspace-git-push-queue");
-        let runtime = FakeRuntime::with_backend_events(
-            vec![
-                backend_event(1, BackendEventKind::TextDelta, &[("text", "hello")]),
-                backend_event(2, BackendEventKind::TurnCompleted, &[("finish", "done")]),
-            ],
-            &[1, 2, 3, 4, 5, 6],
-        );
-        let mut config = runtime_config_for_workspace_with_lanes(&workspace.path, 2);
-        config.workspace_git.enabled = true;
-        config.workspace_git.push_policy = WorkspaceGitPushPolicy::OnCommit;
-        config.workspace_git.remote = Some(
-            workspace
-                .path
-                .join("missing-remote.git")
-                .to_string_lossy()
-                .to_string(),
-        );
-        let mut executor = build_executor_with_config(runtime, 8, config);
-
-        let dispatched = executor
-            .process_gateway_message(gateway_message("m-git-push"))
-            .expect("run should succeed")
-            .expect("run should dispatch");
-        assert_eq!(dispatched.status, RunStatus::Succeeded);
-
-        let queue_path = workspace.path.join("state/workspace_git_push_queue.json");
-        let queue_body = fs::read_to_string(queue_path).expect("push queue file should exist");
-        assert!(queue_body.contains("run:discord:channel:777:m-git-push"));
-        assert!(queue_body.contains("run_finalized"));
-    }
-
-    #[test]
-    fn maybe_enqueue_workspace_git_push_request_skips_when_commit_key_is_missing() {
-        let workspace = TempWorkspace::new("turn-executor", "workspace-git-push-missing-key");
-        let runtime = FakeRuntime::with_backend_events(Vec::new(), &[1]);
-        let mut config = runtime_config_for_workspace_with_lanes(&workspace.path, 2);
-        config.workspace_git.enabled = true;
-        config.workspace_git.push_policy = WorkspaceGitPushPolicy::OnCommit;
-        let executor = build_executor_with_config(runtime, 8, config);
-        let run = delivery_run("discord:channel:777", "run:discord:channel:777:missing-key");
-        let commit_outcome = crab_core::WorkspaceGitCommitOutcome {
-            enabled: true,
-            trigger: Some(crab_core::WorkspaceGitCommitTrigger::RunFinalized),
-            committed: false,
-            commit_key: None,
-            commit_id: Some("deadbeef".to_string()),
-            skipped_reason: Some("missing_key".to_string()),
-            staging_skipped_paths: Vec::new(),
-        };
-
-        executor.maybe_enqueue_workspace_git_push(
-            &run,
-            crab_core::WorkspaceGitCommitTrigger::RunFinalized,
-            99,
-            &commit_outcome,
-        );
-
-        assert!(!workspace
-            .path
-            .join("state/workspace_git_push_queue.json")
-            .exists());
-    }
-
-    #[test]
-    fn maybe_enqueue_workspace_git_push_request_skips_when_commit_id_is_missing() {
-        let workspace = TempWorkspace::new("turn-executor", "workspace-git-push-missing-id");
-        let runtime = FakeRuntime::with_backend_events(Vec::new(), &[1]);
-        let mut config = runtime_config_for_workspace_with_lanes(&workspace.path, 2);
-        config.workspace_git.enabled = true;
-        config.workspace_git.push_policy = WorkspaceGitPushPolicy::OnCommit;
-        let executor = build_executor_with_config(runtime, 8, config);
-        let run = delivery_run("discord:channel:777", "run:discord:channel:777:missing-id");
-        let commit_outcome = crab_core::WorkspaceGitCommitOutcome {
-            enabled: true,
-            trigger: Some(crab_core::WorkspaceGitCommitTrigger::RunFinalized),
-            committed: false,
-            commit_key: Some("run:discord:channel:777:missing-id:run_finalized".to_string()),
-            commit_id: None,
-            skipped_reason: Some("missing_id".to_string()),
-            staging_skipped_paths: Vec::new(),
-        };
-
-        executor.maybe_enqueue_workspace_git_push(
-            &run,
-            crab_core::WorkspaceGitCommitTrigger::RunFinalized,
-            99,
-            &commit_outcome,
-        );
-
-        assert!(!workspace
-            .path
-            .join("state/workspace_git_push_queue.json")
-            .exists());
-    }
-
-    #[test]
-    fn maybe_enqueue_workspace_git_push_request_tolerates_enqueue_errors() {
-        let workspace = TempWorkspace::new("turn-executor", "workspace-git-push-enqueue-error");
-        let runtime = FakeRuntime::with_backend_events(Vec::new(), &[1]);
-        let mut config = runtime_config_for_workspace_with_lanes(&workspace.path, 2);
-        config.workspace_git.enabled = true;
-        config.workspace_git.push_policy = WorkspaceGitPushPolicy::OnCommit;
-        let executor = build_executor_with_config(runtime, 8, config);
-        let run = delivery_run(
-            "discord:channel:777",
-            "run:discord:channel:777:enqueue-error",
-        );
-        let commit_outcome = crab_core::WorkspaceGitCommitOutcome {
-            enabled: true,
-            trigger: Some(crab_core::WorkspaceGitCommitTrigger::RunFinalized),
-            committed: true,
-            commit_key: Some("run:discord:channel:777:enqueue-error:run_finalized".to_string()),
-            commit_id: Some("abcdef123456".to_string()),
-            skipped_reason: None,
-            staging_skipped_paths: Vec::new(),
-        };
-        let state_root = executor.composition.state_stores.root.clone();
-        fs::remove_dir_all(&state_root).expect("state root should be removable");
-        fs::write(&state_root, "blocked").expect("state root file sabotage should succeed");
-
-        executor.maybe_enqueue_workspace_git_push(
-            &run,
-            crab_core::WorkspaceGitCommitTrigger::RunFinalized,
-            99,
-            &commit_outcome,
-        );
-
-        assert!(state_root.is_file());
-    }
-
-    #[test]
     fn process_gateway_message_accumulates_session_token_accounting_from_usage_events() {
         let workspace = TempWorkspace::new("turn-executor", "usage-accounting");
         let mut runtime = FakeRuntime::with_backend_events(
@@ -3118,7 +2778,7 @@ mod tests {
             Ok(crab_core::PhysicalSession {
                 id: "physical-1".to_string(),
                 logical_session_id: "discord:channel:777".to_string(),
-                backend: BackendKind::Codex,
+                backend: BackendKind::Claude,
                 backend_session_id: "thread-abc".to_string(),
                 created_at_epoch_ms: 1_739_173_200_000,
                 last_turn_id: None,
@@ -3126,7 +2786,7 @@ mod tests {
             Ok(crab_core::PhysicalSession {
                 id: "physical-1".to_string(),
                 logical_session_id: "discord:channel:777".to_string(),
-                backend: BackendKind::Codex,
+                backend: BackendKind::Claude,
                 backend_session_id: "thread-abc".to_string(),
                 created_at_epoch_ms: 1_739_173_200_000,
                 last_turn_id: Some("turn-previous".to_string()),
@@ -3680,10 +3340,10 @@ mod tests {
             .session_store
             .upsert_session(&crab_core::LogicalSession {
                 id: "discord:channel:777".to_string(),
-                active_backend: BackendKind::Codex,
+                active_backend: BackendKind::Claude,
                 active_profile: InferenceProfile {
-                    backend: BackendKind::Codex,
-                    model: "gpt-5-codex".to_string(),
+                    backend: BackendKind::Claude,
+                    model: "claude-sonnet-4-5".to_string(),
                     reasoning_level: ReasoningLevel::Medium,
                 },
                 active_physical_session_id: Some("physical-1".to_string()),
@@ -5507,8 +5167,8 @@ mod tests {
             lane_id: Some("discord:channel:1".to_string()),
             logical_session_id: "discord:channel:1".to_string(),
             physical_session_id: None,
-            backend: Some(BackendKind::Codex),
-            resolved_model: Some("gpt-5-codex".to_string()),
+            backend: Some(BackendKind::Claude),
+            resolved_model: Some("claude-sonnet-4-5".to_string()),
             resolved_reasoning_level: Some("medium".to_string()),
             profile_source: Some("global_default".to_string()),
             sequence: 1,
@@ -6011,6 +5671,24 @@ mod tests {
             .expect("run should exist");
         assert_eq!(run.user_input, "Check deployment status");
         assert_eq!(run.status, RunStatus::Queued);
+    }
+
+    #[test]
+    fn enqueue_pending_trigger_rejects_blank_channel_id() {
+        let workspace = TempWorkspace::new("turn-executor", "trigger-blank-channel");
+        let runtime = FakeRuntime::with_backend_events(Vec::new(), &[42_000]);
+        let mut executor = build_executor(&workspace, runtime, 8);
+
+        let error = executor
+            .enqueue_pending_trigger("  ", "hello")
+            .expect_err("blank channel_id should fail");
+        assert_eq!(
+            error,
+            CrabError::InvariantViolation {
+                context: "pending_trigger_enqueue",
+                message: "channel_id must not be empty".to_string(),
+            }
+        );
     }
 
     fn temp_state_root(label: &str) -> PathBuf {

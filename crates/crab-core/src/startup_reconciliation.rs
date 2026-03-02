@@ -426,8 +426,8 @@ mod tests {
 
     fn sample_profile() -> InferenceProfile {
         InferenceProfile {
-            backend: BackendKind::Codex,
-            model: "gpt-5-codex".to_string(),
+            backend: BackendKind::Claude,
+            model: "claude-opus-4-6".to_string(),
             reasoning_level: ReasoningLevel::Medium,
         }
     }
@@ -460,7 +460,7 @@ mod tests {
     fn session(id: &str, lane_state: LaneState, active_physical: Option<&str>) -> LogicalSession {
         LogicalSession {
             id: id.to_string(),
-            active_backend: BackendKind::Codex,
+            active_backend: BackendKind::Claude,
             active_profile: sample_profile(),
             active_physical_session_id: active_physical.map(str::to_string),
             last_successful_checkpoint_id: Some("ckpt-1".to_string()),
@@ -594,8 +594,8 @@ mod tests {
         assert_eq!(event.turn_id, Some("turn:run-1".to_string()));
         assert_eq!(event.lane_id, Some("discord:channel:a".to_string()));
         assert_eq!(event.physical_session_id, Some("phys-1".to_string()));
-        assert_eq!(event.backend, Some(BackendKind::Codex));
-        assert_eq!(event.resolved_model, Some("gpt-5-codex".to_string()));
+        assert_eq!(event.backend, Some(BackendKind::Claude));
+        assert_eq!(event.resolved_model, Some("claude-opus-4-6".to_string()));
         assert_eq!(event.resolved_reasoning_level, Some("medium".to_string()));
         assert_eq!(event.profile_source, Some("session".to_string()));
         assert_eq!(

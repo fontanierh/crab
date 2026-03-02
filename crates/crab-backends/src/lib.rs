@@ -8,51 +8,11 @@ use crab_core::{CrabError, CrabResult, InferenceProfile, PhysicalSession};
 use futures_core::Stream;
 
 pub mod claude;
-pub mod codex;
-pub mod codex_events;
-pub mod codex_protocol;
-pub mod codex_recovery;
-pub mod codex_unattended;
-pub mod opencode;
-pub mod opencode_events;
-pub mod opencode_protocol;
-pub mod opencode_recovery;
 pub mod profile_mapping;
 
 pub use claude::{ClaudeBackend, ClaudeProcess};
-pub use codex::{
-    CodexAppServerProcess, CodexLifecycleManager, CodexManager, CodexManagerState,
-    CodexProcessHandle,
-};
-pub use codex_events::{
-    normalize_codex_events, CodexCompletedItem, CodexNotification, CodexRawEvent, CodexRequest,
-    CodexTurnStatus,
-};
-pub use codex_protocol::{
-    CodexProtocol, CodexRpcRequest, CodexRpcResponse, CodexRpcTransport, CodexTurnConfig,
-};
-pub use codex_recovery::{recover_codex_session, CodexRecoveryOutcome, CodexRotationReason};
-pub use codex_unattended::{
-    decide_unattended_response, CodexApprovalDecision, CodexApprovalPolicy,
-    CodexInteractiveRequest, CodexRequestResponse, CodexUnattendedPolicy, CodexUserInputQuestion,
-};
-pub use opencode::{
-    OpenCodeManager, OpenCodeManagerState, OpenCodeServerHandle, OpenCodeServerProcess,
-};
-pub use opencode_events::{
-    normalize_opencode_events, OpenCodeRawEvent, OpenCodeTokenUsage, OpenCodeTurnState,
-};
-pub use opencode_protocol::{
-    OpenCodeApiRequest, OpenCodeApiResponse, OpenCodeApiTransport, OpenCodeProtocol,
-    OpenCodeSessionConfig, OpenCodeTurnConfig,
-};
-pub use opencode_recovery::{
-    recover_opencode_session, OpenCodeRecoveryOutcome, OpenCodeRecoveryPlan,
-    OpenCodeRecoveryRuntime,
-};
 pub use profile_mapping::{
-    map_claude_inference_profile, map_codex_turn_config, map_opencode_inference_profile,
-    ClaudeInferenceConfig, ClaudeThinkingMode, OpenCodeInferenceMapping,
+    map_claude_inference_profile, ClaudeInferenceConfig, ClaudeThinkingMode,
 };
 
 pub type BackendEventStream = Pin<Box<dyn Stream<Item = BackendEvent> + Send>>;
@@ -124,15 +84,6 @@ impl<B: Backend> BackendHarness<B> {
                 message: format!(
                     "session logical_session_id {} does not match context {}",
                     session.logical_session_id, context.logical_session_id
-                ),
-            });
-        }
-        if session.backend != context.profile.backend {
-            return Err(CrabError::InvariantViolation {
-                context: "backend_contract_create_session",
-                message: format!(
-                    "session backend {:?} does not match profile backend {:?}",
-                    session.backend, context.profile.backend
                 ),
             });
         }
@@ -354,8 +305,8 @@ mod tests {
 
     fn profile() -> InferenceProfile {
         InferenceProfile {
-            backend: BackendKind::Codex,
-            model: "gpt-5-codex".to_string(),
+            backend: BackendKind::Claude,
+            model: "claude-sonnet".to_string(),
             reasoning_level: ReasoningLevel::High,
         }
     }
@@ -371,7 +322,7 @@ mod tests {
         PhysicalSession {
             id: "physical-1".to_string(),
             logical_session_id: "discord:channel:abc".to_string(),
-            backend: BackendKind::Codex,
+            backend: BackendKind::Claude,
             backend_session_id: "thread-1".to_string(),
             created_at_epoch_ms: 1_000,
             last_turn_id: None,
@@ -464,14 +415,6 @@ mod tests {
         assert_create_session_contract_error(
             |session| session.logical_session_id = "discord:channel:other".to_string(),
             "session logical_session_id discord:channel:other does not match context discord:channel:abc",
-        );
-    }
-
-    #[test]
-    fn create_session_rejects_backend_mismatch() {
-        assert_create_session_contract_error(
-            |session| session.backend = BackendKind::Claude,
-            "session backend Claude does not match profile backend Codex",
         );
     }
 

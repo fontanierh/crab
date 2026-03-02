@@ -35,7 +35,6 @@ pub(crate) mod test_support;
 pub mod trust;
 mod validation;
 pub mod workspace;
-pub mod workspace_git;
 
 pub use checkpoint_turn::{
     parse_checkpoint_turn_document, CheckpointTurnArtifact, CheckpointTurnDocument,
@@ -44,9 +43,7 @@ pub use compatibility::{
     evaluate_profile_compatibility, BackendCompatibilityCatalog, BackendCompatibilityRules,
     CompatibilityIssue, CompatibilityReport, AUTO_MODEL_ALIAS,
 };
-pub use config::{
-    OwnerConfig, OwnerProfileDefaults, RuntimeConfig, WorkspaceGitConfig, WorkspaceGitPushPolicy,
-};
+pub use config::{OwnerConfig, OwnerProfileDefaults, RuntimeConfig};
 pub use context_assembly::{
     assemble_turn_context, ContextAssemblyInput, ContextMemorySnippet, CONTEXT_INJECTION_ORDER,
 };
@@ -169,13 +166,6 @@ pub use workspace::{
     MEMORY_FILE_NAME, ROTATE_SESSION_SKILL_FILE_RELATIVE_PATH, ROTATE_SESSION_SKILL_NAME,
     SKILL_AUTHORING_POLICY_FILE_RELATIVE_PATH, SKILL_AUTHORING_POLICY_SKILL_NAME, SOUL_FILE_NAME,
     USER_FILE_NAME,
-};
-pub use workspace_git::{
-    enqueue_workspace_git_push_request, ensure_workspace_git_repository,
-    maybe_commit_workspace_snapshot, process_workspace_git_push_queue,
-    workspace_git_recovery_commands, WorkspaceGitCommitOutcome, WorkspaceGitCommitRequest,
-    WorkspaceGitCommitTrigger, WorkspaceGitEnsureOutcome, WorkspaceGitPushEnqueueOutcome,
-    WorkspaceGitPushRequest, WorkspaceGitPushTickOutcome,
 };
 
 #[cfg(test)]

@@ -14,13 +14,19 @@ mkdir -p "$OUT_DIR"
 
 cd "$ROOT_DIR"
 
+CARGO_EXIT=0
 cargo llvm-cov --workspace --all-features --locked \
   --ignore-filename-regex "$IGNORE_REGEX" \
   --fail-under-functions 100 \
   --fail-uncovered-functions 0 \
-  --lcov --output-path "$LCOV_PATH"
+  --lcov --output-path "$LCOV_PATH" || CARGO_EXIT=$?
 
-python3 - "$LCOV_PATH" <<'PY'
+if [ "$CARGO_EXIT" -ne 0 ]; then
+  echo "cargo llvm-cov exited with code $CARGO_EXIT (function coverage gate failed)"
+fi
+
+GATE_SCRIPT="$OUT_DIR/_coverage_gate.py"
+cat > "$GATE_SCRIPT" <<'PY'
 from __future__ import annotations
 
 import sys
@@ -28,9 +34,11 @@ from collections import defaultdict
 from pathlib import Path
 
 lcov_path = Path(sys.argv[1])
+cargo_exit = int(sys.argv[2]) if len(sys.argv) > 2 else 0
+
 if not lcov_path.exists():
-    print(f"coverage gate failed: missing {lcov_path}", file=sys.stderr)
-    raise SystemExit(1)
+    print(f"coverage gate failed: missing {lcov_path}")
+    sys.exit(1)
 
 line_totals = 0
 line_covered = 0
@@ -58,20 +66,22 @@ for raw in lcov_path.read_text(encoding="utf-8", errors="replace").splitlines():
 
 uncovered_lines = line_totals - line_covered
 
-if uncovered_lines == 0:
+if uncovered_lines == 0 and cargo_exit == 0:
     print(
         "coverage-gate: ok "
         f"(lines {line_covered}/{line_totals}, uncovered lines=0)"
     )
-    raise SystemExit(0)
+    sys.exit(0)
 
-print(
-    "coverage-gate: failed " f"(uncovered lines={uncovered_lines})",
-    file=sys.stderr,
-)
+if cargo_exit != 0:
+    print(
+        f"coverage-gate: failed "
+        f"(cargo llvm-cov exited {cargo_exit}, function coverage gate failed)"
+    )
 
 if uncovered_lines:
-    print("Top uncovered line locations:", file=sys.stderr)
+    print(f"coverage-gate: failed (uncovered lines={uncovered_lines})")
+    print("Top uncovered line locations:")
     rows = [
         (path, sorted(lines))
         for path, lines in missing_lines_by_file.items()
@@ -82,7 +92,9 @@ if uncovered_lines:
         preview = ", ".join(str(line) for line in lines[:20])
         if len(lines) > 20:
             preview += ", ..."
-        print(f"- {path}: {len(lines)} uncovered line(s) [{preview}]", file=sys.stderr)
+        print(f"- {path}: {len(lines)} uncovered line(s) [{preview}]")
 
-raise SystemExit(1)
+sys.exit(1)
 PY
+
+python3 "$GATE_SCRIPT" "$LCOV_PATH" "$CARGO_EXIT"

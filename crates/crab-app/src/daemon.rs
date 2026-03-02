@@ -1,3 +1,26 @@
+use crab_backends::{
+    claude::{ClaudeRawEvent, ClaudeRawEventStream},
+    BackendHarness, ClaudeBackend, ClaudeProcess, SessionContext, TurnInput,
+};
+#[cfg(not(any(test, coverage)))]
+use crab_backends::{map_claude_inference_profile, ClaudeThinkingMode};
+#[cfg(not(coverage))]
+use crab_core::{build_context_diagnostics_report, render_context_diagnostics_fixture};
+use crab_core::{
+    compile_prompt_contract, detect_workspace_bootstrap_state, render_budgeted_turn_context,
+    resolve_inference_profile, resolve_scoped_memory_snippets, resolve_sender_identity,
+    resolve_sender_trust_context, BackendKind, ContextAssemblyInput, ContextBudgetPolicy,
+    CrabError, CrabResult, InferenceProfile, InferenceProfileResolutionInput, MemoryCitationMode,
+    OwnerConfig, PromptContractInput, ReasoningLevel, Run, RunProfileTelemetry, RuntimeConfig,
+    ScopedMemorySnippetResolverInput, SenderConversationKind, SenderIdentityInput, TrustSurface,
+    WorkspaceBootstrapState, IDENTITY_FILE_NAME, MEMORY_FILE_NAME, OWNER_MEMORY_SCOPE_DIRECTORY,
+    SOUL_FILE_NAME, USER_FILE_NAME,
+};
+use crab_discord::GatewayMessage;
+use crab_store::CheckpointStore;
+#[cfg(not(any(test, coverage)))]
+use futures::channel::mpsc;
+use futures::{executor::block_on, stream};
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -5,57 +28,16 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-#[cfg(test)]
-use std::{cell::RefCell, thread_local};
 
-use crab_backends::{
-    claude::{ClaudeRawEvent, ClaudeRawEventStream},
-    map_opencode_inference_profile, normalize_opencode_events, recover_opencode_session,
-    BackendEvent, BackendHarness, ClaudeBackend, ClaudeProcess, CodexAppServerProcess,
-    CodexLifecycleManager, OpenCodeManager, OpenCodeRawEvent, OpenCodeRecoveryPlan,
-    OpenCodeRecoveryRuntime, OpenCodeServerHandle, OpenCodeServerProcess, OpenCodeSessionConfig,
-    OpenCodeTokenUsage, OpenCodeTurnConfig, OpenCodeTurnState, SessionContext, TurnInput,
-};
-#[cfg(not(any(test, coverage)))]
-use crab_backends::{map_claude_inference_profile, ClaudeThinkingMode};
-#[cfg(not(coverage))]
-use crab_core::{build_context_diagnostics_report, render_context_diagnostics_fixture};
-use crab_core::{
-    compile_prompt_contract, detect_workspace_bootstrap_state, process_workspace_git_push_queue,
-    render_budgeted_turn_context, resolve_inference_profile, resolve_scoped_memory_snippets,
-    resolve_sender_identity, resolve_sender_trust_context, BackendKind, ContextAssemblyInput,
-    ContextBudgetPolicy, CrabError, CrabResult, InferenceProfile, InferenceProfileResolutionInput,
-    MemoryCitationMode, OwnerConfig, PromptContractInput, ReasoningLevel, Run, RunProfileTelemetry,
-    RuntimeConfig, ScopedMemorySnippetResolverInput, SenderConversationKind, SenderIdentityInput,
-    TrustSurface, WorkspaceBootstrapState, IDENTITY_FILE_NAME, MEMORY_FILE_NAME,
-    OWNER_MEMORY_SCOPE_DIRECTORY, SOUL_FILE_NAME, USER_FILE_NAME,
-};
-use crab_discord::GatewayMessage;
-use crab_store::CheckpointStore;
-#[cfg(not(any(test, coverage)))]
-use futures::channel::mpsc;
-use futures::{executor::block_on, stream};
-
-#[cfg(not(any(test, coverage)))]
-use crate::daemon_backend_bridge::CodexAppServerTransport;
-#[cfg(any(test, coverage, debug_assertions))]
-use crate::daemon_backend_bridge::DeterministicCodexTransport;
-use crate::daemon_backend_bridge::{
-    CodexDaemonBackendBridge, DaemonBackendBridge as CodexBackendBridge,
-};
-use crate::{boot_runtime_with_processes, run_heartbeat_if_due, TurnExecutor, TurnExecutorRuntime};
+use crate::{run_heartbeat_if_due, TurnExecutor, TurnExecutorRuntime};
 
 pub const DEFAULT_DAEMON_TICK_INTERVAL_MS: u64 = 250;
 const DAEMON_TURN_CONTEXT_READ: &str = "daemon_turn_context_read";
-const DAEMON_BACKEND_BRIDGE_EXECUTE: &str = "daemon_backend_bridge_execute";
-const DAEMON_BACKEND_BRIDGE_CONTEXT: &str = "daemon_backend_bridge";
-const DAEMON_OPENCODE_TRANSPORT_CONTEXT: &str = "daemon_opencode_transport";
 #[cfg(not(any(test, coverage)))]
 const DAEMON_CLAUDE_TRANSPORT_CONTEXT: &str = "daemon_claude_transport";
 #[cfg(any(test, not(coverage)))]
 const DAEMON_CLAUDE_STREAM_CONTEXT: &str = "daemon_claude_stream";
 const MILLIS_PER_DAY: u64 = 86_400_000;
-const OPENCODE_SESSION_PLACEHOLDER_PREFIX: &str = "backend-session:";
 const DAEMON_CLAUDE_FORCE_SEND_ERROR_TOKEN: &str = "force-claude-send-error";
 const CRAB_RUNTIME_BRIEF_BASE: &str = "You are an AI coding agent running inside Crab.\n\
 \n\
@@ -92,9 +74,6 @@ Self-trigger:\n\
 Operating constraints:\n\
 - Keep responses actionable and concise.\n\
 - Respect owner/operator commands and current session policy.";
-#[cfg(all(not(any(test, coverage)), debug_assertions))]
-const DAEMON_DETERMINISTIC_CODEX_TRANSPORT_ENV: &str =
-    "CRAB_DAEMON_FORCE_DETERMINISTIC_CODEX_TRANSPORT";
 #[cfg(all(not(any(test, coverage)), debug_assertions))]
 const DAEMON_DETERMINISTIC_CLAUDE_PROCESS_ENV: &str =
     "CRAB_DAEMON_FORCE_DETERMINISTIC_CLAUDE_PROCESS";
@@ -1084,699 +1063,6 @@ pub trait DaemonLoopControl {
     fn sleep_tick(&mut self, tick_interval_ms: u64) -> CrabResult<()>;
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct OpenCodeBridgeTurnResult {
-    turn_id: String,
-    raw_events: Vec<OpenCodeRawEvent>,
-}
-
-trait OpenCodeBridgeRuntime: Send + Sync + std::fmt::Debug {
-    fn create_session(
-        &self,
-        server_base_url: &str,
-        config: OpenCodeSessionConfig,
-    ) -> CrabResult<String>;
-
-    fn end_session(&self, server_base_url: &str, session_id: &str) -> CrabResult<()>;
-
-    fn execute_turn(
-        &self,
-        server_base_url: &str,
-        session_id: &str,
-        prompt: &str,
-        config: OpenCodeTurnConfig,
-    ) -> CrabResult<OpenCodeBridgeTurnResult>;
-}
-
-#[derive(Debug, Default)]
-struct HttpOpenCodeBridgeRuntime;
-
-impl HttpOpenCodeBridgeRuntime {
-    fn endpoint(server_base_url: &str, route: &str) -> String {
-        let base = server_base_url.trim_end_matches('/');
-        let route = route.trim_start_matches('/');
-        format!("{base}/{route}")
-    }
-
-    fn post_json(
-        &self,
-        server_base_url: &str,
-        route: &str,
-        payload: &serde_json::Value,
-    ) -> CrabResult<serde_json::Value> {
-        self.execute_json_request(reqwest::Method::POST, server_base_url, route, Some(payload))
-    }
-
-    fn delete_json(&self, server_base_url: &str, route: &str) -> CrabResult<serde_json::Value> {
-        self.execute_json_request(reqwest::Method::DELETE, server_base_url, route, None)
-    }
-
-    fn execute_json_request(
-        &self,
-        method: reqwest::Method,
-        server_base_url: &str,
-        route: &str,
-        payload: Option<&serde_json::Value>,
-    ) -> CrabResult<serde_json::Value> {
-        let endpoint = Self::endpoint(server_base_url, route);
-        let client = reqwest::blocking::Client::new();
-        let mut request = client.request(method.clone(), &endpoint);
-        if let Some(payload) = payload {
-            request = request.json(payload);
-        }
-        let response = request.send().map_err(|error| CrabError::Io {
-            context: DAEMON_OPENCODE_TRANSPORT_CONTEXT,
-            path: None,
-            message: format!("{method} {endpoint} failed: {error}"),
-        })?;
-        let status = response.status();
-        let response_body = response.text().map_err(|error| CrabError::Io {
-            context: DAEMON_OPENCODE_TRANSPORT_CONTEXT,
-            path: None,
-            message: format!("failed reading response body from {endpoint}: {error}"),
-        })?;
-        if !status.is_success() {
-            return Err(CrabError::InvariantViolation {
-                context: DAEMON_OPENCODE_TRANSPORT_CONTEXT,
-                message: format!(
-                    "{method} {endpoint} returned HTTP {} with body {}",
-                    status.as_u16(),
-                    response_body.trim()
-                ),
-            });
-        }
-        if response_body.trim().is_empty() {
-            return Ok(serde_json::Value::Object(serde_json::Map::new()));
-        }
-        serde_json::from_str(&response_body).map_err(|error| CrabError::Serialization {
-            context: DAEMON_OPENCODE_TRANSPORT_CONTEXT,
-            path: None,
-            message: format!("invalid JSON response from {endpoint}: {error}"),
-        })
-    }
-
-    fn value_at_path<'a>(
-        value: &'a serde_json::Value,
-        path: &[&str],
-    ) -> Option<&'a serde_json::Value> {
-        let mut cursor = value;
-        for segment in path {
-            cursor = cursor.get(*segment)?;
-        }
-        Some(cursor)
-    }
-
-    fn value_as_non_empty_string(value: &serde_json::Value) -> Option<String> {
-        value
-            .as_str()
-            .map(str::trim)
-            .filter(|text| !text.is_empty())
-            .map(ToOwned::to_owned)
-    }
-
-    fn value_as_u64(value: &serde_json::Value) -> Option<u64> {
-        if let Some(number) = value.as_u64() {
-            return Some(number);
-        }
-        value.as_str()?.parse::<u64>().ok()
-    }
-
-    fn extract_required_response_string(
-        value: &serde_json::Value,
-        context: &'static str,
-        field_name: &'static str,
-        paths: &[&[&str]],
-    ) -> CrabResult<String> {
-        for path in paths {
-            if let Some(parsed) =
-                Self::value_at_path(value, path).and_then(Self::value_as_non_empty_string)
-            {
-                return Ok(parsed);
-            }
-        }
-        Err(CrabError::InvariantViolation {
-            context,
-            message: format!("response is missing required field {field_name}"),
-        })
-    }
-
-    fn extract_first_u64(value: &serde_json::Value, paths: &[&[&str]]) -> Option<u64> {
-        for path in paths {
-            if let Some(parsed) = Self::value_at_path(value, path).and_then(Self::value_as_u64) {
-                return Some(parsed);
-            }
-        }
-        None
-    }
-
-    fn extract_usage(value: &serde_json::Value) -> Option<OpenCodeTokenUsage> {
-        let input_tokens = Self::extract_first_u64(
-            value,
-            &[
-                &["usage", "input_tokens"],
-                &["usage", "inputTokens"],
-                &["input_tokens"],
-                &["inputTokens"],
-                &["info", "tokens", "input"],
-                &["info", "usage", "input_tokens"],
-                &["info", "usage", "inputTokens"],
-            ],
-        )?;
-        let output_tokens = Self::extract_first_u64(
-            value,
-            &[
-                &["usage", "output_tokens"],
-                &["usage", "outputTokens"],
-                &["output_tokens"],
-                &["outputTokens"],
-                &["info", "tokens", "output"],
-                &["info", "usage", "output_tokens"],
-                &["info", "usage", "outputTokens"],
-            ],
-        )?;
-        let total_tokens = Self::extract_first_u64(
-            value,
-            &[
-                &["usage", "total_tokens"],
-                &["usage", "totalTokens"],
-                &["total_tokens"],
-                &["totalTokens"],
-                &["info", "tokens", "total"],
-                &["info", "usage", "total_tokens"],
-                &["info", "usage", "totalTokens"],
-            ],
-        )
-        .or_else(|| input_tokens.checked_add(output_tokens))?;
-        Some(OpenCodeTokenUsage {
-            input_tokens,
-            output_tokens,
-            total_tokens,
-        })
-    }
-
-    fn collect_delta_from_parts(parts: &[serde_json::Value]) -> String {
-        let mut collected = String::new();
-        for part in parts {
-            if let Some(text) = part
-                .get("text")
-                .and_then(serde_json::Value::as_str)
-                .or_else(|| part.get("delta").and_then(serde_json::Value::as_str))
-                .or_else(|| part.get("content").and_then(serde_json::Value::as_str))
-            {
-                collected.push_str(text);
-            } else if let Some(text) = part
-                .get("text")
-                .and_then(|inner| inner.get("value"))
-                .and_then(serde_json::Value::as_str)
-            {
-                collected.push_str(text);
-            }
-        }
-        collected
-    }
-
-    fn extract_text_delta(value: &serde_json::Value) -> Option<String> {
-        for path in &[&["output_text"][..], &["text"], &["message", "text"]] {
-            if let Some(text) = Self::value_at_path(value, path)
-                .and_then(serde_json::Value::as_str)
-                .map(str::trim)
-                .filter(|text| !text.is_empty())
-            {
-                return Some(text.to_string());
-            }
-        }
-
-        for path in &[
-            &["parts"][..],
-            &["message", "parts"],
-            &["assistant", "parts"],
-        ] {
-            if let Some(parts) =
-                Self::value_at_path(value, path).and_then(serde_json::Value::as_array)
-            {
-                let collected = Self::collect_delta_from_parts(parts);
-                if !collected.trim().is_empty() {
-                    return Some(collected);
-                }
-            }
-        }
-
-        None
-    }
-
-    fn extract_turn_state(value: &serde_json::Value) -> OpenCodeTurnState {
-        let state = Self::extract_required_response_string(
-            value,
-            "opencode_send_prompt_response",
-            "state",
-            &[
-                &["state"],
-                &["status"],
-                &["info", "state"],
-                &["info", "status"],
-            ],
-        )
-        .unwrap_or_else(|_| "completed".to_string());
-        match state.to_ascii_lowercase().as_str() {
-            "interrupted" | "cancelled" | "canceled" => OpenCodeTurnState::Interrupted,
-            "failed" | "error" | "errored" => OpenCodeTurnState::Failed,
-            _ => OpenCodeTurnState::Completed,
-        }
-    }
-
-    fn extract_turn_message(value: &serde_json::Value) -> Option<String> {
-        for path in &[&["message"][..], &["error"], &["info", "message"]] {
-            if let Some(text) =
-                Self::value_at_path(value, path).and_then(Self::value_as_non_empty_string)
-            {
-                return Some(text);
-            }
-        }
-        None
-    }
-}
-
-impl OpenCodeBridgeRuntime for HttpOpenCodeBridgeRuntime {
-    fn create_session(
-        &self,
-        server_base_url: &str,
-        config: OpenCodeSessionConfig,
-    ) -> CrabResult<String> {
-        let mut payload = serde_json::Map::new();
-        if let Some(model) = config.model.filter(|value| !value.trim().is_empty()) {
-            payload.insert("model".to_string(), serde_json::Value::String(model));
-        }
-        if let Some(reasoning_level) = config
-            .reasoning_level
-            .filter(|value| !value.trim().is_empty())
-        {
-            payload.insert(
-                "reasoning_level".to_string(),
-                serde_json::Value::String(reasoning_level.clone()),
-            );
-            payload.insert(
-                "reasoningLevel".to_string(),
-                serde_json::Value::String(reasoning_level),
-            );
-        }
-        let response = self.post_json(
-            server_base_url,
-            "session",
-            &serde_json::Value::Object(payload),
-        );
-        let response = response?;
-        Self::extract_required_response_string(
-            &response,
-            "opencode_create_session_response",
-            "session_id",
-            &[&["session_id"], &["sessionId"], &["id"], &["session", "id"]],
-        )
-    }
-
-    fn end_session(&self, server_base_url: &str, session_id: &str) -> CrabResult<()> {
-        let route = format!("session/{session_id}");
-        let _ = self.delete_json(server_base_url, &route)?;
-        Ok(())
-    }
-
-    fn execute_turn(
-        &self,
-        server_base_url: &str,
-        session_id: &str,
-        prompt: &str,
-        config: OpenCodeTurnConfig,
-    ) -> CrabResult<OpenCodeBridgeTurnResult> {
-        let mut payload = serde_json::Map::new();
-        payload.insert(
-            "prompt".to_string(),
-            serde_json::Value::String(prompt.to_string()),
-        );
-        payload.insert(
-            "parts".to_string(),
-            serde_json::json!([{"type":"text","text":prompt}]),
-        );
-        if let Some(model) = config.model.filter(|value| !value.trim().is_empty()) {
-            payload.insert(
-                "model".to_string(),
-                serde_json::Value::String(model.clone()),
-            );
-            payload.insert("modelID".to_string(), serde_json::Value::String(model));
-        }
-        if let Some(reasoning_level) = config
-            .reasoning_level
-            .filter(|value| !value.trim().is_empty())
-        {
-            payload.insert(
-                "reasoning_level".to_string(),
-                serde_json::Value::String(reasoning_level.clone()),
-            );
-            payload.insert(
-                "reasoningLevel".to_string(),
-                serde_json::Value::String(reasoning_level),
-            );
-        }
-        let route = format!("session/{session_id}/message");
-        let response = self.post_json(server_base_url, &route, &serde_json::Value::Object(payload));
-        let response = response?;
-        let turn_id = Self::extract_required_response_string(
-            &response,
-            "opencode_send_prompt_response",
-            "turn_id",
-            &[
-                &["turn_id"],
-                &["turnId"],
-                &["id"],
-                &["message", "id"],
-                &["info", "id"],
-            ],
-        );
-        let turn_id = turn_id?;
-
-        let mut raw_events = Vec::new();
-        let mut sequence = 1;
-        if let Some(delta) = Self::extract_text_delta(&response) {
-            raw_events.push(OpenCodeRawEvent::AssistantDelta {
-                sequence,
-                text: delta,
-            });
-            sequence = sequence.saturating_add(1);
-        }
-        let state = Self::extract_turn_state(&response);
-        let message = Self::extract_turn_message(&response)
-            .or_else(|| (state == OpenCodeTurnState::Completed).then(|| "completed".to_string()));
-        raw_events.push(OpenCodeRawEvent::TurnFinished {
-            sequence,
-            turn_id: turn_id.clone(),
-            state,
-            message,
-            usage: Self::extract_usage(&response),
-        });
-        Ok(OpenCodeBridgeTurnResult {
-            turn_id,
-            raw_events,
-        })
-    }
-}
-
-#[derive(Debug, Clone)]
-struct OpenCodeRecoveryBridgeProcess {
-    server_base_url: String,
-}
-
-impl OpenCodeRecoveryBridgeProcess {
-    fn new(server_base_url: String) -> Self {
-        Self { server_base_url }
-    }
-}
-
-impl OpenCodeServerProcess for OpenCodeRecoveryBridgeProcess {
-    fn spawn_server(&self) -> CrabResult<OpenCodeServerHandle> {
-        Ok(OpenCodeServerHandle {
-            process_id: 1,
-            started_at_epoch_ms: 1,
-            server_base_url: self.server_base_url.clone(),
-        })
-    }
-
-    fn is_server_healthy(&self, _handle: &OpenCodeServerHandle) -> bool {
-        true
-    }
-
-    fn terminate_server(&self, _handle: &OpenCodeServerHandle) -> CrabResult<()> {
-        Ok(())
-    }
-}
-
-#[derive(Debug)]
-struct OpenCodeRecoveryBridgeRuntimeAdapter<'a> {
-    runtime: &'a dyn OpenCodeBridgeRuntime,
-    server_base_url: &'a str,
-}
-
-impl OpenCodeRecoveryRuntime for OpenCodeRecoveryBridgeRuntimeAdapter<'_> {
-    fn create_session(&self, config: OpenCodeSessionConfig) -> CrabResult<String> {
-        self.runtime.create_session(self.server_base_url, config)
-    }
-
-    fn end_session(&self, session_id: &str) -> CrabResult<()> {
-        self.runtime.end_session(self.server_base_url, session_id)
-    }
-
-    fn send_prompt(
-        &self,
-        session_id: &str,
-        prompt: &str,
-        config: OpenCodeTurnConfig,
-    ) -> CrabResult<String> {
-        self.runtime
-            .execute_turn(self.server_base_url, session_id, prompt, config)
-            .map(|result| result.turn_id)
-    }
-}
-
-#[derive(Debug)]
-struct OpenCodeExecutionBridge {
-    server_base_url: String,
-    runtime: Box<dyn OpenCodeBridgeRuntime>,
-}
-
-impl OpenCodeExecutionBridge {
-    #[cfg(test)]
-    fn new(server_base_url: String, runtime: Box<dyn OpenCodeBridgeRuntime>) -> CrabResult<Self> {
-        if server_base_url.trim().is_empty() {
-            return Err(CrabError::InvariantViolation {
-                context: DAEMON_BACKEND_BRIDGE_CONTEXT,
-                message: "opencode server_base_url must not be empty".to_string(),
-            });
-        }
-        Ok(Self {
-            server_base_url,
-            runtime,
-        })
-    }
-
-    fn execute_turn(
-        &mut self,
-        physical_session: &mut crab_core::PhysicalSession,
-        run: &Run,
-        turn_context: &str,
-    ) -> CrabResult<Vec<BackendEvent>> {
-        let mapping = map_opencode_inference_profile(&run.profile.resolved_profile);
-        let prompt = turn_context.to_string();
-        if should_materialize_opencode_session(physical_session) {
-            let recovery_result = self.recover_session_with_helper(
-                None,
-                mapping.session_config.clone(),
-                None,
-                mapping.turn_config.clone(),
-            );
-            let recovery = recovery_result?;
-            physical_session.backend_session_id = recovery.new_session_id;
-        }
-
-        let send_result = self.runtime.execute_turn(
-            &self.server_base_url,
-            &physical_session.backend_session_id,
-            &prompt,
-            mapping.turn_config.clone(),
-        );
-        let turn_result = match send_result {
-            Ok(result) => result,
-            Err(error) if should_retry_opencode_session_recovery(&error) => {
-                let previous_session_id = physical_session.backend_session_id.clone();
-                let recovery_result = self.recover_session_with_helper(
-                    Some(previous_session_id.as_str()),
-                    mapping.session_config,
-                    None,
-                    mapping.turn_config.clone(),
-                );
-                let recovery = recovery_result?;
-                #[cfg(not(coverage))]
-                if let Some(previous_session_end_error) =
-                    recovery.previous_session_end_error.as_deref()
-                {
-                    tracing::warn!(
-                        previous_session_id = %previous_session_id,
-                        previous_session_end_error,
-                        "opencode session recovery rotated session after end-session warning"
-                    );
-                }
-                physical_session.backend_session_id = recovery.new_session_id;
-                let base_url = &self.server_base_url;
-                let session_id = &physical_session.backend_session_id;
-                self.runtime
-                    .execute_turn(base_url, session_id, &prompt, mapping.turn_config)?
-            }
-            Err(error) => return Err(error),
-        };
-
-        physical_session.last_turn_id = Some(turn_result.turn_id);
-        normalize_opencode_events(&turn_result.raw_events)
-    }
-
-    fn recover_session_with_helper(
-        &self,
-        previous_session_id: Option<&str>,
-        session_config: OpenCodeSessionConfig,
-        checkpoint_prompt: Option<String>,
-        checkpoint_turn_config: OpenCodeTurnConfig,
-    ) -> CrabResult<crab_backends::OpenCodeRecoveryOutcome> {
-        let runtime_adapter = OpenCodeRecoveryBridgeRuntimeAdapter {
-            runtime: self.runtime.as_ref(),
-            server_base_url: &self.server_base_url,
-        };
-        let plan = OpenCodeRecoveryPlan {
-            session_config,
-            checkpoint_prompt,
-            checkpoint_turn_config,
-        };
-        let mut manager = OpenCodeManager::new(OpenCodeRecoveryBridgeProcess::new(
-            self.server_base_url.clone(),
-        ));
-        recover_opencode_session(&mut manager, &runtime_adapter, previous_session_id, &plan)
-    }
-}
-
-fn should_materialize_opencode_session(physical_session: &crab_core::PhysicalSession) -> bool {
-    physical_session
-        .backend_session_id
-        .starts_with(OPENCODE_SESSION_PLACEHOLDER_PREFIX)
-}
-
-fn should_retry_opencode_session_recovery(error: &CrabError) -> bool {
-    match error {
-        CrabError::InvariantViolation { context, .. } => {
-            context.starts_with("opencode_") || context.starts_with("daemon_opencode_")
-        }
-        CrabError::Io { context, .. } => *context == "daemon_opencode_transport",
-        _ => false,
-    }
-}
-
-#[derive(Debug)]
-struct DaemonBackendBridge {
-    codex: Box<dyn CodexBackendDebugBridge>,
-    opencode: Option<OpenCodeExecutionBridge>,
-}
-
-trait CodexBackendDebugBridge: CodexBackendBridge + std::fmt::Debug {}
-
-impl<T: CodexBackendBridge + std::fmt::Debug> CodexBackendDebugBridge for T {}
-
-impl DaemonBackendBridge {
-    fn default_codex_bridge() -> CrabResult<Box<dyn CodexBackendDebugBridge>> {
-        #[cfg(all(not(any(test, coverage)), debug_assertions))]
-        if use_deterministic_codex_transport_override() {
-            return Ok(Box::new(CodexDaemonBackendBridge::new(
-                DeterministicCodexTransport::default(),
-            )));
-        }
-
-        #[cfg(not(any(test, coverage)))]
-        {
-            let transport = CodexAppServerTransport::new()?;
-            Ok(Box::new(CodexDaemonBackendBridge::new(transport)))
-        }
-
-        #[cfg(any(test, coverage))]
-        {
-            Ok(Box::new(CodexDaemonBackendBridge::new(
-                DeterministicCodexTransport::default(),
-            )))
-        }
-    }
-
-    fn new_default() -> CrabResult<Self> {
-        Ok(Self {
-            codex: Self::default_codex_bridge()?,
-            opencode: None,
-        })
-    }
-
-    fn has_opencode_backend_bridge(&self) -> bool {
-        self.opencode.is_some()
-    }
-
-    #[cfg(test)]
-    fn configure_opencode_backend_bridge(
-        &mut self,
-        server_base_url: String,
-        runtime: Box<dyn OpenCodeBridgeRuntime>,
-    ) -> CrabResult<()> {
-        self.opencode = Some(OpenCodeExecutionBridge::new(server_base_url, runtime)?);
-        Ok(())
-    }
-
-    fn configure_opencode_backend_bridge_trusted(
-        &mut self,
-        server_base_url: String,
-        runtime: Box<dyn OpenCodeBridgeRuntime>,
-    ) {
-        debug_assert!(
-            !server_base_url.trim().is_empty(),
-            "opencode server_base_url must not be empty"
-        );
-        self.opencode = Some(OpenCodeExecutionBridge {
-            server_base_url,
-            runtime,
-        });
-    }
-
-    fn execute_turn(
-        &mut self,
-        codex_lifecycle: &mut dyn CodexLifecycleManager,
-        physical_session: &mut crab_core::PhysicalSession,
-        run: &Run,
-        turn_id: &str,
-        turn_context: &str,
-    ) -> CrabResult<Vec<BackendEvent>> {
-        if run.profile.resolved_profile.backend == BackendKind::OpenCode {
-            let Some(opencode_bridge) = self.opencode.as_mut() else {
-                return Err(CrabError::InvariantViolation {
-                    context: DAEMON_BACKEND_BRIDGE_CONTEXT,
-                    message: "opencode backend bridge is not configured".to_string(),
-                });
-            };
-            return opencode_bridge.execute_turn(physical_session, run, turn_context);
-        }
-        self.codex.execute_backend_turn(
-            codex_lifecycle,
-            physical_session,
-            run,
-            turn_id,
-            turn_context,
-        )
-    }
-}
-
-impl DaemonBackendExecutionBridge for DaemonBackendBridge {
-    fn execute_turn(
-        &mut self,
-        codex_lifecycle: &mut dyn CodexLifecycleManager,
-        physical_session: &mut crab_core::PhysicalSession,
-        run: &Run,
-        turn_id: &str,
-        turn_context: &str,
-    ) -> CrabResult<Vec<BackendEvent>> {
-        DaemonBackendBridge::execute_turn(
-            self,
-            codex_lifecycle,
-            physical_session,
-            run,
-            turn_id,
-            turn_context,
-        )
-    }
-
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
-
-    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
-        self
-    }
-}
-
 #[derive(Debug, Clone)]
 pub struct SystemDaemonLoopControl {
     shutdown_flag: Arc<AtomicBool>,
@@ -1826,8 +1112,6 @@ impl DaemonLoopControl for SystemDaemonLoopControl {
 pub struct DaemonTurnRuntime<D: DaemonDiscordIo> {
     discord: D,
     owner: OwnerConfig,
-    backend_bridge: Box<dyn DaemonBackendExecutionBridge>,
-    next_session_sequence: u64,
     physical_sessions: BTreeMap<String, crab_core::PhysicalSession>,
     turn_context_runtime: Option<TurnContextRuntimeState>,
     claude_bridge: DaemonClaudeExecutionBridge,
@@ -1838,39 +1122,6 @@ struct TurnContextRuntimeState {
     workspace_root: PathBuf,
     checkpoint_store: CheckpointStore,
     context_budget_policy: ContextBudgetPolicy,
-}
-
-trait DaemonBackendExecutionBridge: std::fmt::Debug {
-    fn execute_turn(
-        &mut self,
-        codex_lifecycle: &mut dyn CodexLifecycleManager,
-        physical_session: &mut crab_core::PhysicalSession,
-        run: &Run,
-        turn_id: &str,
-        turn_context: &str,
-    ) -> CrabResult<Vec<BackendEvent>>;
-    fn as_any(&self) -> &dyn std::any::Any;
-    fn as_any_mut(&mut self) -> &mut dyn std::any::Any;
-}
-
-#[cfg(test)]
-type SessionNowEpochMsOverride = fn() -> CrabResult<u64>;
-
-#[cfg(test)]
-thread_local! {
-    static SESSION_NOW_EPOCH_MS_OVERRIDE: RefCell<Option<SessionNowEpochMsOverride>> = RefCell::new(None);
-}
-
-#[cfg(all(not(any(test, coverage)), debug_assertions))]
-fn use_deterministic_codex_transport_override() -> bool {
-    std::env::var(DAEMON_DETERMINISTIC_CODEX_TRANSPORT_ENV)
-        .ok()
-        .is_some_and(|raw| {
-            matches!(
-                raw.trim().to_ascii_lowercase().as_str(),
-                "1" | "true" | "yes" | "on"
-            )
-        })
 }
 
 #[cfg(all(not(any(test, coverage)), debug_assertions))]
@@ -1892,30 +1143,9 @@ fn use_deterministic_claude_process_override() -> bool {
 
 impl<D: DaemonDiscordIo> DaemonTurnRuntime<D> {
     pub fn new(owner: OwnerConfig, discord: D) -> CrabResult<Self> {
-        let backend_bridge = Box::new(DaemonBackendBridge::new_default()?);
-        Self::new_with_backend_bridge_and_claude_process(
-            owner,
-            discord,
-            backend_bridge,
-            DaemonClaudeProcess::default(),
-        )
+        Self::new_with_claude_process(owner, discord, DaemonClaudeProcess::default())
     }
 
-    #[cfg(test)]
-    fn new_with_backend_bridge(
-        owner: OwnerConfig,
-        discord: D,
-        backend_bridge: Box<dyn DaemonBackendExecutionBridge>,
-    ) -> CrabResult<Self> {
-        Self::new_with_backend_bridge_and_claude_process(
-            owner,
-            discord,
-            backend_bridge,
-            DaemonClaudeProcess::default(),
-        )
-    }
-
-    #[cfg(test)]
     fn new_with_claude_process<P>(
         owner: OwnerConfig,
         discord: D,
@@ -1924,29 +1154,9 @@ impl<D: DaemonDiscordIo> DaemonTurnRuntime<D> {
     where
         P: ClaudeProcess + 'static,
     {
-        let backend_bridge = Box::new(DaemonBackendBridge::new_default()?);
-        Self::new_with_backend_bridge_and_claude_process(
-            owner,
-            discord,
-            backend_bridge,
-            claude_process,
-        )
-    }
-
-    fn new_with_backend_bridge_and_claude_process<P>(
-        owner: OwnerConfig,
-        discord: D,
-        backend_bridge: Box<dyn DaemonBackendExecutionBridge>,
-        claude_process: P,
-    ) -> CrabResult<Self>
-    where
-        P: ClaudeProcess + 'static,
-    {
         Ok(Self {
             discord,
             owner,
-            backend_bridge,
-            next_session_sequence: 0,
             physical_sessions: BTreeMap::new(),
             turn_context_runtime: None,
             claude_bridge: DaemonClaudeExecutionBridge::with_process(Arc::new(claude_process)),
@@ -1963,47 +1173,6 @@ impl<D: DaemonDiscordIo> DaemonTurnRuntime<D> {
             checkpoint_store,
             context_budget_policy: ContextBudgetPolicy::default(),
         });
-    }
-
-    fn has_opencode_backend_bridge(&self) -> bool {
-        self.backend_bridge
-            .as_any()
-            .downcast_ref::<DaemonBackendBridge>()
-            .is_some_and(DaemonBackendBridge::has_opencode_backend_bridge)
-    }
-
-    #[cfg(test)]
-    fn configure_opencode_backend_bridge(
-        &mut self,
-        server_base_url: String,
-        runtime: Box<dyn OpenCodeBridgeRuntime>,
-    ) -> CrabResult<()> {
-        let Some(backend_bridge) = self
-            .backend_bridge
-            .as_any_mut()
-            .downcast_mut::<DaemonBackendBridge>()
-        else {
-            return Err(CrabError::InvariantViolation {
-                context: DAEMON_BACKEND_BRIDGE_CONTEXT,
-                message: "runtime backend bridge does not support opencode test configuration"
-                    .to_string(),
-            });
-        };
-        backend_bridge.configure_opencode_backend_bridge(server_base_url, runtime)
-    }
-
-    fn configure_opencode_backend_bridge_trusted(
-        &mut self,
-        server_base_url: String,
-        runtime: Box<dyn OpenCodeBridgeRuntime>,
-    ) {
-        if let Some(backend_bridge) = self
-            .backend_bridge
-            .as_any_mut()
-            .downcast_mut::<DaemonBackendBridge>()
-        {
-            backend_bridge.configure_opencode_backend_bridge_trusted(server_base_url, runtime);
-        }
     }
 
     fn shutdown_claude_sessions(&mut self) -> CrabResult<()> {
@@ -2034,31 +1203,8 @@ impl<D: DaemonDiscordIo> DaemonTurnRuntime<D> {
         Ok(())
     }
 
-    fn session_now_epoch_ms() -> CrabResult<u64> {
-        #[cfg(test)]
-        if let Some(override_fn) = SESSION_NOW_EPOCH_MS_OVERRIDE.with(|cell| *cell.borrow()) {
-            return override_fn();
-        }
-        now_epoch_ms()
-    }
-
-    #[cfg(test)]
-    fn set_session_now_epoch_ms_override(override_fn: Option<SessionNowEpochMsOverride>) {
-        SESSION_NOW_EPOCH_MS_OVERRIDE.with(|cell| {
-            *cell.borrow_mut() = override_fn;
-        });
-    }
-
     pub fn next_gateway_message(&mut self) -> CrabResult<Option<GatewayMessage>> {
         self.discord.next_gateway_message()
-    }
-
-    fn next_physical_session_id(&mut self, logical_session_id: &str) -> String {
-        self.next_session_sequence = self.next_session_sequence.saturating_add(1);
-        format!(
-            "physical:{logical_session_id}:{}",
-            self.next_session_sequence
-        )
     }
 
     fn build_runtime_turn_context(
@@ -2143,6 +1289,10 @@ impl<D: DaemonDiscordIo> DaemonTurnRuntime<D> {
         }
 
         Ok(budgeted.rendered_context)
+    }
+
+    fn session_now_epoch_ms() -> CrabResult<u64> {
+        now_epoch_ms()
     }
 }
 
@@ -2240,67 +1390,44 @@ impl<D: DaemonDiscordIo> TurnExecutorRuntime for DaemonTurnRuntime<D> {
         profile: &InferenceProfile,
         active_physical_session_id: Option<&str>,
     ) -> CrabResult<crab_core::PhysicalSession> {
-        if profile.backend == BackendKind::Claude {
-            let has_cached_active_session = active_physical_session_id
-                .is_some_and(|active_id| self.physical_sessions.contains_key(active_id));
-            match resolve_claude_session_strategy(
-                active_physical_session_id,
-                has_cached_active_session,
-            ) {
-                ClaudeSessionStrategy::ReuseCached { active_id } => {
-                    let existing =
-                        self.physical_sessions.get(active_id).cloned().expect(
-                            "resolve_claude_session_strategy guarantees cached session exists",
-                        );
-                    return Ok(existing);
-                }
-                ClaudeSessionStrategy::RestoreFromActiveId {
-                    active_id,
-                    backend_session_id,
-                } => {
-                    let session = crab_core::PhysicalSession {
-                        id: active_id.to_string(),
-                        logical_session_id: logical_session_id.to_string(),
-                        backend: BackendKind::Claude,
-                        backend_session_id: backend_session_id.to_string(),
-                        created_at_epoch_ms: Self::session_now_epoch_ms()?,
-                        last_turn_id: None,
-                    };
-                    self.physical_sessions
-                        .insert(active_id.to_string(), session.clone());
-                    return Ok(session);
-                }
-                ClaudeSessionStrategy::CreateNew => {}
+        let has_cached_active_session = active_physical_session_id
+            .is_some_and(|active_id| self.physical_sessions.contains_key(active_id));
+        match resolve_claude_session_strategy(active_physical_session_id, has_cached_active_session)
+        {
+            ClaudeSessionStrategy::ReuseCached { active_id } => {
+                let existing = self
+                    .physical_sessions
+                    .get(active_id)
+                    .cloned()
+                    .expect("resolve_claude_session_strategy guarantees cached session exists");
+                return Ok(existing);
             }
-
-            let session_context = SessionContext {
-                logical_session_id: logical_session_id.to_string(),
-                profile: profile.clone(),
-            };
-            let session = block_on(self.claude_bridge.harness.create_session(&session_context))?;
-            self.physical_sessions
-                .insert(session.id.clone(), session.clone());
-            return Ok(session);
+            ClaudeSessionStrategy::RestoreFromActiveId {
+                active_id,
+                backend_session_id,
+            } => {
+                let session = crab_core::PhysicalSession {
+                    id: active_id.to_string(),
+                    logical_session_id: logical_session_id.to_string(),
+                    backend: BackendKind::Claude,
+                    backend_session_id: backend_session_id.to_string(),
+                    created_at_epoch_ms: Self::session_now_epoch_ms()?,
+                    last_turn_id: None,
+                };
+                self.physical_sessions
+                    .insert(active_id.to_string(), session.clone());
+                return Ok(session);
+            }
+            ClaudeSessionStrategy::CreateNew => {}
         }
 
-        if let Some(active_id) = active_physical_session_id {
-            if let Some(existing) = self.physical_sessions.get(active_id) {
-                return Ok(existing.clone());
-            }
-        }
-
-        let id = active_physical_session_id
-            .map(ToOwned::to_owned)
-            .unwrap_or_else(|| self.next_physical_session_id(logical_session_id));
-        let session = crab_core::PhysicalSession {
-            id: id.clone(),
+        let session_context = SessionContext {
             logical_session_id: logical_session_id.to_string(),
-            backend: profile.backend,
-            backend_session_id: format!("backend-session:{id}"),
-            created_at_epoch_ms: Self::session_now_epoch_ms()?,
-            last_turn_id: None,
+            profile: profile.clone(),
         };
-        self.physical_sessions.insert(id, session.clone());
+        let session = block_on(self.claude_bridge.harness.create_session(&session_context))?;
+        self.physical_sessions
+            .insert(session.id.clone(), session.clone());
         Ok(session)
     }
 
@@ -2321,51 +1448,25 @@ impl<D: DaemonDiscordIo> TurnExecutorRuntime for DaemonTurnRuntime<D> {
 
     fn execute_backend_turn(
         &mut self,
-        codex_lifecycle: &mut dyn CodexLifecycleManager,
         physical_session: &mut crab_core::PhysicalSession,
         run: &Run,
         turn_id: &str,
         turn_context: &str,
     ) -> CrabResult<crab_backends::BackendEventStream> {
         let cache_key = physical_session.id.clone();
-        if run.profile.resolved_profile.backend == BackendKind::Claude {
-            let input = TurnInput {
-                run_id: run.id.clone(),
-                turn_id: turn_id.to_string(),
-                user_input: turn_context.to_string(),
-            };
-            let stream = block_on(
-                self.claude_bridge
-                    .harness
-                    .send_turn(physical_session, input),
-            )?;
-            self.physical_sessions
-                .insert(cache_key, physical_session.clone());
-            return Ok(stream);
-        }
-
-        let backend_events = self
-            .backend_bridge
-            .execute_turn(
-                codex_lifecycle,
-                physical_session,
-                run,
-                turn_id,
-                turn_context,
-            )
-            .map_err(|error| CrabError::InvariantViolation {
-                context: DAEMON_BACKEND_BRIDGE_EXECUTE,
-                message: format!(
-                    "run {} turn {} backend {:?} bridge execution failed: {}",
-                    run.id, turn_id, run.profile.resolved_profile.backend, error
-                ),
-            })?;
-        if physical_session.last_turn_id.is_none() {
-            physical_session.last_turn_id = Some(turn_id.to_string());
-        }
+        let input = TurnInput {
+            run_id: run.id.clone(),
+            turn_id: turn_id.to_string(),
+            user_input: turn_context.to_string(),
+        };
+        let stream = block_on(
+            self.claude_bridge
+                .harness
+                .send_turn(physical_session, input),
+        )?;
         self.physical_sessions
             .insert(cache_key, physical_session.clone());
-        Ok(Box::pin(stream::iter(backend_events)))
+        Ok(stream)
     }
 
     fn deliver_assistant_output(
@@ -2391,51 +1492,37 @@ impl<D: DaemonDiscordIo> TurnExecutorRuntime for DaemonTurnRuntime<D> {
         session: &crab_core::PhysicalSession,
         turn_id: &str,
     ) -> CrabResult<()> {
-        if session.backend == BackendKind::Claude {
-            block_on(self.claude_bridge.harness.interrupt_turn(session, turn_id))
-        } else {
-            Ok(())
-        }
+        block_on(self.claude_bridge.harness.interrupt_turn(session, turn_id))
     }
 }
 
-pub fn run_daemon_loop_with_transport<CP, OP, D, C>(
+pub fn run_daemon_loop_with_transport<D, C>(
     runtime_config: &RuntimeConfig,
     daemon_config: &DaemonConfig,
-    codex_process: CP,
-    opencode_process: OP,
     discord: D,
     control: &mut C,
 ) -> CrabResult<DaemonLoopStats>
 where
-    CP: CodexAppServerProcess,
-    OP: OpenCodeServerProcess,
     D: DaemonDiscordIo,
     C: DaemonLoopControl + ?Sized,
 {
     run_daemon_loop_with_transport_and_runtime_builder(
         runtime_config,
         daemon_config,
-        codex_process,
-        opencode_process,
         discord,
         control,
         DaemonTurnRuntime::new,
     )
 }
 
-fn run_daemon_loop_with_transport_and_runtime_builder<CP, OP, D, C, RB>(
+fn run_daemon_loop_with_transport_and_runtime_builder<D, C, RB>(
     runtime_config: &RuntimeConfig,
     daemon_config: &DaemonConfig,
-    codex_process: CP,
-    opencode_process: OP,
     discord: D,
     control: &mut C,
     runtime_builder: RB,
 ) -> CrabResult<DaemonLoopStats>
 where
-    CP: CodexAppServerProcess,
-    OP: OpenCodeServerProcess,
     D: DaemonDiscordIo,
     C: DaemonLoopControl + ?Sized,
     RB: FnOnce(OwnerConfig, D) -> CrabResult<DaemonTurnRuntime<D>>,
@@ -2443,13 +1530,7 @@ where
     let mut discord = discord;
     daemon_config.validate()?;
     let now_epoch_ms = control.now_epoch_ms()?;
-    let mut boot = boot_runtime_with_processes(
-        runtime_config,
-        &daemon_config.bot_user_id,
-        codex_process,
-        opencode_process,
-        now_epoch_ms,
-    )?;
+    let boot = crate::boot_runtime(runtime_config, &daemon_config.bot_user_id, now_epoch_ms)?;
     #[cfg(not(coverage))]
     {
         let migration = &boot.composition.state_schema_migration;
@@ -2517,9 +1598,6 @@ where
         }
     }
 
-    boot.composition.backends.codex.ensure_started()?;
-    let opencode_handle = boot.composition.backends.opencode.ensure_running()?;
-
     let mut heartbeat_loop_state = boot.heartbeat_loop_state;
     #[cfg(test)]
     {
@@ -2530,11 +1608,6 @@ where
         boot.composition.startup.workspace_root.clone(),
         boot.composition.state_stores.checkpoint_store.clone(),
     );
-    if !runtime.has_opencode_backend_bridge() {
-        let bridge_url = opencode_handle.server_base_url.clone();
-        let bridge_runtime = Box::new(HttpOpenCodeBridgeRuntime);
-        runtime.configure_opencode_backend_bridge_trusted(bridge_url, bridge_runtime);
-    }
     let mut executor = TurnExecutor::new(boot.composition, runtime);
     let mut stats = DaemonLoopStats::default();
 
@@ -2578,67 +1651,36 @@ where
         }
 
         let now_epoch_ms = control.now_epoch_ms()?;
-        let push_outcome = process_workspace_git_push_queue(
-            &executor.composition().startup.workspace_root,
-            &executor.composition().state_stores.root,
-            &executor.composition().workspace_git,
-            now_epoch_ms,
-        );
-        #[cfg(not(coverage))]
-        match push_outcome {
-            Ok(outcome) => {
-                if outcome.attempted && !outcome.pushed {
-                    tracing::warn!(
-                        commit_key = ?outcome.commit_key,
-                        exhausted = outcome.exhausted,
-                        failure = ?outcome.failure,
-                        failure_kind = ?outcome.failure_kind,
-                        recovery_commands = ?outcome.recovery_commands,
-                        next_due_at_epoch_ms = ?outcome.next_due_at_epoch_ms,
-                        next_backoff_ms = ?outcome.next_backoff_ms,
-                        "workspace git push attempt failed"
-                    );
-                } else if outcome.attempted && outcome.pushed {
-                    tracing::info!(
-                        commit_key = ?outcome.commit_key,
-                        queue_depth = outcome.queue_depth,
-                        "workspace git push succeeded"
-                    );
-                }
-            }
-            Err(_error) => {
-                tracing::warn!(error = %_error, "workspace git push queue processing failed");
-            }
-        }
-        #[cfg(coverage)]
-        let _ = push_outcome;
 
-        if let Some(outcome) = run_heartbeat_if_due(
+        let heartbeat_outcome = run_heartbeat_if_due(
             executor.composition_mut(),
             &mut heartbeat_loop_state,
             now_epoch_ms,
-        )? {
+        );
+        if let Some(outcome) = heartbeat_outcome? {
             stats.heartbeat_cycles = stats.heartbeat_cycles.saturating_add(1);
+            #[cfg(coverage)]
+            let _ = &outcome;
 
-            let had_actions = !outcome.cancelled_runs.is_empty()
-                || !outcome.hard_stopped_runs.is_empty()
-                || !outcome.restarted_backends.is_empty()
-                || outcome.dispatcher_nudged;
-            if had_actions {
-                #[cfg(not(coverage))]
-                tracing::warn!(
-                    cancelled_runs = outcome.cancelled_runs.len(),
-                    hard_stopped_runs = outcome.hard_stopped_runs.len(),
-                    restarted_backends = outcome.restarted_backends.len(),
-                    dispatcher_nudged = outcome.dispatcher_nudged,
-                    events = outcome.events.len(),
-                    "heartbeat took corrective action"
-                );
-                #[cfg(not(coverage))]
-                tracing::debug!(?outcome, "heartbeat outcome details");
-            } else {
-                #[cfg(not(coverage))]
-                tracing::debug!(events = outcome.events.len(), "heartbeat cycle complete");
+            #[cfg(not(coverage))]
+            {
+                let had_actions = !outcome.cancelled_runs.is_empty()
+                    || !outcome.hard_stopped_runs.is_empty()
+                    || !outcome.restarted_backends.is_empty()
+                    || outcome.dispatcher_nudged;
+                if had_actions {
+                    tracing::warn!(
+                        cancelled_runs = outcome.cancelled_runs.len(),
+                        hard_stopped_runs = outcome.hard_stopped_runs.len(),
+                        restarted_backends = outcome.restarted_backends.len(),
+                        dispatcher_nudged = outcome.dispatcher_nudged,
+                        events = outcome.events.len(),
+                        "heartbeat took corrective action"
+                    );
+                    tracing::debug!(?outcome, "heartbeat outcome details");
+                } else {
+                    tracing::debug!(events = outcome.events.len(), "heartbeat cycle complete");
+                }
             }
         }
 
@@ -2654,8 +1696,6 @@ where
         "daemon loop exiting: shutting down backends"
     );
     executor.runtime_mut().shutdown_claude_sessions()?;
-    executor.composition_mut().backends.codex.stop()?;
-    executor.composition_mut().backends.opencode.stop()?;
     Ok(stats)
 }
 
@@ -2800,204 +1840,30 @@ mod tests {
         conversation_kind_for_logical_session_id, epoch_ms_from_duration,
         epoch_ms_from_system_time, epoch_ms_to_yyyy_mm_dd, load_latest_checkpoint_summary,
         memory_scope_directory_for_run, notify_startup_recovered_runs, read_workspace_markdown,
-        run_daemon_loop_with_transport, run_daemon_loop_with_transport_and_runtime_builder,
-        trust_surface_for_logical_session_id, DaemonBackendExecutionBridge, DaemonClaudeProcess,
-        DaemonConfig, DaemonDiscordIo, DaemonLoopControl, DaemonLoopStats, DaemonTurnRuntime,
-        OpenCodeBridgeRuntime, OpenCodeBridgeTurnResult, SystemDaemonLoopControl,
+        trust_surface_for_logical_session_id, DaemonClaudeProcess, DaemonConfig, DaemonDiscordIo,
+        DaemonLoopControl, DaemonTurnRuntime, SystemDaemonLoopControl,
     };
     use crate::test_support::{runtime_config_for_workspace_with_lanes, TempWorkspace};
     use crate::TurnExecutorRuntime;
     use crab_backends::{
         claude::{ClaudeRawEvent, ClaudeRawEventStream},
-        BackendEvent, BackendEventKind, ClaudeProcess, CodexAppServerProcess,
-        CodexLifecycleManager, CodexProcessHandle, OpenCodeRawEvent, OpenCodeServerHandle,
-        OpenCodeServerProcess, OpenCodeSessionConfig, OpenCodeTokenUsage, OpenCodeTurnConfig,
-        OpenCodeTurnState, SessionContext, TurnInput,
+        BackendEvent, BackendEventKind, ClaudeProcess, SessionContext, TurnInput,
     };
     use crab_core::{
         BackendKind, Checkpoint, CrabError, CrabResult, InferenceProfile, LaneState,
-        LogicalSession, OwnerConfig, ProfileValueSource, ReasoningLevel, Run, RunProfileTelemetry,
-        RunStatus, SenderConversationKind, TokenAccounting, TrustSurface, WorkspaceBootstrapState,
+        LogicalSession, ProfileValueSource, ReasoningLevel, Run, RunProfileTelemetry, RunStatus,
+        SenderConversationKind, TokenAccounting, TrustSurface, WorkspaceBootstrapState,
     };
-    use crab_discord::{GatewayConversationKind, GatewayMessage};
-    use crab_store::{CheckpointStore, EventStore, RunStore, SessionStore};
+    use crab_discord::GatewayMessage;
+    use crab_store::{CheckpointStore, RunStore};
     use futures::executor::block_on;
     use futures::StreamExt;
     use std::collections::VecDeque;
-    use std::io::{BufRead, BufReader, Read, Write};
-    use std::net::{TcpListener, TcpStream};
     #[cfg(unix)]
     use std::process::Command;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, Mutex};
-    use std::thread::JoinHandle;
     use std::time::{Duration, UNIX_EPOCH};
-
-    #[derive(Debug, Clone, Default)]
-    struct TrackingCodexState {
-        spawn_calls: usize,
-        terminate_calls: usize,
-    }
-
-    #[derive(Debug, Clone, Default)]
-    struct TrackingOpenCodeState {
-        spawn_calls: usize,
-        terminate_calls: usize,
-    }
-
-    #[derive(Debug, Clone)]
-    struct TrackingCodexProcess {
-        state: Arc<Mutex<TrackingCodexState>>,
-        spawn_error: Option<&'static str>,
-        terminate_error: Option<&'static str>,
-    }
-
-    #[derive(Debug, Clone)]
-    struct TrackingOpenCodeProcess {
-        state: Arc<Mutex<TrackingOpenCodeState>>,
-        spawn_error: Option<&'static str>,
-        terminate_error: Option<&'static str>,
-        server_base_url: String,
-    }
-
-    impl TrackingCodexProcess {
-        fn new() -> Self {
-            Self {
-                state: Arc::new(Mutex::new(TrackingCodexState::default())),
-                spawn_error: None,
-                terminate_error: None,
-            }
-        }
-
-        fn with_spawn_error(message: &'static str) -> Self {
-            Self {
-                state: Arc::new(Mutex::new(TrackingCodexState::default())),
-                spawn_error: Some(message),
-                terminate_error: None,
-            }
-        }
-
-        fn with_terminate_error(message: &'static str) -> Self {
-            Self {
-                state: Arc::new(Mutex::new(TrackingCodexState::default())),
-                spawn_error: None,
-                terminate_error: Some(message),
-            }
-        }
-
-        fn stats(&self) -> TrackingCodexState {
-            self.state.lock().expect("lock should succeed").clone()
-        }
-    }
-
-    impl TrackingOpenCodeProcess {
-        fn new() -> Self {
-            Self {
-                state: Arc::new(Mutex::new(TrackingOpenCodeState::default())),
-                spawn_error: None,
-                terminate_error: None,
-                server_base_url: "http://127.0.0.1:4210".to_string(),
-            }
-        }
-
-        fn with_server_base_url(server_base_url: String) -> Self {
-            Self {
-                state: Arc::new(Mutex::new(TrackingOpenCodeState::default())),
-                spawn_error: None,
-                terminate_error: None,
-                server_base_url,
-            }
-        }
-
-        fn with_spawn_error(message: &'static str) -> Self {
-            Self {
-                state: Arc::new(Mutex::new(TrackingOpenCodeState::default())),
-                spawn_error: Some(message),
-                terminate_error: None,
-                server_base_url: "http://127.0.0.1:4210".to_string(),
-            }
-        }
-
-        fn with_terminate_error(message: &'static str) -> Self {
-            Self {
-                state: Arc::new(Mutex::new(TrackingOpenCodeState::default())),
-                spawn_error: None,
-                terminate_error: Some(message),
-                server_base_url: "http://127.0.0.1:4210".to_string(),
-            }
-        }
-
-        fn stats(&self) -> TrackingOpenCodeState {
-            self.state.lock().expect("lock should succeed").clone()
-        }
-    }
-
-    impl CodexAppServerProcess for TrackingCodexProcess {
-        fn spawn_app_server(&self) -> CrabResult<CodexProcessHandle> {
-            if let Some(message) = self.spawn_error {
-                return Err(CrabError::InvariantViolation {
-                    context: "daemon_test_codex_spawn",
-                    message: message.to_string(),
-                });
-            }
-            let mut state = self.state.lock().expect("lock should succeed");
-            state.spawn_calls += 1;
-            Ok(CodexProcessHandle {
-                process_id: 111,
-                started_at_epoch_ms: 1,
-            })
-        }
-
-        fn is_healthy(&self, _handle: &CodexProcessHandle) -> bool {
-            true
-        }
-
-        fn terminate_app_server(&self, _handle: &CodexProcessHandle) -> CrabResult<()> {
-            if let Some(message) = self.terminate_error {
-                return Err(CrabError::InvariantViolation {
-                    context: "daemon_test_codex_terminate",
-                    message: message.to_string(),
-                });
-            }
-            let mut state = self.state.lock().expect("lock should succeed");
-            state.terminate_calls += 1;
-            Ok(())
-        }
-    }
-
-    impl OpenCodeServerProcess for TrackingOpenCodeProcess {
-        fn spawn_server(&self) -> CrabResult<OpenCodeServerHandle> {
-            if let Some(message) = self.spawn_error {
-                return Err(CrabError::InvariantViolation {
-                    context: "daemon_test_opencode_spawn",
-                    message: message.to_string(),
-                });
-            }
-            let mut state = self.state.lock().expect("lock should succeed");
-            state.spawn_calls += 1;
-            Ok(OpenCodeServerHandle {
-                process_id: 222,
-                started_at_epoch_ms: 1,
-                server_base_url: self.server_base_url.clone(),
-            })
-        }
-
-        fn is_server_healthy(&self, _handle: &OpenCodeServerHandle) -> bool {
-            true
-        }
-
-        fn terminate_server(&self, _handle: &OpenCodeServerHandle) -> CrabResult<()> {
-            if let Some(message) = self.terminate_error {
-                return Err(CrabError::InvariantViolation {
-                    context: "daemon_test_opencode_terminate",
-                    message: message.to_string(),
-                });
-            }
-            let mut state = self.state.lock().expect("lock should succeed");
-            state.terminate_calls += 1;
-            Ok(())
-        }
-    }
 
     #[derive(Debug, Clone, Default, PartialEq, Eq)]
     struct ScriptedClaudeStats {
@@ -3167,525 +2033,12 @@ mod tests {
         }
     }
 
-    #[derive(Debug, Clone, Default)]
-    struct ScriptedBackendBridgeState {
-        execute_calls: Vec<(String, String, String, String)>,
-        execute_turn_results: VecDeque<CrabResult<Vec<BackendEvent>>>,
-    }
-
-    #[derive(Debug, Clone)]
-    struct ScriptedBackendBridge {
-        state: Arc<Mutex<ScriptedBackendBridgeState>>,
-    }
-
-    impl ScriptedBackendBridge {
-        fn with_results(results: Vec<CrabResult<Vec<BackendEvent>>>) -> Self {
-            Self {
-                state: Arc::new(Mutex::new(ScriptedBackendBridgeState {
-                    execute_turn_results: VecDeque::from(results),
-                    ..ScriptedBackendBridgeState::default()
-                })),
-            }
-        }
-
-        fn state(&self) -> ScriptedBackendBridgeState {
-            self.state.lock().expect("lock should succeed").clone()
-        }
-    }
-
-    impl DaemonBackendExecutionBridge for ScriptedBackendBridge {
-        fn execute_turn(
-            &mut self,
-            _codex_lifecycle: &mut dyn CodexLifecycleManager,
-            physical_session: &mut crab_core::PhysicalSession,
-            run: &Run,
-            turn_id: &str,
-            turn_context: &str,
-        ) -> CrabResult<Vec<BackendEvent>> {
-            let mut state = self.state.lock().expect("lock should succeed");
-            state.execute_calls.push((
-                physical_session.id.clone(),
-                run.id.clone(),
-                turn_id.to_string(),
-                turn_context.to_string(),
-            ));
-            state.execute_turn_results.pop_front().unwrap_or_else(|| {
-                Err(CrabError::InvariantViolation {
-                    context: "daemon_test_backend_bridge",
-                    message: "missing scripted execute result".to_string(),
-                })
-            })
-        }
-
-        fn as_any(&self) -> &dyn std::any::Any {
-            self
-        }
-
-        fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
-            self
-        }
-    }
-
-    #[derive(Debug, Default)]
-    struct MutatingBackendBridge;
-
-    impl DaemonBackendExecutionBridge for MutatingBackendBridge {
-        fn execute_turn(
-            &mut self,
-            _codex_lifecycle: &mut dyn CodexLifecycleManager,
-            physical_session: &mut crab_core::PhysicalSession,
-            _run: &Run,
-            turn_id: &str,
-            _turn_context: &str,
-        ) -> CrabResult<Vec<BackendEvent>> {
-            physical_session.backend_session_id = format!("backend-session:mutated:{turn_id}");
-            Ok(vec![BackendEvent {
-                sequence: 1,
-                kind: BackendEventKind::TurnCompleted,
-                payload: std::collections::BTreeMap::from([(
-                    "finish".to_string(),
-                    "done".to_string(),
-                )]),
-            }])
-        }
-
-        fn as_any(&self) -> &dyn std::any::Any {
-            self
-        }
-
-        fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
-            self
-        }
-    }
-
-    #[derive(Debug, Default)]
-    struct TurnIdMutatingBackendBridge;
-
-    impl DaemonBackendExecutionBridge for TurnIdMutatingBackendBridge {
-        fn execute_turn(
-            &mut self,
-            _codex_lifecycle: &mut dyn CodexLifecycleManager,
-            physical_session: &mut crab_core::PhysicalSession,
-            _run: &Run,
-            _turn_id: &str,
-            _turn_context: &str,
-        ) -> CrabResult<Vec<BackendEvent>> {
-            physical_session.last_turn_id = Some("backend-turn-id-9".to_string());
-            Ok(vec![BackendEvent {
-                sequence: 1,
-                kind: BackendEventKind::TurnCompleted,
-                payload: std::collections::BTreeMap::from([(
-                    "finish".to_string(),
-                    "done".to_string(),
-                )]),
-            }])
-        }
-
-        fn as_any(&self) -> &dyn std::any::Any {
-            self
-        }
-
-        fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
-            self
-        }
-    }
-
-    #[derive(Debug, Default)]
-    struct NoopCodexLifecycle;
-
-    impl CodexLifecycleManager for NoopCodexLifecycle {
-        fn ensure_started(&mut self) -> CrabResult<CodexProcessHandle> {
-            Ok(CodexProcessHandle {
-                process_id: 1,
-                started_at_epoch_ms: 1,
-            })
-        }
-
-        fn restart(&mut self) -> CrabResult<CodexProcessHandle> {
-            self.ensure_started()
-        }
-    }
-
-    #[test]
-    fn noop_codex_lifecycle_manager_returns_stable_handle_for_start_and_restart() {
-        let mut lifecycle = NoopCodexLifecycle;
-        let started = lifecycle
-            .ensure_started()
-            .expect("ensure_started should return handle");
-        assert_eq!(
-            started,
-            CodexProcessHandle {
-                process_id: 1,
-                started_at_epoch_ms: 1,
-            }
-        );
-        let restarted = lifecycle
-            .restart()
-            .expect("restart should return stable handle");
-        assert_eq!(
-            restarted,
-            CodexProcessHandle {
-                process_id: 1,
-                started_at_epoch_ms: 1,
-            }
-        );
-    }
-
-    #[derive(Debug, Clone)]
-    struct ScriptedControl {
-        now_values: VecDeque<u64>,
-        shutdown: bool,
-        slept: Vec<u64>,
-    }
-
-    impl ScriptedControl {
-        fn with_now(now_values: Vec<u64>) -> Self {
-            Self {
-                now_values: VecDeque::from(now_values),
-                shutdown: false,
-                slept: Vec::new(),
-            }
-        }
-    }
-
-    impl DaemonLoopControl for ScriptedControl {
-        fn now_epoch_ms(&mut self) -> CrabResult<u64> {
-            self.now_values
-                .pop_front()
-                .ok_or(CrabError::InvariantViolation {
-                    context: "daemon_test_now",
-                    message: "missing scripted now value".to_string(),
-                })
-        }
-
-        fn should_shutdown(&self) -> bool {
-            self.shutdown
-        }
-
-        fn sleep_tick(&mut self, tick_interval_ms: u64) -> CrabResult<()> {
-            self.slept.push(tick_interval_ms);
-            Ok(())
-        }
-    }
-
-    fn gateway_message(message_id: &str, author_id: &str, content: &str) -> GatewayMessage {
-        GatewayMessage {
-            message_id: message_id.to_string(),
-            author_id: author_id.to_string(),
-            author_is_bot: false,
-            channel_id: "777".to_string(),
-            guild_id: Some("555".to_string()),
-            thread_id: None,
-            content: content.to_string(),
-            conversation_kind: GatewayConversationKind::GuildChannel,
-            attachments: vec![],
-        }
-    }
-
-    fn gateway_dm_message(message_id: &str, author_id: &str, content: &str) -> GatewayMessage {
-        GatewayMessage {
-            message_id: message_id.to_string(),
-            author_id: author_id.to_string(),
-            author_is_bot: false,
-            channel_id: format!("dm-{author_id}"),
-            guild_id: None,
-            thread_id: None,
-            content: content.to_string(),
-            conversation_kind: GatewayConversationKind::DirectMessage,
-            attachments: vec![],
-        }
-    }
-
-    fn onboarding_capture_payload_json() -> String {
-        serde_json::json!({
-            "schema_version": "v1",
-            "agent_identity": "Crab",
-            "owner_identity": "Owner",
-            "machine_location": "Living room",
-            "machine_timezone": "America/New_York",
-            "primary_goals": ["Build reliable automations"]
-        })
-        .to_string()
-    }
-
     fn install_handler_ok(_flag: Arc<AtomicBool>) -> Result<(), String> {
         Ok(())
     }
 
     fn install_handler_err(_flag: Arc<AtomicBool>) -> Result<(), String> {
         Err("failed to install Ctrl-C handler: test".to_string())
-    }
-
-    fn fail_session_now_epoch_ms() -> CrabResult<u64> {
-        Err(CrabError::InvariantViolation {
-            context: "daemon_runtime_session_now",
-            message: "forced session timestamp failure".to_string(),
-        })
-    }
-
-    fn runtime_builder_err(
-        _owner: OwnerConfig,
-        _discord: ScriptedDiscordIo,
-    ) -> CrabResult<DaemonTurnRuntime<ScriptedDiscordIo>> {
-        Err(CrabError::InvariantViolation {
-            context: "daemon_runtime_builder",
-            message: "forced runtime build failure".to_string(),
-        })
-    }
-
-    #[derive(Debug, Clone)]
-    struct SleepFailControl {
-        now_values: VecDeque<u64>,
-    }
-
-    impl SleepFailControl {
-        fn with_now(now_values: Vec<u64>) -> Self {
-            Self {
-                now_values: VecDeque::from(now_values),
-            }
-        }
-    }
-
-    impl DaemonLoopControl for SleepFailControl {
-        fn now_epoch_ms(&mut self) -> CrabResult<u64> {
-            self.now_values
-                .pop_front()
-                .ok_or(CrabError::InvariantViolation {
-                    context: "daemon_test_now",
-                    message: "missing scripted now value".to_string(),
-                })
-        }
-
-        fn should_shutdown(&self) -> bool {
-            false
-        }
-
-        fn sleep_tick(&mut self, _tick_interval_ms: u64) -> CrabResult<()> {
-            Err(CrabError::InvariantViolation {
-                context: "daemon_test_sleep",
-                message: "forced sleep failure".to_string(),
-            })
-        }
-    }
-
-    #[derive(Debug, Clone, Default, PartialEq, Eq)]
-    struct ScriptedOpenCodeBridgeStats {
-        create_calls: usize,
-        end_calls: usize,
-        execute_calls: usize,
-        seen_session_ids: Vec<String>,
-        seen_ended_session_ids: Vec<String>,
-        seen_prompts: Vec<String>,
-    }
-
-    #[derive(Debug, Clone)]
-    struct ScriptedOpenCodeBridgeRuntime {
-        state: Arc<Mutex<ScriptedOpenCodeBridgeState>>,
-    }
-
-    #[derive(Debug, Clone)]
-    struct ScriptedOpenCodeBridgeState {
-        create_results: VecDeque<CrabResult<String>>,
-        end_results: VecDeque<CrabResult<()>>,
-        execute_results: VecDeque<CrabResult<OpenCodeBridgeTurnResult>>,
-        stats: ScriptedOpenCodeBridgeStats,
-    }
-
-    impl ScriptedOpenCodeBridgeRuntime {
-        fn with_results(
-            create_results: Vec<CrabResult<String>>,
-            execute_results: Vec<CrabResult<OpenCodeBridgeTurnResult>>,
-        ) -> Self {
-            Self {
-                state: Arc::new(Mutex::new(ScriptedOpenCodeBridgeState {
-                    create_results: VecDeque::from(create_results),
-                    end_results: VecDeque::new(),
-                    execute_results: VecDeque::from(execute_results),
-                    stats: ScriptedOpenCodeBridgeStats::default(),
-                })),
-            }
-        }
-
-        fn stats(&self) -> ScriptedOpenCodeBridgeStats {
-            self.state
-                .lock()
-                .expect("lock should succeed")
-                .stats
-                .clone()
-        }
-    }
-
-    impl OpenCodeBridgeRuntime for ScriptedOpenCodeBridgeRuntime {
-        fn create_session(
-            &self,
-            _server_base_url: &str,
-            _config: OpenCodeSessionConfig,
-        ) -> CrabResult<String> {
-            let mut state = self.state.lock().expect("lock should succeed");
-            state.stats.create_calls += 1;
-            state
-                .create_results
-                .pop_front()
-                .unwrap_or(Err(CrabError::InvariantViolation {
-                    context: "daemon_test_opencode_bridge_create",
-                    message: "missing scripted create_session result".to_string(),
-                }))
-        }
-
-        fn end_session(&self, _server_base_url: &str, session_id: &str) -> CrabResult<()> {
-            let mut state = self.state.lock().expect("lock should succeed");
-            state.stats.end_calls += 1;
-            state
-                .stats
-                .seen_ended_session_ids
-                .push(session_id.to_string());
-            state.end_results.pop_front().unwrap_or(Ok(()))
-        }
-
-        fn execute_turn(
-            &self,
-            _server_base_url: &str,
-            session_id: &str,
-            prompt: &str,
-            _config: OpenCodeTurnConfig,
-        ) -> CrabResult<OpenCodeBridgeTurnResult> {
-            let mut state = self.state.lock().expect("lock should succeed");
-            state.stats.execute_calls += 1;
-            state.stats.seen_session_ids.push(session_id.to_string());
-            state.stats.seen_prompts.push(prompt.to_string());
-            state
-                .execute_results
-                .pop_front()
-                .unwrap_or(Err(CrabError::InvariantViolation {
-                    context: "daemon_test_opencode_bridge_execute",
-                    message: "missing scripted execute_turn result".to_string(),
-                }))
-        }
-    }
-
-    #[derive(Debug, Clone, PartialEq, Eq)]
-    struct CapturedHttpRequest {
-        method: String,
-        path: String,
-        body: String,
-    }
-
-    #[derive(Debug, Clone)]
-    struct ScriptedHttpResponse {
-        status_code: u16,
-        body: String,
-    }
-
-    #[derive(Debug)]
-    struct ScriptedHttpServer {
-        base_url: String,
-        requests: Arc<Mutex<Vec<CapturedHttpRequest>>>,
-        handle: Option<JoinHandle<()>>,
-    }
-
-    impl ScriptedHttpServer {
-        fn start(scripted_responses: Vec<ScriptedHttpResponse>) -> Self {
-            let listener = TcpListener::bind("127.0.0.1:0").expect("listener bind should succeed");
-            listener
-                .set_nonblocking(false)
-                .expect("listener should remain blocking");
-            let local_addr = listener.local_addr().expect("local address should resolve");
-            let requests = Arc::new(Mutex::new(Vec::new()));
-            let requests_state = Arc::clone(&requests);
-            let handle = std::thread::spawn(move || {
-                for scripted in scripted_responses {
-                    let (mut stream, _) = listener.accept().expect("accept should succeed");
-                    stream
-                        .set_read_timeout(Some(Duration::from_secs(2)))
-                        .expect("read timeout should set");
-                    let request = read_http_request(&mut stream);
-                    requests_state
-                        .lock()
-                        .expect("lock should succeed")
-                        .push(request);
-                    write_http_response(&mut stream, scripted);
-                }
-            });
-
-            Self {
-                base_url: format!("http://{local_addr}"),
-                requests,
-                handle: Some(handle),
-            }
-        }
-
-        fn base_url(&self) -> String {
-            self.base_url.clone()
-        }
-
-        fn requests(&self) -> Vec<CapturedHttpRequest> {
-            self.requests.lock().expect("lock should succeed").clone()
-        }
-
-        fn join(&mut self) {
-            if let Some(handle) = self.handle.take() {
-                handle.join().expect("http server thread should join");
-            }
-        }
-    }
-
-    impl Drop for ScriptedHttpServer {
-        fn drop(&mut self) {
-            self.join();
-        }
-    }
-
-    fn read_http_request(stream: &mut TcpStream) -> CapturedHttpRequest {
-        let mut reader = BufReader::new(stream);
-        let mut request_line = String::new();
-        reader
-            .read_line(&mut request_line)
-            .expect("request line should parse");
-        let request_line = request_line.trim_end();
-        let mut request_parts = request_line.split_whitespace();
-        let method = request_parts.next().unwrap_or_default().to_string();
-        let path = request_parts.next().unwrap_or_default().to_string();
-        let mut content_length = 0usize;
-        loop {
-            let mut line = String::new();
-            reader
-                .read_line(&mut line)
-                .expect("request header line should parse");
-            if line == "\r\n" {
-                break;
-            }
-            let mut header_parts = line.splitn(2, ':');
-            let key = header_parts.next().unwrap_or_default().trim();
-            let value = header_parts.next().unwrap_or_default().trim();
-            if key.eq_ignore_ascii_case("content-length") {
-                content_length = value.parse::<usize>().expect("content-length should parse");
-            }
-        }
-        let mut body = vec![0u8; content_length];
-        reader
-            .read_exact(&mut body)
-            .expect("request body should parse");
-        CapturedHttpRequest {
-            method,
-            path,
-            body: String::from_utf8(body).expect("request body should be utf-8"),
-        }
-    }
-
-    fn write_http_response(stream: &mut TcpStream, response: ScriptedHttpResponse) {
-        let body_bytes = response.body.into_bytes();
-        let headers = format!(
-            "HTTP/1.1 {} OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-            response.status_code,
-            body_bytes.len()
-        );
-        stream
-            .write_all(headers.as_bytes())
-            .expect("response headers should write");
-        stream
-            .write_all(&body_bytes)
-            .expect("response body should write");
-        stream.flush().expect("response should flush");
     }
 
     fn sample_run(sender_id: &str) -> Run {
@@ -3699,7 +2052,7 @@ mod tests {
             profile: RunProfileTelemetry {
                 requested_profile: None,
                 resolved_profile: InferenceProfile {
-                    backend: BackendKind::Codex,
+                    backend: BackendKind::Claude,
                     model: "auto".to_string(),
                     reasoning_level: ReasoningLevel::Medium,
                 },
@@ -3805,9 +2158,9 @@ mod tests {
     ) -> LogicalSession {
         LogicalSession {
             id: "discord:channel:777".to_string(),
-            active_backend: BackendKind::Codex,
+            active_backend: BackendKind::Claude,
             active_profile: InferenceProfile {
-                backend: BackendKind::Codex,
+                backend: BackendKind::Claude,
                 model: "auto".to_string(),
                 reasoning_level: ReasoningLevel::Medium,
             },
@@ -3824,34 +2177,6 @@ mod tests {
                 cache_creation_input_tokens: 0,
             },
             has_injected_bootstrap: false,
-        }
-    }
-
-    fn scripted_opencode_turn_result(
-        turn_id: &str,
-        text: &str,
-        usage: (u64, u64, u64),
-        state: OpenCodeTurnState,
-    ) -> OpenCodeBridgeTurnResult {
-        OpenCodeBridgeTurnResult {
-            turn_id: turn_id.to_string(),
-            raw_events: vec![
-                OpenCodeRawEvent::AssistantDelta {
-                    sequence: 1,
-                    text: text.to_string(),
-                },
-                OpenCodeRawEvent::TurnFinished {
-                    sequence: 2,
-                    turn_id: turn_id.to_string(),
-                    state,
-                    message: Some("done".to_string()),
-                    usage: Some(OpenCodeTokenUsage {
-                        input_tokens: usage.0,
-                        output_tokens: usage.1,
-                        total_tokens: usage.2,
-                    }),
-                },
-            ],
         }
     }
 
@@ -4303,15 +2628,8 @@ mod tests {
 
         let run = sample_claude_run("123");
         let mut physical = reused.clone();
-        let mut codex_lifecycle = NoopCodexLifecycle;
         let events = runtime
-            .execute_backend_turn(
-                &mut codex_lifecycle,
-                &mut physical,
-                &run,
-                "turn-1",
-                "compiled context",
-            )
+            .execute_backend_turn(&mut physical, &run, "turn-1", "compiled context")
             .expect("claude bridge execution should succeed");
         let events = block_on(events.collect::<Vec<_>>());
         assert_run_usage_note(&events, "5", "7", "12", "claude");
@@ -4375,16 +2693,9 @@ mod tests {
         let mut session = runtime
             .ensure_physical_session("discord:channel:777", &claude_profile(), None)
             .expect("claude session should be created");
-        let mut codex_lifecycle = NoopCodexLifecycle;
 
         let interrupted = runtime
-            .execute_backend_turn(
-                &mut codex_lifecycle,
-                &mut session,
-                &run,
-                "turn-1",
-                "context one",
-            )
+            .execute_backend_turn(&mut session, &run, "turn-1", "context one")
             .expect("interrupted stream should still surface events");
         let interrupted = block_on(interrupted.collect::<Vec<_>>());
         assert!(interrupted
@@ -4393,13 +2704,7 @@ mod tests {
         assert_eq!(session.last_turn_id.as_deref(), Some("turn-1"));
 
         let errored_event = runtime
-            .execute_backend_turn(
-                &mut codex_lifecycle,
-                &mut session,
-                &run,
-                "turn-2",
-                "context two",
-            )
+            .execute_backend_turn(&mut session, &run, "turn-2", "context two")
             .expect("error events should still be emitted as backend events");
         let errored_event = block_on(errored_event.collect::<Vec<_>>());
         assert!(errored_event.iter().any(|event| {
@@ -4409,13 +2714,7 @@ mod tests {
         assert_eq!(session.last_turn_id.as_deref(), Some("turn-2"));
 
         let send_error = runtime
-            .execute_backend_turn(
-                &mut codex_lifecycle,
-                &mut session,
-                &run,
-                "turn-3",
-                "context three",
-            )
+            .execute_backend_turn(&mut session, &run, "turn-3", "context three")
             .err()
             .expect("send errors should propagate through execute_backend_turn");
         assert_eq!(
@@ -4442,15 +2741,9 @@ mod tests {
         assert_eq!(session.backend, BackendKind::Claude);
 
         let run = sample_claude_run("123");
-        let mut codex_lifecycle = NoopCodexLifecycle;
+
         let events = runtime
-            .execute_backend_turn(
-                &mut codex_lifecycle,
-                &mut session,
-                &run,
-                "turn-default",
-                "default context",
-            )
+            .execute_backend_turn(&mut session, &run, "turn-default", "default context")
             .expect("default Claude process should execute through bridge");
         let events = block_on(events.collect::<Vec<_>>());
         assert_run_usage_note(&events, "2", "3", "5", "claude");
@@ -4458,13 +2751,7 @@ mod tests {
         let mut forced_error_run = sample_claude_run("123");
         forced_error_run.id = "run-force-claude-send-error".to_string();
         let error = runtime
-            .execute_backend_turn(
-                &mut codex_lifecycle,
-                &mut session,
-                &forced_error_run,
-                "turn-error",
-                "context",
-            )
+            .execute_backend_turn(&mut session, &forced_error_run, "turn-error", "context")
             .err()
             .expect("forced send failure should propagate");
         assert_eq!(
@@ -4473,560 +2760,6 @@ mod tests {
                 context: "daemon_claude_send_turn",
                 message: "forced claude send failure".to_string(),
             }
-        );
-    }
-
-    #[test]
-    fn helper_should_retry_opencode_session_recovery_covers_contexts() {
-        assert!(super::should_retry_opencode_session_recovery(
-            &CrabError::InvariantViolation {
-                context: "opencode_execute_turn",
-                message: "recover".to_string(),
-            }
-        ));
-        assert!(super::should_retry_opencode_session_recovery(
-            &CrabError::InvariantViolation {
-                context: "daemon_opencode_bridge",
-                message: "recover".to_string(),
-            }
-        ));
-        assert!(super::should_retry_opencode_session_recovery(
-            &CrabError::Io {
-                context: "daemon_opencode_transport",
-                path: None,
-                message: "retry".to_string(),
-            }
-        ));
-        assert!(!super::should_retry_opencode_session_recovery(
-            &CrabError::InvariantViolation {
-                context: "daemon_codex_bridge",
-                message: "do not recover".to_string(),
-            }
-        ));
-        assert!(!super::should_retry_opencode_session_recovery(
-            &CrabError::InvalidConfig {
-                key: "CRAB_TEST",
-                value: "bad".to_string(),
-                reason: "test",
-            }
-        ));
-    }
-
-    #[test]
-    fn opencode_execution_bridge_rejects_blank_server_base_url() {
-        let runtime = ScriptedOpenCodeBridgeRuntime::with_results(Vec::new(), Vec::new());
-        let error = super::OpenCodeExecutionBridge::new("   ".to_string(), Box::new(runtime))
-            .expect_err("blank opencode server URL should fail bridge construction");
-        assert_eq!(
-            error,
-            CrabError::InvariantViolation {
-                context: super::DAEMON_BACKEND_BRIDGE_CONTEXT,
-                message: "opencode server_base_url must not be empty".to_string(),
-            }
-        );
-    }
-
-    #[test]
-    fn daemon_backend_bridge_rejects_opencode_turn_without_configured_bridge() {
-        let mut bridge =
-            super::DaemonBackendBridge::new_default().expect("default bridge should construct");
-        let mut run = sample_run("111");
-        run.profile.resolved_profile.backend = BackendKind::OpenCode;
-        let mut physical_session = crab_core::PhysicalSession {
-            id: "physical-opencode-1".to_string(),
-            logical_session_id: run.logical_session_id.clone(),
-            backend: BackendKind::OpenCode,
-            backend_session_id: "backend-session:physical-opencode-1".to_string(),
-            created_at_epoch_ms: 1,
-            last_turn_id: None,
-        };
-        let mut codex_lifecycle = NoopCodexLifecycle;
-
-        let error = bridge
-            .execute_turn(
-                &mut codex_lifecycle,
-                &mut physical_session,
-                &run,
-                "turn-op-1",
-                "turn context",
-            )
-            .expect_err("missing opencode bridge should be explicit");
-        assert_eq!(
-            error,
-            CrabError::InvariantViolation {
-                context: super::DAEMON_BACKEND_BRIDGE_CONTEXT,
-                message: "opencode backend bridge is not configured".to_string(),
-            }
-        );
-    }
-
-    #[test]
-    fn opencode_execution_bridge_materializes_and_recovers_after_transport_error() {
-        let bridge_runtime = ScriptedOpenCodeBridgeRuntime::with_results(
-            vec![
-                Ok("opencode-session-initial".to_string()),
-                Ok("opencode-session-recovered".to_string()),
-            ],
-            vec![
-                Err(CrabError::Io {
-                    context: "daemon_opencode_transport",
-                    path: None,
-                    message: "session not found".to_string(),
-                }),
-                Ok(scripted_opencode_turn_result(
-                    "opencode-turn-1",
-                    "Recovered bridge output",
-                    (5, 6, 11),
-                    OpenCodeTurnState::Completed,
-                )),
-            ],
-        );
-        let bridge_state = bridge_runtime.clone();
-        let mut bridge = super::OpenCodeExecutionBridge::new(
-            "http://127.0.0.1:4210".to_string(),
-            Box::new(bridge_runtime),
-        )
-        .expect("bridge should construct with valid URL");
-
-        let mut run = sample_run("111");
-        run.profile.resolved_profile.backend = BackendKind::OpenCode;
-        run.profile.resolved_profile.reasoning_level = ReasoningLevel::High;
-        let mut physical_session = crab_core::PhysicalSession {
-            id: "physical-opencode-2".to_string(),
-            logical_session_id: run.logical_session_id.clone(),
-            backend: BackendKind::OpenCode,
-            backend_session_id: "backend-session:physical-opencode-2".to_string(),
-            created_at_epoch_ms: 1,
-            last_turn_id: None,
-        };
-
-        let events = bridge
-            .execute_turn(&mut physical_session, &run, "runtime turn context")
-            .expect("recoverable transport errors should retry and recover");
-        let bridge_stats = bridge_state.stats();
-        assert_eq!(bridge_stats.create_calls, 2);
-        assert_eq!(bridge_stats.end_calls, 1);
-        assert_eq!(bridge_stats.execute_calls, 2);
-        assert_eq!(
-            bridge_stats.seen_session_ids,
-            vec![
-                "opencode-session-initial".to_string(),
-                "opencode-session-recovered".to_string(),
-            ]
-        );
-        assert_eq!(
-            bridge_stats.seen_ended_session_ids,
-            vec!["opencode-session-initial".to_string()]
-        );
-        assert_eq!(
-            bridge_stats.seen_prompts[0],
-            "runtime turn context".to_string()
-        );
-        assert_eq!(
-            physical_session.backend_session_id,
-            "opencode-session-recovered".to_string()
-        );
-        assert_eq!(
-            physical_session.last_turn_id,
-            Some("opencode-turn-1".to_string())
-        );
-        assert!(events.iter().any(|event| {
-            event.payload.get("input_tokens") == Some(&"5".to_string())
-                && event.payload.get("output_tokens") == Some(&"6".to_string())
-                && event.payload.get("total_tokens") == Some(&"11".to_string())
-        }));
-    }
-
-    #[test]
-    fn opencode_execution_bridge_uses_existing_materialized_session_without_recreating() {
-        let bridge_runtime = ScriptedOpenCodeBridgeRuntime::with_results(
-            Vec::new(),
-            vec![Ok(scripted_opencode_turn_result(
-                "opencode-turn-existing",
-                "Existing session output",
-                (2, 3, 5),
-                OpenCodeTurnState::Completed,
-            ))],
-        );
-        let bridge_state = bridge_runtime.clone();
-        let mut bridge = super::OpenCodeExecutionBridge::new(
-            "http://127.0.0.1:4210".to_string(),
-            Box::new(bridge_runtime),
-        )
-        .expect("bridge should construct with valid URL");
-
-        let mut run = sample_run("111");
-        run.profile.resolved_profile.backend = BackendKind::OpenCode;
-        let mut physical_session = crab_core::PhysicalSession {
-            id: "physical-opencode-existing".to_string(),
-            logical_session_id: run.logical_session_id.clone(),
-            backend: BackendKind::OpenCode,
-            backend_session_id: "opencode-session-existing".to_string(),
-            created_at_epoch_ms: 1,
-            last_turn_id: None,
-        };
-
-        bridge
-            .execute_turn(&mut physical_session, &run, "runtime turn context")
-            .expect("existing opencode sessions should not force recreation");
-        let bridge_stats = bridge_state.stats();
-        assert_eq!(bridge_stats.create_calls, 0);
-        assert_eq!(bridge_stats.end_calls, 0);
-        assert_eq!(bridge_stats.execute_calls, 1);
-        assert_eq!(
-            bridge_stats.seen_session_ids,
-            vec!["opencode-session-existing".to_string()]
-        );
-    }
-
-    #[test]
-    fn opencode_recovery_bridge_process_exposes_health_and_terminate_paths() {
-        let process =
-            super::OpenCodeRecoveryBridgeProcess::new("http://127.0.0.1:4210".to_string());
-        let handle = process
-            .spawn_server()
-            .expect("recovery bridge process should spawn deterministic handle");
-        assert_eq!(handle.process_id, 1);
-        assert!(
-            process.is_server_healthy(&handle),
-            "recovery bridge process should always report healthy"
-        );
-        process
-            .terminate_server(&handle)
-            .expect("recovery bridge process terminate should succeed");
-    }
-
-    #[test]
-    fn opencode_recovery_runtime_adapter_send_prompt_delegates_to_runtime_execute_turn() {
-        let bridge_runtime = ScriptedOpenCodeBridgeRuntime::with_results(
-            Vec::new(),
-            vec![Ok(scripted_opencode_turn_result(
-                "checkpoint-turn-1",
-                "checkpoint replay",
-                (3, 2, 5),
-                OpenCodeTurnState::Completed,
-            ))],
-        );
-        let bridge_state = bridge_runtime.clone();
-        let adapter = super::OpenCodeRecoveryBridgeRuntimeAdapter {
-            runtime: &bridge_runtime,
-            server_base_url: "http://127.0.0.1:4210",
-        };
-
-        let turn_id = crab_backends::OpenCodeRecoveryRuntime::send_prompt(
-            &adapter,
-            "session-checkpoint",
-            "restore from checkpoint",
-            OpenCodeTurnConfig::default(),
-        )
-        .expect("send_prompt should return the delegated turn id");
-        assert_eq!(turn_id, "checkpoint-turn-1".to_string());
-
-        let stats = bridge_state.stats();
-        assert_eq!(stats.execute_calls, 1);
-        assert_eq!(
-            stats.seen_session_ids,
-            vec!["session-checkpoint".to_string()]
-        );
-        assert_eq!(
-            stats.seen_prompts,
-            vec!["restore from checkpoint".to_string()]
-        );
-    }
-
-    #[test]
-    fn http_opencode_bridge_runtime_parses_session_turn_events_and_usage() {
-        let mut http_server = ScriptedHttpServer::start(vec![
-            ScriptedHttpResponse {
-                status_code: 201,
-                body: serde_json::json!({
-                    "id": "session-transport-1"
-                })
-                .to_string(),
-            },
-            ScriptedHttpResponse {
-                status_code: 200,
-                body: serde_json::json!({
-                    "id": "turn-transport-1",
-                    "status": "completed",
-                    "usage": {
-                        "input_tokens": 9,
-                        "output_tokens": 5,
-                        "total_tokens": 14
-                    },
-                    "parts": [
-                        {"type": "text", "text": "real transport output"}
-                    ]
-                })
-                .to_string(),
-            },
-        ]);
-
-        let runtime = super::HttpOpenCodeBridgeRuntime;
-        let server_base_url = http_server.base_url();
-        let session_id = runtime
-            .create_session(
-                &server_base_url,
-                OpenCodeSessionConfig {
-                    model: Some("open-model".to_string()),
-                    reasoning_level: Some("medium".to_string()),
-                },
-            )
-            .expect("transport create_session should succeed");
-        assert_eq!(session_id, "session-transport-1".to_string());
-
-        let turn_result = runtime
-            .execute_turn(
-                &server_base_url,
-                &session_id,
-                "bridge prompt",
-                OpenCodeTurnConfig {
-                    model: Some("open-model".to_string()),
-                    reasoning_level: Some("high".to_string()),
-                },
-            )
-            .expect("transport execute_turn should succeed");
-        assert_eq!(turn_result.turn_id, "turn-transport-1".to_string());
-        assert_eq!(
-            turn_result.raw_events,
-            vec![
-                OpenCodeRawEvent::AssistantDelta {
-                    sequence: 1,
-                    text: "real transport output".to_string(),
-                },
-                OpenCodeRawEvent::TurnFinished {
-                    sequence: 2,
-                    turn_id: "turn-transport-1".to_string(),
-                    state: OpenCodeTurnState::Completed,
-                    message: Some("completed".to_string()),
-                    usage: Some(OpenCodeTokenUsage {
-                        input_tokens: 9,
-                        output_tokens: 5,
-                        total_tokens: 14,
-                    }),
-                },
-            ]
-        );
-
-        http_server.join();
-        let requests = http_server.requests();
-        assert_eq!(requests.len(), 2);
-        assert_eq!(requests[0].path, "/session".to_string());
-        assert_eq!(
-            requests[1].path,
-            "/session/session-transport-1/message".to_string()
-        );
-        assert!(requests[0].body.contains("\"model\":\"open-model\""));
-        assert!(requests[1].body.contains("\"prompt\":\"bridge prompt\""));
-        assert!(requests[1].body.contains("\"parts\""));
-    }
-
-    #[test]
-    fn http_opencode_bridge_runtime_sends_delete_for_end_session() {
-        let mut http_server = ScriptedHttpServer::start(vec![ScriptedHttpResponse {
-            status_code: 200,
-            body: serde_json::json!({
-                "ok": true
-            })
-            .to_string(),
-        }]);
-        let runtime = super::HttpOpenCodeBridgeRuntime;
-        runtime
-            .end_session(&http_server.base_url(), "session-end-1")
-            .expect("delete end_session should succeed");
-
-        http_server.join();
-        let requests = http_server.requests();
-        assert_eq!(requests.len(), 1);
-        assert_eq!(requests[0].method, "DELETE".to_string());
-        assert_eq!(requests[0].path, "/session/session-end-1".to_string());
-    }
-
-    #[test]
-    fn http_opencode_bridge_runtime_maps_non_success_http_status_to_transport_error() {
-        let mut http_server = ScriptedHttpServer::start(vec![ScriptedHttpResponse {
-            status_code: 500,
-            body: serde_json::json!({
-                "error": "forced failure"
-            })
-            .to_string(),
-        }]);
-        let runtime = super::HttpOpenCodeBridgeRuntime;
-        let error = runtime
-            .create_session(&http_server.base_url(), OpenCodeSessionConfig::default())
-            .expect_err("500 response should fail");
-        http_server.join();
-        assert!(matches!(
-            error,
-            CrabError::InvariantViolation {
-                context: super::DAEMON_OPENCODE_TRANSPORT_CONTEXT,
-                message,
-            } if message.contains("HTTP 500") && message.contains("forced failure")
-        ));
-    }
-
-    #[test]
-    fn http_opencode_bridge_runtime_maps_connection_failures_to_io_error() {
-        let runtime = super::HttpOpenCodeBridgeRuntime;
-        let error = runtime
-            .create_session("http://127.0.0.1:1", OpenCodeSessionConfig::default())
-            .expect_err("connection failures should map to io");
-        assert!(matches!(
-            error,
-            CrabError::Io {
-                context: super::DAEMON_OPENCODE_TRANSPORT_CONTEXT,
-                path: None,
-                message,
-            } if message.contains("POST http://127.0.0.1:1/session failed")
-        ));
-    }
-
-    #[test]
-    fn http_opencode_bridge_runtime_maps_truncated_response_body_to_io_error() {
-        let listener = TcpListener::bind("127.0.0.1:0").expect("listener bind should succeed");
-        let addr = listener.local_addr().expect("local address should resolve");
-        let handle = std::thread::spawn(move || {
-            let (mut stream, _) = listener.accept().expect("accept should succeed");
-            let mut inbound = [0_u8; 1024];
-            let _ = stream.read(&mut inbound);
-            stream
-                .write_all(
-                    b"HTTP/1.1 201 OK\r\nContent-Type: application/json\r\nContent-Length: 8\r\nConnection: close\r\n\r\n{\"id\"",
-                )
-                .expect("response write should succeed");
-            stream.flush().expect("response flush should succeed");
-        });
-
-        let runtime = super::HttpOpenCodeBridgeRuntime;
-        let error = runtime
-            .create_session(&format!("http://{addr}"), OpenCodeSessionConfig::default())
-            .expect_err("truncated responses should fail while reading body");
-        handle.join().expect("server thread should join");
-        assert!(matches!(
-            error,
-            CrabError::Io {
-                context: super::DAEMON_OPENCODE_TRANSPORT_CONTEXT,
-                path: None,
-                message,
-            } if message.contains("failed reading response body")
-        ));
-    }
-
-    #[test]
-    fn http_opencode_bridge_runtime_maps_invalid_json_and_empty_body_shapes() {
-        let mut invalid_json_server = ScriptedHttpServer::start(vec![ScriptedHttpResponse {
-            status_code: 201,
-            body: "{invalid".to_string(),
-        }]);
-        let runtime = super::HttpOpenCodeBridgeRuntime;
-        let invalid_json_error = runtime
-            .create_session(
-                &invalid_json_server.base_url(),
-                OpenCodeSessionConfig::default(),
-            )
-            .expect_err("invalid json should fail");
-        invalid_json_server.join();
-        assert!(matches!(
-            invalid_json_error,
-            CrabError::Serialization {
-                context: super::DAEMON_OPENCODE_TRANSPORT_CONTEXT,
-                path: None,
-                ..
-            }
-        ));
-
-        let mut empty_body_server = ScriptedHttpServer::start(vec![ScriptedHttpResponse {
-            status_code: 201,
-            body: String::new(),
-        }]);
-        let missing_field_error = runtime
-            .create_session(
-                &empty_body_server.base_url(),
-                OpenCodeSessionConfig::default(),
-            )
-            .expect_err("empty response body should fail required field extraction");
-        empty_body_server.join();
-        assert_eq!(
-            missing_field_error,
-            CrabError::InvariantViolation {
-                context: "opencode_create_session_response",
-                message: "response is missing required field session_id".to_string(),
-            }
-        );
-    }
-
-    #[test]
-    fn http_opencode_bridge_runtime_helper_extractors_cover_fallback_paths() {
-        let usage_from_strings =
-            super::HttpOpenCodeBridgeRuntime::extract_usage(&serde_json::json!({
-                "usage": {
-                    "input_tokens": "2",
-                    "output_tokens": "3",
-                    "total_tokens": "5"
-                }
-            }))
-            .expect("string encoded token usage should parse");
-        assert_eq!(
-            usage_from_strings,
-            OpenCodeTokenUsage {
-                input_tokens: 2,
-                output_tokens: 3,
-                total_tokens: 5,
-            }
-        );
-        assert_eq!(
-            super::HttpOpenCodeBridgeRuntime::extract_usage(&serde_json::json!({
-                "usage": {
-                    "output_tokens": 3,
-                    "total_tokens": 3
-                }
-            })),
-            None
-        );
-        assert_eq!(
-            super::HttpOpenCodeBridgeRuntime::extract_usage(&serde_json::json!({
-                "usage": {
-                    "input_tokens": 3,
-                    "total_tokens": 3
-                }
-            })),
-            None
-        );
-        assert_eq!(
-            super::HttpOpenCodeBridgeRuntime::extract_usage(&serde_json::json!({
-                "usage": {
-                    "input_tokens": 4,
-                    "output_tokens": 6
-                }
-            })),
-            Some(OpenCodeTokenUsage {
-                input_tokens: 4,
-                output_tokens: 6,
-                total_tokens: 10,
-            })
-        );
-
-        assert_eq!(
-            super::HttpOpenCodeBridgeRuntime::extract_text_delta(&serde_json::json!({
-                "output_text": "  text from output  "
-            })),
-            Some("text from output".to_string())
-        );
-        assert_eq!(
-            super::HttpOpenCodeBridgeRuntime::extract_text_delta(&serde_json::json!({
-                "parts": [{"text": {"value": "nested text"}}]
-            })),
-            Some("nested text".to_string())
-        );
-        assert_eq!(
-            super::HttpOpenCodeBridgeRuntime::extract_text_delta(&serde_json::json!({
-                "parts": [{"tool": "shell"}]
-            })),
-            None
-        );
-        assert_eq!(
-            super::HttpOpenCodeBridgeRuntime::extract_turn_state(&serde_json::json!({})),
-            OpenCodeTurnState::Completed
         );
     }
 
@@ -5082,674 +2815,6 @@ mod tests {
     }
 
     #[test]
-    fn daemon_loop_ingests_dispatches_and_stops_backends() {
-        let workspace = TempWorkspace::new("daemon", "dispatch");
-        let mut config = runtime_config_for_workspace_with_lanes(&workspace.path, 2);
-        config.owner.profile_defaults.backend = Some(BackendKind::Codex);
-        config.owner.discord_user_ids = vec!["111".to_string()];
-        let daemon_config = DaemonConfig {
-            bot_user_id: "999".to_string(),
-            tick_interval_ms: 5,
-            max_iterations: Some(2),
-        };
-        let discord = ScriptedDiscordIo::with_state(DiscordIoState {
-            inbound: VecDeque::from([
-                Ok(Some(gateway_message("m-1", "111", "hello world"))),
-                Ok(None),
-            ]),
-            ..DiscordIoState::default()
-        });
-        let discord_state = discord.clone();
-        let codex = TrackingCodexProcess::new();
-        let codex_state = codex.clone();
-        let opencode = TrackingOpenCodeProcess::new();
-        let opencode_state = opencode.clone();
-        let mut control = ScriptedControl::with_now(vec![
-            2_000_000_000_000,
-            2_000_000_000_001,
-            2_000_000_000_002,
-        ]);
-
-        let stats = run_daemon_loop_with_transport(
-            &config,
-            &daemon_config,
-            codex,
-            opencode,
-            discord,
-            &mut control,
-        )
-        .expect("daemon loop should succeed");
-
-        assert_eq!(
-            stats,
-            DaemonLoopStats {
-                iterations: 2,
-                ingested_messages: 1,
-                ingested_triggers: 0,
-                dispatched_runs: 1,
-                heartbeat_cycles: 0
-            }
-        );
-
-        let discord = discord_state.state();
-        assert_eq!(discord.posted.len(), 1);
-        assert!(discord.posted[0].2.contains("Codex bridge response"));
-
-        let session = SessionStore::new(workspace.path.join("state"))
-            .get_session("discord:channel:777")
-            .expect("session read should succeed")
-            .expect("session should exist");
-        assert!(session.token_accounting.input_tokens > 0);
-        assert_eq!(session.token_accounting.output_tokens, 3);
-        assert_eq!(
-            session.token_accounting.total_tokens,
-            session.token_accounting.input_tokens + session.token_accounting.output_tokens
-        );
-
-        let codex_stats = codex_state.stats();
-        assert_eq!(codex_stats.spawn_calls, 2);
-        assert_eq!(codex_stats.terminate_calls, 2);
-
-        let opencode_stats = opencode_state.stats();
-        assert_eq!(opencode_stats.spawn_calls, 1);
-        assert_eq!(opencode_stats.terminate_calls, 1);
-        assert_eq!(control.slept, vec![5, 5]);
-    }
-
-    #[test]
-    fn daemon_loop_opencode_default_bridge_uses_backend_events_for_output_and_usage() {
-        let mut http_server = ScriptedHttpServer::start(vec![
-            ScriptedHttpResponse {
-                status_code: 201,
-                body: serde_json::json!({
-                    "id": "session-op-real"
-                })
-                .to_string(),
-            },
-            ScriptedHttpResponse {
-                status_code: 200,
-                body: serde_json::json!({
-                    "id": "turn-op-real",
-                    "state": "completed",
-                    "message": "completed",
-                    "usage": {
-                        "input_tokens": 11,
-                        "output_tokens": 6,
-                        "total_tokens": 17
-                    },
-                    "parts": [
-                        {"type": "text", "text": "OpenCode real backend response"}
-                    ]
-                })
-                .to_string(),
-            },
-        ]);
-        let workspace = TempWorkspace::new("daemon", "opencode-default-bridge");
-        let mut config = runtime_config_for_workspace_with_lanes(&workspace.path, 2);
-        config.owner.discord_user_ids = vec!["111".to_string()];
-        config.owner.profile_defaults.backend = Some(BackendKind::OpenCode);
-        let daemon_config = DaemonConfig {
-            bot_user_id: "999".to_string(),
-            tick_interval_ms: 5,
-            max_iterations: Some(2),
-        };
-        let discord = ScriptedDiscordIo::with_state(DiscordIoState {
-            inbound: VecDeque::from([
-                Ok(Some(gateway_message("m-op-1", "111", "hello"))),
-                Ok(None),
-            ]),
-            ..DiscordIoState::default()
-        });
-        let discord_state = discord.clone();
-        let codex = TrackingCodexProcess::new();
-        let opencode = TrackingOpenCodeProcess::with_server_base_url(http_server.base_url());
-        let mut control = ScriptedControl::with_now(vec![10_000, 10_001, 10_002]);
-
-        let stats = run_daemon_loop_with_transport(
-            &config,
-            &daemon_config,
-            codex,
-            opencode,
-            discord,
-            &mut control,
-        )
-        .expect("daemon loop should succeed for opencode bridge path");
-        assert_eq!(stats.dispatched_runs, 1);
-
-        let discord = discord_state.state();
-        assert_eq!(discord.posted.len(), 1);
-        assert_eq!(
-            discord.posted[0].2,
-            "OpenCode real backend response".to_string()
-        );
-        assert!(!discord.posted[0].2.contains("Crab stub response"));
-
-        let state_root = workspace.path.join("state");
-        let session = SessionStore::new(&state_root)
-            .get_session("discord:channel:777")
-            .expect("session lookup should succeed")
-            .expect("session should exist");
-        assert_eq!(session.token_accounting.input_tokens, 11);
-        assert_eq!(session.token_accounting.output_tokens, 6);
-        assert_eq!(session.token_accounting.total_tokens, 17);
-
-        let run_ids = RunStore::new(&state_root)
-            .list_run_ids("discord:channel:777")
-            .expect("run ids should list");
-        assert_eq!(run_ids.len(), 1);
-        let events = EventStore::new(&state_root)
-            .replay_run("discord:channel:777", &run_ids[0])
-            .expect("run replay should succeed");
-        assert!(
-            events
-                .iter()
-                .all(|event| event.payload.get("run_usage_source")
-                    != Some(&"daemon_stub".to_string()))
-        );
-        assert!(events.iter().any(|event| {
-            event.payload.get("input_tokens") == Some(&"11".to_string())
-                && event.payload.get("output_tokens") == Some(&"6".to_string())
-                && event.payload.get("total_tokens") == Some(&"17".to_string())
-        }));
-
-        http_server.join();
-        let requests = http_server.requests();
-        assert_eq!(requests.len(), 2);
-        assert_eq!(requests[0].method, "POST".to_string());
-        assert_eq!(requests[0].path, "/session".to_string());
-        assert_eq!(requests[1].method, "POST".to_string());
-        assert_eq!(
-            requests[1].path,
-            "/session/session-op-real/message".to_string()
-        );
-    }
-
-    #[test]
-    fn daemon_loop_opencode_bridge_propagates_non_recoverable_errors() {
-        let workspace = TempWorkspace::new("daemon", "opencode-bridge-fatal");
-        let mut config = runtime_config_for_workspace_with_lanes(&workspace.path, 2);
-        config.owner.discord_user_ids = vec!["111".to_string()];
-        config.owner.profile_defaults.backend = Some(BackendKind::OpenCode);
-        let daemon_config = DaemonConfig {
-            bot_user_id: "999".to_string(),
-            tick_interval_ms: 5,
-            max_iterations: Some(2),
-        };
-        let discord = ScriptedDiscordIo::with_state(DiscordIoState {
-            inbound: VecDeque::from([
-                Ok(Some(gateway_message("m-op-err", "111", "hello"))),
-                Ok(None),
-            ]),
-            ..DiscordIoState::default()
-        });
-        let bridge_runtime = ScriptedOpenCodeBridgeRuntime::with_results(
-            vec![Ok("session-op-1".to_string())],
-            vec![Err(CrabError::InvariantViolation {
-                context: "daemon_test_non_recoverable",
-                message: "forced fatal execute error".to_string(),
-            })],
-        );
-        let bridge_state = bridge_runtime.clone();
-        let codex = TrackingCodexProcess::new();
-        let opencode = TrackingOpenCodeProcess::new();
-        let mut control = ScriptedControl::with_now(vec![20_000, 20_001, 20_002]);
-
-        let error = run_daemon_loop_with_transport_and_runtime_builder(
-            &config,
-            &daemon_config,
-            codex,
-            opencode,
-            discord,
-            &mut control,
-            move |owner, discord| {
-                let mut runtime = DaemonTurnRuntime::new(owner, discord)?;
-                let bridge_url = "http://127.0.0.1:4210".to_string();
-                let bridge = Box::new(bridge_runtime.clone());
-                runtime.configure_opencode_backend_bridge(bridge_url, bridge)?;
-                Ok(runtime)
-            },
-        )
-        .expect_err("non-recoverable opencode bridge errors should surface");
-        assert!(matches!(
-            error,
-            CrabError::InvariantViolation {
-                context: "daemon_backend_bridge_execute",
-                message,
-            } if message.contains(
-                "daemon_test_non_recoverable invariant violation: forced fatal execute error"
-            )
-        ));
-        let bridge_stats = bridge_state.stats();
-        assert_eq!(bridge_stats.create_calls, 1);
-        assert_eq!(bridge_stats.execute_calls, 1);
-    }
-
-    #[test]
-    fn daemon_loop_opencode_bridge_recovers_with_new_session_after_recoverable_errors() {
-        let workspace = TempWorkspace::new("daemon", "opencode-bridge-recovery");
-        let mut config = runtime_config_for_workspace_with_lanes(&workspace.path, 2);
-        config.owner.discord_user_ids = vec!["111".to_string()];
-        config.owner.profile_defaults.backend = Some(BackendKind::OpenCode);
-        let daemon_config = DaemonConfig {
-            bot_user_id: "999".to_string(),
-            tick_interval_ms: 5,
-            max_iterations: Some(2),
-        };
-        let discord = ScriptedDiscordIo::with_state(DiscordIoState {
-            inbound: VecDeque::from([
-                Ok(Some(gateway_message("m-op-recover", "111", "hello"))),
-                Ok(None),
-            ]),
-            ..DiscordIoState::default()
-        });
-        let discord_state = discord.clone();
-        let bridge_runtime = ScriptedOpenCodeBridgeRuntime::with_results(
-            vec![
-                Ok("session-op-old".to_string()),
-                Ok("session-op-new".to_string()),
-            ],
-            vec![
-                Err(CrabError::InvariantViolation {
-                    context: "opencode_send_prompt_response",
-                    message: "session not found".to_string(),
-                }),
-                Ok(scripted_opencode_turn_result(
-                    "turn-op-recovered",
-                    "Recovered OpenCode response",
-                    (8, 5, 13),
-                    OpenCodeTurnState::Completed,
-                )),
-            ],
-        );
-        let bridge_state = bridge_runtime.clone();
-        let codex = TrackingCodexProcess::new();
-        let opencode = TrackingOpenCodeProcess::new();
-        let mut control = ScriptedControl::with_now(vec![30_000, 30_001, 30_002]);
-
-        let stats = run_daemon_loop_with_transport_and_runtime_builder(
-            &config,
-            &daemon_config,
-            codex,
-            opencode,
-            discord,
-            &mut control,
-            move |owner, discord| {
-                let mut runtime = DaemonTurnRuntime::new(owner, discord)?;
-                let bridge_url = "http://127.0.0.1:4210".to_string();
-                let bridge = Box::new(bridge_runtime.clone());
-                runtime.configure_opencode_backend_bridge(bridge_url, bridge)?;
-                Ok(runtime)
-            },
-        )
-        .expect("recoverable opencode bridge failures should recover");
-        assert_eq!(stats.dispatched_runs, 1);
-
-        let bridge_stats = bridge_state.stats();
-        assert_eq!(bridge_stats.create_calls, 2);
-        assert_eq!(bridge_stats.execute_calls, 2);
-        assert_eq!(
-            bridge_stats.seen_session_ids,
-            vec!["session-op-old".to_string(), "session-op-new".to_string()]
-        );
-
-        let discord = discord_state.state();
-        assert_eq!(discord.posted.len(), 1);
-        assert_eq!(
-            discord.posted[0].2,
-            "Recovered OpenCode response".to_string()
-        );
-
-        let state_root = workspace.path.join("state");
-        let session = SessionStore::new(&state_root)
-            .get_session("discord:channel:777")
-            .expect("session lookup should succeed")
-            .expect("session should exist");
-        assert_eq!(session.token_accounting.total_tokens, 13);
-    }
-
-    #[test]
-    fn daemon_loop_dispatches_claude_owner_turn_and_shuts_down_claude_session() {
-        let workspace = TempWorkspace::new("daemon", "dispatch-claude-owner");
-        let mut config = runtime_config_for_workspace_with_lanes(&workspace.path, 2);
-        config.owner.discord_user_ids = vec!["111".to_string()];
-        config.owner.profile_defaults.backend = Some(BackendKind::Claude);
-        config.owner.profile_defaults.model = Some("claude-sonnet".to_string());
-        config.owner.profile_defaults.reasoning_level = Some(ReasoningLevel::High);
-        let daemon_config = DaemonConfig {
-            bot_user_id: "999".to_string(),
-            tick_interval_ms: 5,
-            max_iterations: Some(1),
-        };
-        let discord = ScriptedDiscordIo::with_state(DiscordIoState {
-            inbound: VecDeque::from([Ok(Some(gateway_message("m-claude", "111", "hello world")))]),
-            ..DiscordIoState::default()
-        });
-        let discord_state = discord.clone();
-        let codex = TrackingCodexProcess::new();
-        let codex_state = codex.clone();
-        let opencode = TrackingOpenCodeProcess::new();
-        let opencode_state = opencode.clone();
-        let mut control = ScriptedControl::with_now(vec![2_000_000_010_000, 2_000_000_010_001]);
-
-        let stats = run_daemon_loop_with_transport(
-            &config,
-            &daemon_config,
-            codex,
-            opencode,
-            discord,
-            &mut control,
-        )
-        .expect("Claude owner daemon loop should succeed");
-        assert_eq!(stats.dispatched_runs, 1);
-
-        let discord = discord_state.state();
-        assert_eq!(discord.posted.len(), 1);
-        assert!(
-            discord.posted[0].2.contains("Claude bridge response"),
-            "Claude response should be delivered through daemon transport"
-        );
-
-        let codex_stats = codex_state.stats();
-        assert_eq!(codex_stats.spawn_calls, 1);
-        assert_eq!(codex_stats.terminate_calls, 1);
-
-        let opencode_stats = opencode_state.stats();
-        assert_eq!(opencode_stats.spawn_calls, 1);
-        assert_eq!(opencode_stats.terminate_calls, 1);
-    }
-
-    #[test]
-    fn daemon_loop_owner_onboarding_capture_emits_conflict_warning_and_run_note() {
-        let workspace = TempWorkspace::new("daemon", "onboarding-capture-conflict");
-        std::fs::create_dir_all(&workspace.path)
-            .expect("workspace root should be creatable for conflict setup");
-        std::fs::write(
-            workspace.path.join("IDENTITY.md"),
-            "# IDENTITY.md\n\n<!-- CRAB:ONBOARDING_MANAGED:START -->\nlegacy",
-        )
-        .expect("malformed identity markers should be writable for conflict setup");
-        std::fs::write(
-            workspace.path.join("BOOTSTRAP.md"),
-            "Bootstrap remains pending until owner onboarding capture is applied.",
-        )
-        .expect("bootstrap marker should be writable for pending onboarding setup");
-
-        let mut config = runtime_config_for_workspace_with_lanes(&workspace.path, 2);
-        config.owner.discord_user_ids = vec!["111".to_string()];
-        let daemon_config = DaemonConfig {
-            bot_user_id: "999".to_string(),
-            tick_interval_ms: 5,
-            max_iterations: Some(1),
-        };
-        let discord = ScriptedDiscordIo::with_state(DiscordIoState {
-            inbound: VecDeque::from([Ok(Some(gateway_dm_message(
-                "m-onboarding-capture-daemon",
-                "111",
-                &onboarding_capture_payload_json(),
-            )))]),
-            ..DiscordIoState::default()
-        });
-        let discord_state = discord.clone();
-        let codex = TrackingCodexProcess::new();
-        let opencode = TrackingOpenCodeProcess::new();
-        let mut control = ScriptedControl::with_now(vec![2_000_000_020_000, 2_000_000_020_001]);
-        let workspace_root_for_runtime = workspace.path.clone();
-
-        let stats = run_daemon_loop_with_transport_and_runtime_builder(
-            &config,
-            &daemon_config,
-            codex,
-            opencode,
-            discord,
-            &mut control,
-            move |owner, discord| {
-                std::fs::write(
-                    workspace_root_for_runtime.join("BOOTSTRAP.md"),
-                    "Bootstrap remains pending until owner onboarding capture is applied.",
-                )
-                .expect("bootstrap marker should be rewritable for onboarding test");
-                DaemonTurnRuntime::new(owner, discord)
-            },
-        )
-        .expect("owner onboarding capture should execute in daemon loop");
-        assert_eq!(stats.dispatched_runs, 1);
-
-        let discord = discord_state.state();
-        assert_eq!(discord.posted.len(), 1);
-        assert!(
-            discord.posted[0].2.contains("Onboarding capture applied."),
-            "owner onboarding completion should produce confirmation response"
-        );
-        assert!(
-            discord.posted[0].2.contains("Profile conflicts detected"),
-            "owner onboarding completion should include conflict warning"
-        );
-
-        let run_id = "run:discord:dm:111:m-onboarding-capture-daemon";
-        let events = EventStore::new(workspace.path.join("state"))
-            .replay_run("discord:dm:111", run_id)
-            .expect("event replay should succeed");
-        let conflict_event = events
-            .iter()
-            .find(|event| {
-                event.kind == crab_core::EventKind::RunNote
-                    && event
-                        .payload
-                        .get("event")
-                        .is_some_and(|value| value == "onboarding_profile_conflicts")
-            })
-            .expect("conflict run note should be recorded");
-        assert!(
-            conflict_event
-                .payload
-                .get("conflict_paths")
-                .is_some_and(|value| value.contains("IDENTITY.md")),
-            "conflict payload should include the identity file path"
-        );
-    }
-
-    #[test]
-    fn daemon_loop_keeps_dispatching_when_workspace_git_push_fails() {
-        let workspace = TempWorkspace::new("daemon", "workspace-git-push-failure");
-        let mut config = runtime_config_for_workspace_with_lanes(&workspace.path, 2);
-        config.workspace_git.enabled = true;
-        config.workspace_git.push_policy = crab_core::WorkspaceGitPushPolicy::OnCommit;
-        config.workspace_git.remote = Some(
-            workspace
-                .path
-                .join("missing-remote.git")
-                .to_string_lossy()
-                .to_string(),
-        );
-
-        let daemon_config = DaemonConfig {
-            bot_user_id: "999".to_string(),
-            tick_interval_ms: 5,
-            max_iterations: Some(2),
-        };
-        let discord = ScriptedDiscordIo::with_state(DiscordIoState {
-            inbound: VecDeque::from([
-                Ok(Some(gateway_message("m-1", "111", "hello world"))),
-                Ok(None),
-            ]),
-            ..DiscordIoState::default()
-        });
-        let codex = TrackingCodexProcess::new();
-        let opencode = TrackingOpenCodeProcess::new();
-        let mut control = ScriptedControl::with_now(vec![1_000, 1_001, 1_002]);
-
-        let stats = run_daemon_loop_with_transport(
-            &config,
-            &daemon_config,
-            codex,
-            opencode,
-            discord,
-            &mut control,
-        )
-        .expect("daemon loop should keep running despite push failure");
-        assert_eq!(stats.dispatched_runs, 1);
-
-        let queue_path = workspace.path.join("state/workspace_git_push_queue.json");
-        let queue = std::fs::read_to_string(queue_path).expect("push queue should persist");
-        let parsed: serde_json::Value =
-            serde_json::from_str(&queue).expect("queue json should parse");
-        let entries = parsed["entries"]
-            .as_array()
-            .expect("entries should be an array");
-        assert_eq!(entries.len(), 1);
-        assert_eq!(
-            entries[0]["commit_key"]
-                .as_str()
-                .expect("commit_key should be present"),
-            "discord:channel:777|run:discord:channel:777:m-1|run_finalized|none"
-        );
-    }
-
-    #[test]
-    fn daemon_loop_runs_heartbeat_when_due() {
-        let workspace = TempWorkspace::new("daemon", "heartbeat");
-        let config = runtime_config_for_workspace_with_lanes(&workspace.path, 1);
-        let daemon_config = DaemonConfig {
-            bot_user_id: "999".to_string(),
-            tick_interval_ms: 1,
-            max_iterations: Some(2),
-        };
-        let discord = ScriptedDiscordIo::with_state(DiscordIoState {
-            inbound: VecDeque::from([Ok(None), Ok(None)]),
-            ..DiscordIoState::default()
-        });
-        let codex = TrackingCodexProcess::new();
-        let opencode = TrackingOpenCodeProcess::new();
-        let mut control = ScriptedControl::with_now(vec![1_000, 12_000, 24_000]);
-
-        let stats = run_daemon_loop_with_transport(
-            &config,
-            &daemon_config,
-            codex,
-            opencode,
-            discord,
-            &mut control,
-        )
-        .expect("daemon loop should succeed");
-
-        assert_eq!(stats.heartbeat_cycles, 2);
-    }
-
-    #[test]
-    fn daemon_loop_reports_startup_reconciliation_when_session_handle_is_non_idle() {
-        let workspace = TempWorkspace::new("daemon", "startup-reconcile-session");
-        let config = runtime_config_for_workspace_with_lanes(&workspace.path, 1);
-
-        // Seed a session that is non-idle and still has a physical handle; startup reconciliation
-        // should repair the lane state to Idle without discarding the physical session handle.
-        let state_root = workspace.path.join("state");
-        let session_store = SessionStore::new(state_root);
-        let seeded = sample_session(LaneState::Running, Some("phys-1".to_string()));
-        session_store
-            .upsert_session(&seeded)
-            .expect("seed session should persist");
-
-        let daemon_config = DaemonConfig {
-            bot_user_id: "999".to_string(),
-            tick_interval_ms: 1,
-            max_iterations: Some(1),
-        };
-        let discord = ScriptedDiscordIo::with_state(DiscordIoState {
-            inbound: VecDeque::from([Ok(None)]),
-            ..DiscordIoState::default()
-        });
-        let codex = TrackingCodexProcess::new();
-        let opencode = TrackingOpenCodeProcess::new();
-        let mut control = ScriptedControl::with_now(vec![1_000, 1_001]);
-
-        run_daemon_loop_with_transport(
-            &config,
-            &daemon_config,
-            codex,
-            opencode,
-            discord,
-            &mut control,
-        )
-        .expect("daemon loop should succeed");
-
-        let updated = session_store
-            .get_session(&seeded.id)
-            .expect("session read should succeed")
-            .expect("session should exist");
-        assert_eq!(
-            updated.active_physical_session_id,
-            Some("phys-1".to_string())
-        );
-        assert_eq!(updated.lane_state, LaneState::Idle);
-    }
-
-    #[test]
-    fn daemon_loop_notifies_user_when_startup_reconciliation_recovers_stale_run() {
-        let workspace = TempWorkspace::new("daemon", "startup-reconcile-notify");
-        let config = runtime_config_for_workspace_with_lanes(&workspace.path, 1);
-
-        let state_root = workspace.path.join("state");
-        let session_store = SessionStore::new(state_root.clone());
-        let run_store = RunStore::new(state_root);
-
-        let logical_session_id = "discord:dm:111";
-        let mut session = sample_session(LaneState::Running, Some("phys-1".to_string()));
-        session.id = logical_session_id.to_string();
-        session.active_backend = BackendKind::Claude;
-        session.active_profile = claude_profile();
-        session_store
-            .upsert_session(&session)
-            .expect("seed session should persist");
-
-        let mut run = sample_claude_run("111");
-        run.id = "run:discord:dm:111:stale-1".to_string();
-        run.logical_session_id = logical_session_id.to_string();
-        run.status = RunStatus::Running;
-        run.delivery_channel_id = Some("dm-111".to_string());
-        run.queued_at_epoch_ms = 1;
-        run.started_at_epoch_ms = Some(1);
-        run.completed_at_epoch_ms = None;
-        run.profile.sender_is_owner = true;
-        run_store.upsert_run(&run).expect("seed run should persist");
-
-        let daemon_config = DaemonConfig {
-            bot_user_id: "999".to_string(),
-            tick_interval_ms: 1,
-            max_iterations: Some(1),
-        };
-        let discord = ScriptedDiscordIo::with_state(DiscordIoState {
-            inbound: VecDeque::from([Ok(None)]),
-            ..DiscordIoState::default()
-        });
-        let discord_state = discord.clone();
-        let codex = TrackingCodexProcess::new();
-        let opencode = TrackingOpenCodeProcess::new();
-
-        // Boot at 200s, tick once at 200s+1ms (run is stale relative to default 90s grace period).
-        let mut control = ScriptedControl::with_now(vec![200_000, 200_001]);
-
-        run_daemon_loop_with_transport(
-            &config,
-            &daemon_config,
-            codex,
-            opencode,
-            discord,
-            &mut control,
-        )
-        .expect("daemon loop should succeed");
-
-        let discord = discord_state.state();
-        assert!(discord
-            .posted
-            .iter()
-            .any(|(channel_id, delivery_id, content)| {
-                channel_id == "dm-111"
-                    && delivery_id.starts_with("startup:recovered:")
-                    && content.contains("marked cancelled")
-            }));
-    }
-
-    #[test]
     fn notify_startup_recovered_runs_skips_when_run_is_missing() {
         let workspace = TempWorkspace::new("daemon", "startup-reconcile-missing-run");
         let state_root = workspace.path.join("state");
@@ -5796,1060 +2861,6 @@ mod tests {
 
         assert_eq!(sent, 0);
         assert!(discord.state().posted.is_empty());
-    }
-
-    #[test]
-    fn daemon_loop_reports_heartbeat_actions_when_run_is_stalled() {
-        let workspace = TempWorkspace::new("daemon", "heartbeat-actions");
-        let config = runtime_config_for_workspace_with_lanes(&workspace.path, 1);
-
-        let state_root = workspace.path.join("state");
-        let session_store = SessionStore::new(state_root.clone());
-        let run_store = RunStore::new(state_root);
-
-        // Avoid startup reconciliation clearing the session: it only clears when a physical handle
-        // exists. We still want the lane to be considered active for heartbeat.
-        let session = sample_session(LaneState::Running, None);
-        session_store
-            .upsert_session(&session)
-            .expect("seed session should persist");
-
-        let mut run = sample_run("111");
-        run.id = "run-stalled-1".to_string();
-        run.status = RunStatus::Running;
-        run.started_at_epoch_ms = Some(1_000);
-        run_store.upsert_run(&run).expect("seed run should persist");
-
-        let daemon_config = DaemonConfig {
-            bot_user_id: "999".to_string(),
-            tick_interval_ms: 1,
-            max_iterations: Some(1),
-        };
-        let discord = ScriptedDiscordIo::with_state(DiscordIoState {
-            inbound: VecDeque::from([Ok(None)]),
-            ..DiscordIoState::default()
-        });
-        let codex = TrackingCodexProcess::new();
-        let opencode = TrackingOpenCodeProcess::new();
-
-        // Boot at 1s, then jump far enough ahead to exceed CRAB_RUN_STALL_TIMEOUT_SECS (default 600s).
-        let mut control = ScriptedControl::with_now(vec![1_000, 701_000]);
-
-        run_daemon_loop_with_transport(
-            &config,
-            &daemon_config,
-            codex,
-            opencode,
-            discord,
-            &mut control,
-        )
-        .expect("daemon loop should succeed");
-
-        let updated = session_store
-            .get_session(&session.id)
-            .expect("session read should succeed")
-            .expect("session should exist");
-        assert_eq!(updated.lane_state, LaneState::Cancelling);
-    }
-
-    #[test]
-    fn daemon_loop_honors_shutdown_signal_without_iterations() {
-        let workspace = TempWorkspace::new("daemon", "shutdown");
-        let config = runtime_config_for_workspace_with_lanes(&workspace.path, 1);
-        let daemon_config = DaemonConfig {
-            bot_user_id: "999".to_string(),
-            tick_interval_ms: 1,
-            max_iterations: None,
-        };
-        let discord = ScriptedDiscordIo::with_state(DiscordIoState::default());
-        let codex = TrackingCodexProcess::new();
-        let opencode = TrackingOpenCodeProcess::new();
-        let mut control = ScriptedControl::with_now(vec![1_000]);
-        control.shutdown = true;
-
-        let stats = run_daemon_loop_with_transport(
-            &config,
-            &daemon_config,
-            codex,
-            opencode,
-            discord,
-            &mut control,
-        )
-        .expect("daemon loop should succeed");
-
-        assert_eq!(stats.iterations, 0);
-    }
-
-    #[test]
-    fn daemon_loop_propagates_now_source_errors() {
-        let workspace = TempWorkspace::new("daemon", "now-error");
-        let config = runtime_config_for_workspace_with_lanes(&workspace.path, 1);
-        let daemon_config = DaemonConfig {
-            bot_user_id: "999".to_string(),
-            tick_interval_ms: 1,
-            max_iterations: None,
-        };
-        let discord = ScriptedDiscordIo::with_state(DiscordIoState::default());
-        let codex = TrackingCodexProcess::new();
-        let opencode = TrackingOpenCodeProcess::new();
-        let mut control = ScriptedControl::with_now(vec![]);
-
-        let error = run_daemon_loop_with_transport(
-            &config,
-            &daemon_config,
-            codex,
-            opencode,
-            discord,
-            &mut control,
-        )
-        .expect_err("missing now should fail");
-        assert!(matches!(
-            error,
-            CrabError::InvariantViolation {
-                context: "daemon_test_now",
-                message,
-            } if message == "missing scripted now value"
-        ));
-    }
-
-    #[test]
-    fn daemon_loop_propagates_daemon_config_validation_errors() {
-        let workspace = TempWorkspace::new("daemon", "validate-error");
-        let config = runtime_config_for_workspace_with_lanes(&workspace.path, 1);
-        let daemon_config = DaemonConfig {
-            bot_user_id: "999".to_string(),
-            tick_interval_ms: 0,
-            max_iterations: Some(1),
-        };
-        let discord = ScriptedDiscordIo::with_state(DiscordIoState::default());
-        let codex = TrackingCodexProcess::new();
-        let opencode = TrackingOpenCodeProcess::new();
-        let mut control = ScriptedControl::with_now(vec![1_000]);
-
-        let error = run_daemon_loop_with_transport(
-            &config,
-            &daemon_config,
-            codex,
-            opencode,
-            discord,
-            &mut control,
-        )
-        .expect_err("invalid daemon config should fail before loop starts");
-        assert_eq!(
-            error,
-            CrabError::InvalidConfig {
-                key: "CRAB_DAEMON_TICK_INTERVAL_MS",
-                value: "0".to_string(),
-                reason: "must be greater than 0",
-            }
-        );
-    }
-
-    #[test]
-    fn daemon_loop_propagates_boot_runtime_errors() {
-        let workspace = TempWorkspace::new("daemon", "boot-error");
-        let mut config = runtime_config_for_workspace_with_lanes(&workspace.path, 1);
-        config.max_concurrent_lanes = 0;
-        let daemon_config = DaemonConfig {
-            bot_user_id: "999".to_string(),
-            tick_interval_ms: 1,
-            max_iterations: None,
-        };
-        let discord = ScriptedDiscordIo::with_state(DiscordIoState::default());
-        let codex = TrackingCodexProcess::new();
-        let opencode = TrackingOpenCodeProcess::new();
-        let mut control = ScriptedControl::with_now(vec![1_000]);
-
-        let error = run_daemon_loop_with_transport(
-            &config,
-            &daemon_config,
-            codex,
-            opencode,
-            discord,
-            &mut control,
-        )
-        .expect_err("invalid workspace root should fail composition boot");
-        assert_eq!(
-            error,
-            CrabError::InvalidConfig {
-                key: "CRAB_MAX_CONCURRENT_LANES",
-                value: "0".to_string(),
-                reason: "must be greater than 0",
-            }
-        );
-    }
-
-    #[test]
-    fn daemon_loop_propagates_codex_backend_start_errors() {
-        let workspace = TempWorkspace::new("daemon", "codex-start-error");
-        let config = runtime_config_for_workspace_with_lanes(&workspace.path, 1);
-        let daemon_config = DaemonConfig {
-            bot_user_id: "999".to_string(),
-            tick_interval_ms: 1,
-            max_iterations: Some(1),
-        };
-        let discord = ScriptedDiscordIo::with_state(DiscordIoState::default());
-        let codex = TrackingCodexProcess::with_spawn_error("forced codex spawn failure");
-        let opencode = TrackingOpenCodeProcess::new();
-        let mut control = ScriptedControl::with_now(vec![1_000]);
-
-        let error = run_daemon_loop_with_transport(
-            &config,
-            &daemon_config,
-            codex,
-            opencode,
-            discord,
-            &mut control,
-        )
-        .expect_err("codex start failures should propagate");
-        assert!(matches!(
-            error,
-            CrabError::InvariantViolation {
-                context: "daemon_test_codex_spawn",
-                message,
-            } if message == "forced codex spawn failure"
-        ));
-    }
-
-    #[test]
-    fn daemon_loop_propagates_opencode_backend_start_errors() {
-        let workspace = TempWorkspace::new("daemon", "opencode-start-error");
-        let config = runtime_config_for_workspace_with_lanes(&workspace.path, 1);
-        let daemon_config = DaemonConfig {
-            bot_user_id: "999".to_string(),
-            tick_interval_ms: 1,
-            max_iterations: Some(1),
-        };
-        let discord = ScriptedDiscordIo::with_state(DiscordIoState::default());
-        let codex = TrackingCodexProcess::new();
-        let opencode = TrackingOpenCodeProcess::with_spawn_error("forced opencode spawn failure");
-        let mut control = ScriptedControl::with_now(vec![1_000]);
-
-        let error = run_daemon_loop_with_transport(
-            &config,
-            &daemon_config,
-            codex,
-            opencode,
-            discord,
-            &mut control,
-        )
-        .expect_err("opencode start failures should propagate");
-        assert!(matches!(
-            error,
-            CrabError::InvariantViolation {
-                context: "daemon_test_opencode_spawn",
-                message,
-            } if message == "forced opencode spawn failure"
-        ));
-    }
-
-    #[test]
-    fn daemon_loop_sleep_control_propagates_codex_backend_start_errors() {
-        let workspace = TempWorkspace::new("daemon", "codex-start-error-sleep-control");
-        let config = runtime_config_for_workspace_with_lanes(&workspace.path, 1);
-        let daemon_config = DaemonConfig {
-            bot_user_id: "999".to_string(),
-            tick_interval_ms: 1,
-            max_iterations: Some(1),
-        };
-        let discord = ScriptedDiscordIo::with_state(DiscordIoState::default());
-        let codex = TrackingCodexProcess::with_spawn_error("forced codex spawn failure");
-        let opencode = TrackingOpenCodeProcess::new();
-        let mut control = SleepFailControl::with_now(vec![1_000]);
-
-        let error = run_daemon_loop_with_transport(
-            &config,
-            &daemon_config,
-            codex,
-            opencode,
-            discord,
-            &mut control,
-        )
-        .expect_err("codex start failures should propagate for sleep-fail control");
-        assert!(matches!(
-            error,
-            CrabError::InvariantViolation {
-                context: "daemon_test_codex_spawn",
-                message,
-            } if message == "forced codex spawn failure"
-        ));
-    }
-
-    #[test]
-    fn daemon_loop_sleep_control_propagates_opencode_backend_start_errors() {
-        let workspace = TempWorkspace::new("daemon", "opencode-start-error-sleep-control");
-        let config = runtime_config_for_workspace_with_lanes(&workspace.path, 1);
-        let daemon_config = DaemonConfig {
-            bot_user_id: "999".to_string(),
-            tick_interval_ms: 1,
-            max_iterations: Some(1),
-        };
-        let discord = ScriptedDiscordIo::with_state(DiscordIoState::default());
-        let codex = TrackingCodexProcess::new();
-        let opencode = TrackingOpenCodeProcess::with_spawn_error("forced opencode spawn failure");
-        let mut control = SleepFailControl::with_now(vec![1_000]);
-
-        let error = run_daemon_loop_with_transport(
-            &config,
-            &daemon_config,
-            codex,
-            opencode,
-            discord,
-            &mut control,
-        )
-        .expect_err("opencode start failures should propagate for sleep-fail control");
-        assert!(matches!(
-            error,
-            CrabError::InvariantViolation {
-                context: "daemon_test_opencode_spawn",
-                message,
-            } if message == "forced opencode spawn failure"
-        ));
-    }
-
-    #[test]
-    fn daemon_loop_propagates_runtime_builder_errors() {
-        let workspace = TempWorkspace::new("daemon", "runtime-builder-error");
-        let config = runtime_config_for_workspace_with_lanes(&workspace.path, 1);
-        let daemon_config = DaemonConfig {
-            bot_user_id: "999".to_string(),
-            tick_interval_ms: 1,
-            max_iterations: Some(1),
-        };
-        let discord = ScriptedDiscordIo::with_state(DiscordIoState::default());
-        let codex = TrackingCodexProcess::new();
-        let opencode = TrackingOpenCodeProcess::new();
-        let mut control = ScriptedControl::with_now(vec![1_000]);
-
-        let error = run_daemon_loop_with_transport_and_runtime_builder(
-            &config,
-            &daemon_config,
-            codex,
-            opencode,
-            discord,
-            &mut control,
-            runtime_builder_err,
-        )
-        .expect_err("runtime builder failures should propagate");
-        assert!(matches!(
-            error,
-            CrabError::InvariantViolation {
-                context: "daemon_runtime_builder",
-                message,
-            } if message == "forced runtime build failure"
-        ));
-    }
-
-    #[test]
-    fn daemon_loop_propagates_ingress_poll_errors() {
-        let workspace = TempWorkspace::new("daemon", "ingress-error");
-        let config = runtime_config_for_workspace_with_lanes(&workspace.path, 1);
-        let daemon_config = DaemonConfig {
-            bot_user_id: "999".to_string(),
-            tick_interval_ms: 1,
-            max_iterations: Some(1),
-        };
-        let discord = ScriptedDiscordIo::with_state(DiscordIoState {
-            inbound: VecDeque::from([Err(CrabError::InvariantViolation {
-                context: "daemon_test_ingress_poll",
-                message: "forced ingress poll failure".to_string(),
-            })]),
-            ..DiscordIoState::default()
-        });
-        let codex = TrackingCodexProcess::new();
-        let opencode = TrackingOpenCodeProcess::new();
-        let mut control = ScriptedControl::with_now(vec![1_000]);
-
-        let error = run_daemon_loop_with_transport(
-            &config,
-            &daemon_config,
-            codex,
-            opencode,
-            discord,
-            &mut control,
-        )
-        .expect_err("ingress poll failures should propagate");
-        assert!(matches!(
-            error,
-            CrabError::InvariantViolation {
-                context: "daemon_test_ingress_poll",
-                message,
-            } if message == "forced ingress poll failure"
-        ));
-    }
-
-    #[test]
-    fn daemon_loop_propagates_enqueue_errors() {
-        let workspace = TempWorkspace::new("daemon", "enqueue-error");
-        let config = runtime_config_for_workspace_with_lanes(&workspace.path, 1);
-        let daemon_config = DaemonConfig {
-            bot_user_id: "999".to_string(),
-            tick_interval_ms: 1,
-            max_iterations: Some(1),
-        };
-        let discord = ScriptedDiscordIo::with_state(DiscordIoState {
-            inbound: VecDeque::from([Ok(Some(gateway_message("m-1", "111", "")))]),
-            ..DiscordIoState::default()
-        });
-        let codex = TrackingCodexProcess::new();
-        let opencode = TrackingOpenCodeProcess::new();
-        let mut control = ScriptedControl::with_now(vec![1_000]);
-
-        let error = run_daemon_loop_with_transport(
-            &config,
-            &daemon_config,
-            codex,
-            opencode,
-            discord,
-            &mut control,
-        )
-        .expect_err("enqueue failures should propagate");
-        assert!(error.to_string().contains("must not be empty"));
-    }
-
-    #[test]
-    fn daemon_loop_propagates_dispatch_errors() {
-        let workspace = TempWorkspace::new("daemon", "dispatch-error");
-        let config = runtime_config_for_workspace_with_lanes(&workspace.path, 1);
-        let daemon_config = DaemonConfig {
-            bot_user_id: "999".to_string(),
-            tick_interval_ms: 1,
-            max_iterations: Some(1),
-        };
-        let discord = ScriptedDiscordIo::with_state(DiscordIoState {
-            inbound: VecDeque::from([Ok(Some(gateway_message("m-1", "111", "hello")))]),
-            post_results: VecDeque::from([Err(CrabError::InvariantViolation {
-                context: "daemon_test_post",
-                message: "forced post failure".to_string(),
-            })]),
-            ..DiscordIoState::default()
-        });
-        let codex = TrackingCodexProcess::new();
-        let opencode = TrackingOpenCodeProcess::new();
-        let mut control = ScriptedControl::with_now(vec![1_000]);
-
-        let error = run_daemon_loop_with_transport(
-            &config,
-            &daemon_config,
-            codex,
-            opencode,
-            discord,
-            &mut control,
-        )
-        .expect_err("dispatch failures should propagate");
-        assert!(error.to_string().contains("forced post failure"));
-    }
-
-    #[test]
-    fn daemon_loop_propagates_heartbeat_clock_errors() {
-        let workspace = TempWorkspace::new("daemon", "heartbeat-clock-error");
-        let config = runtime_config_for_workspace_with_lanes(&workspace.path, 1);
-        let daemon_config = DaemonConfig {
-            bot_user_id: "999".to_string(),
-            tick_interval_ms: 1,
-            max_iterations: Some(1),
-        };
-        let discord = ScriptedDiscordIo::with_state(DiscordIoState::default());
-        let codex = TrackingCodexProcess::new();
-        let opencode = TrackingOpenCodeProcess::new();
-        let mut control = ScriptedControl::with_now(vec![1_000]);
-
-        let error = run_daemon_loop_with_transport(
-            &config,
-            &daemon_config,
-            codex,
-            opencode,
-            discord,
-            &mut control,
-        )
-        .expect_err("missing heartbeat clock value should fail");
-        assert!(matches!(
-            error,
-            CrabError::InvariantViolation {
-                context: "daemon_test_now",
-                message,
-            } if message == "missing scripted now value"
-        ));
-    }
-
-    #[test]
-    fn daemon_loop_propagates_heartbeat_runtime_errors() {
-        let workspace = TempWorkspace::new("daemon", "heartbeat-runtime-error");
-        let config = runtime_config_for_workspace_with_lanes(&workspace.path, 1);
-        let daemon_config = DaemonConfig {
-            bot_user_id: "999".to_string(),
-            tick_interval_ms: 1,
-            max_iterations: Some(1),
-        };
-        let discord = ScriptedDiscordIo::with_state(DiscordIoState::default());
-        let codex = TrackingCodexProcess::new();
-        let opencode = TrackingOpenCodeProcess::new();
-        let mut control = ScriptedControl::with_now(vec![1_000, 0]);
-
-        let error = run_daemon_loop_with_transport(
-            &config,
-            &daemon_config,
-            codex,
-            opencode,
-            discord,
-            &mut control,
-        )
-        .expect_err("heartbeat runtime invariants should propagate");
-        assert_eq!(
-            error,
-            CrabError::InvariantViolation {
-                context: "runtime_heartbeat_tick",
-                message: "now_epoch_ms must be greater than 0".to_string(),
-            }
-        );
-    }
-
-    #[test]
-    fn daemon_loop_propagates_sleep_errors() {
-        let workspace = TempWorkspace::new("daemon", "sleep-error");
-        let config = runtime_config_for_workspace_with_lanes(&workspace.path, 1);
-        let daemon_config = DaemonConfig {
-            bot_user_id: "999".to_string(),
-            tick_interval_ms: 1,
-            max_iterations: Some(1),
-        };
-        let discord = ScriptedDiscordIo::with_state(DiscordIoState::default());
-        let codex = TrackingCodexProcess::new();
-        let opencode = TrackingOpenCodeProcess::new();
-        let mut control = SleepFailControl::with_now(vec![1_000, 1_001]);
-
-        let error = run_daemon_loop_with_transport(
-            &config,
-            &daemon_config,
-            codex,
-            opencode,
-            discord,
-            &mut control,
-        )
-        .expect_err("sleep failures should propagate");
-        assert_eq!(
-            error,
-            CrabError::InvariantViolation {
-                context: "daemon_test_sleep",
-                message: "forced sleep failure".to_string(),
-            }
-        );
-    }
-
-    #[test]
-    fn daemon_loop_propagates_codex_stop_errors() {
-        let workspace = TempWorkspace::new("daemon", "codex-stop-error");
-        let config = runtime_config_for_workspace_with_lanes(&workspace.path, 1);
-        let daemon_config = DaemonConfig {
-            bot_user_id: "999".to_string(),
-            tick_interval_ms: 1,
-            max_iterations: Some(1),
-        };
-        let discord = ScriptedDiscordIo::with_state(DiscordIoState::default());
-        let codex = TrackingCodexProcess::with_terminate_error("forced codex stop failure");
-        let opencode = TrackingOpenCodeProcess::new();
-        let mut control = ScriptedControl::with_now(vec![1_000, 1_001]);
-
-        let error = run_daemon_loop_with_transport(
-            &config,
-            &daemon_config,
-            codex,
-            opencode,
-            discord,
-            &mut control,
-        )
-        .expect_err("codex stop failures should propagate");
-        assert!(matches!(
-            error,
-            CrabError::InvariantViolation {
-                context: "daemon_test_codex_terminate",
-                message,
-            } if message == "forced codex stop failure"
-        ));
-    }
-
-    #[test]
-    fn daemon_loop_propagates_opencode_stop_errors() {
-        let workspace = TempWorkspace::new("daemon", "opencode-stop-error");
-        let config = runtime_config_for_workspace_with_lanes(&workspace.path, 1);
-        let daemon_config = DaemonConfig {
-            bot_user_id: "999".to_string(),
-            tick_interval_ms: 1,
-            max_iterations: Some(1),
-        };
-        let discord = ScriptedDiscordIo::with_state(DiscordIoState::default());
-        let codex = TrackingCodexProcess::new();
-        let opencode =
-            TrackingOpenCodeProcess::with_terminate_error("forced opencode stop failure");
-        let mut control = ScriptedControl::with_now(vec![1_000, 1_001]);
-
-        let error = run_daemon_loop_with_transport(
-            &config,
-            &daemon_config,
-            codex,
-            opencode,
-            discord,
-            &mut control,
-        )
-        .expect_err("opencode stop failures should propagate");
-        assert!(matches!(
-            error,
-            CrabError::InvariantViolation {
-                context: "daemon_test_opencode_terminate",
-                message,
-            } if message == "forced opencode stop failure"
-        ));
-    }
-
-    #[test]
-    fn daemon_loop_polls_and_consumes_pending_triggers() {
-        let workspace = TempWorkspace::new("daemon", "trigger-poll");
-        let config = runtime_config_for_workspace_with_lanes(&workspace.path, 2);
-        let daemon_config = DaemonConfig {
-            bot_user_id: "999".to_string(),
-            tick_interval_ms: 5,
-            max_iterations: Some(2),
-        };
-
-        // Seed a pending trigger file before starting the loop.
-        let state_root = workspace.path.join("state");
-        std::fs::create_dir_all(&state_root).expect("state root should be creatable");
-        let trigger = crab_core::PendingTrigger {
-            channel_id: "777".to_string(),
-            message: "scheduled check-in".to_string(),
-        };
-        let trigger_path =
-            crab_core::write_pending_trigger(&state_root, &trigger).expect("write should succeed");
-        assert!(trigger_path.exists());
-
-        let discord = ScriptedDiscordIo::with_state(DiscordIoState {
-            inbound: VecDeque::from([Ok(None), Ok(None)]),
-            ..DiscordIoState::default()
-        });
-        let codex = TrackingCodexProcess::new();
-        let opencode = TrackingOpenCodeProcess::new();
-        let mut control = ScriptedControl::with_now(vec![
-            2_000_000_000_000,
-            2_000_000_000_001,
-            2_000_000_000_002,
-        ]);
-
-        let stats = run_daemon_loop_with_transport(
-            &config,
-            &daemon_config,
-            codex,
-            opencode,
-            discord,
-            &mut control,
-        )
-        .expect("daemon loop should succeed");
-
-        assert_eq!(stats.ingested_triggers, 1);
-        assert_eq!(stats.dispatched_runs, 1);
-        assert!(!trigger_path.exists(), "trigger file should be consumed");
-    }
-
-    #[test]
-    fn daemon_loop_logs_warning_when_trigger_enqueue_fails() {
-        let workspace = TempWorkspace::new("daemon", "trigger-enqueue-fail");
-        let config = runtime_config_for_workspace_with_lanes(&workspace.path, 2);
-        let daemon_config = DaemonConfig {
-            bot_user_id: "999".to_string(),
-            tick_interval_ms: 5,
-            max_iterations: Some(2),
-        };
-
-        // Seed a trigger file with a blank channel_id that will fail enqueue validation.
-        let state_root = workspace.path.join("state");
-        std::fs::create_dir_all(state_root.join("pending_triggers"))
-            .expect("trigger dir should be creatable");
-        let trigger_json = r#"{"channel_id":" ","message":"bad trigger"}"#;
-        let trigger_path = state_root.join("pending_triggers/bad-trigger.json");
-        std::fs::write(&trigger_path, trigger_json).expect("trigger write should succeed");
-
-        let discord = ScriptedDiscordIo::with_state(DiscordIoState {
-            inbound: VecDeque::from([Ok(None), Ok(None)]),
-            ..DiscordIoState::default()
-        });
-        let codex = TrackingCodexProcess::new();
-        let opencode = TrackingOpenCodeProcess::new();
-        let mut control = ScriptedControl::with_now(vec![
-            2_000_000_000_000,
-            2_000_000_000_001,
-            2_000_000_000_002,
-        ]);
-
-        let stats = run_daemon_loop_with_transport(
-            &config,
-            &daemon_config,
-            codex,
-            opencode,
-            discord,
-            &mut control,
-        )
-        .expect("daemon loop should succeed despite trigger enqueue failure");
-
-        // The bad trigger should not have been ingested.
-        assert_eq!(stats.ingested_triggers, 0);
-        // The trigger file should still exist (not consumed on failure).
-        assert!(trigger_path.exists());
-    }
-
-    #[test]
-    fn daemon_runtime_ensure_physical_session_propagates_session_clock_errors() {
-        let workspace = TempWorkspace::new("daemon", "session-clock-error");
-        let config = runtime_config_for_workspace_with_lanes(&workspace.path, 1);
-        let discord = ScriptedDiscordIo::with_state(DiscordIoState::default());
-        let mut runtime =
-            DaemonTurnRuntime::new(config.owner.clone(), discord).expect("runtime builds");
-        let profile = InferenceProfile {
-            backend: BackendKind::Codex,
-            model: "auto".to_string(),
-            reasoning_level: ReasoningLevel::Medium,
-        };
-
-        DaemonTurnRuntime::<ScriptedDiscordIo>::set_session_now_epoch_ms_override(Some(
-            fail_session_now_epoch_ms,
-        ));
-        let error = runtime
-            .ensure_physical_session("discord:channel:777", &profile, None)
-            .expect_err("session clock failures should surface");
-        DaemonTurnRuntime::<ScriptedDiscordIo>::set_session_now_epoch_ms_override(None);
-
-        assert_eq!(
-            error,
-            CrabError::InvariantViolation {
-                context: "daemon_runtime_session_now",
-                message: "forced session timestamp failure".to_string(),
-            }
-        );
-    }
-
-    #[test]
-    fn daemon_runtime_execute_backend_turn_delegates_success_path() {
-        let workspace = TempWorkspace::new("daemon", "backend-bridge-success");
-        let config = runtime_config_for_workspace_with_lanes(&workspace.path, 1);
-        let run = sample_run("non-owner");
-        let expected_events = vec![
-            BackendEvent {
-                sequence: 1,
-                kind: BackendEventKind::TextDelta,
-                payload: std::collections::BTreeMap::from([(
-                    "text".to_string(),
-                    "delegated output".to_string(),
-                )]),
-            },
-            BackendEvent {
-                sequence: 2,
-                kind: BackendEventKind::TurnCompleted,
-                payload: std::collections::BTreeMap::from([(
-                    "finish".to_string(),
-                    "done".to_string(),
-                )]),
-            },
-        ];
-
-        let discord = ScriptedDiscordIo::with_state(DiscordIoState::default());
-        let bridge = ScriptedBackendBridge::with_results(vec![Ok(expected_events.clone())]);
-        let bridge_state = bridge.clone();
-        let mut runtime = DaemonTurnRuntime::new_with_backend_bridge(
-            config.owner.clone(),
-            discord,
-            Box::new(bridge),
-        )
-        .expect("runtime builds");
-
-        let active_id = "physical:discord:channel:777:1".to_string();
-        let mut physical = runtime
-            .ensure_physical_session(&run.logical_session_id, &run.profile.resolved_profile, None)
-            .expect("physical session should resolve");
-        assert_eq!(physical.id, active_id);
-        let mut codex_lifecycle = NoopCodexLifecycle;
-
-        let events = runtime
-            .execute_backend_turn(
-                &mut codex_lifecycle,
-                &mut physical,
-                &run,
-                "turn-1",
-                "turn context",
-            )
-            .expect("delegated backend turn should succeed");
-        let events = block_on(events.collect::<Vec<_>>());
-        assert_eq!(events, expected_events);
-        assert_eq!(physical.last_turn_id, Some("turn-1".to_string()));
-        let cached = runtime
-            .ensure_physical_session(
-                &run.logical_session_id,
-                &run.profile.resolved_profile,
-                Some(&active_id),
-            )
-            .expect("cached physical session should resolve");
-        assert_eq!(cached.last_turn_id, Some("turn-1".to_string()));
-
-        let bridge_state = bridge_state.state();
-        assert_eq!(
-            bridge_state.execute_calls,
-            vec![(
-                physical.id,
-                run.id,
-                "turn-1".to_string(),
-                "turn context".to_string(),
-            )]
-        );
-    }
-
-    #[test]
-    fn daemon_runtime_execute_backend_turn_maps_bridge_failures() {
-        let workspace = TempWorkspace::new("daemon", "backend-bridge-failure");
-        let config = runtime_config_for_workspace_with_lanes(&workspace.path, 1);
-        let run = sample_run("non-owner");
-        let discord = ScriptedDiscordIo::with_state(DiscordIoState::default());
-        let bridge =
-            ScriptedBackendBridge::with_results(vec![Err(CrabError::InvariantViolation {
-                context: "daemon_test_backend_bridge",
-                message: "forced backend bridge failure".to_string(),
-            })]);
-        let bridge_state = bridge.clone();
-        let mut runtime = DaemonTurnRuntime::new_with_backend_bridge(
-            config.owner.clone(),
-            discord,
-            Box::new(bridge),
-        )
-        .expect("runtime builds");
-        let mut physical = runtime
-            .ensure_physical_session(&run.logical_session_id, &run.profile.resolved_profile, None)
-            .expect("physical session should resolve");
-        let mut codex_lifecycle = NoopCodexLifecycle;
-
-        let error = runtime
-            .execute_backend_turn(
-                &mut codex_lifecycle,
-                &mut physical,
-                &run,
-                "turn-2",
-                "turn context",
-            )
-            .err()
-            .expect("delegated backend failures should be mapped");
-        assert!(matches!(
-            error,
-            CrabError::InvariantViolation {
-                context: "daemon_backend_bridge_execute",
-                message,
-            } if message
-                .contains("run run-1 turn turn-2 backend Codex bridge execution failed")
-                && message.contains(
-                    "daemon_test_backend_bridge invariant violation: forced backend bridge failure"
-            )
-        ));
-
-        let bridge_state = bridge_state.state();
-        assert_eq!(bridge_state.execute_calls.len(), 1);
-        assert_eq!(physical.last_turn_id, None);
-    }
-
-    #[test]
-    fn daemon_runtime_execute_backend_turn_surfaces_scripted_bridge_depletion() {
-        let workspace = TempWorkspace::new("daemon", "backend-bridge-depletion");
-        let config = runtime_config_for_workspace_with_lanes(&workspace.path, 1);
-        let run = sample_run("non-owner");
-        let discord = ScriptedDiscordIo::with_state(DiscordIoState::default());
-        let mut runtime = DaemonTurnRuntime::new_with_backend_bridge(
-            config.owner.clone(),
-            discord,
-            Box::new(ScriptedBackendBridge::with_results(Vec::new())),
-        )
-        .expect("runtime builds");
-        let mut physical = runtime
-            .ensure_physical_session(&run.logical_session_id, &run.profile.resolved_profile, None)
-            .expect("physical session should resolve");
-        let mut codex_lifecycle = NoopCodexLifecycle;
-
-        let error = runtime
-            .execute_backend_turn(
-                &mut codex_lifecycle,
-                &mut physical,
-                &run,
-                "turn-3",
-                "turn context",
-            )
-            .err()
-            .expect("depleted scripted bridge results should fail");
-        assert!(matches!(
-            error,
-            CrabError::InvariantViolation {
-                context: "daemon_backend_bridge_execute",
-                message,
-            } if message.contains(
-                "daemon_test_backend_bridge invariant violation: missing scripted execute result"
-            )
-        ));
-        assert_eq!(physical.last_turn_id, None);
-    }
-
-    #[test]
-    fn daemon_runtime_execute_backend_turn_persists_bridge_mutations_in_cache() {
-        let workspace = TempWorkspace::new("daemon", "backend-bridge-cache-persist");
-        let config = runtime_config_for_workspace_with_lanes(&workspace.path, 1);
-        let run = sample_run("non-owner");
-        let discord = ScriptedDiscordIo::with_state(DiscordIoState::default());
-        let mut runtime = DaemonTurnRuntime::new_with_backend_bridge(
-            config.owner.clone(),
-            discord,
-            Box::<MutatingBackendBridge>::default(),
-        )
-        .expect("runtime builds");
-        let mut physical = runtime
-            .ensure_physical_session(&run.logical_session_id, &run.profile.resolved_profile, None)
-            .expect("physical session should resolve");
-        let active_id = physical.id.clone();
-        let initial_backend_session_id = physical.backend_session_id.clone();
-        let mut codex_lifecycle = NoopCodexLifecycle;
-
-        let events = runtime
-            .execute_backend_turn(
-                &mut codex_lifecycle,
-                &mut physical,
-                &run,
-                "turn-4",
-                "turn context",
-            )
-            .expect("mutating bridge turn should succeed");
-        let _ = block_on(events.collect::<Vec<_>>());
-        assert_ne!(physical.backend_session_id, initial_backend_session_id);
-        assert_eq!(physical.last_turn_id, Some("turn-4".to_string()));
-
-        let cached = runtime
-            .ensure_physical_session(
-                &run.logical_session_id,
-                &run.profile.resolved_profile,
-                Some(&active_id),
-            )
-            .expect("cached physical session should resolve");
-        assert_eq!(cached.backend_session_id, physical.backend_session_id);
-        assert_eq!(cached.last_turn_id, physical.last_turn_id);
-    }
-
-    #[test]
-    fn daemon_runtime_execute_backend_turn_preserves_backend_native_turn_id() {
-        let workspace = TempWorkspace::new("daemon", "backend-bridge-turn-id-preserve");
-        let config = runtime_config_for_workspace_with_lanes(&workspace.path, 1);
-        let run = sample_run("non-owner");
-        let discord = ScriptedDiscordIo::with_state(DiscordIoState::default());
-        let mut runtime = DaemonTurnRuntime::new_with_backend_bridge(
-            config.owner.clone(),
-            discord,
-            Box::<TurnIdMutatingBackendBridge>::default(),
-        )
-        .expect("runtime builds");
-        assert!(!runtime.has_opencode_backend_bridge());
-        runtime.configure_opencode_backend_bridge_trusted(
-            "http://127.0.0.1:9999".to_string(),
-            Box::new(ScriptedOpenCodeBridgeRuntime::with_results(
-                vec![Ok("ignored".to_string())],
-                vec![Ok(scripted_opencode_turn_result(
-                    "ignored-turn",
-                    "ignored",
-                    (1, 1, 2),
-                    OpenCodeTurnState::Completed,
-                ))],
-            )),
-        );
-        let mut physical = runtime
-            .ensure_physical_session(&run.logical_session_id, &run.profile.resolved_profile, None)
-            .expect("physical session should resolve");
-        let active_id = physical.id.clone();
-        let mut codex_lifecycle = NoopCodexLifecycle;
-
-        let events = runtime
-            .execute_backend_turn(
-                &mut codex_lifecycle,
-                &mut physical,
-                &run,
-                "turn-daemon",
-                "turn context",
-            )
-            .expect("turn execution should succeed");
-        let _ = block_on(events.collect::<Vec<_>>());
-        assert_eq!(physical.last_turn_id, Some("backend-turn-id-9".to_string()));
-
-        let cached = runtime
-            .ensure_physical_session(
-                &run.logical_session_id,
-                &run.profile.resolved_profile,
-                Some(&active_id),
-            )
-            .expect("cached physical session should resolve");
-        assert_eq!(cached.last_turn_id, Some("backend-turn-id-9".to_string()));
-    }
-
-    #[test]
-    fn daemon_runtime_opencode_test_config_rejects_non_default_backend_bridge() {
-        let workspace = TempWorkspace::new("daemon", "opencode-test-config-reject-non-default");
-        let config = runtime_config_for_workspace_with_lanes(&workspace.path, 1);
-        let discord = ScriptedDiscordIo::with_state(DiscordIoState::default());
-        let mut runtime = DaemonTurnRuntime::new_with_backend_bridge(
-            config.owner.clone(),
-            discord,
-            Box::new(ScriptedBackendBridge::with_results(Vec::new())),
-        )
-        .expect("runtime builds");
-
-        assert!(!runtime.has_opencode_backend_bridge());
-
-        let error = runtime
-            .configure_opencode_backend_bridge(
-                "http://127.0.0.1:9999".to_string(),
-                Box::new(ScriptedOpenCodeBridgeRuntime::with_results(
-                    vec![Ok("ignored".to_string())],
-                    vec![Ok(scripted_opencode_turn_result(
-                        "ignored-turn",
-                        "ignored output",
-                        (1, 1, 2),
-                        OpenCodeTurnState::Completed,
-                    ))],
-                )),
-            )
-            .expect_err("non-default bridge should reject opencode test configuration");
-        assert_eq!(
-            error,
-            CrabError::InvariantViolation {
-                context: "daemon_backend_bridge",
-                message: "runtime backend bridge does not support opencode test configuration"
-                    .to_string(),
-            }
-        );
-    }
-
-    #[test]
-    fn daemon_runtime_opencode_trusted_config_ignores_non_default_backend_bridge() {
-        let workspace = TempWorkspace::new("daemon", "opencode-trusted-config-ignore-non-default");
-        let config = runtime_config_for_workspace_with_lanes(&workspace.path, 1);
-        let discord = ScriptedDiscordIo::with_state(DiscordIoState::default());
-        let mut runtime = DaemonTurnRuntime::new_with_backend_bridge(
-            config.owner.clone(),
-            discord,
-            Box::<MutatingBackendBridge>::default(),
-        )
-        .expect("runtime builds");
-
-        assert!(!runtime.has_opencode_backend_bridge());
-
-        runtime.configure_opencode_backend_bridge_trusted(
-            "http://127.0.0.1:9999".to_string(),
-            Box::new(ScriptedOpenCodeBridgeRuntime::with_results(
-                vec![Ok("ignored".to_string())],
-                vec![Ok(scripted_opencode_turn_result(
-                    "ignored-turn",
-                    "ignored output",
-                    (1, 1, 2),
-                    OpenCodeTurnState::Completed,
-                ))],
-            )),
-        );
-
-        assert!(!runtime.has_opencode_backend_bridge());
     }
 
     #[test]
@@ -6900,37 +2911,6 @@ mod tests {
                 message: "edit failure".to_string(),
             }
         );
-    }
-
-    #[test]
-    fn daemon_runtime_owner_profile_resolution_can_use_owner_defaults() {
-        let workspace = TempWorkspace::new("daemon", "owner-profile");
-        let mut config = runtime_config_for_workspace_with_lanes(&workspace.path, 1);
-        config.owner.discord_user_ids = vec!["123".to_string()];
-        config.owner.profile_defaults.backend = Some(crab_core::BackendKind::OpenCode);
-        config.owner.profile_defaults.model = Some("owner-model".to_string());
-        config.owner.profile_defaults.reasoning_level = Some(crab_core::ReasoningLevel::High);
-        config.owner.machine_location = Some("Paris".to_string());
-        config.owner.machine_timezone = Some("Europe/Paris".to_string());
-
-        let discord = ScriptedDiscordIo::with_state(DiscordIoState::default());
-        let mut runtime =
-            DaemonTurnRuntime::new(config.owner.clone(), discord).expect("runtime builds");
-        let telemetry = runtime
-            .resolve_run_profile("discord:channel:777", "123", "hello")
-            .expect("profile resolution should succeed");
-
-        assert!(telemetry.sender_is_owner);
-        assert_eq!(
-            telemetry.resolved_profile.backend,
-            crab_core::BackendKind::OpenCode
-        );
-        assert_eq!(telemetry.resolved_profile.model, "owner-model");
-        assert_eq!(
-            telemetry.resolved_profile.reasoning_level,
-            crab_core::ReasoningLevel::High
-        );
-        assert!(telemetry.resolved_owner_profile.is_some());
     }
 
     #[test]
@@ -7241,7 +3221,7 @@ mod tests {
         let mut runtime =
             DaemonTurnRuntime::new(config.owner.clone(), discord).expect("runtime builds");
         let profile = InferenceProfile {
-            backend: BackendKind::Codex,
+            backend: BackendKind::Claude,
             model: "auto".to_string(),
             reasoning_level: ReasoningLevel::Medium,
         };
@@ -7254,25 +3234,6 @@ mod tests {
             .expect("existing session should be reused");
 
         assert_eq!(created, reused);
-    }
-
-    #[test]
-    fn daemon_runtime_ensure_physical_session_uses_provided_id_when_missing_from_cache() {
-        let workspace = TempWorkspace::new("daemon", "session-cache-miss");
-        let config = runtime_config_for_workspace_with_lanes(&workspace.path, 1);
-        let discord = ScriptedDiscordIo::with_state(DiscordIoState::default());
-        let mut runtime =
-            DaemonTurnRuntime::new(config.owner.clone(), discord).expect("runtime builds");
-        let profile = InferenceProfile {
-            backend: BackendKind::Codex,
-            model: "auto".to_string(),
-            reasoning_level: ReasoningLevel::Medium,
-        };
-
-        let created = runtime
-            .ensure_physical_session("discord:channel:777", &profile, Some("physical:missing:1"))
-            .expect("missing active id should be created");
-        assert_eq!(created.id, "physical:missing:1");
     }
 
     #[test]
@@ -7298,15 +3259,9 @@ mod tests {
         let mut session = runtime
             .ensure_physical_session("discord:channel:777", &claude_profile(), None)
             .expect("claude session should be created");
-        let mut codex_lifecycle = NoopCodexLifecycle;
+
         let events = runtime
-            .execute_backend_turn(
-                &mut codex_lifecycle,
-                &mut session,
-                &run,
-                "turn-cleanup",
-                "cleanup context",
-            )
+            .execute_backend_turn(&mut session, &run, "turn-cleanup", "cleanup context")
             .expect("claude turn should succeed before shutdown");
         let _ = block_on(events.collect::<Vec<_>>());
         assert_eq!(session.last_turn_id.as_deref(), Some("turn-cleanup"));
@@ -7354,15 +3309,9 @@ mod tests {
         let mut session = runtime
             .ensure_physical_session("discord:channel:777", &claude_profile(), None)
             .expect("claude session should be created");
-        let mut codex_lifecycle = NoopCodexLifecycle;
+
         let events = runtime
-            .execute_backend_turn(
-                &mut codex_lifecycle,
-                &mut session,
-                &run,
-                "turn-cleanup",
-                "cleanup context",
-            )
+            .execute_backend_turn(&mut session, &run, "turn-cleanup", "cleanup context")
             .expect("claude turn should succeed before shutdown");
         let _ = block_on(events.collect::<Vec<_>>());
 
@@ -7404,15 +3353,9 @@ mod tests {
         let mut session = runtime
             .ensure_physical_session("discord:channel:777", &claude_profile(), None)
             .expect("claude session should be created");
-        let mut codex_lifecycle = NoopCodexLifecycle;
+
         let events = runtime
-            .execute_backend_turn(
-                &mut codex_lifecycle,
-                &mut session,
-                &run,
-                "turn-cleanup",
-                "cleanup context",
-            )
+            .execute_backend_turn(&mut session, &run, "turn-cleanup", "cleanup context")
             .expect("claude turn should succeed before shutdown");
         let _ = block_on(events.collect::<Vec<_>>());
 
@@ -7563,33 +3506,6 @@ mod tests {
     }
 
     #[test]
-    fn interrupt_backend_turn_skips_non_claude_backends() {
-        let claude_process =
-            ScriptedClaudeProcess::with_scripted(Vec::new(), Vec::new(), Vec::new(), Vec::new());
-        let (_workspace, mut runtime, process) =
-            build_scripted_claude_runtime("interrupt-non-claude-backend", claude_process);
-
-        let session = crab_core::PhysicalSession {
-            id: "physical-1".to_string(),
-            logical_session_id: "discord:channel:777".to_string(),
-            backend: BackendKind::Codex,
-            backend_session_id: "codex-session-1".to_string(),
-            created_at_epoch_ms: 1_000_000,
-            last_turn_id: None,
-        };
-
-        runtime
-            .interrupt_backend_turn(&session, "turn-1")
-            .expect("interrupt should succeed (no-op) for non-Claude backend");
-
-        let stats = process.stats();
-        assert_eq!(
-            stats.interrupt_calls, 0,
-            "Claude process should not be called for non-Claude backend"
-        );
-    }
-
-    #[test]
     fn epoch_conversion_helpers_cover_success_and_error_paths() {
         let success = epoch_ms_from_system_time(UNIX_EPOCH + Duration::from_millis(42))
             .expect("unix offset should convert");
@@ -7613,6 +3529,379 @@ mod tests {
                 context: "daemon_clock_now",
                 message: "epoch milliseconds overflow u64".to_string(),
             }
+        );
+    }
+
+    #[test]
+    fn notify_startup_recovered_runs_sends_discord_messages() {
+        let workspace = TempWorkspace::new("daemon", "startup-reconcile-happy-path");
+        let state_root = workspace.path.join("state");
+        let run_store = RunStore::new(&state_root);
+
+        let mut run = sample_claude_run("111");
+        run.id = "run:discord:dm:111:stale-with-channel".to_string();
+        run.logical_session_id = "discord:dm:111".to_string();
+        run.status = RunStatus::Cancelled;
+        run.delivery_channel_id = Some("999".to_string());
+        run_store.upsert_run(&run).expect("seed run should persist");
+
+        let recovered = crab_core::startup_reconciliation::StartupReconciliationRecoveredRun {
+            logical_session_id: run.logical_session_id.clone(),
+            run_id: run.id.clone(),
+            previous_status: RunStatus::Running,
+            recovered_status: RunStatus::Cancelled,
+        };
+
+        let mut discord = ScriptedDiscordIo::with_state(DiscordIoState::default());
+        let sent = notify_startup_recovered_runs(&run_store, &[recovered], &mut discord)
+            .expect("notification should succeed");
+
+        assert_eq!(sent, 1);
+        let state = discord.state();
+        assert_eq!(state.posted.len(), 1);
+        assert_eq!(state.posted[0].0, "999");
+        assert!(state.posted[0].1.starts_with("startup:recovered:"));
+        assert!(state.posted[0].2.contains("Crab restarted"));
+        assert!(state.posted[0].2.contains(&run.id));
+    }
+
+    #[test]
+    fn civil_from_days_covers_january() {
+        // 1704067200000 ms = 2024-01-01T00:00:00Z
+        let date = epoch_ms_to_yyyy_mm_dd(1_704_067_200_000).expect("January date should convert");
+        assert_eq!(date, "2024-01-01");
+    }
+
+    #[test]
+    fn civil_from_days_covers_february() {
+        // 1706745600000 ms = 2024-02-01T00:00:00Z
+        let date = epoch_ms_to_yyyy_mm_dd(1_706_745_600_000).expect("February date should convert");
+        assert_eq!(date, "2024-02-01");
+    }
+
+    #[test]
+    fn scripted_discord_io_next_gateway_message_returns_queued_messages() {
+        let msg1 = GatewayMessage {
+            message_id: "m1".to_string(),
+            author_id: "222".to_string(),
+            author_is_bot: false,
+            channel_id: "111".to_string(),
+            guild_id: None,
+            thread_id: None,
+            content: "hello".to_string(),
+            conversation_kind: crab_discord::GatewayConversationKind::GuildChannel,
+            attachments: Vec::new(),
+        };
+        let msg2 = GatewayMessage {
+            message_id: "m2".to_string(),
+            author_id: "444".to_string(),
+            author_is_bot: false,
+            channel_id: "333".to_string(),
+            guild_id: None,
+            thread_id: None,
+            content: "world".to_string(),
+            conversation_kind: crab_discord::GatewayConversationKind::GuildChannel,
+            attachments: Vec::new(),
+        };
+        let mut discord = ScriptedDiscordIo::with_state(DiscordIoState {
+            inbound: VecDeque::from([Ok(Some(msg1.clone())), Ok(Some(msg2.clone()))]),
+            ..DiscordIoState::default()
+        });
+
+        let first = discord
+            .next_gateway_message()
+            .expect("first call should succeed")
+            .expect("first message should be present");
+        assert_eq!(first, msg1);
+
+        let second = discord
+            .next_gateway_message()
+            .expect("second call should succeed")
+            .expect("second message should be present");
+        assert_eq!(second, msg2);
+
+        let empty = discord
+            .next_gateway_message()
+            .expect("drained call should succeed");
+        assert!(empty.is_none());
+    }
+
+    // ---- Daemon loop integration tests ----
+
+    struct OneShotControl {
+        now: u64,
+        shutdown: bool,
+    }
+
+    impl DaemonLoopControl for OneShotControl {
+        fn now_epoch_ms(&mut self) -> CrabResult<u64> {
+            Ok(self.now)
+        }
+        fn should_shutdown(&self) -> bool {
+            self.shutdown
+        }
+        fn sleep_tick(&mut self, _tick_interval_ms: u64) -> CrabResult<()> {
+            Ok(())
+        }
+    }
+
+    fn daemon_loop_config() -> DaemonConfig {
+        DaemonConfig {
+            bot_user_id: "999".to_string(),
+            tick_interval_ms: 1,
+            max_iterations: Some(1),
+        }
+    }
+
+    #[test]
+    fn daemon_loop_runs_single_iteration_with_empty_state() {
+        let workspace = TempWorkspace::new("daemon", "loop-empty");
+        let config = runtime_config_for_workspace_with_lanes(&workspace.path, 1);
+        let discord = ScriptedDiscordIo::with_state(DiscordIoState::default());
+        let mut control = OneShotControl {
+            now: 1_739_173_200_000,
+            shutdown: false,
+        };
+
+        let stats = super::run_daemon_loop_with_transport(
+            &config,
+            &daemon_loop_config(),
+            discord,
+            &mut control,
+        )
+        .expect("daemon loop should succeed with empty state");
+
+        assert_eq!(stats.iterations, 1);
+        assert_eq!(stats.ingested_messages, 0);
+        assert_eq!(stats.ingested_triggers, 0);
+    }
+
+    #[test]
+    fn daemon_loop_exits_on_shutdown_signal() {
+        let workspace = TempWorkspace::new("daemon", "loop-shutdown");
+        let config = runtime_config_for_workspace_with_lanes(&workspace.path, 1);
+        let discord = ScriptedDiscordIo::with_state(DiscordIoState::default());
+
+        let mut control = OneShotControl {
+            now: 1_739_173_200_000,
+            shutdown: true,
+        };
+
+        let daemon_config = DaemonConfig {
+            bot_user_id: "999".to_string(),
+            tick_interval_ms: 1,
+            max_iterations: None, // no iteration limit - shutdown signal should stop it
+        };
+
+        let stats =
+            super::run_daemon_loop_with_transport(&config, &daemon_config, discord, &mut control)
+                .expect("daemon loop should exit cleanly on shutdown");
+
+        assert_eq!(stats.iterations, 0);
+    }
+
+    #[test]
+    fn daemon_loop_ingests_gateway_messages() {
+        let workspace = TempWorkspace::new("daemon", "loop-gateway");
+        let config = runtime_config_for_workspace_with_lanes(&workspace.path, 1);
+        let msg = GatewayMessage {
+            message_id: "m1".to_string(),
+            author_id: "222".to_string(),
+            author_is_bot: false,
+            channel_id: "333".to_string(),
+            guild_id: None,
+            thread_id: None,
+            content: "hello".to_string(),
+            conversation_kind: crab_discord::GatewayConversationKind::DirectMessage,
+            attachments: Vec::new(),
+        };
+        let discord = ScriptedDiscordIo::with_state(DiscordIoState {
+            inbound: VecDeque::from([Ok(Some(msg))]),
+            ..DiscordIoState::default()
+        });
+        let mut control = OneShotControl {
+            now: 1_739_173_200_000,
+            shutdown: false,
+        };
+
+        let stats = super::run_daemon_loop_with_transport(
+            &config,
+            &daemon_loop_config(),
+            discord,
+            &mut control,
+        )
+        .expect("daemon loop should succeed");
+
+        assert_eq!(stats.iterations, 1);
+        assert_eq!(stats.ingested_messages, 1);
+    }
+
+    #[test]
+    fn daemon_loop_ingests_trigger_and_handles_trigger_error() {
+        let workspace = TempWorkspace::new("daemon", "loop-triggers");
+        let config = runtime_config_for_workspace_with_lanes(&workspace.path, 1);
+        let state_root = workspace.path.join("state");
+        std::fs::create_dir_all(&state_root).expect("state root should be creatable");
+
+        // Good trigger
+        crab_core::write_pending_trigger(
+            &state_root,
+            &crab_core::PendingTrigger {
+                channel_id: "888".to_string(),
+                message: "good trigger".to_string(),
+            },
+        )
+        .expect("trigger should be written");
+
+        // Write a trigger file directly with a blank channel_id to bypass write
+        // validation and exercise the enqueue error branch in the daemon loop.
+        let triggers_dir = state_root.join("pending_triggers");
+        std::fs::create_dir_all(&triggers_dir).expect("triggers dir should be creatable");
+        std::fs::write(
+            triggers_dir.join("bad_trigger.json"),
+            r#"{"channel_id":"  ","message":"bad trigger"}"#,
+        )
+        .expect("bad trigger file should be writable");
+
+        let discord = ScriptedDiscordIo::with_state(DiscordIoState::default());
+        let mut control = OneShotControl {
+            now: 1_739_173_200_000,
+            shutdown: false,
+        };
+
+        let stats = super::run_daemon_loop_with_transport(
+            &config,
+            &daemon_loop_config(),
+            discord,
+            &mut control,
+        )
+        .expect("daemon loop should succeed even with trigger error");
+
+        assert_eq!(stats.iterations, 1);
+        // At least the good trigger should be ingested; the bad one should hit the error path
+        assert!(stats.ingested_triggers >= 1);
+    }
+
+    #[test]
+    fn daemon_loop_exercises_startup_reconciliation_notification() {
+        let workspace = TempWorkspace::new("daemon", "loop-reconcile");
+        let config = runtime_config_for_workspace_with_lanes(&workspace.path, 1);
+        let state_root = workspace.path.join("state");
+        std::fs::create_dir_all(&state_root).expect("state root should be creatable");
+
+        // Seed a "Running" run so startup reconciliation recovers it.
+        let run_store = RunStore::new(&state_root);
+        let mut stale_run = sample_claude_run("111");
+        stale_run.id = "run:discord:dm:111:stale".to_string();
+        stale_run.logical_session_id = "discord:dm:111".to_string();
+        stale_run.status = RunStatus::Running;
+        stale_run.delivery_channel_id = Some("999".to_string());
+        stale_run.started_at_epoch_ms = Some(1);
+        stale_run.queued_at_epoch_ms = 1;
+        run_store
+            .upsert_run(&stale_run)
+            .expect("stale run should persist");
+
+        // Seed a matching logical session so reconciliation can find the run.
+        let session_store = crab_store::SessionStore::new(&state_root);
+        let mut session = sample_session(LaneState::Running, None);
+        session.id = "discord:dm:111".to_string();
+        session_store
+            .upsert_session(&session)
+            .expect("session should persist");
+
+        let discord = ScriptedDiscordIo::with_state(DiscordIoState::default());
+        let discord_state = discord.clone();
+
+        let mut control = OneShotControl {
+            now: 1_739_173_200_000,
+            shutdown: false,
+        };
+
+        let stats = super::run_daemon_loop_with_transport(
+            &config,
+            &daemon_loop_config(),
+            discord,
+            &mut control,
+        )
+        .expect("daemon loop should succeed with reconciliation");
+
+        assert_eq!(stats.iterations, 1);
+
+        // The startup recovery notification should have been posted to the delivery channel.
+        let state = discord_state.state();
+        assert!(
+            state
+                .posted
+                .iter()
+                .any(|(ch, _, content)| { ch == "999" && content.contains("Crab restarted") }),
+            "expected startup recovery Discord message, got: {:?}",
+            state.posted
+        );
+    }
+
+    #[test]
+    fn daemon_loop_exercises_heartbeat_cycle() {
+        let workspace = TempWorkspace::new("daemon", "loop-heartbeat");
+        let config = runtime_config_for_workspace_with_lanes(&workspace.path, 1);
+        let state_root = workspace.path.join("state");
+        std::fs::create_dir_all(&state_root).expect("state root should be creatable");
+
+        // Seed a stale running run so heartbeat has work to do.
+        let run_store = RunStore::new(&state_root);
+        let mut stale = sample_claude_run("111");
+        stale.id = "run:discord:channel:777:heartbeat-stale".to_string();
+        stale.logical_session_id = "discord:channel:777".to_string();
+        stale.status = RunStatus::Running;
+        stale.started_at_epoch_ms = Some(1);
+        stale.queued_at_epoch_ms = 1;
+        run_store.upsert_run(&stale).expect("run should persist");
+
+        let session_store = crab_store::SessionStore::new(&state_root);
+        let mut session = sample_session(LaneState::Running, None);
+        session.id = "discord:channel:777".to_string();
+        session_store
+            .upsert_session(&session)
+            .expect("session should persist");
+
+        let discord = ScriptedDiscordIo::with_state(DiscordIoState::default());
+
+        // Advance clock to trigger heartbeat (interval is typically 120s).
+        struct AdvancingControl {
+            call: u64,
+            base: u64,
+        }
+        impl DaemonLoopControl for AdvancingControl {
+            fn now_epoch_ms(&mut self) -> CrabResult<u64> {
+                self.call += 1;
+                Ok(self.base + self.call * 120_000)
+            }
+            fn should_shutdown(&self) -> bool {
+                false
+            }
+            fn sleep_tick(&mut self, _: u64) -> CrabResult<()> {
+                Ok(())
+            }
+        }
+
+        let daemon_config = DaemonConfig {
+            bot_user_id: "999".to_string(),
+            tick_interval_ms: 1,
+            max_iterations: Some(3),
+        };
+
+        let mut control = AdvancingControl {
+            call: 0,
+            base: 1_739_173_200_000,
+        };
+
+        let stats =
+            super::run_daemon_loop_with_transport(&config, &daemon_config, discord, &mut control)
+                .expect("daemon loop with heartbeat should complete");
+
+        assert!(
+            stats.heartbeat_cycles >= 1,
+            "expected at least one heartbeat cycle"
         );
     }
 }
