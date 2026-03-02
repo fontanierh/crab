@@ -321,7 +321,11 @@ mod tests {
 
     #[test]
     fn citation_mode_off_hides_citations_in_prompt_contract() {
-        let mut input = input_for(BackendKind::Claude, "claude-sonnet-4", ReasoningLevel::Medium);
+        let mut input = input_for(
+            BackendKind::Claude,
+            "claude-sonnet-4",
+            ReasoningLevel::Medium,
+        );
         input.memory_citation_mode = MemoryCitationMode::Off;
 
         let rendered = compile_prompt_contract(&input).expect("prompt contract should compile");
@@ -335,7 +339,11 @@ mod tests {
 
     #[test]
     fn citation_mode_on_for_shared_context_still_requires_citations() {
-        let mut input = input_for(BackendKind::Claude, "claude-sonnet-4", ReasoningLevel::Medium);
+        let mut input = input_for(
+            BackendKind::Claude,
+            "claude-sonnet-4",
+            ReasoningLevel::Medium,
+        );
         input.memory_citation_mode = MemoryCitationMode::On;
         input.memory_recall_surface = TrustSurface::SharedDiscord;
 
@@ -373,7 +381,11 @@ mod tests {
 
     #[test]
     fn compiler_rejects_blank_required_inputs() {
-        let mut blank_model = input_for(BackendKind::Claude, "claude-sonnet-4", ReasoningLevel::Medium);
+        let mut blank_model = input_for(
+            BackendKind::Claude,
+            "claude-sonnet-4",
+            ReasoningLevel::Medium,
+        );
         blank_model.model = " ".to_string();
         let model_error =
             compile_prompt_contract(&blank_model).expect_err("blank model should fail");
@@ -385,7 +397,11 @@ mod tests {
             }
         );
 
-        let mut blank_sender = input_for(BackendKind::Claude, "claude-sonnet-4", ReasoningLevel::Medium);
+        let mut blank_sender = input_for(
+            BackendKind::Claude,
+            "claude-sonnet-4",
+            ReasoningLevel::Medium,
+        );
         blank_sender.sender_id = " ".to_string();
         let sender_error =
             compile_prompt_contract(&blank_sender).expect_err("blank sender id should fail");
@@ -400,8 +416,11 @@ mod tests {
 
     #[test]
     fn compiler_rejects_blank_owner_profile_fields() {
-        let mut blank_location =
-            input_for(BackendKind::Claude, "claude-sonnet-4", ReasoningLevel::Medium);
+        let mut blank_location = input_for(
+            BackendKind::Claude,
+            "claude-sonnet-4",
+            ReasoningLevel::Medium,
+        );
         blank_location.owner_profile = Some(OwnerProfileMetadata {
             machine_location: Some(" ".to_string()),
             machine_timezone: None,
@@ -419,8 +438,11 @@ mod tests {
             }
         );
 
-        let mut blank_timezone =
-            input_for(BackendKind::Claude, "claude-sonnet-4", ReasoningLevel::Medium);
+        let mut blank_timezone = input_for(
+            BackendKind::Claude,
+            "claude-sonnet-4",
+            ReasoningLevel::Medium,
+        );
         blank_timezone.owner_profile = Some(OwnerProfileMetadata {
             machine_location: None,
             machine_timezone: Some(" ".to_string()),
@@ -438,7 +460,11 @@ mod tests {
             }
         );
 
-        let mut blank_model = input_for(BackendKind::Claude, "claude-sonnet-4", ReasoningLevel::Medium);
+        let mut blank_model = input_for(
+            BackendKind::Claude,
+            "claude-sonnet-4",
+            ReasoningLevel::Medium,
+        );
         blank_model.owner_profile = Some(OwnerProfileMetadata {
             machine_location: None,
             machine_timezone: None,

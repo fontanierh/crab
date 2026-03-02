@@ -22,7 +22,6 @@ use crab_discord::{
 #[cfg(not(test))]
 use crab_telemetry::init_tracing_stderr;
 
-
 const DEFAULT_OUTBOUND_RECEIPT_TIMEOUT_MS: u64 = 120_000;
 
 #[derive(Debug)]
@@ -438,12 +437,7 @@ fn run_with_values_and_discord_and_control(
         dispatcher_stall_timeout_secs = runtime_config.heartbeat.dispatcher_stall_timeout_secs,
         "crabd starting"
     );
-    run_daemon_loop_with_transport(
-        &runtime_config,
-        &daemon_config,
-        discord,
-        control,
-    )
+    run_daemon_loop_with_transport(&runtime_config, &daemon_config, discord, control)
 }
 
 #[cfg(test)]
@@ -537,8 +531,7 @@ fn main() -> ExitCode {
 mod tests {
     use super::{
         main, parse_daemon_config, parse_optional_u64, parse_required_u64, run_main_with_runner,
-        run_with_env_and_reader_and_control_installer, run_with_reader_and_control,
-        StdioDiscordIo,
+        run_with_env_and_reader_and_control_installer, run_with_reader_and_control, StdioDiscordIo,
     };
     use crab_app::{DaemonClaudeProcess, DaemonDiscordIo, DaemonLoopControl, DaemonLoopStats};
     use crab_backends::ClaudeProcess;

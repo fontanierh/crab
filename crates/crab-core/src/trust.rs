@@ -265,7 +265,10 @@ mod tests {
             Some("Europe/Paris".to_string())
         );
         assert_eq!(owner_profile.default_backend, Some(BackendKind::Claude));
-        assert_eq!(owner_profile.default_model, Some("claude-opus-4-6".to_string()));
+        assert_eq!(
+            owner_profile.default_model,
+            Some("claude-opus-4-6".to_string())
+        );
         assert_eq!(
             owner_profile.default_reasoning_level,
             Some(ReasoningLevel::High)

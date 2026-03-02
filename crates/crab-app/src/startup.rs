@@ -402,11 +402,8 @@ mod tests {
         ]);
         assert_eq!(diagnostics, expected);
 
-        let noop = render_startup_diagnostics(
-            WorkspaceBootstrapState::Ready,
-            &Vec::new(),
-            &Vec::new(),
-        );
+        let noop =
+            render_startup_diagnostics(WorkspaceBootstrapState::Ready, &Vec::new(), &Vec::new());
         let mut expected_noop = common_diagnostics_prefix("ready");
         expected_noop.extend(["workspace.ensure:noop".to_string()]);
         assert_eq!(noop, expected_noop);

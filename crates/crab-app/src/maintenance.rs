@@ -108,8 +108,7 @@ pub fn boot_runtime_with_queue_limit(
     lane_queue_limit: usize,
     now_epoch_ms: u64,
 ) -> CrabResult<BootRuntime> {
-    let mut composition =
-        compose_runtime_with_queue_limit(config, bot_user_id, lane_queue_limit)?;
+    let mut composition = compose_runtime_with_queue_limit(config, bot_user_id, lane_queue_limit)?;
     let startup_reconciliation =
         run_startup_reconciliation_on_boot(&mut composition, now_epoch_ms)?;
     let heartbeat_loop_state =
@@ -870,9 +869,7 @@ mod tests {
 
         let workspace = TempWorkspace::new("maintenance", "heartbeat-schedule-overflow");
         let config = runtime_config_for_workspace_with_lanes(&workspace.path, 1);
-        let mut composition =
-            compose_runtime(&config, "999")
-                .expect("composition should succeed");
+        let mut composition = compose_runtime(&config, "999").expect("composition should succeed");
         let mut runtime_state = HeartbeatLoopState {
             heartbeat_interval_ms: 1,
             next_heartbeat_due_at_epoch_ms: u64::MAX,
@@ -893,9 +890,7 @@ mod tests {
     fn startup_reconciliation_on_boot_recovers_stale_runs() {
         let workspace = TempWorkspace::new("maintenance", "startup-reconciliation");
         let config = runtime_config_for_workspace_with_lanes(&workspace.path, 2);
-        let mut composition =
-            compose_runtime(&config, "999")
-                .expect("composition should succeed");
+        let mut composition = compose_runtime(&config, "999").expect("composition should succeed");
 
         let logical_session_id = "discord:channel:777";
         let run_id = "run-stale";
@@ -962,9 +957,7 @@ mod tests {
     fn startup_reconciliation_repairs_orphan_active_physical_session_id_when_it_has_failed() {
         let workspace = TempWorkspace::new("maintenance", "startup-repair-orphan-physical");
         let config = runtime_config_for_workspace_with_lanes(&workspace.path, 1);
-        let mut composition =
-            compose_runtime(&config, "999")
-                .expect("composition should succeed");
+        let mut composition = compose_runtime(&config, "999").expect("composition should succeed");
 
         let logical_session_id = "discord:channel:orphan";
         let now_epoch_ms = 1_739_173_400_000;
@@ -1050,9 +1043,7 @@ mod tests {
     fn startup_reconciliation_reports_grace_period_overflow() {
         let workspace = TempWorkspace::new("maintenance", "startup-overflow");
         let config = runtime_config_for_workspace_with_lanes(&workspace.path, 1);
-        let mut composition =
-            compose_runtime(&config, "999")
-                .expect("composition should succeed");
+        let mut composition = compose_runtime(&config, "999").expect("composition should succeed");
         composition.startup_reconciliation_policy.grace_period_secs = u64::MAX;
 
         let error = run_startup_reconciliation_on_boot(&mut composition, 1_000)
@@ -1093,9 +1084,7 @@ mod tests {
     fn run_heartbeat_if_due_is_deterministic_and_advances_schedule() {
         let workspace = TempWorkspace::new("maintenance", "heartbeat-due");
         let config = runtime_config_for_workspace_with_lanes(&workspace.path, 2);
-        let mut composition =
-            compose_runtime(&config, "999")
-                .expect("composition should succeed");
+        let mut composition = compose_runtime(&config, "999").expect("composition should succeed");
         let mut state =
             HeartbeatLoopState::new(10, 1_739_173_300_000).expect("state should initialize");
 
@@ -1131,9 +1120,7 @@ mod tests {
     fn heartbeat_escalates_from_cancel_request_to_hard_stop() {
         let workspace = TempWorkspace::new("maintenance", "heartbeat-escalation");
         let config = runtime_config_for_workspace_with_lanes(&workspace.path, 1);
-        let mut composition =
-            compose_runtime(&config, "999")
-                .expect("composition should succeed");
+        let mut composition = compose_runtime(&config, "999").expect("composition should succeed");
 
         let logical_session_id = "discord:channel:escalation";
         let run_id = "run-escalate";
@@ -1211,9 +1198,7 @@ mod tests {
     fn heartbeat_dispatcher_nudge_updates_dispatch_timestamp() {
         let workspace = TempWorkspace::new("maintenance", "heartbeat-dispatcher");
         let config = runtime_config_for_workspace_with_lanes(&workspace.path, 2);
-        let mut composition =
-            compose_runtime(&config, "999")
-                .expect("composition should succeed");
+        let mut composition = compose_runtime(&config, "999").expect("composition should succeed");
 
         composition
             .scheduler
@@ -1239,9 +1224,7 @@ mod tests {
     fn heartbeat_runtime_reports_invalid_active_run_invariants() {
         let workspace = TempWorkspace::new("maintenance", "heartbeat-invariants");
         let config = runtime_config_for_workspace_with_lanes(&workspace.path, 1);
-        let mut composition =
-            compose_runtime(&config, "999")
-                .expect("composition should succeed");
+        let mut composition = compose_runtime(&config, "999").expect("composition should succeed");
 
         let logical_session_id = "discord:channel:broken";
         composition
@@ -1269,9 +1252,7 @@ mod tests {
     fn startup_runtime_repair_session_lane_state_requires_existing_session() {
         let workspace = TempWorkspace::new("maintenance", "startup-repair-missing");
         let config = runtime_config_for_workspace_with_lanes(&workspace.path, 1);
-        let mut composition =
-            compose_runtime(&config, "999")
-                .expect("composition should succeed");
+        let mut composition = compose_runtime(&config, "999").expect("composition should succeed");
 
         let mut runtime = super::StartupRuntimeAdapter {
             composition: &mut composition,
@@ -1292,9 +1273,7 @@ mod tests {
     fn startup_runtime_repair_active_physical_session_id_requires_existing_session() {
         let workspace = TempWorkspace::new("maintenance", "startup-repair-active-missing");
         let config = runtime_config_for_workspace_with_lanes(&workspace.path, 1);
-        let mut composition =
-            compose_runtime(&config, "999")
-                .expect("composition should succeed");
+        let mut composition = compose_runtime(&config, "999").expect("composition should succeed");
         let mut runtime = super::StartupRuntimeAdapter {
             composition: &mut composition,
         };
@@ -1315,8 +1294,8 @@ mod tests {
         {
             let workspace = TempWorkspace::new("maintenance", "startup-restart-backends");
             let config = runtime_config_for_workspace_with_lanes(&workspace.path, 1);
-            let mut composition = compose_runtime(&config, "999")
-                .expect("composition should succeed");
+            let mut composition =
+                compose_runtime(&config, "999").expect("composition should succeed");
             let mut runtime = super::StartupRuntimeAdapter {
                 composition: &mut composition,
             };
@@ -1327,8 +1306,8 @@ mod tests {
         {
             let workspace = TempWorkspace::new("maintenance", "startup-repair-session-store-io");
             let config = runtime_config_for_workspace_with_lanes(&workspace.path, 1);
-            let mut composition = compose_runtime(&config, "999")
-                .expect("composition should succeed");
+            let mut composition =
+                compose_runtime(&config, "999").expect("composition should succeed");
             let sessions_dir = state_root(&workspace).join("sessions");
             replace_path_with_file(&sessions_dir);
 
@@ -1346,8 +1325,8 @@ mod tests {
         {
             let workspace = TempWorkspace::new("maintenance", "startup-repair-queued-run-io");
             let config = runtime_config_for_workspace_with_lanes(&workspace.path, 1);
-            let mut composition = compose_runtime(&config, "999")
-                .expect("composition should succeed");
+            let mut composition =
+                compose_runtime(&config, "999").expect("composition should succeed");
             let logical_session_id = "discord:channel:queued-run-io";
             composition
                 .state_stores
@@ -1374,9 +1353,7 @@ mod tests {
     fn heartbeat_rejects_running_run_when_lane_is_idle() {
         let workspace = TempWorkspace::new("maintenance", "heartbeat-idle-running-mismatch");
         let config = runtime_config_for_workspace_with_lanes(&workspace.path, 1);
-        let mut composition =
-            compose_runtime(&config, "999")
-                .expect("composition should succeed");
+        let mut composition = compose_runtime(&config, "999").expect("composition should succeed");
         let logical_session_id = "discord:channel:idle";
         let run_id = "run-idle";
 
@@ -1413,9 +1390,7 @@ mod tests {
     fn heartbeat_ignores_idle_sessions_without_running_runs() {
         let workspace = TempWorkspace::new("maintenance", "heartbeat-idle-no-run");
         let config = runtime_config_for_workspace_with_lanes(&workspace.path, 1);
-        let mut composition =
-            compose_runtime(&config, "999")
-                .expect("composition should succeed");
+        let mut composition = compose_runtime(&config, "999").expect("composition should succeed");
         let logical_session_id = "discord:channel:idle-empty";
         let mut session = running_session(logical_session_id, 1_739_173_300_000);
         session.lane_state = LaneState::Idle;
@@ -1440,8 +1415,8 @@ mod tests {
         {
             let workspace = TempWorkspace::new("maintenance", "heartbeat-list-sessions-io");
             let config = runtime_config_for_workspace_with_lanes(&workspace.path, 1);
-            let mut composition = compose_runtime(&config, "999")
-                .expect("composition should succeed");
+            let mut composition =
+                compose_runtime(&config, "999").expect("composition should succeed");
             let sessions_dir = state_root(&workspace).join("sessions");
             replace_path_with_file(&sessions_dir);
 
@@ -1462,8 +1437,8 @@ mod tests {
         {
             let workspace = TempWorkspace::new("maintenance", "heartbeat-list-runs-io");
             let config = runtime_config_for_workspace_with_lanes(&workspace.path, 1);
-            let mut composition = compose_runtime(&config, "999")
-                .expect("composition should succeed");
+            let mut composition =
+                compose_runtime(&config, "999").expect("composition should succeed");
             let logical_session_id = "discord:channel:runs-io";
             composition
                 .state_stores
@@ -1491,8 +1466,8 @@ mod tests {
         {
             let workspace = TempWorkspace::new("maintenance", "heartbeat-list-multiple-running");
             let config = runtime_config_for_workspace_with_lanes(&workspace.path, 1);
-            let mut composition = compose_runtime(&config, "999")
-                .expect("composition should succeed");
+            let mut composition =
+                compose_runtime(&config, "999").expect("composition should succeed");
             let logical_session_id = "discord:channel:multiple-running";
             composition
                 .state_stores
@@ -1529,8 +1504,8 @@ mod tests {
         {
             let workspace = TempWorkspace::new("maintenance", "heartbeat-list-events-io");
             let config = runtime_config_for_workspace_with_lanes(&workspace.path, 1);
-            let mut composition = compose_runtime(&config, "999")
-                .expect("composition should succeed");
+            let mut composition =
+                compose_runtime(&config, "999").expect("composition should succeed");
             let logical_session_id = "discord:channel:event-io";
             let run_id = "run-event-io";
             composition
@@ -1566,9 +1541,7 @@ mod tests {
     fn heartbeat_runtime_request_cancel_validates_run_state_and_lane_state() {
         let workspace = TempWorkspace::new("maintenance", "heartbeat-cancel-guards");
         let config = runtime_config_for_workspace_with_lanes(&workspace.path, 1);
-        let mut composition =
-            compose_runtime(&config, "999")
-                .expect("composition should succeed");
+        let mut composition = compose_runtime(&config, "999").expect("composition should succeed");
         let logical_session_id = "discord:channel:cancel-guard";
         let run_id = "run-cancel-guard";
         let now_epoch_ms = 1_739_173_400_000;
@@ -1647,9 +1620,7 @@ mod tests {
     fn heartbeat_runtime_restart_backend_manager_allows_claude_noop() {
         let workspace = TempWorkspace::new("maintenance", "heartbeat-restart-claude");
         let config = runtime_config_for_workspace_with_lanes(&workspace.path, 1);
-        let mut composition =
-            compose_runtime(&config, "999")
-                .expect("composition should succeed");
+        let mut composition = compose_runtime(&config, "999").expect("composition should succeed");
         let mut dispatch_clock = 1_739_173_400_000;
 
         let mut runtime = super::HeartbeatRuntimeAdapter {
@@ -1667,8 +1638,8 @@ mod tests {
         {
             let workspace = TempWorkspace::new("maintenance", "heartbeat-cancel-missing-session");
             let config = runtime_config_for_workspace_with_lanes(&workspace.path, 1);
-            let mut composition = compose_runtime(&config, "999")
-                .expect("composition should succeed");
+            let mut composition =
+                compose_runtime(&config, "999").expect("composition should succeed");
             let mut dispatch_clock = 1_739_173_400_000;
             let mut runtime = super::HeartbeatRuntimeAdapter {
                 composition: &mut composition,
@@ -1690,8 +1661,8 @@ mod tests {
         {
             let workspace = TempWorkspace::new("maintenance", "heartbeat-cancel-missing-run");
             let config = runtime_config_for_workspace_with_lanes(&workspace.path, 1);
-            let mut composition = compose_runtime(&config, "999")
-                .expect("composition should succeed");
+            let mut composition =
+                compose_runtime(&config, "999").expect("composition should succeed");
             let logical_session_id = "discord:channel:cancel-missing-run";
             composition
                 .state_stores
@@ -1719,8 +1690,8 @@ mod tests {
         {
             let workspace = TempWorkspace::new("maintenance", "heartbeat-cancel-session-upsert-io");
             let config = runtime_config_for_workspace_with_lanes(&workspace.path, 1);
-            let mut composition = compose_runtime(&config, "999")
-                .expect("composition should succeed");
+            let mut composition =
+                compose_runtime(&config, "999").expect("composition should succeed");
             let logical_session_id = "discord:channel:cancel-session-upsert-io";
             let run_id = "run-cancel-session-upsert-io";
             composition
@@ -1754,8 +1725,8 @@ mod tests {
         {
             let workspace = TempWorkspace::new("maintenance", "heartbeat-cancel-event-io");
             let config = runtime_config_for_workspace_with_lanes(&workspace.path, 1);
-            let mut composition = compose_runtime(&config, "999")
-                .expect("composition should succeed");
+            let mut composition =
+                compose_runtime(&config, "999").expect("composition should succeed");
             let logical_session_id = "discord:channel:cancel-event-io";
             let run_id = "run-cancel-event-io";
             composition
@@ -1794,8 +1765,8 @@ mod tests {
             let workspace =
                 TempWorkspace::new("maintenance", "heartbeat-hard-stop-missing-session");
             let config = runtime_config_for_workspace_with_lanes(&workspace.path, 1);
-            let mut composition = compose_runtime(&config, "999")
-                .expect("composition should succeed");
+            let mut composition =
+                compose_runtime(&config, "999").expect("composition should succeed");
             let mut dispatch_clock = 1_739_173_400_000;
             let mut runtime = super::HeartbeatRuntimeAdapter {
                 composition: &mut composition,
@@ -1817,8 +1788,8 @@ mod tests {
         {
             let workspace = TempWorkspace::new("maintenance", "heartbeat-hard-stop-missing-run");
             let config = runtime_config_for_workspace_with_lanes(&workspace.path, 1);
-            let mut composition = compose_runtime(&config, "999")
-                .expect("composition should succeed");
+            let mut composition =
+                compose_runtime(&config, "999").expect("composition should succeed");
             let logical_session_id = "discord:channel:hard-stop-missing-run";
             composition
                 .state_stores
@@ -1848,8 +1819,8 @@ mod tests {
         {
             let workspace = TempWorkspace::new("maintenance", "heartbeat-hard-stop-run-upsert-io");
             let config = runtime_config_for_workspace_with_lanes(&workspace.path, 1);
-            let mut composition = compose_runtime(&config, "999")
-                .expect("composition should succeed");
+            let mut composition =
+                compose_runtime(&config, "999").expect("composition should succeed");
             let logical_session_id = "discord:channel:hard-stop-run-upsert-io";
             let run_id = "run-hard-stop-run-upsert-io";
             composition
@@ -1882,8 +1853,8 @@ mod tests {
         {
             let workspace = TempWorkspace::new("maintenance", "heartbeat-hard-stop-event-io");
             let config = runtime_config_for_workspace_with_lanes(&workspace.path, 1);
-            let mut composition = compose_runtime(&config, "999")
-                .expect("composition should succeed");
+            let mut composition =
+                compose_runtime(&config, "999").expect("composition should succeed");
             let logical_session_id = "discord:channel:hard-stop-event-io";
             let run_id = "run-hard-stop-event-io";
             composition
@@ -1918,8 +1889,8 @@ mod tests {
             let workspace =
                 TempWorkspace::new("maintenance", "heartbeat-hard-stop-session-upsert-io");
             let config = runtime_config_for_workspace_with_lanes(&workspace.path, 1);
-            let mut composition = compose_runtime(&config, "999")
-                .expect("composition should succeed");
+            let mut composition =
+                compose_runtime(&config, "999").expect("composition should succeed");
             let logical_session_id = "discord:channel:hard-stop-session-upsert-io";
             let run_id = "run-hard-stop-session-upsert-io";
             composition
@@ -1954,9 +1925,7 @@ mod tests {
     fn require_session_and_run_helpers_report_missing_ids() {
         let workspace = TempWorkspace::new("maintenance", "require-helpers");
         let config = runtime_config_for_workspace_with_lanes(&workspace.path, 1);
-        let composition =
-            compose_runtime(&config, "999")
-                .expect("composition should succeed");
+        let composition = compose_runtime(&config, "999").expect("composition should succeed");
 
         let missing_session = super::require_session(
             &composition.state_stores.session_store,
@@ -2210,9 +2179,7 @@ mod tests {
     fn load_helpers_sort_sessions_and_runs_by_id() {
         let workspace = TempWorkspace::new("maintenance", "load-helpers-sort");
         let config = runtime_config_for_workspace_with_lanes(&workspace.path, 1);
-        let composition =
-            compose_runtime(&config, "999")
-                .expect("composition should succeed");
+        let composition = compose_runtime(&config, "999").expect("composition should succeed");
         let now_epoch_ms = 1_739_173_400_000;
 
         composition

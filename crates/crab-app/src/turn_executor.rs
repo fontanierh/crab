@@ -2340,8 +2340,9 @@ mod tests {
         config: crab_core::RuntimeConfig,
     ) -> TurnExecutor<FakeRuntime> {
         let bootstrap_path = Path::new(config.workspace_root.as_str()).join("BOOTSTRAP.md");
-        let composition = compose_runtime_with_queue_limit(&config, "999999999999999999", lane_queue_limit)
-            .expect("composition should build");
+        let composition =
+            compose_runtime_with_queue_limit(&config, "999999999999999999", lane_queue_limit)
+                .expect("composition should build");
         let _ = std::fs::remove_file(&bootstrap_path);
         TurnExecutor::new(composition, runtime)
     }

@@ -1,10 +1,3 @@
-use std::collections::BTreeMap;
-use std::fs;
-use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
-use std::thread;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use crab_backends::{
     claude::{ClaudeRawEvent, ClaudeRawEventStream},
     BackendHarness, ClaudeBackend, ClaudeProcess, SessionContext, TurnInput,
@@ -14,20 +7,27 @@ use crab_backends::{map_claude_inference_profile, ClaudeThinkingMode};
 #[cfg(not(coverage))]
 use crab_core::{build_context_diagnostics_report, render_context_diagnostics_fixture};
 use crab_core::{
-    compile_prompt_contract, detect_workspace_bootstrap_state,
-    render_budgeted_turn_context, resolve_inference_profile, resolve_scoped_memory_snippets,
-    resolve_sender_identity, resolve_sender_trust_context, BackendKind, ContextAssemblyInput,
-    ContextBudgetPolicy, CrabError, CrabResult, InferenceProfile, InferenceProfileResolutionInput,
-    MemoryCitationMode, OwnerConfig, PromptContractInput, ReasoningLevel, Run, RunProfileTelemetry,
-    RuntimeConfig, ScopedMemorySnippetResolverInput, SenderConversationKind, SenderIdentityInput,
-    TrustSurface, WorkspaceBootstrapState, IDENTITY_FILE_NAME, MEMORY_FILE_NAME,
-    OWNER_MEMORY_SCOPE_DIRECTORY, SOUL_FILE_NAME, USER_FILE_NAME,
+    compile_prompt_contract, detect_workspace_bootstrap_state, render_budgeted_turn_context,
+    resolve_inference_profile, resolve_scoped_memory_snippets, resolve_sender_identity,
+    resolve_sender_trust_context, BackendKind, ContextAssemblyInput, ContextBudgetPolicy,
+    CrabError, CrabResult, InferenceProfile, InferenceProfileResolutionInput, MemoryCitationMode,
+    OwnerConfig, PromptContractInput, ReasoningLevel, Run, RunProfileTelemetry, RuntimeConfig,
+    ScopedMemorySnippetResolverInput, SenderConversationKind, SenderIdentityInput, TrustSurface,
+    WorkspaceBootstrapState, IDENTITY_FILE_NAME, MEMORY_FILE_NAME, OWNER_MEMORY_SCOPE_DIRECTORY,
+    SOUL_FILE_NAME, USER_FILE_NAME,
 };
 use crab_discord::GatewayMessage;
 use crab_store::CheckpointStore;
 #[cfg(not(any(test, coverage)))]
 use futures::channel::mpsc;
 use futures::{executor::block_on, stream};
+use std::collections::BTreeMap;
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::thread;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::{run_heartbeat_if_due, TurnExecutor, TurnExecutorRuntime};
 
@@ -1063,9 +1063,6 @@ pub trait DaemonLoopControl {
     fn sleep_tick(&mut self, tick_interval_ms: u64) -> CrabResult<()>;
 }
 
-
-
-
 #[derive(Debug, Clone)]
 pub struct SystemDaemonLoopControl {
     shutdown_flag: Arc<AtomicBool>,
@@ -1566,11 +1563,7 @@ where
     let mut discord = discord;
     daemon_config.validate()?;
     let now_epoch_ms = control.now_epoch_ms()?;
-    let boot = crate::boot_runtime(
-        runtime_config,
-        &daemon_config.bot_user_id,
-        now_epoch_ms,
-    )?;
+    let boot = crate::boot_runtime(runtime_config, &daemon_config.bot_user_id, now_epoch_ms)?;
     #[cfg(not(coverage))]
     {
         let migration = &boot.composition.state_schema_migration;
@@ -1877,9 +1870,8 @@ mod tests {
         conversation_kind_for_logical_session_id, epoch_ms_from_duration,
         epoch_ms_from_system_time, epoch_ms_to_yyyy_mm_dd, load_latest_checkpoint_summary,
         memory_scope_directory_for_run, notify_startup_recovered_runs, read_workspace_markdown,
-        trust_surface_for_logical_session_id, DaemonClaudeProcess,
-        DaemonConfig, DaemonDiscordIo, DaemonLoopControl, DaemonTurnRuntime,
-        SystemDaemonLoopControl,
+        trust_surface_for_logical_session_id, DaemonClaudeProcess, DaemonConfig, DaemonDiscordIo,
+        DaemonLoopControl, DaemonTurnRuntime, SystemDaemonLoopControl,
     };
     use crate::test_support::{runtime_config_for_workspace_with_lanes, TempWorkspace};
     use crate::TurnExecutorRuntime;
@@ -1889,8 +1881,8 @@ mod tests {
     };
     use crab_core::{
         BackendKind, Checkpoint, CrabError, CrabResult, InferenceProfile, LaneState,
-        LogicalSession, ProfileValueSource, ReasoningLevel, Run, RunProfileTelemetry,
-        RunStatus, SenderConversationKind, TokenAccounting, TrustSurface, WorkspaceBootstrapState,
+        LogicalSession, ProfileValueSource, ReasoningLevel, Run, RunProfileTelemetry, RunStatus,
+        SenderConversationKind, TokenAccounting, TrustSurface, WorkspaceBootstrapState,
     };
     use crab_discord::GatewayMessage;
     use crab_store::{CheckpointStore, RunStore};
@@ -2667,12 +2659,7 @@ mod tests {
         let run = sample_claude_run("123");
         let mut physical = reused.clone();
         let events = runtime
-            .execute_backend_turn(
-                &mut physical,
-                &run,
-                "turn-1",
-                "compiled context",
-            )
+            .execute_backend_turn(&mut physical, &run, "turn-1", "compiled context")
             .expect("claude bridge execution should succeed");
         let events = block_on(events.collect::<Vec<_>>());
         assert_run_usage_note(&events, "5", "7", "12", "claude");
@@ -2737,14 +2724,8 @@ mod tests {
             .ensure_physical_session("discord:channel:777", &claude_profile(), None)
             .expect("claude session should be created");
 
-
         let interrupted = runtime
-            .execute_backend_turn(
-                &mut session,
-                &run,
-                "turn-1",
-                "context one",
-            )
+            .execute_backend_turn(&mut session, &run, "turn-1", "context one")
             .expect("interrupted stream should still surface events");
         let interrupted = block_on(interrupted.collect::<Vec<_>>());
         assert!(interrupted
@@ -2753,12 +2734,7 @@ mod tests {
         assert_eq!(session.last_turn_id.as_deref(), Some("turn-1"));
 
         let errored_event = runtime
-            .execute_backend_turn(
-                &mut session,
-                &run,
-                "turn-2",
-                "context two",
-            )
+            .execute_backend_turn(&mut session, &run, "turn-2", "context two")
             .expect("error events should still be emitted as backend events");
         let errored_event = block_on(errored_event.collect::<Vec<_>>());
         assert!(errored_event.iter().any(|event| {
@@ -2768,12 +2744,7 @@ mod tests {
         assert_eq!(session.last_turn_id.as_deref(), Some("turn-2"));
 
         let send_error = runtime
-            .execute_backend_turn(
-                &mut session,
-                &run,
-                "turn-3",
-                "context three",
-            )
+            .execute_backend_turn(&mut session, &run, "turn-3", "context three")
             .err()
             .expect("send errors should propagate through execute_backend_turn");
         assert_eq!(
@@ -2802,12 +2773,7 @@ mod tests {
         let run = sample_claude_run("123");
 
         let events = runtime
-            .execute_backend_turn(
-                &mut session,
-                &run,
-                "turn-default",
-                "default context",
-            )
+            .execute_backend_turn(&mut session, &run, "turn-default", "default context")
             .expect("default Claude process should execute through bridge");
         let events = block_on(events.collect::<Vec<_>>());
         assert_run_usage_note(&events, "2", "3", "5", "claude");
@@ -2815,12 +2781,7 @@ mod tests {
         let mut forced_error_run = sample_claude_run("123");
         forced_error_run.id = "run-force-claude-send-error".to_string();
         let error = runtime
-            .execute_backend_turn(
-                &mut session,
-                &forced_error_run,
-                "turn-error",
-                "context",
-            )
+            .execute_backend_turn(&mut session, &forced_error_run, "turn-error", "context")
             .err()
             .expect("forced send failure should propagate");
         assert_eq!(
@@ -3330,12 +3291,7 @@ mod tests {
             .expect("claude session should be created");
 
         let events = runtime
-            .execute_backend_turn(
-                &mut session,
-                &run,
-                "turn-cleanup",
-                "cleanup context",
-            )
+            .execute_backend_turn(&mut session, &run, "turn-cleanup", "cleanup context")
             .expect("claude turn should succeed before shutdown");
         let _ = block_on(events.collect::<Vec<_>>());
         assert_eq!(session.last_turn_id.as_deref(), Some("turn-cleanup"));
@@ -3385,12 +3341,7 @@ mod tests {
             .expect("claude session should be created");
 
         let events = runtime
-            .execute_backend_turn(
-                &mut session,
-                &run,
-                "turn-cleanup",
-                "cleanup context",
-            )
+            .execute_backend_turn(&mut session, &run, "turn-cleanup", "cleanup context")
             .expect("claude turn should succeed before shutdown");
         let _ = block_on(events.collect::<Vec<_>>());
 
@@ -3434,12 +3385,7 @@ mod tests {
             .expect("claude session should be created");
 
         let events = runtime
-            .execute_backend_turn(
-                &mut session,
-                &run,
-                "turn-cleanup",
-                "cleanup context",
-            )
+            .execute_backend_turn(&mut session, &run, "turn-cleanup", "cleanup context")
             .expect("claude turn should succeed before shutdown");
         let _ = block_on(events.collect::<Vec<_>>());
 

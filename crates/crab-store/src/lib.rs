@@ -3708,7 +3708,9 @@ mod tests {
             model_source: ProfileValueSource::BackendDefault,
             reasoning_level_source: ProfileValueSource::TurnOverride,
             fallback_applied: true,
-            fallback_notes: vec!["claude-haiku-4-5-20251001 replaced with claude-sonnet-4-20250514".to_string()],
+            fallback_notes: vec![
+                "claude-haiku-4-5-20251001 replaced with claude-sonnet-4-20250514".to_string(),
+            ],
             sender_id: "123456789012345678".to_string(),
             sender_is_owner: true,
             resolved_owner_profile: Some(OwnerProfileMetadata {

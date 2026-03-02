@@ -179,15 +179,13 @@ mod tests {
     #[test]
     fn rules_lookup_and_wildcards_work_for_claude() {
         let source = catalog();
-        let cases = [
-            (
-                BackendKind::Claude,
-                "claude-sonnet",
-                ReasoningLevel::Medium,
-                true,
-                true,
-            ),
-        ];
+        let cases = [(
+            BackendKind::Claude,
+            "claude-sonnet",
+            ReasoningLevel::Medium,
+            true,
+            true,
+        )];
         for (backend, model, reasoning_level, model_ok, reasoning_ok) in cases {
             let rules = source.rules_for_backend(backend);
             assert_eq!(rules.supports_model(model), model_ok);
