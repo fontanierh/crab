@@ -20,7 +20,8 @@ cargo llvm-cov --workspace --all-features --locked \
   --fail-uncovered-functions 0 \
   --lcov --output-path "$LCOV_PATH"
 
-python3 - "$LCOV_PATH" <<'PY'
+GATE_SCRIPT="$OUT_DIR/_coverage_gate.py"
+cat > "$GATE_SCRIPT" <<'PY'
 from __future__ import annotations
 
 import sys
@@ -29,8 +30,8 @@ from pathlib import Path
 
 lcov_path = Path(sys.argv[1])
 if not lcov_path.exists():
-    print(f"coverage gate failed: missing {lcov_path}", file=sys.stderr)
-    raise SystemExit(1)
+    print(f"coverage gate failed: missing {lcov_path}")
+    sys.exit(1)
 
 line_totals = 0
 line_covered = 0
@@ -63,15 +64,12 @@ if uncovered_lines == 0:
         "coverage-gate: ok "
         f"(lines {line_covered}/{line_totals}, uncovered lines=0)"
     )
-    raise SystemExit(0)
+    sys.exit(0)
 
-msg = "coverage-gate: failed " f"(uncovered lines={uncovered_lines})"
-print(msg)
-print(msg, file=sys.stderr)
+print(f"coverage-gate: failed (uncovered lines={uncovered_lines})")
 
 if uncovered_lines:
     print("Top uncovered line locations:")
-    print("Top uncovered line locations:", file=sys.stderr)
     rows = [
         (path, sorted(lines))
         for path, lines in missing_lines_by_file.items()
@@ -82,9 +80,9 @@ if uncovered_lines:
         preview = ", ".join(str(line) for line in lines[:20])
         if len(lines) > 20:
             preview += ", ..."
-        detail = f"- {path}: {len(lines)} uncovered line(s) [{preview}]"
-        print(detail)
-        print(detail, file=sys.stderr)
+        print(f"- {path}: {len(lines)} uncovered line(s) [{preview}]")
 
-raise SystemExit(1)
+sys.exit(1)
 PY
+
+python3 "$GATE_SCRIPT" "$LCOV_PATH" 2>&1
