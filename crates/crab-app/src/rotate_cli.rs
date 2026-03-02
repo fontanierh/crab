@@ -111,7 +111,7 @@ mod tests {
     }
 
     fn valid_checkpoint_json() -> &'static str {
-        r#"{"summary":"Session summary","decisions":["Use codex backend"],"open_questions":["Need model override?"],"next_actions":["Implement checkpoint writer"],"artifacts":[{"path":"src/main.rs","note":"entrypoint updated"}]}"#
+        r#"{"summary":"Session summary","decisions":["Use claude backend"],"open_questions":["Need model override?"],"next_actions":["Implement checkpoint writer"],"artifacts":[{"path":"src/main.rs","note":"entrypoint updated"}]}"#
     }
 
     fn run_with_optional_stdin(
