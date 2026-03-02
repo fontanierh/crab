@@ -72,7 +72,6 @@ pub struct StateSchemaCompatibilityReport {
     pub status: StateSchemaCompatibilityStatus,
 }
 
-
 pub fn state_schema_marker_path(state_root: &Path) -> PathBuf {
     state_root.join(STATE_SCHEMA_MARKER_FILE_NAME)
 }
