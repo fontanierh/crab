@@ -1723,11 +1723,7 @@ impl DiscordAssistantDelivery {
             if let Some(pos) = self.active_content.find(SECTION_DELIMITER) {
                 let prefix = self.active_content[..pos].to_string();
                 let remainder = self.active_content[pos + SECTION_DELIMITER.len()..].to_string();
-                let flushed = self.flush_current_prefix(&prefix, planned);
-                // Leading/repeated delimiters should not create empty chunks.
-                if flushed {
-                    self.advance_chunk();
-                }
+                self.flush_oversized_prefix(&prefix, planned);
                 self.active_content = remainder;
                 continue;
             }
@@ -1744,6 +1740,51 @@ impl DiscordAssistantDelivery {
             }
 
             break;
+        }
+    }
+
+    /// Flush a prefix that may exceed the Discord character limit.
+    /// Splits at the last newline before the limit for cleaner breaks,
+    /// falling back to a hard character split if no newline is found.
+    fn flush_oversized_prefix(
+        &mut self,
+        prefix: &str,
+        planned: &mut Vec<PlannedAssistantDelivery>,
+    ) {
+        let limit = crab_discord::DISCORD_MESSAGE_CHAR_LIMIT;
+        let mut remaining = prefix.to_string();
+
+        loop {
+            if remaining.chars().count() <= limit {
+                let flushed = self.flush_current_prefix(&remaining, planned);
+                if flushed {
+                    self.advance_chunk();
+                }
+                break;
+            }
+
+            // Find a newline to split at, preferring the last one before the limit.
+            let byte_limit = remaining
+                .char_indices()
+                .nth(limit)
+                .map(|(i, _)| i)
+                .unwrap_or(remaining.len());
+            let split_pos = remaining[..byte_limit].rfind('\n').unwrap_or(byte_limit);
+
+            let (head, tail) = remaining.split_at(split_pos);
+            let head = head.to_string();
+            // Skip the newline character we split at (if we split at a newline).
+            let tail = if let Some(stripped) = tail.strip_prefix('\n') {
+                stripped.to_string()
+            } else {
+                tail.to_string()
+            };
+
+            let flushed = self.flush_current_prefix(&head, planned);
+            if flushed {
+                self.advance_chunk();
+            }
+            remaining = tail;
         }
     }
 
@@ -4497,6 +4538,54 @@ mod tests {
         let (prefix, remainder) = super::split_at_char_limit("abc", 5);
         assert_eq!(prefix, "abc".to_string());
         assert_eq!(remainder, "".to_string());
+    }
+
+    #[test]
+    fn assistant_delivery_splits_oversized_section_between_blank_lines() {
+        // A blank-line-delimited section that exceeds the Discord limit should
+        // be split into multiple chunks.
+        let limit = crab_discord::DISCORD_MESSAGE_CHAR_LIMIT;
+        let mut delivery = super::DiscordAssistantDelivery::new();
+
+        // Build: "short\n\n<oversized>\n\ntrailing"
+        let oversized = "x".repeat(limit + 500);
+        let input = format!("short\n\n{}\n\ntrailing", oversized);
+        let planned = delivery.push_delta(&input);
+
+        // Should produce at least 4 chunks: "short", split oversized (2 parts), "trailing"
+        assert!(planned.len() >= 4);
+
+        // First chunk is the short section.
+        assert_eq!(planned[0].content, "short");
+        assert_eq!(planned[0].chunk_index, 0);
+
+        // The oversized section should be split -- no chunk should exceed the limit.
+        for p in &planned {
+            assert!(p.content.chars().count() <= limit);
+        }
+
+        // Last chunk is "trailing" (still streaming, so it's the active content).
+        assert_eq!(planned.last().unwrap().content, "trailing");
+    }
+
+    #[test]
+    fn assistant_delivery_oversized_section_splits_at_newline() {
+        // When splitting an oversized section, prefer splitting at a newline.
+        let limit = crab_discord::DISCORD_MESSAGE_CHAR_LIMIT;
+        let mut delivery = super::DiscordAssistantDelivery::new();
+
+        // Build a section with a newline near the limit boundary.
+        let before_newline = "y".repeat(limit - 100);
+        let after_newline = "z".repeat(200);
+        let section = format!("{}\n{}", before_newline, after_newline);
+        let input = format!("{}\n\ndone", section);
+
+        let planned = delivery.push_delta(&input);
+
+        // First chunk should be the part before the newline (split at \n).
+        assert_eq!(planned[0].content, before_newline);
+        assert_eq!(planned[1].content, after_newline);
+        assert_eq!(planned.last().unwrap().content, "done");
     }
 
     #[test]
