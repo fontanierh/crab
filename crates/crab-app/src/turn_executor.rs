@@ -4552,12 +4552,8 @@ mod tests {
         let input = format!("short\n\n{}\n\ntrailing", oversized);
         let planned = delivery.push_delta(&input);
 
-        // Should produce at least 3 chunks: "short", split oversized (2 parts), "trailing"
-        assert!(
-            planned.len() >= 4,
-            "expected >= 4 chunks, got {}",
-            planned.len()
-        );
+        // Should produce at least 4 chunks: "short", split oversized (2 parts), "trailing"
+        assert!(planned.len() >= 4);
 
         // First chunk is the short section.
         assert_eq!(planned[0].content, "short");
@@ -4565,13 +4561,7 @@ mod tests {
 
         // The oversized section should be split -- no chunk should exceed the limit.
         for p in &planned {
-            assert!(
-                p.content.chars().count() <= limit,
-                "chunk {} has {} chars, exceeds limit {}",
-                p.chunk_index,
-                p.content.chars().count(),
-                limit,
-            );
+            assert!(p.content.chars().count() <= limit);
         }
 
         // Last chunk is "trailing" (still streaming, so it's the active content).
