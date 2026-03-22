@@ -1646,6 +1646,26 @@ where
             }
         }
 
+        // Also consume steering triggers when idle (so they don't pile up)
+        for (trigger_path, trigger) in
+            crab_core::read_steering_triggers(&executor.composition().state_stores.root)?
+        {
+            match executor.enqueue_pending_trigger(&trigger.channel_id, &trigger.message) {
+                Ok(_) => {
+                    crab_core::consume_steering_trigger(&trigger_path)?;
+                    stats.ingested_triggers = stats.ingested_triggers.saturating_add(1);
+                }
+                Err(_error) => {
+                    #[cfg(not(coverage))]
+                    tracing::warn!(
+                        channel_id = %trigger.channel_id,
+                        error = %_error,
+                        "failed to enqueue steering trigger from idle loop"
+                    );
+                }
+            }
+        }
+
         while executor.dispatch_next_run()?.is_some() {
             stats.dispatched_runs = stats.dispatched_runs.saturating_add(1);
         }

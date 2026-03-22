@@ -220,12 +220,42 @@ impl<R: TurnExecutorRuntime> TurnExecutor<R> {
 
     fn check_for_steering_message(&mut self, current_logical_session_id: &str) -> CrabResult<bool> {
         let Some(message) = self.runtime.next_gateway_message()? else {
-            return Ok(false);
+            return self.check_for_steering_trigger(current_logical_session_id);
         };
         let Some(queued) = self.enqueue_gateway_message(message)? else {
-            return Ok(false);
+            return self.check_for_steering_trigger(current_logical_session_id);
         };
-        Ok(queued.logical_session_id == current_logical_session_id)
+        if queued.logical_session_id == current_logical_session_id {
+            return Ok(true);
+        }
+        self.check_for_steering_trigger(current_logical_session_id)
+    }
+
+    fn check_for_steering_trigger(
+        &mut self,
+        current_logical_session_id: &str,
+    ) -> CrabResult<bool> {
+        let state_root = self.composition.state_stores.root.clone();
+        let triggers = crab_core::read_steering_triggers(&state_root)?;
+        for (trigger_path, trigger) in triggers {
+            match self.enqueue_pending_trigger(&trigger.channel_id, &trigger.message) {
+                Ok(queued) => {
+                    crab_core::consume_steering_trigger(&trigger_path)?;
+                    if queued.logical_session_id == current_logical_session_id {
+                        return Ok(true);
+                    }
+                }
+                Err(_error) => {
+                    #[cfg(not(coverage))]
+                    tracing::warn!(
+                        channel_id = %trigger.channel_id,
+                        error = %_error,
+                        "failed to enqueue steering trigger"
+                    );
+                }
+            }
+        }
+        Ok(false)
     }
 
     pub fn dispatch_next_run(&mut self) -> CrabResult<Option<DispatchedTurn>> {

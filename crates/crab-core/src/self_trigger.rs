@@ -6,6 +6,7 @@ use crate::file_signal;
 use crate::{CrabError, CrabResult};
 
 pub const PENDING_TRIGGERS_DIR_NAME: &str = "pending_triggers";
+pub const STEERING_TRIGGERS_DIR_NAME: &str = "steering_triggers";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -50,6 +51,28 @@ pub fn read_pending_triggers(state_root: &Path) -> CrabResult<Vec<(PathBuf, Pend
 
 pub fn consume_pending_trigger(path: &Path) -> CrabResult<()> {
     file_signal::consume_signal_file(path, "pending_trigger_consume")
+}
+
+pub fn write_steering_trigger(state_root: &Path, trigger: &PendingTrigger) -> CrabResult<PathBuf> {
+    validate_pending_trigger(trigger)?;
+    file_signal::write_signal_file(
+        state_root,
+        STEERING_TRIGGERS_DIR_NAME,
+        trigger,
+        "steering_trigger_write",
+    )
+}
+
+pub fn read_steering_triggers(state_root: &Path) -> CrabResult<Vec<(PathBuf, PendingTrigger)>> {
+    file_signal::read_signal_files(
+        state_root,
+        STEERING_TRIGGERS_DIR_NAME,
+        "steering_trigger_read",
+    )
+}
+
+pub fn consume_steering_trigger(path: &Path) -> CrabResult<()> {
+    file_signal::consume_signal_file(path, "steering_trigger_consume")
 }
 
 #[cfg(test)]

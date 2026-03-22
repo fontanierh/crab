@@ -1,17 +1,18 @@
 use std::io::Write;
 use std::path::PathBuf;
 
-use crab_core::{write_pending_trigger, PendingTrigger};
+use crab_core::{write_pending_trigger, write_steering_trigger, PendingTrigger};
 
 use crate::cli_support;
 
 const USAGE: &str = "Usage:
-  crab-trigger --state-dir <path> --channel <channel_id> --message <text>
+  crab-trigger --state-dir <path> --channel <channel_id> --message <text> [--steer]
 
 Flags:
   --state-dir    path to the Crab state directory (e.g. /path/to/workspace/state)
   --channel      Discord channel ID to trigger
   --message      message content for the trigger
+  --steer        steer the active session instead of queuing until idle
   --help         show this help";
 
 pub fn run_trigger_cli<I, S>(args: I, stdout: &mut dyn Write, stderr: &mut dyn Write) -> i32
@@ -27,9 +28,24 @@ fn execute(args: &[String]) -> Result<PathBuf, String> {
     let mut state_dir: Option<String> = None;
     let mut channel: Option<String> = None;
     let mut message: Option<String> = None;
+    let mut steer = false;
+
+    // Filter out the boolean --steer flag before pair-parsing
+    let filtered: Vec<String> = args
+        .iter()
+        .filter(|a| {
+            if a.as_str() == "--steer" {
+                steer = true;
+                false
+            } else {
+                true
+            }
+        })
+        .cloned()
+        .collect();
 
     cli_support::parse_flag_pairs(
-        args,
+        &filtered,
         |flag| matches!(flag, "--state-dir" | "--channel" | "--message"),
         |flag, value| {
             let slot = match flag {
@@ -50,7 +66,13 @@ fn execute(args: &[String]) -> Result<PathBuf, String> {
         message,
     };
 
-    write_pending_trigger(&PathBuf::from(state_dir), &trigger).map_err(|error| error.to_string())
+    let state_path = PathBuf::from(state_dir);
+    if steer {
+        write_steering_trigger(&state_path, &trigger)
+    } else {
+        write_pending_trigger(&state_path, &trigger)
+    }
+    .map_err(|error| error.to_string())
 }
 
 #[cfg(test)]
