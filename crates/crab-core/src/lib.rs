@@ -130,8 +130,7 @@ pub use rotation_sequence::{
 pub use self_trigger::{
     consume_pending_trigger, consume_steering_trigger, read_pending_triggers,
     read_steering_triggers, validate_pending_trigger, write_pending_trigger,
-    write_steering_trigger, PendingTrigger, PENDING_TRIGGERS_DIR_NAME,
-    STEERING_TRIGGERS_DIR_NAME,
+    write_steering_trigger, PendingTrigger, PENDING_TRIGGERS_DIR_NAME, STEERING_TRIGGERS_DIR_NAME,
 };
 pub use sender_identity::{
     resolve_sender_identity, ResolvedSenderIdentity, SenderConversationKind, SenderIdentityInput,

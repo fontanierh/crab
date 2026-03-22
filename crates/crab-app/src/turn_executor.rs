@@ -231,10 +231,7 @@ impl<R: TurnExecutorRuntime> TurnExecutor<R> {
         self.check_for_steering_trigger(current_logical_session_id)
     }
 
-    fn check_for_steering_trigger(
-        &mut self,
-        current_logical_session_id: &str,
-    ) -> CrabResult<bool> {
+    fn check_for_steering_trigger(&mut self, current_logical_session_id: &str) -> CrabResult<bool> {
         let state_root = self.composition.state_stores.root.clone();
         let triggers = crab_core::read_steering_triggers(&state_root)?;
         for (trigger_path, trigger) in triggers {
