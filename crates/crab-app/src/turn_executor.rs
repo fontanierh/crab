@@ -5620,6 +5620,63 @@ mod tests {
     }
 
     #[test]
+    fn check_for_steering_trigger_different_lane_does_not_steer_current_run() {
+        let backend_events = vec![
+            backend_event(1, BackendEventKind::TextDelta, &[("text", "output")]),
+            backend_event(2, BackendEventKind::TurnCompleted, &[("finish", "done")]),
+        ];
+        // now_epoch_ms calls: enqueue(1), started(2), event1(3), enqueue_trigger(4),
+        // completed(5)
+        let mut runtime =
+            FakeRuntime::with_backend_events(backend_events, &[1, 2, 3, 4, 5, 6, 7, 8]);
+        runtime
+            .resolve_profile_results
+            .push_back(Ok(sample_profile_telemetry()));
+        let (workspace, mut executor) =
+            build_executor_scenario("steering-trigger-different-lane", runtime, 8);
+
+        // Write a steering trigger for channel 999 -- different from channel 777
+        // used by gateway_message, so logical_session_id will NOT match.
+        let state_root = state_root(&workspace);
+        fs::create_dir_all(&state_root).expect("state root should be creatable");
+        let trigger_path = crab_core::write_steering_trigger(
+            &state_root,
+            &crab_core::PendingTrigger {
+                channel_id: "999".to_string(),
+                message: "steer different lane".to_string(),
+            },
+        )
+        .expect("steering trigger write should succeed");
+        assert!(trigger_path.exists());
+
+        let dispatch = executor
+            .process_gateway_message(gateway_message("m-1"))
+            .expect("pipeline should succeed")
+            .expect("message should dispatch");
+
+        // The trigger is for a different lane, so the current run should NOT be steered.
+        assert_eq!(
+            dispatch.status,
+            RunStatus::Succeeded,
+            "run should succeed when steering trigger targets a different lane"
+        );
+
+        // The steering trigger file should still be consumed (removed from disk).
+        assert!(
+            !trigger_path.exists(),
+            "steering trigger file should be consumed even for a different lane"
+        );
+
+        // No interrupt should have been issued since the trigger is for another lane.
+        let runtime = executor.runtime_mut();
+        assert_eq!(
+            runtime.interrupt_calls.len(),
+            0,
+            "interrupt_backend_turn should not be called for different-lane trigger"
+        );
+    }
+
+    #[test]
     fn check_for_steering_message_returns_false_when_no_message_available() {
         let backend_events = vec![
             backend_event(1, BackendEventKind::TextDelta, &[("text", "output")]),
