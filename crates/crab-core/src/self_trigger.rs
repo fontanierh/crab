@@ -80,8 +80,10 @@ mod tests {
     use std::fs;
 
     use super::{
-        consume_pending_trigger, read_pending_triggers, validate_pending_trigger,
-        write_pending_trigger, PendingTrigger, PENDING_TRIGGERS_DIR_NAME,
+        consume_pending_trigger, consume_steering_trigger, read_pending_triggers,
+        read_steering_triggers, validate_pending_trigger, write_pending_trigger,
+        write_steering_trigger, PendingTrigger, PENDING_TRIGGERS_DIR_NAME,
+        STEERING_TRIGGERS_DIR_NAME,
     };
     use crate::test_support::TempDir;
     use crate::CrabError;
@@ -321,5 +323,70 @@ mod tests {
         let json = r#"{"channel_id":"123","message":"hello","extra":"oops"}"#;
         let result = serde_json::from_str::<PendingTrigger>(json);
         assert!(result.is_err());
+    }
+
+    // ── Steering trigger tests ───────────────────────────────────────────
+
+    #[test]
+    fn steering_write_and_read_round_trip() {
+        let temp = TempDir::new("self-trigger", "steering-write-read");
+        let trigger = sample_trigger();
+
+        let path =
+            write_steering_trigger(&temp.root, &trigger).expect("steering write should succeed");
+        assert!(path.exists());
+        assert!(path.to_string_lossy().contains(STEERING_TRIGGERS_DIR_NAME));
+
+        let triggers = read_steering_triggers(&temp.root).expect("steering read should succeed");
+        assert_eq!(triggers.len(), 1);
+        assert_eq!(triggers[0].0, path);
+        assert_eq!(triggers[0].1, trigger);
+    }
+
+    #[test]
+    fn steering_consume_deletes_file() {
+        let temp = TempDir::new("self-trigger", "steering-consume");
+        let trigger = sample_trigger();
+
+        let path =
+            write_steering_trigger(&temp.root, &trigger).expect("steering write should succeed");
+        assert!(path.exists());
+
+        consume_steering_trigger(&path).expect("steering consume should succeed");
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn steering_read_returns_empty_when_directory_missing() {
+        let temp = TempDir::new("self-trigger", "steering-read-missing-dir");
+        let triggers = read_steering_triggers(&temp.root).expect("steering read should succeed");
+        assert!(triggers.is_empty());
+    }
+
+    #[test]
+    fn steering_write_rejects_invalid_trigger() {
+        let temp = TempDir::new("self-trigger", "steering-write-invalid");
+        let trigger = PendingTrigger {
+            channel_id: "".to_string(),
+            message: "hello".to_string(),
+        };
+        let error = write_steering_trigger(&temp.root, &trigger)
+            .expect_err("should reject invalid trigger");
+        assert!(error.to_string().contains("channel_id must not be empty"));
+    }
+
+    #[test]
+    fn steering_consume_returns_error_for_missing_file() {
+        let temp = TempDir::new("self-trigger", "steering-consume-missing");
+        let path = temp.root.join("nonexistent.json");
+        let error =
+            consume_steering_trigger(&path).expect_err("consume of missing file should fail");
+        assert!(matches!(
+            error,
+            CrabError::Io {
+                context: "steering_trigger_consume",
+                ..
+            }
+        ));
     }
 }

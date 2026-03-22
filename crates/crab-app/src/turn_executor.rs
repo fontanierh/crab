@@ -5537,6 +5537,89 @@ mod tests {
     }
 
     #[test]
+    fn check_for_steering_trigger_steers_run_when_file_present_for_same_lane() {
+        let backend_events = vec![
+            backend_event(1, BackendEventKind::TextDelta, &[("text", "partial")]),
+            backend_event(2, BackendEventKind::TurnCompleted, &[("finish", "done")]),
+        ];
+        // now_epoch_ms calls: enqueue(1), started(2), event1(3), enqueue_trigger(4), steered(5),
+        // completed(6)
+        let mut runtime =
+            FakeRuntime::with_backend_events(backend_events, &[1, 2, 3, 4, 5, 6, 7, 8]);
+        runtime
+            .resolve_profile_results
+            .push_back(Ok(sample_profile_telemetry()));
+        let (workspace, mut executor) =
+            build_executor_scenario("steering-trigger-same-lane", runtime, 8);
+
+        // Write a steering trigger file to disk for channel 777 (same as the gateway message)
+        let state_root = state_root(&workspace);
+        fs::create_dir_all(&state_root).expect("state root should be creatable");
+        let trigger_path = crab_core::write_steering_trigger(
+            &state_root,
+            &crab_core::PendingTrigger {
+                channel_id: "777".to_string(),
+                message: "steer me".to_string(),
+            },
+        )
+        .expect("steering trigger write should succeed");
+        assert!(trigger_path.exists());
+
+        let dispatch = executor
+            .process_gateway_message(gateway_message("m-1"))
+            .expect("pipeline should succeed")
+            .expect("message should dispatch");
+
+        assert_eq!(dispatch.status, RunStatus::Cancelled);
+
+        // The steering trigger file should have been consumed
+        assert!(
+            !trigger_path.exists(),
+            "steering trigger file should be consumed after processing"
+        );
+
+        let runtime = executor.runtime_mut();
+        assert_eq!(
+            runtime.interrupt_calls.len(),
+            1,
+            "interrupt_backend_turn should be called once for steering trigger"
+        );
+    }
+
+    #[test]
+    fn check_for_steering_trigger_enqueue_error_does_not_abort_run() {
+        let backend_events = vec![
+            backend_event(1, BackendEventKind::TextDelta, &[("text", "output")]),
+            backend_event(2, BackendEventKind::TurnCompleted, &[("finish", "done")]),
+        ];
+        let runtime = FakeRuntime::with_backend_events(backend_events, &[1, 2, 3, 4, 5, 6, 7, 8]);
+        let (workspace, mut executor) =
+            build_executor_scenario("steering-trigger-bad-channel", runtime, 8);
+
+        // Write a steering trigger with a blank channel_id directly to disk
+        // (bypassing validation) to exercise the enqueue error branch.
+        let state_root = state_root(&workspace);
+        let triggers_dir = state_root.join("steering_triggers");
+        fs::create_dir_all(&triggers_dir).expect("triggers dir should be creatable");
+        fs::write(
+            triggers_dir.join("bad_trigger.json"),
+            r#"{"channel_id":"  ","message":"bad trigger"}"#,
+        )
+        .expect("bad trigger file should be writable");
+
+        let dispatch = executor
+            .process_gateway_message(gateway_message("m-1"))
+            .expect("pipeline should succeed")
+            .expect("message should dispatch");
+
+        assert_eq!(
+            dispatch.status,
+            RunStatus::Succeeded,
+            "run should succeed even when steering trigger enqueue fails"
+        );
+    }
+
+    #[test]
     fn check_for_steering_message_returns_false_when_no_message_available() {
         let backend_events = vec![
             backend_event(1, BackendEventKind::TextDelta, &[("text", "output")]),

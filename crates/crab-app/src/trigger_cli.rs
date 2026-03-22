@@ -79,7 +79,7 @@ fn execute(args: &[String]) -> Result<PathBuf, String> {
 mod tests {
     use std::path::PathBuf;
 
-    use crab_core::PENDING_TRIGGERS_DIR_NAME;
+    use crab_core::{PENDING_TRIGGERS_DIR_NAME, STEERING_TRIGGERS_DIR_NAME};
 
     use super::run_trigger_cli;
     use crate::cli_support::test_helpers::FailWriter;
@@ -308,6 +308,36 @@ mod tests {
         assert_eq!(status, 1);
         let stderr = String::from_utf8(stderr).expect("stderr should be utf-8");
         assert!(stderr.contains("failed to write output"));
+    }
+
+    #[test]
+    fn steer_flag_writes_to_steering_triggers_directory() {
+        let temp = TempWorkspace::new("trigger-cli", "steer-flag");
+        let state_dir = temp.path.to_string_lossy().to_string();
+
+        let (status, stdout, stderr) = run(&[
+            "crab-trigger",
+            "--state-dir",
+            &state_dir,
+            "--channel",
+            "123456789",
+            "--message",
+            "Steer the session",
+            "--steer",
+        ]);
+        assert_eq!(status, 0);
+        assert!(stderr.is_empty());
+
+        let printed_path = stdout.trim();
+        assert!(
+            printed_path.contains(STEERING_TRIGGERS_DIR_NAME),
+            "path should contain steering_triggers directory, got: {printed_path}"
+        );
+        assert!(
+            !printed_path.contains(PENDING_TRIGGERS_DIR_NAME),
+            "path should NOT contain pending_triggers directory"
+        );
+        assert!(PathBuf::from(printed_path).exists());
     }
 
     #[test]

@@ -3924,4 +3924,52 @@ mod tests {
             "expected at least one heartbeat cycle"
         );
     }
+
+    #[test]
+    fn daemon_loop_ingests_steering_triggers_when_idle() {
+        let workspace = TempWorkspace::new("daemon", "loop-steering-triggers");
+        let config = runtime_config_for_workspace_with_lanes(&workspace.path, 1);
+        let state_root = workspace.path.join("state");
+        std::fs::create_dir_all(&state_root).expect("state root should be creatable");
+
+        // Write a good steering trigger
+        crab_core::write_steering_trigger(
+            &state_root,
+            &crab_core::PendingTrigger {
+                channel_id: "888".to_string(),
+                message: "steer me".to_string(),
+            },
+        )
+        .expect("steering trigger should be written");
+
+        // Write a bad steering trigger directly to exercise the error branch
+        let steering_dir = state_root.join("steering_triggers");
+        std::fs::create_dir_all(&steering_dir).expect("steering dir should be creatable");
+        std::fs::write(
+            steering_dir.join("bad_steer.json"),
+            r#"{"channel_id":"  ","message":"bad steering trigger"}"#,
+        )
+        .expect("bad steering trigger file should be writable");
+
+        let discord = ScriptedDiscordIo::with_state(DiscordIoState::default());
+        let mut control = OneShotControl {
+            now: 1_739_173_200_000,
+            shutdown: false,
+        };
+
+        let stats = super::run_daemon_loop_with_transport(
+            &config,
+            &daemon_loop_config(),
+            discord,
+            &mut control,
+        )
+        .expect("daemon loop should succeed even with steering trigger error");
+
+        assert_eq!(stats.iterations, 1);
+        // At least the good steering trigger should be ingested
+        assert!(
+            stats.ingested_triggers >= 1,
+            "at least one steering trigger should be ingested"
+        );
+    }
 }
