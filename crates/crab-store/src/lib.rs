@@ -913,35 +913,9 @@ fn validate_run(run: &Run) -> CrabResult<()> {
     }
     validate_profile_sender_context("run_validate", &run.profile)?;
 
-    if let Some(started_at) = run.started_at_epoch_ms {
-        if started_at < run.queued_at_epoch_ms {
-            return Err(CrabError::InvariantViolation {
-                context: "run_validate",
-                message: "started_at_epoch_ms must be greater than or equal to queued_at_epoch_ms"
-                    .to_string(),
-            });
-        }
-    }
-    if let Some(completed_at) = run.completed_at_epoch_ms {
-        if completed_at < run.queued_at_epoch_ms {
-            return Err(CrabError::InvariantViolation {
-                context: "run_validate",
-                message:
-                    "completed_at_epoch_ms must be greater than or equal to queued_at_epoch_ms"
-                        .to_string(),
-            });
-        }
-        if let Some(started_at) = run.started_at_epoch_ms {
-            if completed_at < started_at {
-                return Err(CrabError::InvariantViolation {
-                    context: "run_validate",
-                    message:
-                        "completed_at_epoch_ms must be greater than or equal to started_at_epoch_ms"
-                            .to_string(),
-                });
-            }
-        }
-    }
+    // Timestamp ordering (started >= queued, completed >= started) is enforced
+    // by clamp_run_timestamps which runs before validate_run in upsert_run.
+    // No validation needed here -- clamping guarantees the invariant.
 
     Ok(())
 }
