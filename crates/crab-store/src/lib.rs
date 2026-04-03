@@ -1063,9 +1063,9 @@ mod tests {
     };
 
     use super::{
-        checkpoint_file_name, read_json_file, run_log_file_name, session_file_name,
-        write_logical_session_atomically, write_session_index_atomically, CheckpointStore,
-        EventStore, OutboundRecordStore, RunStore, SessionIndex, SessionStore,
+        checkpoint_file_name, clamp_run_timestamps, read_json_file, run_log_file_name,
+        session_file_name, write_logical_session_atomically, write_session_index_atomically,
+        CheckpointStore, EventStore, OutboundRecordStore, RunStore, SessionIndex, SessionStore,
     };
 
     #[test]
@@ -1903,6 +1903,49 @@ mod tests {
             .expect("backward completed_at vs started_at should be clamped, not rejected");
 
         cleanup(&root);
+    }
+
+    #[test]
+    fn clamp_run_timestamps_fixes_backward_started_at() {
+        let mut run = sample_run("discord:channel:clamp", "run-clamp-1");
+        run.started_at_epoch_ms = Some(run.queued_at_epoch_ms - 1);
+        clamp_run_timestamps(&mut run);
+        assert_eq!(run.started_at_epoch_ms, Some(run.queued_at_epoch_ms));
+    }
+
+    #[test]
+    fn clamp_run_timestamps_fixes_backward_completed_at_vs_queued() {
+        let mut run = sample_run("discord:channel:clamp", "run-clamp-2");
+        // Clear started_at so we only test the completed_at vs queued_at path
+        run.started_at_epoch_ms = None;
+        run.completed_at_epoch_ms = Some(run.queued_at_epoch_ms - 1);
+        clamp_run_timestamps(&mut run);
+        assert_eq!(run.completed_at_epoch_ms, Some(run.queued_at_epoch_ms));
+    }
+
+    #[test]
+    fn clamp_run_timestamps_fixes_backward_completed_at_vs_started() {
+        let mut run = sample_run("discord:channel:clamp", "run-clamp-3");
+        // Both started_at and completed_at after queued_at, but completed < started
+        run.started_at_epoch_ms = Some(run.queued_at_epoch_ms + 200);
+        run.completed_at_epoch_ms = Some(run.queued_at_epoch_ms + 199);
+        clamp_run_timestamps(&mut run);
+        assert_eq!(
+            run.completed_at_epoch_ms,
+            Some(run.queued_at_epoch_ms + 200)
+        );
+    }
+
+    #[test]
+    fn clamp_run_timestamps_noop_when_ordered() {
+        let mut run = sample_run("discord:channel:clamp", "run-clamp-4");
+        run.started_at_epoch_ms = Some(run.queued_at_epoch_ms + 1);
+        run.completed_at_epoch_ms = Some(run.queued_at_epoch_ms + 2);
+        let started_before = run.started_at_epoch_ms;
+        let completed_before = run.completed_at_epoch_ms;
+        clamp_run_timestamps(&mut run);
+        assert_eq!(run.started_at_epoch_ms, started_before);
+        assert_eq!(run.completed_at_epoch_ms, completed_before);
     }
 
     #[test]
