@@ -579,18 +579,31 @@ where
             Ok(output) => return Ok(output),
             Err(error) => {
                 if !error.is_retryable() {
-                    return Err(CrabError::InvariantViolation {
+                    // Non-retryable Discord errors (400, 403, 404) should fail
+                    // the current operation but NOT kill the daemon. A bad
+                    // channel ID or deleted message is a run-level failure.
+                    eprintln!(
+                        "[discord] non-retryable error on attempt {attempt} (context: {context}): {}",
+                        error.message()
+                    );
+                    return Err(CrabError::Io {
                         context,
+                        path: None,
                         message: format!(
-                            "fatal discord API error on attempt {attempt}: {}",
+                            "discord API error on attempt {attempt}: {}",
                             error.message()
                         ),
                     });
                 }
 
                 if attempt >= max_attempts {
-                    return Err(CrabError::InvariantViolation {
+                    eprintln!(
+                        "[discord] retries exhausted after {attempt} attempts (context: {context}): {}",
+                        error.message()
+                    );
+                    return Err(CrabError::Io {
                         context,
+                        path: None,
                         message: format!(
                             "discord API retries exhausted after {attempt} attempts: {}",
                             error.message()

@@ -3805,16 +3805,12 @@ mod tests {
             .enqueue_gateway_message(gateway_message("m-running-timestamp"))
             .expect("enqueue should succeed");
 
-        let error = executor
-            .dispatch_next_run()
-            .expect_err("backward start timestamp should fail run persistence");
-        assert_eq!(
-            error,
-            CrabError::InvariantViolation {
-                context: "run_validate",
-                message: "started_at_epoch_ms must be greater than or equal to queued_at_epoch_ms"
-                    .to_string(),
-            }
+        // Backward timestamps are now clamped instead of rejected, so
+        // dispatch succeeds. The store silently fixes clock jitter.
+        let result = executor.dispatch_next_run();
+        assert!(
+            result.is_ok(),
+            "backward start timestamp should be clamped, not rejected"
         );
     }
 
@@ -4032,17 +4028,12 @@ mod tests {
             .enqueue_gateway_message(gateway_message("m-completion-timestamp"))
             .expect("enqueue should succeed");
 
-        let error = executor
-            .dispatch_next_run()
-            .expect_err("backward completion timestamp should fail run persistence");
-        assert_eq!(
-            error,
-            CrabError::InvariantViolation {
-                context: "run_validate",
-                message:
-                    "completed_at_epoch_ms must be greater than or equal to started_at_epoch_ms"
-                        .to_string(),
-            }
+        // Backward timestamps are now clamped instead of rejected, so
+        // dispatch succeeds. The store silently fixes clock jitter.
+        let result = executor.dispatch_next_run();
+        assert!(
+            result.is_ok(),
+            "backward completion timestamp should be clamped, not rejected"
         );
     }
 
@@ -4157,24 +4148,19 @@ mod tests {
             .enqueue_gateway_message(gateway_message("m-mark-failed-validate"))
             .expect("enqueue should succeed");
 
-        let error = executor
-            .mark_run_failed(
-                "discord:channel:777",
-                run_id,
-                &CrabError::InvariantViolation {
-                    context: "test",
-                    message: "force failure".to_string(),
-                },
-            )
-            .expect_err("backward completion timestamp should fail failed-run persistence");
-        assert_eq!(
-            error,
-            CrabError::InvariantViolation {
-                context: "run_validate",
-                message:
-                    "completed_at_epoch_ms must be greater than or equal to queued_at_epoch_ms"
-                        .to_string(),
-            }
+        // Backward timestamps are now clamped instead of rejected, so
+        // mark_run_failed succeeds. The store silently fixes clock jitter.
+        let result = executor.mark_run_failed(
+            "discord:channel:777",
+            run_id,
+            &CrabError::InvariantViolation {
+                context: "test",
+                message: "force failure".to_string(),
+            },
+        );
+        assert!(
+            result.is_ok(),
+            "backward completion timestamp should be clamped, not rejected"
         );
     }
 

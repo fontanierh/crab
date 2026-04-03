@@ -161,10 +161,14 @@ impl RunStore {
     }
 
     pub fn upsert_run(&self, run: &Run) -> CrabResult<()> {
-        validate_run(run)?;
+        // Clamp timestamps to handle NTP clock jitter on very short runs,
+        // then validate the clamped copy.
+        let mut clamped = run.clone();
+        clamp_run_timestamps(&mut clamped);
+        validate_run(&clamped)?;
         self.ensure_layout()?;
-        let run_path = self.run_path(&run.logical_session_id, &run.id);
-        write_run_atomically(&run_path, run, "run_write")
+        let run_path = self.run_path(&clamped.logical_session_id, &clamped.id);
+        write_run_atomically(&run_path, &clamped, "run_write")
     }
 
     pub fn get_run(&self, logical_session_id: &str, run_id: &str) -> CrabResult<Option<Run>> {
@@ -838,6 +842,39 @@ fn validate_checkpoint(checkpoint: &Checkpoint) -> CrabResult<()> {
         ensure_non_empty_field("checkpoint_validate", "state key", key)?;
     }
     Ok(())
+}
+
+/// Clamp completed_at to be >= started_at >= queued_at. NTP clock jitter on
+/// very short runs (< 1 second) can cause sub-millisecond backward jumps. This
+/// is harmless but would previously crash the daemon via validate_run.
+fn clamp_run_timestamps(run: &mut Run) {
+    if let Some(started_at) = run.started_at_epoch_ms {
+        if started_at < run.queued_at_epoch_ms {
+            eprintln!(
+                "[store] clamping started_at ({started_at}) to queued_at ({})",
+                run.queued_at_epoch_ms
+            );
+            run.started_at_epoch_ms = Some(run.queued_at_epoch_ms);
+        }
+    }
+    if let Some(completed_at) = run.completed_at_epoch_ms {
+        if completed_at < run.queued_at_epoch_ms {
+            eprintln!(
+                "[store] clamping completed_at ({completed_at}) to queued_at ({})",
+                run.queued_at_epoch_ms
+            );
+            run.completed_at_epoch_ms = Some(run.queued_at_epoch_ms);
+        }
+        if let Some(started_at) = run.started_at_epoch_ms {
+            if run.completed_at_epoch_ms.unwrap_or(0) < started_at {
+                eprintln!(
+                    "[store] clamping completed_at ({}) to started_at ({started_at})",
+                    run.completed_at_epoch_ms.unwrap_or(0)
+                );
+                run.completed_at_epoch_ms = Some(started_at);
+            }
+        }
+    }
 }
 
 fn validate_run(run: &Run) -> CrabResult<()> {
@@ -1842,52 +1879,28 @@ mod tests {
             }
         );
 
+        // Backward timestamps are now clamped instead of rejected.
+        // The store silently fixes clock jitter from NTP on short runs.
         let mut started_before_queued = sample_run("discord:channel:runs", "run-4");
         started_before_queued.started_at_epoch_ms =
             Some(started_before_queued.queued_at_epoch_ms - 1);
-        let error = store
+        store
             .upsert_run(&started_before_queued)
-            .expect_err("started_at should not precede queued_at");
-        assert_eq!(
-            error,
-            CrabError::InvariantViolation {
-                context: "run_validate",
-                message: "started_at_epoch_ms must be greater than or equal to queued_at_epoch_ms"
-                    .to_string(),
-            }
-        );
+            .expect("backward started_at should be clamped, not rejected");
 
         let mut completed_before_queued = sample_run("discord:channel:runs", "run-5");
         completed_before_queued.completed_at_epoch_ms =
             Some(completed_before_queued.queued_at_epoch_ms - 1);
-        let error = store
+        store
             .upsert_run(&completed_before_queued)
-            .expect_err("completed_at should not precede queued_at");
-        assert_eq!(
-            error,
-            CrabError::InvariantViolation {
-                context: "run_validate",
-                message:
-                    "completed_at_epoch_ms must be greater than or equal to queued_at_epoch_ms"
-                        .to_string(),
-            }
-        );
+            .expect("backward completed_at should be clamped, not rejected");
 
         let mut completed_before_started = sample_run("discord:channel:runs", "run-6");
         completed_before_started.started_at_epoch_ms = Some(1_739_173_200_200);
         completed_before_started.completed_at_epoch_ms = Some(1_739_173_200_199);
-        let error = store
+        store
             .upsert_run(&completed_before_started)
-            .expect_err("completed_at should not precede started_at");
-        assert_eq!(
-            error,
-            CrabError::InvariantViolation {
-                context: "run_validate",
-                message:
-                    "completed_at_epoch_ms must be greater than or equal to started_at_epoch_ms"
-                        .to_string(),
-            }
-        );
+            .expect("backward completed_at vs started_at should be clamped, not rejected");
 
         cleanup(&root);
     }
