@@ -117,6 +117,20 @@ Baseline/trend note:
 - Regenerate `CODE_QUALITY_REPORT.md` (includes trend sections when baselines exist):
   `make quality-report`
 
+## Self-Trigger
+
+`crab-trigger` lets the agent schedule future invocations of itself. This is the primitive
+that enables autonomous operation: cron jobs, delayed follow-ups, session chaining, and
+multi-hour work sessions all build on top of it. See `PHILOSOPHY.md` for the full rationale.
+
+```bash
+# Immediate self-trigger
+crab-trigger --state-dir "$CRAB_STATE_DIR" --channel <channel_id> --message "Check deployment"
+
+# Delayed self-trigger (wake up in 30 minutes)
+sleep 1800 && crab-trigger --state-dir "$CRAB_STATE_DIR" --channel <channel_id> --message "Follow up" &
+```
+
 ## Memory CLI Commands
 
 Run memory recall commands with Cargo:

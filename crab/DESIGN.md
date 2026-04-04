@@ -52,6 +52,11 @@ Major subsystems:
 - Backend Manager: lifecycle for subprocess/persistent backends.
 - Context Builder: workspace instructions + memory + checkpoint injection.
 - State Store: sessions, checkpoints, events, run metadata.
+- Self-Trigger (`crab-trigger`): CLI command that lets the agent schedule future invocations
+  of itself. This is the primitive that enables autonomous operation -- cron jobs, delayed
+  follow-ups, session chaining across rotations, and multi-hour unattended work sessions all
+  build on top of it. The agent calls `crab-trigger --state-dir "$CRAB_STATE_DIR" --channel
+  <channel_id> --message "<context>"` to wake itself up, optionally after a delay.
 
 Quality engineering workflow:
 
