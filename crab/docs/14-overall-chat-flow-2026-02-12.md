@@ -1,5 +1,7 @@
 # Overall Chat Flow (2026-02-12)
 
+> **Historical document.** This describes the runtime flow as of February 12, 2026. Since this was written, the Codex CLI and OpenCode backends were removed (PRs #163 and #164). Claude Code is now the only active backend. References to Codex/OpenCode execution paths below are preserved for historical context.
+
 ## Scope
 
 This is the end-to-end runtime flow for a real chat with Crab as of February 12, 2026.
@@ -86,7 +88,7 @@ Runtime sends raw user turn input only. It does not re-inject the full bootstrap
 
 ## 6) Backend Turn Execution
 
-1. Runtime executes turn through backend bridge (Codex/OpenCode/Claude).
+1. Runtime executes turn through backend bridge (Claude Code; Codex/OpenCode paths were removed, see PRs #163/#164).
 2. Streamed backend events are normalized and appended as `EventEnvelope` records.
 3. Usage metadata (tokens) is collected from normalized usage events.
 4. Final run status resolves to `success`, `failed`, or `cancelled`.

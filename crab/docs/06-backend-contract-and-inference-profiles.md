@@ -28,13 +28,17 @@ All backend outputs must normalize into `BackendEvent` stream (`TextDelta`, `Too
 
 ## Backend-Specific Notes
 
-### Claude
+### Claude Code (current implementation)
 
 - process-oriented adapter
 - resumable backend session id
 - usage accounting extracted from Claude usage events and surfaced as run notes
 
-### Codex
+### Codex and OpenCode (historical reference)
+
+> **Note:** The Codex CLI and OpenCode adapters were removed from the implementation (PRs #163 and #164). The notes below are preserved as reference for the backend contract design and for future adapter implementations.
+
+**Codex:**
 
 - persistent `app-server` managed by lifecycle manager
 - protocol primitives include:
@@ -45,7 +49,7 @@ All backend outputs must normalize into `BackendEvent` stream (`TextDelta`, `Too
 - event normalizer maps Codex notifications/requests into shared backend events
 - unattended policy handles approval and user-input requests deterministically
 
-### OpenCode
+**OpenCode:**
 
 - persistent server lifecycle manager
 - protocol primitives include create/send/interrupt/end
@@ -60,9 +64,8 @@ Crab keeps a single canonical skills source of truth in the workspace:
 
 Backend expectations:
 
-- Codex: reads `.agents/skills`
-- OpenCode: reads `.agents/skills`
 - Claude Code: reads `.claude/skills` (symlinked to canonical path by workspace bootstrap)
+- Future adapters should read `.agents/skills` (the canonical path).
 
 Skill authoring policy is reinforced at prompt-contract level and by a built-in required skill:
 `.agents/skills/skill-authoring-policy/SKILL.md`.
@@ -96,17 +99,15 @@ Compatibility policy (`strict` vs `compatible`) is enforced in core fallback log
 
 `crates/crab-backends/src/profile_mapping.rs`:
 
-- Claude: map canonical reasoning levels to Claude thinking bands
-- Codex: map reasoning directly to `effort`
-- OpenCode:
-  - reasoning maps directly to native OpenCode session/turn controls
-  - no synthetic reasoning guidance suffix is appended to prompt text
+- Claude Code: map canonical reasoning levels to Claude thinking bands
+
+Historical mappings for Codex (`effort`) and OpenCode (native session/turn controls) are preserved in DESIGN.md sections 5.3 and 5.4 for extensibility reference.
 
 ## Operator Controls
 
 Owner-authorized operator commands:
 
-- `/backend <claude|codex|opencode>`
+- `/backend <claude>`
 - `/model <value>`
 - `/reasoning <none|minimal|low|medium|high|xhigh>`
 - `/profile`
@@ -118,9 +119,11 @@ Changing backend requires rotation (`requires_rotation=true`) and clears active 
 Implemented:
 
 - adapter contract and normalized event shape
-- Claude/Codex/OpenCode manager/protocol/normalization modules
+- Claude Code manager/protocol/normalization module
 - profile resolution, source telemetry, fallback mapping
 - owner-only operator command authorization
+
+Note: Codex CLI and OpenCode adapters were removed (PRs #163, #164). The contract remains extensible for future adapters.
 
 Operational note:
 

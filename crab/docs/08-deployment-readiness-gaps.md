@@ -46,7 +46,7 @@ Implemented and validated in repository code/tests:
   - bootstrap context size observability logging (`injected_context_tokens`, `injected_context_chars`)
 - Production daemon binary exists: `crabd` (`crates/crab-app/src/bin/crabd.rs`) with:
   - startup boot + reconciliation
-  - backend lifecycle ensure (Codex/OpenCode managers)
+  - backend lifecycle ensure
   - ingress poll + lane dispatch loop
   - heartbeat execution
   - graceful shutdown control
@@ -75,10 +75,10 @@ Implemented and validated in repository code/tests:
   - `SOUL.md`/`IDENTITY.md`/`USER.md` managed sections are updated and conflicts are surfaced
   - onboarding completion protocol writes managed `MEMORY.md` baseline and retires `BOOTSTRAP.md`
   - rotation can run hidden extraction to complete onboarding when strict capture is derivable
-- OpenCode session recovery uses shared backend helper:
-  - daemon OpenCode execution bridge now routes materialization/recovery through
+- OpenCode session recovery used a shared backend helper (historical; OpenCode adapter removed in PR #164):
+  - daemon OpenCode execution bridge routed materialization/recovery through
     `crab_backends::recover_opencode_session`
-  - recoverable session faults rotate sessions through a single recovery primitive with
+  - recoverable session faults rotated sessions through a single recovery primitive with
     deterministic bookkeeping
 - Quality engineering ergonomics are standardized:
   - strict gate: `make quality`
@@ -138,8 +138,6 @@ Required work:
 Current status:
 
 - `DaemonTurnRuntime::execute_backend_turn` now delegates through a daemon backend bridge.
-- Codex runs are wired through the `daemon_backend_bridge` Codex transport seam.
-- OpenCode runs are wired through normalized backend events/usage metadata in daemon flow.
 - Claude runs are wired through `DaemonClaudeExecutionBridge` in daemon runtime execution.
 - Hidden checkpoint turns in rotation now execute through the runtime backend path with strict
   checkpoint schema parsing/validation and retry policy.
@@ -148,16 +146,17 @@ Current status:
 - The same `TurnExecutorRuntime::execute_backend_turn` path is used for normal turns and hidden
   checkpoint turns, so checkpoint output now comes from the active real backend execution path.
 
+Note: Codex CLI and OpenCode backend execution paths were removed (PRs #163, #164).
+
 Impact:
 
-- Runtime/backend integration gap is closed for Codex, OpenCode, and Claude execution paths.
+- Runtime/backend integration gap is closed for Claude Code execution path.
 - Hidden checkpoint output is generated through runtime backend execution with strict schema
   validation and deterministic fallback-on-failure behavior.
 
 Exit evidence:
 
 - Daemon runtime backend integration tests in `crates/crab-app/src/daemon.rs` cover:
-  - Codex and OpenCode backend execution through runtime bridge paths
   - Claude execution through daemon runtime execution
   - turn-context assembly and checkpoint-summary injection
 - Rotation tests in `crates/crab-app/src/turn_executor.rs` cover:

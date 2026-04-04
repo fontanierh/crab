@@ -39,10 +39,9 @@ core modules are actually exercised in production flow.
   - Coverage: CLI tests
 - Daemon backend execution bridge:
   - Runtime: `crates/crab-app/src/daemon.rs` (`execute_backend_turn`, `DaemonBackendBridge`)
-  - Codex path executes through `crates/crab-app/src/daemon_backend_bridge.rs`.
-  - OpenCode path executes through `OpenCodeExecutionBridge` transport-backed runtime path.
-  - Claude path executes through `DaemonClaudeExecutionBridge` in daemon runtime flow.
+  - Claude Code path executes through `DaemonClaudeExecutionBridge` in daemon runtime flow.
   - Coverage: daemon runtime integration tests
+  - Note: Codex CLI and OpenCode execution bridge paths were removed (PRs #163, #164).
 - `crab-rotate` CLI + `rotate-session` skill:
   - Core: `rotate_cli`, `pending_rotation`
   - Runtime: `crates/crab-app/src/rotate_cli.rs` (`crab-rotate` binary)
@@ -51,11 +50,10 @@ core modules are actually exercised in production flow.
   - Behavior: agent-produced checkpoint is written as a pending rotation signal; no hidden
     checkpoint turns or hidden memory flush turns exist
   - Coverage: rotate CLI tests
-- OpenCode recovery helper integration:
+- OpenCode recovery helper integration (historical; OpenCode adapter removed in PR #164):
   - Core: `recover_opencode_session`
   - Runtime: `crates/crab-app/src/daemon.rs` (`OpenCodeExecutionBridge::recover_session_with_helper`)
-  - Materialization/recovery path now uses shared recovery primitive instead of ad-hoc retry-only session creation
-  - Coverage: daemon OpenCode execution bridge tests + HTTP transport end-session contract test
+  - Materialization/recovery path used shared recovery primitive instead of ad-hoc retry-only session creation
 - First-interaction onboarding completion capture:
   - Core: `parse_onboarding_capture_document`, `persist_onboarding_profile_files`,
     `execute_onboarding_completion_protocol`, `build_onboarding_extraction_prompt`

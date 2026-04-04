@@ -6,7 +6,7 @@ Crab gives an AI agent six primitives -- ingress, a backend contract, sessions, 
 
 ## What Crab Does
 
-- **Runs coding agents behind Discord.** Claude Code, Codex CLI, and OpenCode are supported as backends behind a unified contract.
+- **Runs coding agents behind Discord.** Claude Code is the primary backend. The backend contract is designed to support additional agents.
 - **Manages sessions and context.** Per-channel logical sessions, physical session rotation, checkpoint persistence, and crash recovery.
 - **Handles delivery.** Streaming edits, idempotent message delivery, chunked output, and automatic retry/rate-limit handling.
 - **Persists everything.** Every run produces a durable event log. Sessions, checkpoints, and outbound records are all recoverable after restart.
@@ -19,7 +19,7 @@ Crab gives an AI agent six primitives -- ingress, a backend contract, sessions, 
 Discord Gateway
   -> Session Router
   -> Lane Scheduler (per-session FIFO + global concurrency cap)
-  -> Backend Adapter (Claude Code | Codex CLI | OpenCode)
+  -> Backend Adapter (Claude Code)
   -> Event Log + Checkpoint Store
   -> Memory Files + Memory CLI
   -> Self-Trigger (crab-trigger)
@@ -33,7 +33,7 @@ Eight Rust crates: `crab-core`, `crab-store`, `crab-scheduler`, `crab-backends`,
 
 - Rust stable toolchain (pinned in `rust-toolchain.toml`)
 - A Discord bot token ([provisioning guide](crab/docs/09-discord-provisioning-and-secrets.md))
-- At least one backend installed: `claude` (Claude Code), `codex` (Codex CLI), or `opencode`
+- Claude Code installed (`claude` CLI)
 
 ### Build
 

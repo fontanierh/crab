@@ -1,6 +1,6 @@
 # Crab - Design Document
 
-Rust harness that runs coding agents (Claude Code, Codex CLI, OpenCode) behind a Discord bot.
+Rust harness that runs coding agents (Claude Code) behind a Discord bot.
 
 This document defines the v1 architecture and operational semantics.
 
@@ -12,7 +12,7 @@ Companion deep-dive architecture docs are tracked in `crab/docs/README.md`.
 ### Goals
 
 - Provide one autonomous Discord-first coding agent runtime.
-- Support multiple backend agents behind one unified runtime contract.
+- Support multiple backend agents behind one unified runtime contract (Claude Code is the current implementation; the contract is designed to be extensible).
 - Keep behavior reliable under long-running autonomous operation.
 - Preserve high-quality context through explicit memory and checkpointing.
 - Keep delivery semantics simple and non-buggy (idempotent, recoverable, observable).
@@ -38,7 +38,7 @@ Companion deep-dive architecture docs are tracked in `crab/docs/README.md`.
 Discord Gateway
   -> Session Router
   -> Lane Scheduler
-  -> Backend Adapter (Claude | Codex | OpenCode)
+  -> Backend Adapter (Claude Code)
   -> Event Log + Transcript Store
   -> Checkpoint Store
   -> Memory Files + Memory CLI Commands
@@ -92,8 +92,6 @@ Each logical session stores:
 Backend-specific execution state reused across turns until rotation/reset:
 
 - Claude Code: resumable session id.
-- Codex CLI: thread id on one `codex app-server`.
-- OpenCode: server-side session id.
 
 ### 4.3 Lane Model (Queue Semantics)
 
@@ -155,7 +153,10 @@ Notes:
 - Best-effort interruption uses process termination semantics.
 - Recovery after crash is simple: spawn next turn with last known resume id; if invalid, rotate physical session from checkpoint.
 
-### 5.3 Codex CLI (validated on 2026-02-09, `codex-cli 0.98.0`)
+### 5.3 Codex CLI (historical reference)
+
+> **Note:** The Codex CLI adapter was removed from the implementation (PR #163). The section below is preserved as reference for the backend contract design and for future adapter implementations.
+
 
 Model:
 
@@ -180,7 +181,9 @@ Crab behavior:
 - `item/tool/requestUserInput` is handled as unattended mode by default (reject with a deterministic message, emit event, continue/fail the run according to backend response).
 - If app-server dies: restart process, create/resume thread where possible; if not possible, rotate physical session using latest checkpoint.
 
-### 5.4 OpenCode
+### 5.4 OpenCode (historical reference)
+
+> **Note:** The OpenCode adapter was removed from the implementation (PR #164). The section below is preserved as reference for the backend contract design and for future adapter implementations.
 
 Model:
 
@@ -229,12 +232,8 @@ Backend mapping rules:
 - Claude Code:
   - `model`: resolved to a backend-supported Claude model alias.
   - `reasoning_level`: mapped by adapter to Claude-supported thinking mode; unsupported values are clamped under fallback policy.
-- Codex CLI:
-  - `model`: sent via `turn/start` model override when provided.
-  - `reasoning_level`: mapped directly to `turn/start.effort` (`none|minimal|low|medium|high|xhigh`).
-- OpenCode:
-  - `model`: applied through OpenCode session/turn model controls.
-  - `reasoning_level`: mapped directly to OpenCode native reasoning controls on session/turn config.
+
+The Codex CLI and OpenCode mapping rules are documented in sections 5.3 and 5.4 for extensibility reference.
 
 Profile stickiness:
 
@@ -260,7 +259,7 @@ Memory access is exposed as CLI commands available to the agent runtime:
 
 Rules:
 
-- Keep the command surface uniform across Claude/Codex/OpenCode.
+- Keep the command surface uniform across backends (currently Claude Code; contract is extensible).
 - Keep command behavior deterministic and path-safe.
 - Defer embedding/vector semantic search in v1; keyword + curated memory is the default.
 
@@ -535,9 +534,8 @@ Behavior:
 
 - Mark run state `Cancelling`.
 - Send backend-specific interrupt:
-  - Claude: terminate process.
-  - Codex: `turn/interrupt` with `threadId`, `turnId`.
-  - OpenCode: server cancel endpoint/stream interruption.
+  - Claude Code: terminate process.
+  - (Other backend interrupt strategies are defined in sections 5.3 and 5.4 for reference.)
 - Stop streaming to Discord.
 - Persist `turn.interrupted` envelope.
 - Leave physical session alive unless backend integrity requires rotation.
@@ -578,7 +576,6 @@ On process boot:
 - Mark them `RecoveredAsInterrupted`.
 - Emit synthetic interruption/failure envelopes.
 - Reconcile backend managers:
-  - restart Codex/OpenCode services if dead.
   - treat stale backend handles as invalid.
 - Keep logical session; force new physical session on next user message.
 
@@ -594,7 +591,7 @@ Because outbound records are persisted, replay can continue without duplicate sp
 Crab runs three heartbeat loops:
 
 - Run heartbeat: updates `last_progress_at` while a turn streams.
-- Backend heartbeat: verifies persistent services (Codex/OpenCode) on interval.
+- Backend heartbeat: verifies backend health on interval.
 - Dispatcher heartbeat: checks lane scheduler forward progress.
 
 Stall policy:
@@ -651,10 +648,6 @@ This is intentional for autonomous server configuration and operations.
       events.jsonl
       outbound.jsonl
   backends/
-    codex/
-      manager_state.json
-    opencode/
-      manager_state.json
   logs/
     crab.log
 ```
@@ -666,7 +659,7 @@ This is intentional for autonomous server configuration and operations.
 token = "${DISCORD_TOKEN}"
 
 [defaults]
-backend = "codex"
+backend = "claude"
 max_concurrent_lanes = 6
 lane_queue_limit = 32
 startup_reconciliation_grace_period_secs = 90
@@ -689,18 +682,8 @@ binary = "claude"
 default_model = "auto"
 supported_reasoning_levels = ["none", "low", "medium", "high"]
 
-[backends.codex]
-binary = "codex"
-mode = "app-server"
-[backends.codex.inference]
-default_model = "auto"
-
-[backends.opencode]
-binary = "opencode"
-serve_port = 4210
-[backends.opencode.inference]
-default_model = "auto"
-# reasoning_level is always mapped through native OpenCode session/turn config
+# Codex CLI and OpenCode backend config blocks have been removed (PRs #163, #164).
+# See sections 5.3 and 5.4 for historical config shape if implementing future adapters.
 
 [memory]
 access_mode = "cli"             # cli (v1)

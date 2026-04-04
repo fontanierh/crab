@@ -41,9 +41,7 @@ Important: DM delivery target differs from the DM logical session id.
 
 A logical session may have an active `PhysicalSession` with backend-specific ids:
 
-- Claude: resumable Claude session id
-- Codex: `threadId` on a persistent app-server
-- OpenCode: server-side session id
+- Claude Code: resumable Claude session id
 
 `LogicalSession.active_physical_session_id` points to the currently bound physical handle.
 
