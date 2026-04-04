@@ -16,6 +16,28 @@ Crab works the same way. The harness gives the agent a small set of capabilities
 - A checkpoint/rotation protocol (how the agent manages its own continuity)
 - A memory system (how knowledge persists across sessions)
 - A workspace (where the agent lives and works)
+- A self-trigger primitive (how the agent wakes itself up)
+
+That last one deserves emphasis. `crab-trigger` is a small CLI command that lets the
+agent schedule a future invocation of itself. It is the difference between a reactive
+chatbot and an autonomous system.
+
+Without self-trigger, the agent only runs when a human sends a message. With it, the
+agent can:
+
+- Finish a task, rotate its session, and immediately re-trigger to continue in a fresh
+  context
+- Schedule a delayed wake-up (`sleep 1800 && crab-trigger ...`) to check on a deployment,
+  follow up on a long-running build, or revisit a conversation
+- Wire cron jobs that call `crab-trigger` on a schedule, giving it recurring autonomous
+  execution windows
+- Chain multi-hour work sessions across multiple context rotations without any human
+  involvement
+
+Self-trigger is the mechanism that turns a request-response agent into a continuously
+running system. The agent uses it to build its own scheduling layer, its own monitoring
+loops, its own autonomous work cycles. The harness provides the primitive. The agent
+decides when and why to use it.
 
 That's it. Everything else is the agent's job.
 
