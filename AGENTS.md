@@ -112,8 +112,7 @@ No bypasses on main branch.
 
 ## 10. Issue Tracking Boundaries
 
-- For this project, only create/edit/reference issues in:
-  `https://github.com/fontanierh/2026-02-06-autofun`.
+- For this project, only create/edit/reference issues in this repository.
 - Do not create/edit issues in external repositories while working on this codebase.
 - Keep issue and project status current while implementing:
   use `status:todo`, `status:in-progress`, `status:done` labels and mirror the same state in the project board.
@@ -211,24 +210,27 @@ The repository now enforces quality with executable gates and CI automation.
 - Dependency/security gates (`cargo deny`, `cargo audit`).
 - Mutation testing on critical modules (useful, but enable once core foundations exist).
 
-## 13. GitHub Project Tracking (Private)
+## 13. GitHub Project Tracking (Maintainer)
 
-- All workstream/task issues for this repo must be tracked in the private GitHub Project:
-  `https://github.com/users/fontanierh/projects/1` (`Crab Workstreams`).
+- All workstream/task issues for this repo must be tracked in the maintainer's private GitHub Project
+  (`Crab Workstreams`). This is for maintainer use only.
 - Keep project visibility as `PRIVATE`.
 - When creating new implementation issues, add them to this project immediately.
 - Do not track this repo's work in external projects.
 
 ### Project Ops Commands
 
+Replace `<owner>` with the repository owner's GitHub username and `<project-number>` with the
+project number before running these commands.
+
 - Create project:
-  `gh project create --owner fontanierh --title "Crab Workstreams"`
+  `gh project create --owner <owner> --title "Crab Workstreams"`
 - Enforce private visibility:
-  `gh project edit 1 --owner fontanierh --visibility PRIVATE`
+  `gh project edit <project-number> --owner <owner> --visibility PRIVATE`
 - Add an issue to project:
-  `gh project item-add 1 --owner fontanierh --url https://github.com/fontanierh/2026-02-06-autofun/issues/<id>`
+  `gh project item-add <project-number> --owner <owner> --url https://github.com/<owner>/<repo>/issues/<id>`
 - List project items:
-  `gh project item-list 1 --owner fontanierh --limit 500`
+  `gh project item-list <project-number> --owner <owner> --limit 500`
 
 ## 14. Target Machine Remote Access (Tailscale + tmux)
 

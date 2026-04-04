@@ -185,7 +185,7 @@ mod tests {
         owner.profile_defaults.backend = Some(BackendKind::Claude);
         owner.profile_defaults.model = Some("claude-opus-4-6".to_string());
         owner.profile_defaults.reasoning_level = Some(ReasoningLevel::High);
-        owner.machine_location = Some("Paris, France".to_string());
+        owner.machine_location = Some("Berlin, Germany".to_string());
         owner.machine_timezone = Some("Europe/Paris".to_string());
         owner
     }
@@ -258,7 +258,7 @@ mod tests {
             .expect("owner profile defaults should be included");
         assert_eq!(
             owner_profile.machine_location,
-            Some("Paris, France".to_string())
+            Some("Berlin, Germany".to_string())
         );
         assert_eq!(
             owner_profile.machine_timezone,

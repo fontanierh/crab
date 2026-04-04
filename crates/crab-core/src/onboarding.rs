@@ -218,9 +218,9 @@ mod tests {
         OnboardingCaptureDocument {
             schema_version: ONBOARDING_SCHEMA_VERSION.to_string(),
             agent_identity: "Crab".to_string(),
-            owner_identity: "Henry".to_string(),
+            owner_identity: "Alice".to_string(),
             primary_goals: vec!["Ship fast".to_string()],
-            machine_location: "Paris, France".to_string(),
+            machine_location: "Berlin, Germany".to_string(),
             machine_timezone: "Europe/Paris".to_string(),
         }
     }
@@ -300,9 +300,9 @@ mod tests {
         let raw = r#"{
             "schema_version": " v1 ",
             "agent_identity": " Crab ",
-            "owner_identity": " Henry ",
+            "owner_identity": " Alice ",
             "primary_goals": ["Keep code quality high", "Ship fast"],
-            "machine_location": " Paris, France ",
+            "machine_location": " Berlin, Germany ",
             "machine_timezone": " Europe/Paris "
         }"#;
 
@@ -312,12 +312,12 @@ mod tests {
             OnboardingCaptureDocument {
                 schema_version: "v1".to_string(),
                 agent_identity: "Crab".to_string(),
-                owner_identity: "Henry".to_string(),
+                owner_identity: "Alice".to_string(),
                 primary_goals: vec![
                     "Keep code quality high".to_string(),
                     "Ship fast".to_string(),
                 ],
-                machine_location: "Paris, France".to_string(),
+                machine_location: "Berlin, Germany".to_string(),
                 machine_timezone: "Europe/Paris".to_string(),
             }
         );
@@ -346,9 +346,9 @@ mod tests {
                 r#"{
                     "schema_version":"v1",
                     "agent_identity":"Crab",
-                    "owner_identity":"Henry",
+                    "owner_identity":"Alice",
                     "primary_goals":["One"],
-                    "machine_location":"Paris",
+                    "machine_location":"Berlin",
                     "machine_timezone":"Europe/Paris",
                     "extra":"unexpected"
                 }"#,
@@ -364,9 +364,9 @@ mod tests {
                 r#"{
                     "schema_version":"v2",
                     "agent_identity":"Crab",
-                    "owner_identity":"Henry",
+                    "owner_identity":"Alice",
                     "primary_goals":["One"],
-                    "machine_location":"Paris",
+                    "machine_location":"Berlin",
                     "machine_timezone":"Europe/Paris"
                 }"#,
             ),
@@ -411,9 +411,9 @@ mod tests {
                 r#"{
                     "schema_version":"v1",
                     "agent_identity":"Crab",
-                    "owner_identity":"Henry",
+                    "owner_identity":"Alice",
                     "primary_goals":[],
-                    "machine_location":"Paris",
+                    "machine_location":"Berlin",
                     "machine_timezone":"Europe/Paris"
                 }"#,
             ),
@@ -425,9 +425,9 @@ mod tests {
                 r#"{
                     "schema_version":"v1",
                     "agent_identity":"Crab",
-                    "owner_identity":"Henry",
+                    "owner_identity":"Alice",
                     "primary_goals":["valid","   "],
-                    "machine_location":"Paris",
+                    "machine_location":"Berlin",
                     "machine_timezone":"Europe/Paris"
                 }"#,
             ),

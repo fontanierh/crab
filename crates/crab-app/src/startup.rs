@@ -183,12 +183,12 @@ mod tests {
         OnboardingCaptureDocument {
             schema_version: ONBOARDING_SCHEMA_VERSION.to_string(),
             agent_identity: "Crab".to_string(),
-            owner_identity: "Henry".to_string(),
+            owner_identity: "Alice".to_string(),
             primary_goals: vec![
                 "Ship reliable automation".to_string(),
                 "Keep strict quality gates".to_string(),
             ],
-            machine_location: "Paris, France".to_string(),
+            machine_location: "Berlin, Germany".to_string(),
             machine_timezone: "Europe/Paris".to_string(),
         }
     }

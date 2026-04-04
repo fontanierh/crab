@@ -442,11 +442,11 @@ mod tests {
             ("CRAB_BACKEND_STALL_TIMEOUT_SECS", "31"),
             ("CRAB_DISPATCHER_STALL_TIMEOUT_SECS", "21"),
             ("CRAB_OWNER_DISCORD_USER_IDS", "12345,67890"),
-            ("CRAB_OWNER_ALIASES", "Henry,Ops"),
+            ("CRAB_OWNER_ALIASES", "Alice,Ops"),
             ("CRAB_OWNER_DEFAULT_BACKEND", "claude"),
             ("CRAB_OWNER_DEFAULT_MODEL", "claude-opus-4-5"),
             ("CRAB_OWNER_DEFAULT_REASONING_LEVEL", "high"),
-            ("CRAB_OWNER_MACHINE_LOCATION", "Paris, France"),
+            ("CRAB_OWNER_MACHINE_LOCATION", "Berlin, Germany"),
             ("CRAB_OWNER_MACHINE_TIMEZONE", "Europe/Paris"),
         ]);
 
@@ -473,13 +473,13 @@ mod tests {
             parsed.owner,
             OwnerConfig {
                 discord_user_ids: vec!["12345".to_string(), "67890".to_string()],
-                aliases: vec!["Henry".to_string(), "Ops".to_string()],
+                aliases: vec!["Alice".to_string(), "Ops".to_string()],
                 profile_defaults: OwnerProfileDefaults {
                     backend: Some(BackendKind::Claude),
                     model: Some("claude-opus-4-5".to_string()),
                     reasoning_level: Some(ReasoningLevel::High),
                 },
-                machine_location: Some("Paris, France".to_string()),
+                machine_location: Some("Berlin, Germany".to_string()),
                 machine_timezone: Some("Europe/Paris".to_string()),
             }
         );
@@ -696,13 +696,13 @@ mod tests {
 
     #[test]
     fn rejects_duplicate_owner_aliases() {
-        let err = parse_with_token(&[("CRAB_OWNER_ALIASES", "henry,Henry")])
+        let err = parse_with_token(&[("CRAB_OWNER_ALIASES", "alice,Alice")])
             .expect_err("duplicate owner aliases should fail");
         assert_eq!(
             err,
             CrabError::InvalidConfig {
                 key: "CRAB_OWNER_ALIASES",
-                value: "henry,Henry".to_string(),
+                value: "alice,Alice".to_string(),
                 reason: "must not contain duplicate aliases",
             }
         );

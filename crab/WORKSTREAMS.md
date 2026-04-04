@@ -4,7 +4,7 @@ This document breaks the Crab implementation into execution workstreams and issu
 
 ## 1) Planning Constraints
 
-- Track all issues and tasks only in `fontanierh/2026-02-06-autofun`.
+- Track all issues and tasks only in this repository.
 - Keep tasks small enough for one PR each whenever possible.
 - Preserve project quality gates from `AGENTS.md`:
   - 100% test coverage (with enforcement command in CI)

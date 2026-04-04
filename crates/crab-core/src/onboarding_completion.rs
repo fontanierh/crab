@@ -460,12 +460,12 @@ mod tests {
         OnboardingCaptureDocument {
             schema_version: "v1".to_string(),
             agent_identity: "Crab".to_string(),
-            owner_identity: "Henry".to_string(),
+            owner_identity: "Alice".to_string(),
             primary_goals: vec![
                 "Keep quality at 100%".to_string(),
                 "Ship the harness".to_string(),
             ],
-            machine_location: "Paris, France".to_string(),
+            machine_location: "Berlin, Germany".to_string(),
             machine_timezone: "Europe/Paris".to_string(),
         }
     }

@@ -2250,7 +2250,7 @@ mod tests {
         telemetry.sender_id = "999999999999999999".to_string();
         telemetry.sender_is_owner = true;
         telemetry.resolved_owner_profile = Some(OwnerProfileMetadata {
-            machine_location: Some("Paris, France".to_string()),
+            machine_location: Some("Berlin, Germany".to_string()),
             machine_timezone: Some("Europe/Paris".to_string()),
             default_backend: Some(BackendKind::Claude),
             default_model: Some("claude-sonnet-4-5".to_string()),
@@ -2305,9 +2305,9 @@ mod tests {
         r#"{
   "schema_version": "v1",
   "agent_identity": "Crab",
-  "owner_identity": "Henry",
+  "owner_identity": "Alice",
   "primary_goals": ["Ship reliable automation", "Keep strict quality gates"],
-  "machine_location": "Paris, France",
+  "machine_location": "Berlin, Germany",
   "machine_timezone": "Europe/Paris"
 }"#
     }
@@ -3472,7 +3472,7 @@ mod tests {
             .expect("owner profile metadata should persist");
         assert_eq!(
             owner_profile.machine_location,
-            Some("Paris, France".to_string())
+            Some("Berlin, Germany".to_string())
         );
         assert_eq!(
             owner_profile.machine_timezone,

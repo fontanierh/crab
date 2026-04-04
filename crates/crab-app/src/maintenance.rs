@@ -658,7 +658,7 @@ mod tests {
             sender_id: sender_id.to_string(),
             sender_is_owner: true,
             resolved_owner_profile: Some(OwnerProfileMetadata {
-                machine_location: Some("Paris, France".to_string()),
+                machine_location: Some("Berlin, Germany".to_string()),
                 machine_timezone: Some("Europe/Paris".to_string()),
                 default_backend: Some(BackendKind::Claude),
                 default_model: Some("claude-sonnet-4-5".to_string()),

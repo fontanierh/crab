@@ -1,5 +1,5 @@
 blank_issues_enabled: false
 contact_links:
   - name: Project Workstreams
-    url: https://github.com/users/fontanierh/projects/1
-    about: Track planned work in the private Crab Workstreams project.
+    url: https://github.com/<owner>/projects/<project-number>
+    about: Track planned work in the private Crab Workstreams project (maintainer use only).

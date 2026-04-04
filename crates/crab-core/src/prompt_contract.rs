@@ -268,7 +268,7 @@ mod tests {
             default_model: None,
             default_reasoning_level: None,
         };
-        owner_profile.machine_location = Some("Paris, France".to_string());
+        owner_profile.machine_location = Some("Berlin, Germany".to_string());
         owner_profile.machine_timezone = Some("Europe/Paris".to_string());
         owner_profile.default_backend = Some(BackendKind::Claude);
         owner_profile.default_model = Some("claude-sonnet-4".to_string());
@@ -277,7 +277,7 @@ mod tests {
 
         let rendered = compile_prompt_contract(&input).expect("prompt contract should compile");
         assert!(rendered.contains("- sender_is_owner: true"));
-        assert!(rendered.contains("- owner.machine_location: Paris, France"));
+        assert!(rendered.contains("- owner.machine_location: Berlin, Germany"));
         assert!(rendered.contains("- owner.machine_timezone: Europe/Paris"));
         assert!(rendered.contains("- owner.default_backend: claude"));
         assert!(rendered.contains("- owner.default_model: claude-sonnet-4"));

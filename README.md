@@ -57,6 +57,7 @@ Crab is a Rust harness for running coding agents (Claude Code, Codex CLI, OpenCo
 
 ## Docs
 
+- Philosophy: `PHILOSOPHY.md`
 - Design: `crab/DESIGN.md`
 - Workstreams: `crab/WORKSTREAMS.md`
 - Architecture handbook: `crab/docs/README.md`
