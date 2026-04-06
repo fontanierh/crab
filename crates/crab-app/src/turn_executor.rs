@@ -255,6 +255,33 @@ impl<R: TurnExecutorRuntime> TurnExecutor<R> {
         Ok(false)
     }
 
+    fn check_for_graceful_steering_trigger(
+        &mut self,
+        current_logical_session_id: &str,
+    ) -> CrabResult<bool> {
+        let state_root = self.composition.state_stores.root.clone();
+        let triggers = crab_core::read_graceful_steering_triggers(&state_root)?;
+        for (trigger_path, trigger) in triggers {
+            match self.enqueue_pending_trigger(&trigger.channel_id, &trigger.message) {
+                Ok(queued) => {
+                    crab_core::consume_graceful_steering_trigger(&trigger_path)?;
+                    if queued.logical_session_id == current_logical_session_id {
+                        return Ok(true);
+                    }
+                }
+                Err(_error) => {
+                    #[cfg(not(coverage))]
+                    tracing::warn!(
+                        channel_id = %trigger.channel_id,
+                        error = %_error,
+                        "failed to enqueue graceful steering trigger"
+                    );
+                }
+            }
+        }
+        Ok(false)
+    }
+
     pub fn dispatch_next_run(&mut self) -> CrabResult<Option<DispatchedTurn>> {
         let Some(dispatched) = self.composition.scheduler.try_dispatch_next() else {
             return Ok(None);
@@ -512,6 +539,8 @@ impl<R: TurnExecutorRuntime> TurnExecutor<R> {
             });
 
             let steering_poll_interval = Duration::from_millis(200);
+            let mut last_event_was_tool_result = false;
+            let mut graceful_steer_pending = false;
             loop {
                 let maybe_event = match event_rx.recv_timeout(steering_poll_interval) {
                     Ok(event) => Some(event),
@@ -544,14 +573,50 @@ impl<R: TurnExecutorRuntime> TurnExecutor<R> {
                             )?;
                         }
                     }
+
+                    // Graceful steering: detect agentic loop boundaries
+                    match &backend_event.kind {
+                        BackendEventKind::ToolResult => {
+                            last_event_was_tool_result = true;
+                        }
+                        BackendEventKind::TextDelta | BackendEventKind::ToolCall => {
+                            if last_event_was_tool_result && graceful_steer_pending {
+                                // Loop boundary: tools finished, new iteration starting.
+                                let _ = self
+                                    .runtime
+                                    .interrupt_backend_turn(&physical_session, &turn_id);
+                                steered = true;
+                                backend_events.push(backend_event);
+                                break;
+                            }
+                            last_event_was_tool_result = false;
+                        }
+                        BackendEventKind::TurnCompleted => {
+                            if graceful_steer_pending {
+                                steered = true;
+                            }
+                        }
+                        _ => {}
+                    }
+
                     backend_events.push(backend_event);
                 }
+
+                // Immediate steering check (unchanged priority)
                 if self.check_for_steering_message(&run.logical_session_id)? {
                     let _ = self
                         .runtime
                         .interrupt_backend_turn(&physical_session, &turn_id);
                     steered = true;
                     break;
+                }
+
+                // Graceful steering check (does NOT break immediately)
+                if !graceful_steer_pending
+                    && self
+                        .check_for_graceful_steering_trigger(&run.logical_session_id)?
+                {
+                    graceful_steer_pending = true;
                 }
             }
             drop(event_rx);

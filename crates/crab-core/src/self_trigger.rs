@@ -7,6 +7,7 @@ use crate::{CrabError, CrabResult};
 
 pub const PENDING_TRIGGERS_DIR_NAME: &str = "pending_triggers";
 pub const STEERING_TRIGGERS_DIR_NAME: &str = "steering_triggers";
+pub const GRACEFUL_STEERING_DIR_NAME: &str = "graceful_steering";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -75,15 +76,43 @@ pub fn consume_steering_trigger(path: &Path) -> CrabResult<()> {
     file_signal::consume_signal_file(path, "steering_trigger_consume")
 }
 
+pub fn write_graceful_steering_trigger(
+    state_root: &Path,
+    trigger: &PendingTrigger,
+) -> CrabResult<PathBuf> {
+    validate_pending_trigger(trigger)?;
+    file_signal::write_signal_file(
+        state_root,
+        GRACEFUL_STEERING_DIR_NAME,
+        trigger,
+        "graceful_steering_trigger_write",
+    )
+}
+
+pub fn read_graceful_steering_triggers(
+    state_root: &Path,
+) -> CrabResult<Vec<(PathBuf, PendingTrigger)>> {
+    file_signal::read_signal_files(
+        state_root,
+        GRACEFUL_STEERING_DIR_NAME,
+        "graceful_steering_trigger_read",
+    )
+}
+
+pub fn consume_graceful_steering_trigger(path: &Path) -> CrabResult<()> {
+    file_signal::consume_signal_file(path, "graceful_steering_trigger_consume")
+}
+
 #[cfg(test)]
 mod tests {
     use std::fs;
 
     use super::{
-        consume_pending_trigger, consume_steering_trigger, read_pending_triggers,
-        read_steering_triggers, validate_pending_trigger, write_pending_trigger,
-        write_steering_trigger, PendingTrigger, PENDING_TRIGGERS_DIR_NAME,
-        STEERING_TRIGGERS_DIR_NAME,
+        consume_graceful_steering_trigger, consume_pending_trigger, consume_steering_trigger,
+        read_graceful_steering_triggers, read_pending_triggers, read_steering_triggers,
+        validate_pending_trigger, write_graceful_steering_trigger, write_pending_trigger,
+        write_steering_trigger, PendingTrigger, GRACEFUL_STEERING_DIR_NAME,
+        PENDING_TRIGGERS_DIR_NAME, STEERING_TRIGGERS_DIR_NAME,
     };
     use crate::test_support::TempDir;
     use crate::CrabError;
@@ -385,6 +414,73 @@ mod tests {
             error,
             CrabError::Io {
                 context: "steering_trigger_consume",
+                ..
+            }
+        ));
+    }
+
+    // ── Graceful steering trigger tests ─────────────────────────────────
+
+    #[test]
+    fn graceful_steering_write_and_read_round_trip() {
+        let temp = TempDir::new("self-trigger", "graceful-write-read");
+        let trigger = sample_trigger();
+
+        let path = write_graceful_steering_trigger(&temp.root, &trigger)
+            .expect("graceful steering write should succeed");
+        assert!(path.exists());
+        assert!(path.to_string_lossy().contains(GRACEFUL_STEERING_DIR_NAME));
+
+        let triggers =
+            read_graceful_steering_triggers(&temp.root).expect("graceful read should succeed");
+        assert_eq!(triggers.len(), 1);
+        assert_eq!(triggers[0].0, path);
+        assert_eq!(triggers[0].1, trigger);
+    }
+
+    #[test]
+    fn graceful_steering_consume_deletes_file() {
+        let temp = TempDir::new("self-trigger", "graceful-consume");
+        let trigger = sample_trigger();
+
+        let path = write_graceful_steering_trigger(&temp.root, &trigger)
+            .expect("graceful steering write should succeed");
+        assert!(path.exists());
+
+        consume_graceful_steering_trigger(&path).expect("graceful consume should succeed");
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn graceful_steering_read_returns_empty_when_directory_missing() {
+        let temp = TempDir::new("self-trigger", "graceful-read-missing-dir");
+        let triggers =
+            read_graceful_steering_triggers(&temp.root).expect("graceful read should succeed");
+        assert!(triggers.is_empty());
+    }
+
+    #[test]
+    fn graceful_steering_write_rejects_invalid_trigger() {
+        let temp = TempDir::new("self-trigger", "graceful-write-invalid");
+        let trigger = PendingTrigger {
+            channel_id: "".to_string(),
+            message: "hello".to_string(),
+        };
+        let error = write_graceful_steering_trigger(&temp.root, &trigger)
+            .expect_err("should reject invalid trigger");
+        assert!(error.to_string().contains("channel_id must not be empty"));
+    }
+
+    #[test]
+    fn graceful_steering_consume_returns_error_for_missing_file() {
+        let temp = TempDir::new("self-trigger", "graceful-consume-missing");
+        let path = temp.root.join("nonexistent.json");
+        let error = consume_graceful_steering_trigger(&path)
+            .expect_err("consume of missing file should fail");
+        assert!(matches!(
+            error,
+            CrabError::Io {
+                context: "graceful_steering_trigger_consume",
                 ..
             }
         ));
