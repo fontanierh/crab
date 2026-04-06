@@ -548,6 +548,34 @@ impl<R: TurnExecutorRuntime> TurnExecutor<R> {
                     Err(RecvTimeoutError::Disconnected) => break,
                 };
                 if let Some(backend_event) = maybe_event {
+                    // Graceful steering: detect agentic loop boundaries BEFORE
+                    // appending/rendering the event, so the first event of the
+                    // next iteration is not leaked to the user.
+                    match &backend_event.kind {
+                        BackendEventKind::ToolResult => {
+                            last_event_was_tool_result = true;
+                        }
+                        BackendEventKind::TextDelta | BackendEventKind::ToolCall => {
+                            if last_event_was_tool_result && graceful_steer_pending {
+                                // Loop boundary: tools finished, new iteration starting.
+                                // Kill before appending/rendering the boundary event.
+                                let _ = self
+                                    .runtime
+                                    .interrupt_backend_turn(&physical_session, &turn_id);
+                                steered = true;
+                                break;
+                            }
+                            last_event_was_tool_result = false;
+                        }
+                        BackendEventKind::TurnCompleted => {
+                            // Turn completed naturally while graceful steer was pending.
+                            // The turn's output is valid (not interrupted). The steering
+                            // message is already enqueued and will be dispatched next.
+                            // Do NOT set steered here: the run succeeded normally.
+                        }
+                        _ => {}
+                    }
+
                     let emitted_at_epoch_ms = self.runtime.now_epoch_ms()?;
                     self.append_backend_event(&run, &backend_event, emitted_at_epoch_ms)?;
                     if backend_event.kind == BackendEventKind::ToolCall {
@@ -573,36 +601,10 @@ impl<R: TurnExecutorRuntime> TurnExecutor<R> {
                             )?;
                         }
                     }
-
-                    // Graceful steering: detect agentic loop boundaries
-                    match &backend_event.kind {
-                        BackendEventKind::ToolResult => {
-                            last_event_was_tool_result = true;
-                        }
-                        BackendEventKind::TextDelta | BackendEventKind::ToolCall => {
-                            if last_event_was_tool_result && graceful_steer_pending {
-                                // Loop boundary: tools finished, new iteration starting.
-                                let _ = self
-                                    .runtime
-                                    .interrupt_backend_turn(&physical_session, &turn_id);
-                                steered = true;
-                                backend_events.push(backend_event);
-                                break;
-                            }
-                            last_event_was_tool_result = false;
-                        }
-                        BackendEventKind::TurnCompleted => {
-                            if graceful_steer_pending {
-                                steered = true;
-                            }
-                        }
-                        _ => {}
-                    }
-
                     backend_events.push(backend_event);
                 }
 
-                // Immediate steering check (unchanged priority)
+                // Immediate steering check (always takes priority)
                 if self.check_for_steering_message(&run.logical_session_id)? {
                     let _ = self
                         .runtime
