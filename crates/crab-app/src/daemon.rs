@@ -1646,44 +1646,21 @@ where
             }
         }
 
-        // Also consume steering triggers when idle (so they don't pile up)
-        for (trigger_path, trigger) in
-            crab_core::read_steering_triggers(&executor.composition().state_stores.root)?
+        // Also consume steering triggers when idle (so they don't pile up).
+        // Batch by channel so multiple triggers become one combined run.
         {
-            match executor.enqueue_pending_trigger(&trigger.channel_id, &trigger.message) {
-                Ok(_) => {
-                    crab_core::consume_steering_trigger(&trigger_path)?;
-                    stats.ingested_triggers = stats.ingested_triggers.saturating_add(1);
-                }
-                Err(_error) => {
-                    #[cfg(not(coverage))]
-                    tracing::warn!(
-                        channel_id = %trigger.channel_id,
-                        error = %_error,
-                        "failed to enqueue steering trigger from idle loop"
-                    );
-                }
-            }
-        }
+            let state_root = executor.composition().state_stores.root.clone();
+            let steering = crab_core::read_steering_triggers(&state_root)?;
+            // Keep on one line: multi-line call sites can produce llvm-cov line-mapping gaps.
+            #[rustfmt::skip]
+            let (_, consumed) = executor.consume_and_batch_triggers(steering, "", crab_core::consume_steering_trigger, "steering")?;
+            stats.ingested_triggers = stats.ingested_triggers.saturating_add(consumed as u64);
 
-        // Also consume graceful steering triggers when idle
-        for (trigger_path, trigger) in
-            crab_core::read_graceful_steering_triggers(&executor.composition().state_stores.root)?
-        {
-            match executor.enqueue_pending_trigger(&trigger.channel_id, &trigger.message) {
-                Ok(_) => {
-                    crab_core::consume_graceful_steering_trigger(&trigger_path)?;
-                    stats.ingested_triggers = stats.ingested_triggers.saturating_add(1);
-                }
-                Err(_error) => {
-                    #[cfg(not(coverage))]
-                    tracing::warn!(
-                        channel_id = %trigger.channel_id,
-                        error = %_error,
-                        "failed to enqueue graceful steering trigger from idle loop"
-                    );
-                }
-            }
+            let graceful = crab_core::read_graceful_steering_triggers(&state_root)?;
+            // Keep on one line: multi-line call sites can produce llvm-cov line-mapping gaps.
+            #[rustfmt::skip]
+            let (_, consumed) = executor.consume_and_batch_triggers(graceful, "", crab_core::consume_graceful_steering_trigger, "graceful steering")?;
+            stats.ingested_triggers = stats.ingested_triggers.saturating_add(consumed as u64);
         }
 
         while executor.dispatch_next_run()?.is_some() {
