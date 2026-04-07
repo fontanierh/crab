@@ -234,25 +234,12 @@ impl<R: TurnExecutorRuntime> TurnExecutor<R> {
     fn check_for_steering_trigger(&mut self, current_logical_session_id: &str) -> CrabResult<bool> {
         let state_root = self.composition.state_stores.root.clone();
         let triggers = crab_core::read_steering_triggers(&state_root)?;
-        for (trigger_path, trigger) in triggers {
-            match self.enqueue_pending_trigger(&trigger.channel_id, &trigger.message) {
-                Ok(queued) => {
-                    crab_core::consume_steering_trigger(&trigger_path)?;
-                    if queued.logical_session_id == current_logical_session_id {
-                        return Ok(true);
-                    }
-                }
-                Err(_error) => {
-                    #[cfg(not(coverage))]
-                    tracing::warn!(
-                        channel_id = %trigger.channel_id,
-                        error = %_error,
-                        "failed to enqueue steering trigger"
-                    );
-                }
-            }
-        }
-        Ok(false)
+        self.consume_and_batch_triggers(
+            triggers,
+            current_logical_session_id,
+            crab_core::consume_steering_trigger,
+            "steering",
+        )
     }
 
     fn check_for_graceful_steering_trigger(
@@ -261,25 +248,95 @@ impl<R: TurnExecutorRuntime> TurnExecutor<R> {
     ) -> CrabResult<bool> {
         let state_root = self.composition.state_stores.root.clone();
         let triggers = crab_core::read_graceful_steering_triggers(&state_root)?;
+        self.consume_and_batch_triggers(
+            triggers,
+            current_logical_session_id,
+            crab_core::consume_graceful_steering_trigger,
+            "graceful steering",
+        )
+    }
+
+    /// Consume all trigger files, batch messages by channel_id, and enqueue
+    /// one combined run per channel. Returns true if any trigger matched the
+    /// current lane.
+    ///
+    /// Design invariants (from Codex review):
+    /// - Only delete trigger files whose messages were successfully enqueued.
+    ///   Files for failed enqueues stay on disk for retry (no silent message loss).
+    /// - Messages within a batch are ordered chronologically (read_signal_files
+    ///   sorts by filename, which embeds timestamp + monotonic counter).
+    /// - Message boundaries are preserved with `---` delimiters so the agent
+    ///   can distinguish separate user messages from a single multi-line message.
+    pub fn consume_and_batch_triggers(
+        &mut self,
+        triggers: Vec<(PathBuf, crab_core::PendingTrigger)>,
+        current_logical_session_id: &str,
+        consume_fn: fn(&Path) -> CrabResult<()>,
+        _label: &str,
+    ) -> CrabResult<bool> {
+        if triggers.is_empty() {
+            return Ok(false);
+        }
+
+        // Group messages and their trigger paths by channel_id, preserving
+        // chronological order (read_signal_files returns sorted results).
+        let mut by_channel: BTreeMap<String, Vec<(PathBuf, String)>> = BTreeMap::new();
         for (trigger_path, trigger) in triggers {
-            match self.enqueue_pending_trigger(&trigger.channel_id, &trigger.message) {
+            by_channel
+                .entry(trigger.channel_id)
+                .or_default()
+                .push((trigger_path, trigger.message));
+        }
+
+        let mut matched_current_lane = false;
+
+        for (channel_id, entries) in &by_channel {
+            // Build combined message with explicit delimiters between messages.
+            let combined = if entries.len() == 1 {
+                entries[0].1.clone()
+            } else {
+                entries
+                    .iter()
+                    .map(|(_, msg)| msg.as_str())
+                    .collect::<Vec<_>>()
+                    .join("\n---\n")
+            };
+
+            match self.enqueue_pending_trigger(channel_id, &combined) {
                 Ok(queued) => {
-                    crab_core::consume_graceful_steering_trigger(&trigger_path)?;
+                    // Enqueue succeeded — consume all trigger files for this channel.
+                    for (path, _) in entries {
+                        if let Err(_error) = consume_fn(path) {
+                            #[cfg(not(coverage))]
+                            tracing::warn!(
+                                path = %path.display(),
+                                error = %_error,
+                                "failed to consume {} trigger file",
+                                _label,
+                            );
+                        }
+                    }
                     if queued.logical_session_id == current_logical_session_id {
-                        return Ok(true);
+                        matched_current_lane = true;
                     }
                 }
                 Err(_error) => {
+                    // Enqueue failed — leave trigger files on disk for retry.
+                    // This avoids the silent message loss that caused the
+                    // reverted collapse attempt (commit eebf825).
                     #[cfg(not(coverage))]
                     tracing::warn!(
-                        channel_id = %trigger.channel_id,
+                        channel_id = %channel_id,
+                        trigger_count = entries.len(),
                         error = %_error,
-                        "failed to enqueue graceful steering trigger"
+                        "failed to enqueue batched {} triggers, files retained for retry",
+                        _label,
                     );
                 }
             }
         }
-        Ok(false)
+
+        Ok(matched_current_lane)
     }
 
     pub fn dispatch_next_run(&mut self) -> CrabResult<Option<DispatchedTurn>> {

@@ -1,10 +1,17 @@
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 
 use crate::{CrabError, CrabResult};
+
+/// Monotonic counter to guarantee unique filenames even within the same
+/// millisecond and process. Combined with timestamp + pid this prevents
+/// the overwrite bug where two writes from the same process in the same
+/// millisecond would produce identical filenames.
+static SIGNAL_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 pub(crate) fn write_signal_file<T: Serialize>(
     state_root: &Path,
@@ -25,8 +32,9 @@ pub(crate) fn write_signal_file<T: Serialize>(
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis();
-    let random_suffix = format!("{:04x}", timestamp_ms as u16 ^ std::process::id() as u16);
-    let filename = format!("{timestamp_ms}-{random_suffix}.json");
+    let seq = SIGNAL_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let pid = std::process::id();
+    let filename = format!("{timestamp_ms}-{pid}-{seq}.json");
     let path = dir.join(&filename);
 
     fs::write(&path, &json).map_err(|error| CrabError::Io {
@@ -70,6 +78,12 @@ pub(crate) fn read_signal_files<T: DeserializeOwned>(
         };
         results.push((path, signal));
     }
+
+    // Sort by filename to preserve chronological order.
+    // Filenames are `{timestamp_ms}-{pid}-{seq}.json`, so lexicographic
+    // sort gives chronological order (timestamp dominates, seq breaks ties
+    // within the same millisecond and process).
+    results.sort_by(|(a, _), (b, _)| a.file_name().cmp(&b.file_name()));
 
     Ok(results)
 }
