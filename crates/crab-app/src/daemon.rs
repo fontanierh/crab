@@ -1650,9 +1650,12 @@ where
         for (trigger_path, trigger) in
             crab_core::read_steering_triggers(&executor.composition().state_stores.root)?
         {
+            crab_core::consume_steering_trigger(&trigger_path)?;
+            if executor.lane_has_queued_run(&trigger.channel_id) {
+                continue;
+            }
             match executor.enqueue_pending_trigger(&trigger.channel_id, &trigger.message) {
                 Ok(_) => {
-                    crab_core::consume_steering_trigger(&trigger_path)?;
                     stats.ingested_triggers = stats.ingested_triggers.saturating_add(1);
                 }
                 Err(_error) => {
@@ -1670,9 +1673,12 @@ where
         for (trigger_path, trigger) in
             crab_core::read_graceful_steering_triggers(&executor.composition().state_stores.root)?
         {
+            crab_core::consume_graceful_steering_trigger(&trigger_path)?;
+            if executor.lane_has_queued_run(&trigger.channel_id) {
+                continue;
+            }
             match executor.enqueue_pending_trigger(&trigger.channel_id, &trigger.message) {
                 Ok(_) => {
-                    crab_core::consume_graceful_steering_trigger(&trigger_path)?;
                     stats.ingested_triggers = stats.ingested_triggers.saturating_add(1);
                 }
                 Err(_error) => {
