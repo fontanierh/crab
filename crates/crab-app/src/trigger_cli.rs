@@ -8,14 +8,14 @@ use crab_core::{
 use crate::cli_support;
 
 const USAGE: &str = "Usage:
-  crab-trigger --state-dir <path> --channel <channel_id> --message <text> [--steer | --steer-graceful]
+  crab-trigger --state-dir <path> --channel <channel_id> --message <text> [--steer | --steer-immediate]
 
 Flags:
   --state-dir        path to the Crab state directory (e.g. /path/to/workspace/state)
   --channel          Discord channel ID to trigger
   --message          message content for the trigger
-  --steer            steer the active session immediately (kills in-flight tools)
-  --steer-graceful   steer at the next agentic loop boundary (waits for tools to finish)
+  --steer            steer at the next agentic loop boundary (waits for tools to finish)
+  --steer-immediate  steer the active session immediately (kills in-flight tools)
   --help             show this help";
 
 pub fn run_trigger_cli<I, S>(args: I, stdout: &mut dyn Write, stderr: &mut dyn Write) -> i32
@@ -32,9 +32,9 @@ fn execute(args: &[String]) -> Result<PathBuf, String> {
     let mut channel: Option<String> = None;
     let mut message: Option<String> = None;
     let mut steer = false;
-    let mut steer_graceful = false;
+    let mut steer_immediate = false;
 
-    // Filter out the boolean --steer / --steer-graceful flags before pair-parsing
+    // Filter out the boolean --steer / --steer-immediate flags before pair-parsing
     let filtered: Vec<String> = args
         .iter()
         .filter(|a| match a.as_str() {
@@ -42,8 +42,8 @@ fn execute(args: &[String]) -> Result<PathBuf, String> {
                 steer = true;
                 false
             }
-            "--steer-graceful" => {
-                steer_graceful = true;
+            "--steer-immediate" => {
+                steer_immediate = true;
                 false
             }
             _ => true,
@@ -51,8 +51,8 @@ fn execute(args: &[String]) -> Result<PathBuf, String> {
         .cloned()
         .collect();
 
-    if steer && steer_graceful {
-        return Err("--steer and --steer-graceful are mutually exclusive".to_string());
+    if steer && steer_immediate {
+        return Err("--steer and --steer-immediate are mutually exclusive".to_string());
     }
 
     cli_support::parse_flag_pairs(
@@ -78,10 +78,10 @@ fn execute(args: &[String]) -> Result<PathBuf, String> {
     };
 
     let state_path = PathBuf::from(state_dir);
-    if steer_graceful {
-        write_graceful_steering_trigger(&state_path, &trigger)
-    } else if steer {
+    if steer_immediate {
         write_steering_trigger(&state_path, &trigger)
+    } else if steer {
+        write_graceful_steering_trigger(&state_path, &trigger)
     } else {
         write_pending_trigger(&state_path, &trigger)
     }
@@ -326,7 +326,7 @@ mod tests {
     }
 
     #[test]
-    fn steer_flag_writes_to_steering_triggers_directory() {
+    fn steer_flag_writes_to_graceful_steering_directory() {
         let temp = TempWorkspace::new("trigger-cli", "steer-flag");
         let state_dir = temp.path.to_string_lossy().to_string();
 
@@ -339,36 +339,6 @@ mod tests {
             "--message",
             "Steer the session",
             "--steer",
-        ]);
-        assert_eq!(status, 0);
-        assert!(stderr.is_empty());
-
-        let printed_path = stdout.trim();
-        assert!(
-            printed_path.contains(STEERING_TRIGGERS_DIR_NAME),
-            "path should contain steering_triggers directory, got: {printed_path}"
-        );
-        assert!(
-            !printed_path.contains(PENDING_TRIGGERS_DIR_NAME),
-            "path should NOT contain pending_triggers directory"
-        );
-        assert!(PathBuf::from(printed_path).exists());
-    }
-
-    #[test]
-    fn steer_graceful_flag_writes_to_graceful_steering_directory() {
-        let temp = TempWorkspace::new("trigger-cli", "steer-graceful-flag");
-        let state_dir = temp.path.to_string_lossy().to_string();
-
-        let (status, stdout, stderr) = run(&[
-            "crab-trigger",
-            "--state-dir",
-            &state_dir,
-            "--channel",
-            "123456789",
-            "--message",
-            "Graceful steer",
-            "--steer-graceful",
         ]);
         assert_eq!(status, 0);
         assert!(stderr.is_empty());
@@ -390,7 +360,37 @@ mod tests {
     }
 
     #[test]
-    fn steer_and_steer_graceful_together_returns_error() {
+    fn steer_immediate_flag_writes_to_steering_triggers_directory() {
+        let temp = TempWorkspace::new("trigger-cli", "steer-immediate-flag");
+        let state_dir = temp.path.to_string_lossy().to_string();
+
+        let (status, stdout, stderr) = run(&[
+            "crab-trigger",
+            "--state-dir",
+            &state_dir,
+            "--channel",
+            "123456789",
+            "--message",
+            "Hard steer now",
+            "--steer-immediate",
+        ]);
+        assert_eq!(status, 0);
+        assert!(stderr.is_empty());
+
+        let printed_path = stdout.trim();
+        assert!(
+            printed_path.contains(STEERING_TRIGGERS_DIR_NAME),
+            "path should contain steering_triggers directory, got: {printed_path}"
+        );
+        assert!(
+            !printed_path.contains(PENDING_TRIGGERS_DIR_NAME),
+            "path should NOT contain pending_triggers directory"
+        );
+        assert!(PathBuf::from(printed_path).exists());
+    }
+
+    #[test]
+    fn steer_and_steer_immediate_together_returns_error() {
         let (status, _, stderr) = run(&[
             "crab-trigger",
             "--state-dir",
@@ -400,7 +400,7 @@ mod tests {
             "--message",
             "hello",
             "--steer",
-            "--steer-graceful",
+            "--steer-immediate",
         ]);
         assert_eq!(status, 1);
         assert!(stderr.contains("mutually exclusive"));
