@@ -294,6 +294,7 @@ impl<R: TurnExecutorRuntime> TurnExecutor<R> {
 
         let mut matched_current_lane = false;
         let mut consumed_count = 0_usize;
+        let mut deferred_delete_error: Option<CrabError> = None;
 
         for (channel_id, entries) in &by_channel {
             // Build combined message with explicit delimiters between messages.
@@ -312,19 +313,17 @@ impl<R: TurnExecutorRuntime> TurnExecutor<R> {
                     // Enqueue succeeded — delete all trigger files for this channel.
                     // Best-effort: attempt ALL deletions even if one fails, so we
                     // minimize leftover files that would cause duplicates on re-poll.
-                    // Track the first error and report it after the loop.
-                    let mut first_delete_error: Option<CrabError> = None;
+                    // Defer the first error until after all channels are processed,
+                    // so a delete failure for one channel doesn't block steering
+                    // detection for the current lane.
                     for (path, _) in entries {
                         if let Err(error) = consume_fn(path) {
-                            if first_delete_error.is_none() {
-                                first_delete_error = Some(error);
+                            if deferred_delete_error.is_none() {
+                                deferred_delete_error = Some(error);
                             }
                         } else {
                             consumed_count += 1;
                         }
-                    }
-                    if let Some(error) = first_delete_error {
-                        return Err(error);
                     }
                     if queued.logical_session_id == current_logical_session_id {
                         matched_current_lane = true;
@@ -344,6 +343,10 @@ impl<R: TurnExecutorRuntime> TurnExecutor<R> {
                     );
                 }
             }
+        }
+
+        if let Some(error) = deferred_delete_error {
+            return Err(error);
         }
 
         Ok((matched_current_lane, consumed_count))
