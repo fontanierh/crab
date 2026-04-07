@@ -1646,27 +1646,44 @@ where
             }
         }
 
-        // Sentinel lsid: idle loop never needs to know "did I steer the current lane".
-        let idle = "__idle__";
-
-        // Also consume steering triggers when idle (so they don't pile up).
+        // Also consume steering triggers when idle (so they don't pile up)
         for (trigger_path, trigger) in
             crab_core::read_steering_triggers(&executor.composition().state_stores.root)?
         {
-            crab_core::consume_steering_trigger(&trigger_path)?;
-            let (ch, msg) = (&trigger.channel_id, &trigger.message);
-            let _ = executor.consume_and_enqueue_steering(idle, ch, msg)?;
-            stats.ingested_triggers = stats.ingested_triggers.saturating_add(1);
+            match executor.enqueue_pending_trigger(&trigger.channel_id, &trigger.message) {
+                Ok(_) => {
+                    crab_core::consume_steering_trigger(&trigger_path)?;
+                    stats.ingested_triggers = stats.ingested_triggers.saturating_add(1);
+                }
+                Err(_error) => {
+                    #[cfg(not(coverage))]
+                    tracing::warn!(
+                        channel_id = %trigger.channel_id,
+                        error = %_error,
+                        "failed to enqueue steering trigger from idle loop"
+                    );
+                }
+            }
         }
 
         // Also consume graceful steering triggers when idle
         for (trigger_path, trigger) in
             crab_core::read_graceful_steering_triggers(&executor.composition().state_stores.root)?
         {
-            crab_core::consume_graceful_steering_trigger(&trigger_path)?;
-            let (ch, msg) = (&trigger.channel_id, &trigger.message);
-            let _ = executor.consume_and_enqueue_steering(idle, ch, msg)?;
-            stats.ingested_triggers = stats.ingested_triggers.saturating_add(1);
+            match executor.enqueue_pending_trigger(&trigger.channel_id, &trigger.message) {
+                Ok(_) => {
+                    crab_core::consume_graceful_steering_trigger(&trigger_path)?;
+                    stats.ingested_triggers = stats.ingested_triggers.saturating_add(1);
+                }
+                Err(_error) => {
+                    #[cfg(not(coverage))]
+                    tracing::warn!(
+                        channel_id = %trigger.channel_id,
+                        error = %_error,
+                        "failed to enqueue graceful steering trigger from idle loop"
+                    );
+                }
+            }
         }
 
         while executor.dispatch_next_run()?.is_some() {
@@ -4020,76 +4037,6 @@ mod tests {
         assert!(
             stats.ingested_triggers >= 1,
             "at least one graceful steering trigger should be ingested"
-        );
-    }
-
-    #[test]
-    fn daemon_loop_collapses_duplicate_steering_triggers() {
-        let workspace = TempWorkspace::new("daemon", "loop-collapse-steering");
-        let config = runtime_config_for_workspace_with_lanes(&workspace.path, 1);
-        let state_root = workspace.path.join("state");
-        std::fs::create_dir_all(&state_root).expect("state root should be creatable");
-
-        // Write two steering triggers for the same channel
-        crab_core::write_steering_trigger(
-            &state_root,
-            &crab_core::PendingTrigger {
-                channel_id: "888".to_string(),
-                message: "steer 1".to_string(),
-            },
-        )
-        .expect("trigger 1 should be written");
-        crab_core::write_steering_trigger(
-            &state_root,
-            &crab_core::PendingTrigger {
-                channel_id: "888".to_string(),
-                message: "steer 2".to_string(),
-            },
-        )
-        .expect("trigger 2 should be written");
-
-        // Write two graceful steering triggers for the same channel
-        crab_core::write_graceful_steering_trigger(
-            &state_root,
-            &crab_core::PendingTrigger {
-                channel_id: "888".to_string(),
-                message: "graceful 1".to_string(),
-            },
-        )
-        .expect("graceful 1 should be written");
-        crab_core::write_graceful_steering_trigger(
-            &state_root,
-            &crab_core::PendingTrigger {
-                channel_id: "888".to_string(),
-                message: "graceful 2".to_string(),
-            },
-        )
-        .expect("graceful 2 should be written");
-
-        let discord = ScriptedDiscordIo::with_state(DiscordIoState::default());
-        let mut control = OneShotControl {
-            now: 1_739_173_200_000,
-            shutdown: false,
-        };
-
-        let stats = super::run_daemon_loop_with_transport(
-            &config,
-            &daemon_loop_config(),
-            discord,
-            &mut control,
-        )
-        .expect("daemon loop should succeed");
-
-        assert_eq!(stats.iterations, 1);
-        // Trigger files are consumed. The first per directory gets enqueued,
-        // the rest are collapsed by lane_has_queued_run.
-        assert!(
-            stats.ingested_triggers >= 2,
-            "at least the steering triggers should be consumed"
-        );
-        assert_eq!(
-            stats.dispatched_runs, 1,
-            "only one run should be dispatched"
         );
     }
 }

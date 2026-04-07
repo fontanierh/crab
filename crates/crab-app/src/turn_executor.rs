@@ -231,36 +231,25 @@ impl<R: TurnExecutorRuntime> TurnExecutor<R> {
         self.check_for_steering_trigger(current_logical_session_id)
     }
 
-    pub(crate) fn consume_and_enqueue_steering(
-        &mut self,
-        current_logical_session_id: &str,
-        channel_id: &str,
-        message: &str,
-    ) -> CrabResult<bool> {
-        let dominated = self.lane_has_queued_run(channel_id);
-        if dominated {
-            return Ok(false);
-        }
-        match self.enqueue_pending_trigger(channel_id, message) {
-            Ok(queued) => Ok(queued.logical_session_id == current_logical_session_id),
-            Err(_error) => {
-                #[cfg(not(coverage))]
-                tracing::warn!(channel_id, error = %_error, "failed to enqueue steering trigger");
-                Ok(false)
-            }
-        }
-    }
-
     fn check_for_steering_trigger(&mut self, current_logical_session_id: &str) -> CrabResult<bool> {
         let state_root = self.composition.state_stores.root.clone();
         let triggers = crab_core::read_steering_triggers(&state_root)?;
         for (trigger_path, trigger) in triggers {
-            crab_core::consume_steering_trigger(&trigger_path)?;
-            let lsid = current_logical_session_id;
-            let steered =
-                self.consume_and_enqueue_steering(lsid, &trigger.channel_id, &trigger.message)?;
-            if steered {
-                return Ok(true);
+            match self.enqueue_pending_trigger(&trigger.channel_id, &trigger.message) {
+                Ok(queued) => {
+                    crab_core::consume_steering_trigger(&trigger_path)?;
+                    if queued.logical_session_id == current_logical_session_id {
+                        return Ok(true);
+                    }
+                }
+                Err(_error) => {
+                    #[cfg(not(coverage))]
+                    tracing::warn!(
+                        channel_id = %trigger.channel_id,
+                        error = %_error,
+                        "failed to enqueue steering trigger"
+                    );
+                }
             }
         }
         Ok(false)
@@ -273,28 +262,24 @@ impl<R: TurnExecutorRuntime> TurnExecutor<R> {
         let state_root = self.composition.state_stores.root.clone();
         let triggers = crab_core::read_graceful_steering_triggers(&state_root)?;
         for (trigger_path, trigger) in triggers {
-            crab_core::consume_graceful_steering_trigger(&trigger_path)?;
-            let lsid = current_logical_session_id;
-            let steered =
-                self.consume_and_enqueue_steering(lsid, &trigger.channel_id, &trigger.message)?;
-            if steered {
-                return Ok(true);
+            match self.enqueue_pending_trigger(&trigger.channel_id, &trigger.message) {
+                Ok(queued) => {
+                    crab_core::consume_graceful_steering_trigger(&trigger_path)?;
+                    if queued.logical_session_id == current_logical_session_id {
+                        return Ok(true);
+                    }
+                }
+                Err(_error) => {
+                    #[cfg(not(coverage))]
+                    tracing::warn!(
+                        channel_id = %trigger.channel_id,
+                        error = %_error,
+                        "failed to enqueue graceful steering trigger"
+                    );
+                }
             }
         }
         Ok(false)
-    }
-
-    fn lane_has_queued_run(&self, channel_id: &str) -> bool {
-        let routing_key = RoutingKey::Channel {
-            channel_id: channel_id.to_string(),
-        };
-        let Ok(logical_session_id) = routing_key.logical_session_id() else {
-            return false;
-        };
-        self.composition
-            .scheduler
-            .queued_count_unchecked(&logical_session_id)
-            > 0
     }
 
     pub fn dispatch_next_run(&mut self) -> CrabResult<Option<DispatchedTurn>> {
@@ -2086,7 +2071,7 @@ mod tests {
         BackendKind, CrabError, CrabResult, EventKind, InferenceProfile, LaneState,
         OwnerProfileMetadata, ProfileValueSource, ReasoningLevel, RunProfileTelemetry, RunStatus,
     };
-    use crab_discord::{GatewayAttachment, GatewayConversationKind, GatewayMessage, RoutingKey};
+    use crab_discord::{GatewayAttachment, GatewayConversationKind, GatewayMessage};
     use futures::stream;
 
     use super::{
@@ -7149,139 +7134,5 @@ mod tests {
             runtime.interrupt_calls.is_empty(),
             "interrupt should not be called when no graceful trigger exists"
         );
-    }
-
-    #[test]
-    fn check_for_graceful_steering_trigger_enqueue_error_does_not_abort_run() {
-        let backend_events = vec![
-            backend_event(1, BackendEventKind::TextDelta, &[("text", "output")]),
-            backend_event(2, BackendEventKind::TurnCompleted, &[("finish", "done")]),
-        ];
-        let runtime = FakeRuntime::with_backend_events(backend_events, &[1, 2, 3, 4, 5, 6, 7, 8]);
-        let (workspace, mut executor) =
-            build_executor_scenario("graceful-trigger-bad-channel", runtime, 8);
-
-        let state_root = state_root(&workspace);
-        let triggers_dir = state_root.join("graceful_steering");
-        fs::create_dir_all(&triggers_dir).expect("triggers dir should be creatable");
-        fs::write(
-            triggers_dir.join("bad_graceful.json"),
-            r#"{"channel_id":"  ","message":"bad graceful trigger"}"#,
-        )
-        .expect("bad trigger file should be writable");
-
-        let dispatch = executor
-            .process_gateway_message(gateway_message("m-1"))
-            .expect("pipeline should succeed")
-            .expect("message should dispatch");
-
-        assert_eq!(
-            dispatch.status,
-            RunStatus::Succeeded,
-            "run should succeed even when graceful steering trigger enqueue fails"
-        );
-    }
-
-    // ── Steering trigger collapse tests ──────────────────────────────────
-
-    #[test]
-    fn duplicate_steering_triggers_are_collapsed() {
-        // Scenario: two steering triggers for channel 777. The first gets enqueued,
-        // the second should be consumed but NOT enqueued (lane already has a run).
-        let runtime = FakeRuntime::with_backend_events(vec![], &[1, 2, 3, 4, 5, 6, 7, 8]);
-        let (workspace, mut executor) = build_executor_scenario("collapse-steering", runtime, 8);
-
-        let state_root = state_root(&workspace);
-        fs::create_dir_all(&state_root).expect("state root should be creatable");
-
-        // Write two steering triggers for the same channel
-        let path1 = crab_core::write_steering_trigger(
-            &state_root,
-            &crab_core::PendingTrigger {
-                channel_id: "777".to_string(),
-                message: "first steer".to_string(),
-            },
-        )
-        .expect("trigger 1 write should succeed");
-        let path2 = crab_core::write_steering_trigger(
-            &state_root,
-            &crab_core::PendingTrigger {
-                channel_id: "777".to_string(),
-                message: "second steer".to_string(),
-            },
-        )
-        .expect("trigger 2 write should succeed");
-
-        // Process them via check_for_steering_trigger
-        let steered = executor
-            .check_for_steering_trigger("some-other-lane")
-            .expect("check should succeed");
-
-        // Both files consumed
-        assert!(!path1.exists(), "trigger 1 should be consumed");
-        assert!(!path2.exists(), "trigger 2 should be consumed");
-
-        // But only one run queued (the first one; the second was collapsed)
-        let routing_key = RoutingKey::Channel {
-            channel_id: "777".to_string(),
-        };
-        let lsid = routing_key
-            .logical_session_id()
-            .expect("routing key should yield session id");
-        let count = executor
-            .composition()
-            .scheduler
-            .queued_count_unchecked(&lsid);
-        assert_eq!(count, 1, "only one run should be queued, not two");
-
-        // steered should be false because the lane doesn't match current_logical_session_id
-        assert!(!steered);
-    }
-
-    #[test]
-    fn duplicate_graceful_steering_triggers_are_collapsed() {
-        let runtime = FakeRuntime::with_backend_events(vec![], &[1, 2, 3, 4, 5, 6, 7, 8]);
-        let (workspace, mut executor) = build_executor_scenario("collapse-graceful", runtime, 8);
-
-        let state_root = state_root(&workspace);
-        fs::create_dir_all(&state_root).expect("state root should be creatable");
-
-        let path1 = crab_core::write_graceful_steering_trigger(
-            &state_root,
-            &crab_core::PendingTrigger {
-                channel_id: "777".to_string(),
-                message: "first graceful".to_string(),
-            },
-        )
-        .expect("trigger 1 write should succeed");
-        let path2 = crab_core::write_graceful_steering_trigger(
-            &state_root,
-            &crab_core::PendingTrigger {
-                channel_id: "777".to_string(),
-                message: "second graceful".to_string(),
-            },
-        )
-        .expect("trigger 2 write should succeed");
-
-        let steered = executor
-            .check_for_graceful_steering_trigger("some-other-lane")
-            .expect("check should succeed");
-
-        assert!(!path1.exists(), "trigger 1 should be consumed");
-        assert!(!path2.exists(), "trigger 2 should be consumed");
-
-        let routing_key = RoutingKey::Channel {
-            channel_id: "777".to_string(),
-        };
-        let lsid = routing_key
-            .logical_session_id()
-            .expect("routing key should yield session id");
-        let count = executor
-            .composition()
-            .scheduler
-            .queued_count_unchecked(&lsid);
-        assert_eq!(count, 1, "only one run should be queued, not two");
-
-        assert!(!steered);
     }
 }
