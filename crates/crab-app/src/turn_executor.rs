@@ -7155,6 +7155,37 @@ mod tests {
         );
     }
 
+    #[test]
+    fn check_for_graceful_steering_trigger_enqueue_error_does_not_abort_run() {
+        let backend_events = vec![
+            backend_event(1, BackendEventKind::TextDelta, &[("text", "output")]),
+            backend_event(2, BackendEventKind::TurnCompleted, &[("finish", "done")]),
+        ];
+        let runtime = FakeRuntime::with_backend_events(backend_events, &[1, 2, 3, 4, 5, 6, 7, 8]);
+        let (workspace, mut executor) =
+            build_executor_scenario("graceful-trigger-bad-channel", runtime, 8);
+
+        let state_root = state_root(&workspace);
+        let triggers_dir = state_root.join("graceful_steering");
+        fs::create_dir_all(&triggers_dir).expect("triggers dir should be creatable");
+        fs::write(
+            triggers_dir.join("bad_graceful.json"),
+            r#"{"channel_id":"  ","message":"bad graceful trigger"}"#,
+        )
+        .expect("bad trigger file should be writable");
+
+        let dispatch = executor
+            .process_gateway_message(gateway_message("m-1"))
+            .expect("pipeline should succeed")
+            .expect("message should dispatch");
+
+        assert_eq!(
+            dispatch.status,
+            RunStatus::Succeeded,
+            "run should succeed even when graceful steering trigger enqueue fails"
+        );
+    }
+
     // ── Steering trigger collapse tests ──────────────────────────────────
 
     #[test]

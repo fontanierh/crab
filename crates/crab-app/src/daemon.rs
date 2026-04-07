@@ -4045,4 +4045,69 @@ mod tests {
             "at least one graceful steering trigger should be ingested"
         );
     }
+
+    #[test]
+    fn daemon_loop_collapses_duplicate_steering_triggers() {
+        let workspace = TempWorkspace::new("daemon", "loop-collapse-steering");
+        let config = runtime_config_for_workspace_with_lanes(&workspace.path, 1);
+        let state_root = workspace.path.join("state");
+        std::fs::create_dir_all(&state_root).expect("state root should be creatable");
+
+        // Write two steering triggers for the same channel
+        crab_core::write_steering_trigger(
+            &state_root,
+            &crab_core::PendingTrigger {
+                channel_id: "888".to_string(),
+                message: "steer 1".to_string(),
+            },
+        )
+        .expect("trigger 1 should be written");
+        crab_core::write_steering_trigger(
+            &state_root,
+            &crab_core::PendingTrigger {
+                channel_id: "888".to_string(),
+                message: "steer 2".to_string(),
+            },
+        )
+        .expect("trigger 2 should be written");
+
+        // Write two graceful steering triggers for the same channel
+        crab_core::write_graceful_steering_trigger(
+            &state_root,
+            &crab_core::PendingTrigger {
+                channel_id: "888".to_string(),
+                message: "graceful 1".to_string(),
+            },
+        )
+        .expect("graceful 1 should be written");
+        crab_core::write_graceful_steering_trigger(
+            &state_root,
+            &crab_core::PendingTrigger {
+                channel_id: "888".to_string(),
+                message: "graceful 2".to_string(),
+            },
+        )
+        .expect("graceful 2 should be written");
+
+        let discord = ScriptedDiscordIo::with_state(DiscordIoState::default());
+        let mut control = OneShotControl {
+            now: 1_739_173_200_000,
+            shutdown: false,
+        };
+
+        let stats = super::run_daemon_loop_with_transport(
+            &config,
+            &daemon_loop_config(),
+            discord,
+            &mut control,
+        )
+        .expect("daemon loop should succeed");
+
+        assert_eq!(stats.iterations, 1);
+        // Only 1 trigger should be ingested (the rest collapsed)
+        assert_eq!(
+            stats.ingested_triggers, 1,
+            "duplicate triggers for the same lane should be collapsed to one"
+        );
+    }
 }
