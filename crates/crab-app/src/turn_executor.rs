@@ -255,11 +255,10 @@ impl<R: TurnExecutorRuntime> TurnExecutor<R> {
         let triggers = crab_core::read_steering_triggers(&state_root)?;
         for (trigger_path, trigger) in triggers {
             crab_core::consume_steering_trigger(&trigger_path)?;
-            if self.consume_and_enqueue_steering(
-                current_logical_session_id,
-                &trigger.channel_id,
-                &trigger.message,
-            )? {
+            let lsid = current_logical_session_id;
+            let steered =
+                self.consume_and_enqueue_steering(lsid, &trigger.channel_id, &trigger.message)?;
+            if steered {
                 return Ok(true);
             }
         }
@@ -274,11 +273,10 @@ impl<R: TurnExecutorRuntime> TurnExecutor<R> {
         let triggers = crab_core::read_graceful_steering_triggers(&state_root)?;
         for (trigger_path, trigger) in triggers {
             crab_core::consume_graceful_steering_trigger(&trigger_path)?;
-            if self.consume_and_enqueue_steering(
-                current_logical_session_id,
-                &trigger.channel_id,
-                &trigger.message,
-            )? {
+            let lsid = current_logical_session_id;
+            let steered =
+                self.consume_and_enqueue_steering(lsid, &trigger.channel_id, &trigger.message)?;
+            if steered {
                 return Ok(true);
             }
         }
