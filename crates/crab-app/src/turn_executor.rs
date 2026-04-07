@@ -556,16 +556,26 @@ impl<R: TurnExecutorRuntime> TurnExecutor<R> {
                             last_event_was_tool_result = true;
                         }
                         BackendEventKind::TextDelta | BackendEventKind::ToolCall => {
-                            if last_event_was_tool_result && graceful_steer_pending {
-                                // Loop boundary: tools finished, new iteration starting.
-                                // Drain any immediate steer so it doesn't fire later.
-                                let _ = self.check_for_steering_message(&run.logical_session_id)?;
-                                // Kill before appending/rendering the boundary event.
-                                let _ = self
-                                    .runtime
-                                    .interrupt_backend_turn(&physical_session, &turn_id);
-                                steered = true;
-                                break;
+                            if last_event_was_tool_result {
+                                // Potential loop boundary: tools finished, new iteration starting.
+                                // Fresh-poll for graceful triggers that arrived since last check.
+                                if !graceful_steer_pending {
+                                    graceful_steer_pending = self
+                                        .check_for_graceful_steering_trigger(
+                                            &run.logical_session_id,
+                                        )?;
+                                }
+                                if graceful_steer_pending {
+                                    // Drain any immediate steer so it doesn't fire later.
+                                    let _ =
+                                        self.check_for_steering_message(&run.logical_session_id)?;
+                                    // Kill before appending/rendering the boundary event.
+                                    let _ = self
+                                        .runtime
+                                        .interrupt_backend_turn(&physical_session, &turn_id);
+                                    steered = true;
+                                    break;
+                                }
                             }
                             last_event_was_tool_result = false;
                         }
@@ -7086,6 +7096,44 @@ mod tests {
         assert!(
             runtime.interrupt_calls.is_empty(),
             "interrupt should not be called for cross-lane graceful triggers"
+        );
+    }
+
+    #[test]
+    fn graceful_steering_boundary_fresh_poll_finds_no_trigger() {
+        // Scenario: no graceful trigger exists. Events include a ToolResult -> TextDelta
+        // boundary. The fresh-poll at the boundary should fire (graceful_steer_pending
+        // is false) and return false, so the turn completes normally.
+        let backend_events = vec![
+            backend_event(1, BackendEventKind::ToolResult, &[("output", "done")]),
+            backend_event(2, BackendEventKind::TextDelta, &[("text", "summary")]),
+            backend_event(3, BackendEventKind::TurnCompleted, &[("finish", "done")]),
+        ];
+        let mut runtime =
+            FakeRuntime::with_backend_events(backend_events, &[1, 2, 3, 4, 5, 6, 7, 8]);
+        runtime
+            .resolve_profile_results
+            .push_back(Ok(sample_profile_telemetry()));
+        let (_workspace, mut executor) =
+            build_executor_scenario("graceful-boundary-no-trigger", runtime, 8);
+
+        // No trigger written -- the fresh-poll at the boundary should find nothing.
+
+        let dispatch = executor
+            .process_gateway_message(gateway_message("m-1"))
+            .expect("pipeline should succeed")
+            .expect("message should dispatch");
+
+        assert_eq!(
+            dispatch.status,
+            RunStatus::Succeeded,
+            "turn should complete normally when no graceful trigger exists"
+        );
+
+        let runtime = executor.runtime_mut();
+        assert!(
+            runtime.interrupt_calls.is_empty(),
+            "interrupt should not be called when no graceful trigger exists"
         );
     }
 }
