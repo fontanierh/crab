@@ -558,10 +558,8 @@ impl<R: TurnExecutorRuntime> TurnExecutor<R> {
                         BackendEventKind::TextDelta | BackendEventKind::ToolCall => {
                             if last_event_was_tool_result && graceful_steer_pending {
                                 // Loop boundary: tools finished, new iteration starting.
-                                // Check immediate steering first so it always wins.
-                                if self.check_for_steering_message(&run.logical_session_id)? {
-                                    // Immediate steer arrived; it takes priority.
-                                }
+                                // Drain any immediate steer so it doesn't fire later.
+                                let _ = self.check_for_steering_message(&run.logical_session_id)?;
                                 // Kill before appending/rendering the boundary event.
                                 let _ = self
                                     .runtime
