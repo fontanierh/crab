@@ -234,6 +234,7 @@ impl<R: TurnExecutorRuntime> TurnExecutor<R> {
     fn check_for_steering_trigger(&mut self, current_logical_session_id: &str) -> CrabResult<bool> {
         let state_root = self.composition.state_stores.root.clone();
         let triggers = crab_core::read_steering_triggers(&state_root)?;
+        // Keep on one line: multi-line call sites can produce llvm-cov line-mapping gaps.
         let (matched, _) = self.consume_and_batch_triggers(
             triggers,
             current_logical_session_id,
@@ -249,6 +250,7 @@ impl<R: TurnExecutorRuntime> TurnExecutor<R> {
     ) -> CrabResult<bool> {
         let state_root = self.composition.state_stores.root.clone();
         let triggers = crab_core::read_graceful_steering_triggers(&state_root)?;
+        // Keep on one line: multi-line call sites can produce llvm-cov line-mapping gaps.
         let (matched, _) = self.consume_and_batch_triggers(
             triggers,
             current_logical_session_id,
@@ -6061,6 +6063,39 @@ mod tests {
             bad_path.exists(),
             "file should be retained on enqueue failure"
         );
+    }
+
+    #[test]
+    fn batch_triggers_delete_failure_returns_error_after_processing_all_channels() {
+        let workspace = TempWorkspace::new("turn-executor", "batch-delete-fail");
+        let runtime = FakeRuntime::with_backend_events(Vec::new(), &[1, 2, 3]);
+        let mut executor = build_executor(&workspace, runtime, 8);
+
+        let state_root = state_root(&workspace);
+        fs::create_dir_all(&state_root).expect("state root");
+
+        // Write a trigger, then pre-delete the file so consume_fn fails.
+        let trigger_path = crab_core::write_steering_trigger(
+            &state_root,
+            &crab_core::PendingTrigger {
+                channel_id: "777".to_string(),
+                message: "will fail delete".to_string(),
+            },
+        )
+        .expect("write trigger");
+
+        // Read triggers, then delete the file before calling batch
+        let triggers = crab_core::read_steering_triggers(&state_root).expect("read");
+        fs::remove_file(&trigger_path).expect("pre-delete should succeed");
+
+        let result = executor.consume_and_batch_triggers(
+            triggers,
+            "discord:channel:777",
+            crab_core::consume_steering_trigger,
+            "steering",
+        );
+
+        assert!(result.is_err(), "should return error when consume_fn fails");
     }
 
     // ── Bug 3: Bootstrap re-injection flag survives daemon restart ──────
