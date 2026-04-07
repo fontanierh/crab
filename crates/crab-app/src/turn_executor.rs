@@ -236,22 +236,21 @@ impl<R: TurnExecutorRuntime> TurnExecutor<R> {
         let triggers = crab_core::read_steering_triggers(&state_root)?;
         for (trigger_path, trigger) in triggers {
             crab_core::consume_steering_trigger(&trigger_path)?;
-            if self.lane_has_queued_run(&trigger.channel_id) {
-                continue;
-            }
-            match self.enqueue_pending_trigger(&trigger.channel_id, &trigger.message) {
-                Ok(queued) => {
-                    if queued.logical_session_id == current_logical_session_id {
-                        return Ok(true);
+            if !self.lane_has_queued_run(&trigger.channel_id) {
+                match self.enqueue_pending_trigger(&trigger.channel_id, &trigger.message) {
+                    Ok(queued) => {
+                        if queued.logical_session_id == current_logical_session_id {
+                            return Ok(true);
+                        }
                     }
-                }
-                Err(_error) => {
-                    #[cfg(not(coverage))]
-                    tracing::warn!(
-                        channel_id = %trigger.channel_id,
-                        error = %_error,
-                        "failed to enqueue steering trigger"
-                    );
+                    Err(_error) => {
+                        #[cfg(not(coverage))]
+                        tracing::warn!(
+                            channel_id = %trigger.channel_id,
+                            error = %_error,
+                            "failed to enqueue steering trigger"
+                        );
+                    }
                 }
             }
         }
@@ -266,22 +265,21 @@ impl<R: TurnExecutorRuntime> TurnExecutor<R> {
         let triggers = crab_core::read_graceful_steering_triggers(&state_root)?;
         for (trigger_path, trigger) in triggers {
             crab_core::consume_graceful_steering_trigger(&trigger_path)?;
-            if self.lane_has_queued_run(&trigger.channel_id) {
-                continue;
-            }
-            match self.enqueue_pending_trigger(&trigger.channel_id, &trigger.message) {
-                Ok(queued) => {
-                    if queued.logical_session_id == current_logical_session_id {
-                        return Ok(true);
+            if !self.lane_has_queued_run(&trigger.channel_id) {
+                match self.enqueue_pending_trigger(&trigger.channel_id, &trigger.message) {
+                    Ok(queued) => {
+                        if queued.logical_session_id == current_logical_session_id {
+                            return Ok(true);
+                        }
                     }
-                }
-                Err(_error) => {
-                    #[cfg(not(coverage))]
-                    tracing::warn!(
-                        channel_id = %trigger.channel_id,
-                        error = %_error,
-                        "failed to enqueue graceful steering trigger"
-                    );
+                    Err(_error) => {
+                        #[cfg(not(coverage))]
+                        tracing::warn!(
+                            channel_id = %trigger.channel_id,
+                            error = %_error,
+                            "failed to enqueue graceful steering trigger"
+                        );
+                    }
                 }
             }
         }

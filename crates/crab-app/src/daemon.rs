@@ -1651,20 +1651,19 @@ where
             crab_core::read_steering_triggers(&executor.composition().state_stores.root)?
         {
             crab_core::consume_steering_trigger(&trigger_path)?;
-            if executor.lane_has_queued_run(&trigger.channel_id) {
-                continue;
-            }
-            match executor.enqueue_pending_trigger(&trigger.channel_id, &trigger.message) {
-                Ok(_) => {
-                    stats.ingested_triggers = stats.ingested_triggers.saturating_add(1);
-                }
-                Err(_error) => {
-                    #[cfg(not(coverage))]
-                    tracing::warn!(
-                        channel_id = %trigger.channel_id,
-                        error = %_error,
-                        "failed to enqueue steering trigger from idle loop"
-                    );
+            if !executor.lane_has_queued_run(&trigger.channel_id) {
+                match executor.enqueue_pending_trigger(&trigger.channel_id, &trigger.message) {
+                    Ok(_) => {
+                        stats.ingested_triggers = stats.ingested_triggers.saturating_add(1);
+                    }
+                    Err(_error) => {
+                        #[cfg(not(coverage))]
+                        tracing::warn!(
+                            channel_id = %trigger.channel_id,
+                            error = %_error,
+                            "failed to enqueue steering trigger from idle loop"
+                        );
+                    }
                 }
             }
         }
@@ -1674,20 +1673,19 @@ where
             crab_core::read_graceful_steering_triggers(&executor.composition().state_stores.root)?
         {
             crab_core::consume_graceful_steering_trigger(&trigger_path)?;
-            if executor.lane_has_queued_run(&trigger.channel_id) {
-                continue;
-            }
-            match executor.enqueue_pending_trigger(&trigger.channel_id, &trigger.message) {
-                Ok(_) => {
-                    stats.ingested_triggers = stats.ingested_triggers.saturating_add(1);
-                }
-                Err(_error) => {
-                    #[cfg(not(coverage))]
-                    tracing::warn!(
-                        channel_id = %trigger.channel_id,
-                        error = %_error,
-                        "failed to enqueue graceful steering trigger from idle loop"
-                    );
+            if !executor.lane_has_queued_run(&trigger.channel_id) {
+                match executor.enqueue_pending_trigger(&trigger.channel_id, &trigger.message) {
+                    Ok(_) => {
+                        stats.ingested_triggers = stats.ingested_triggers.saturating_add(1);
+                    }
+                    Err(_error) => {
+                        #[cfg(not(coverage))]
+                        tracing::warn!(
+                            channel_id = %trigger.channel_id,
+                            error = %_error,
+                            "failed to enqueue graceful steering trigger from idle loop"
+                        );
+                    }
                 }
             }
         }
