@@ -231,13 +231,14 @@ impl<R: TurnExecutorRuntime> TurnExecutor<R> {
         self.check_for_steering_trigger(current_logical_session_id)
     }
 
-    fn consume_and_enqueue_steering(
+    pub(crate) fn consume_and_enqueue_steering(
         &mut self,
         current_logical_session_id: &str,
         channel_id: &str,
         message: &str,
     ) -> CrabResult<bool> {
-        if self.lane_has_queued_run(channel_id) {
+        let dominated = self.lane_has_queued_run(channel_id);
+        if dominated {
             return Ok(false);
         }
         match self.enqueue_pending_trigger(channel_id, message) {
@@ -283,7 +284,7 @@ impl<R: TurnExecutorRuntime> TurnExecutor<R> {
         Ok(false)
     }
 
-    pub fn lane_has_queued_run(&self, channel_id: &str) -> bool {
+    fn lane_has_queued_run(&self, channel_id: &str) -> bool {
         let routing_key = RoutingKey::Channel {
             channel_id: channel_id.to_string(),
         };

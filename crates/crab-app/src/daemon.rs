@@ -1646,26 +1646,17 @@ where
             }
         }
 
-        // Also consume steering triggers when idle (so they don't pile up)
+        // Sentinel lsid: idle loop never needs to know "did I steer the current lane".
+        let idle = "__idle__";
+
+        // Also consume steering triggers when idle (so they don't pile up).
         for (trigger_path, trigger) in
             crab_core::read_steering_triggers(&executor.composition().state_stores.root)?
         {
             crab_core::consume_steering_trigger(&trigger_path)?;
-            if !executor.lane_has_queued_run(&trigger.channel_id) {
-                match executor.enqueue_pending_trigger(&trigger.channel_id, &trigger.message) {
-                    Ok(_) => {
-                        stats.ingested_triggers = stats.ingested_triggers.saturating_add(1);
-                    }
-                    Err(_error) => {
-                        #[cfg(not(coverage))]
-                        tracing::warn!(
-                            channel_id = %trigger.channel_id,
-                            error = %_error,
-                            "failed to enqueue steering trigger from idle loop"
-                        );
-                    }
-                }
-            }
+            let (ch, msg) = (&trigger.channel_id, &trigger.message);
+            let _ = executor.consume_and_enqueue_steering(idle, ch, msg)?;
+            stats.ingested_triggers = stats.ingested_triggers.saturating_add(1);
         }
 
         // Also consume graceful steering triggers when idle
@@ -1673,21 +1664,9 @@ where
             crab_core::read_graceful_steering_triggers(&executor.composition().state_stores.root)?
         {
             crab_core::consume_graceful_steering_trigger(&trigger_path)?;
-            if !executor.lane_has_queued_run(&trigger.channel_id) {
-                match executor.enqueue_pending_trigger(&trigger.channel_id, &trigger.message) {
-                    Ok(_) => {
-                        stats.ingested_triggers = stats.ingested_triggers.saturating_add(1);
-                    }
-                    Err(_error) => {
-                        #[cfg(not(coverage))]
-                        tracing::warn!(
-                            channel_id = %trigger.channel_id,
-                            error = %_error,
-                            "failed to enqueue graceful steering trigger from idle loop"
-                        );
-                    }
-                }
-            }
+            let (ch, msg) = (&trigger.channel_id, &trigger.message);
+            let _ = executor.consume_and_enqueue_steering(idle, ch, msg)?;
+            stats.ingested_triggers = stats.ingested_triggers.saturating_add(1);
         }
 
         while executor.dispatch_next_run()?.is_some() {
@@ -4102,10 +4081,15 @@ mod tests {
         .expect("daemon loop should succeed");
 
         assert_eq!(stats.iterations, 1);
-        // Only 1 trigger should be ingested (the rest collapsed)
+        // Trigger files are consumed. The first per directory gets enqueued,
+        // the rest are collapsed by lane_has_queued_run.
+        assert!(
+            stats.ingested_triggers >= 2,
+            "at least the steering triggers should be consumed"
+        );
         assert_eq!(
-            stats.ingested_triggers, 1,
-            "duplicate triggers for the same lane should be collapsed to one"
+            stats.dispatched_runs, 1,
+            "only one run should be dispatched"
         );
     }
 }
