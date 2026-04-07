@@ -5854,8 +5854,7 @@ mod tests {
         )
         .expect("write trigger 2");
 
-        let triggers = crab_core::read_steering_triggers(&state_root)
-            .expect("read triggers");
+        let triggers = crab_core::read_steering_triggers(&state_root).expect("read triggers");
         assert_eq!(triggers.len(), 2, "should have 2 trigger files");
 
         let (matched, consumed) = executor
@@ -5898,7 +5897,9 @@ mod tests {
         let workspace = TempWorkspace::new("turn-executor", "batch-cross-channel");
         let mut runtime = FakeRuntime::with_backend_events(Vec::new(), &[1, 2, 3, 4, 5, 6, 7, 8]);
         // Two enqueue calls need two profile resolutions (default has one).
-        runtime.resolve_profile_results.push_back(Ok(sample_profile_telemetry()));
+        runtime
+            .resolve_profile_results
+            .push_back(Ok(sample_profile_telemetry()));
         let mut executor = build_executor(&workspace, runtime, 8);
 
         let state_root = state_root(&workspace);
@@ -5921,8 +5922,7 @@ mod tests {
         )
         .expect("write trigger for 999");
 
-        let triggers = crab_core::read_steering_triggers(&state_root)
-            .expect("read triggers");
+        let triggers = crab_core::read_steering_triggers(&state_root).expect("read triggers");
         assert_eq!(triggers.len(), 2);
 
         let (matched, consumed) = executor
@@ -5939,12 +5939,20 @@ mod tests {
 
         // Two separate runs should exist, one per channel.
         assert_eq!(
-            executor.composition().scheduler.queued_count("discord:channel:777").unwrap(),
+            executor
+                .composition()
+                .scheduler
+                .queued_count("discord:channel:777")
+                .unwrap(),
             1,
             "channel 777 should have 1 queued run"
         );
         assert_eq!(
-            executor.composition().scheduler.queued_count("discord:channel:999").unwrap(),
+            executor
+                .composition()
+                .scheduler
+                .queued_count("discord:channel:999")
+                .unwrap(),
             1,
             "channel 999 should have 1 queued run"
         );
@@ -5968,8 +5976,7 @@ mod tests {
         )
         .expect("write trigger");
 
-        let triggers = crab_core::read_steering_triggers(&state_root)
-            .expect("read triggers");
+        let triggers = crab_core::read_steering_triggers(&state_root).expect("read triggers");
 
         let (_, consumed) = executor
             .consume_and_batch_triggers(
@@ -6034,11 +6041,9 @@ mod tests {
         let triggers_dir = state_root.join("steering_triggers");
         fs::create_dir_all(&triggers_dir).expect("dir");
         let bad_path = triggers_dir.join("bad.json");
-        fs::write(&bad_path, r#"{"channel_id":"  ","message":"bad"}"#)
-            .expect("write bad trigger");
+        fs::write(&bad_path, r#"{"channel_id":"  ","message":"bad"}"#).expect("write bad trigger");
 
-        let triggers = crab_core::read_steering_triggers(&state_root)
-            .expect("read triggers");
+        let triggers = crab_core::read_steering_triggers(&state_root).expect("read triggers");
 
         let (matched, consumed) = executor
             .consume_and_batch_triggers(
@@ -6051,7 +6056,10 @@ mod tests {
 
         assert!(!matched);
         assert_eq!(consumed, 0, "failed enqueue should not count as consumed");
-        assert!(bad_path.exists(), "file should be retained on enqueue failure");
+        assert!(
+            bad_path.exists(),
+            "file should be retained on enqueue failure"
+        );
     }
 
     // ── Bug 3: Bootstrap re-injection flag survives daemon restart ──────
