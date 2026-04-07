@@ -235,12 +235,8 @@ impl<R: TurnExecutorRuntime> TurnExecutor<R> {
         let state_root = self.composition.state_stores.root.clone();
         let triggers = crab_core::read_steering_triggers(&state_root)?;
         // Keep on one line: multi-line call sites can produce llvm-cov line-mapping gaps.
-        let (matched, _) = self.consume_and_batch_triggers(
-            triggers,
-            current_logical_session_id,
-            crab_core::consume_steering_trigger,
-            "steering",
-        )?;
+        #[rustfmt::skip]
+        let (matched, _) = self.consume_and_batch_triggers(triggers, current_logical_session_id, crab_core::consume_steering_trigger, "steering")?;
         Ok(matched)
     }
 
@@ -251,12 +247,8 @@ impl<R: TurnExecutorRuntime> TurnExecutor<R> {
         let state_root = self.composition.state_stores.root.clone();
         let triggers = crab_core::read_graceful_steering_triggers(&state_root)?;
         // Keep on one line: multi-line call sites can produce llvm-cov line-mapping gaps.
-        let (matched, _) = self.consume_and_batch_triggers(
-            triggers,
-            current_logical_session_id,
-            crab_core::consume_graceful_steering_trigger,
-            "graceful steering",
-        )?;
+        #[rustfmt::skip]
+        let (matched, _) = self.consume_and_batch_triggers(triggers, current_logical_session_id, crab_core::consume_graceful_steering_trigger, "graceful steering")?;
         Ok(matched)
     }
 

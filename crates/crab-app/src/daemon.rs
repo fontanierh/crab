@@ -1652,22 +1652,14 @@ where
             let state_root = executor.composition().state_stores.root.clone();
             let steering = crab_core::read_steering_triggers(&state_root)?;
             // Keep on one line: multi-line call sites can produce llvm-cov line-mapping gaps.
-            let (_, consumed) = executor.consume_and_batch_triggers(
-                steering,
-                "",
-                crab_core::consume_steering_trigger,
-                "steering",
-            )?;
+            #[rustfmt::skip]
+            let (_, consumed) = executor.consume_and_batch_triggers(steering, "", crab_core::consume_steering_trigger, "steering")?;
             stats.ingested_triggers = stats.ingested_triggers.saturating_add(consumed as u64);
 
             let graceful = crab_core::read_graceful_steering_triggers(&state_root)?;
             // Keep on one line: multi-line call sites can produce llvm-cov line-mapping gaps.
-            let (_, consumed) = executor.consume_and_batch_triggers(
-                graceful,
-                "",
-                crab_core::consume_graceful_steering_trigger,
-                "graceful steering",
-            )?;
+            #[rustfmt::skip]
+            let (_, consumed) = executor.consume_and_batch_triggers(graceful, "", crab_core::consume_graceful_steering_trigger, "graceful steering")?;
             stats.ingested_triggers = stats.ingested_triggers.saturating_add(consumed as u64);
         }
 
