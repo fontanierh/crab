@@ -265,8 +265,9 @@ impl<R: TurnExecutorRuntime> TurnExecutor<R> {
     /// Design invariants (from Codex review):
     /// - Only delete trigger files whose messages were successfully enqueued.
     ///   Files for failed enqueues stay on disk for retry (no silent message loss).
-    /// - Messages within a batch are ordered chronologically (read_signal_files
-    ///   sorts by filename, which embeds timestamp + monotonic counter).
+    /// - Messages within a batch are ordered deterministically by filename
+    ///   (timestamp + pid + monotonic counter). Exact chronological within a
+    ///   single process; approximately chronological cross-process.
     /// - Message boundaries are preserved with `---` delimiters so the agent
     ///   can distinguish separate user messages from a single multi-line message.
     /// Returns `(matched_current_lane, consumed_trigger_count)`.
@@ -308,14 +309,23 @@ impl<R: TurnExecutorRuntime> TurnExecutor<R> {
 
             match self.enqueue_pending_trigger(channel_id, &combined) {
                 Ok(queued) => {
-                    // Enqueue succeeded — consume all trigger files for this channel.
-                    // Propagate delete errors: if a file can't be removed it will be
-                    // re-enqueued on the next poll, causing duplicate messages. It's
-                    // safer to surface the error than silently duplicate.
+                    // Enqueue succeeded — delete all trigger files for this channel.
+                    // Best-effort: attempt ALL deletions even if one fails, so we
+                    // minimize leftover files that would cause duplicates on re-poll.
+                    // Track the first error and report it after the loop.
+                    let mut first_delete_error: Option<CrabError> = None;
                     for (path, _) in entries {
-                        consume_fn(path)?;
+                        if let Err(error) = consume_fn(path) {
+                            if first_delete_error.is_none() {
+                                first_delete_error = Some(error);
+                            }
+                        } else {
+                            consumed_count += 1;
+                        }
                     }
-                    consumed_count += entries.len();
+                    if let Some(error) = first_delete_error {
+                        return Err(error);
+                    }
                     if queued.logical_session_id == current_logical_session_id {
                         matched_current_lane = true;
                     }
@@ -5874,17 +5884,9 @@ mod tests {
             .get_run("discord:channel:777", &run_ids[0])
             .expect("run read should succeed")
             .expect("run should exist");
-        assert!(
-            run.user_input.contains("first message"),
-            "combined input should contain first message"
-        );
-        assert!(
-            run.user_input.contains("---"),
-            "combined input should contain delimiter"
-        );
-        assert!(
-            run.user_input.contains("second message"),
-            "combined input should contain second message"
+        assert_eq!(
+            run.user_input, "first message\n---\nsecond message",
+            "messages should be joined with delimiter in chronological order"
         );
     }
 

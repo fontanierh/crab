@@ -79,10 +79,10 @@ pub(crate) fn read_signal_files<T: DeserializeOwned>(
         results.push((path, signal));
     }
 
-    // Sort by filename to preserve chronological order.
-    // Filenames are `{timestamp_ms}-{pid}-{seq}.json`, so lexicographic
-    // sort gives chronological order (timestamp dominates, seq breaks ties
-    // within the same millisecond and process).
+    // Sort by filename for deterministic, approximately chronological order.
+    // Filenames are `{timestamp_ms}-{pid}-{seq:010}.json`. Lexicographic sort
+    // is exact within a single process (timestamp + monotonic seq). Cross-process
+    // same-millisecond writes are ordered by pid, which is arbitrary but stable.
     results.sort_by(|(a, _), (b, _)| a.file_name().cmp(&b.file_name()));
 
     Ok(results)
