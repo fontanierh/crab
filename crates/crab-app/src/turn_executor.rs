@@ -270,6 +270,7 @@ impl<R: TurnExecutorRuntime> TurnExecutor<R> {
     ///   single process; approximately chronological cross-process.
     /// - Message boundaries are preserved with `---` delimiters so the agent
     ///   can distinguish separate user messages from a single multi-line message.
+    ///
     /// Returns `(matched_current_lane, consumed_trigger_count)`.
     pub fn consume_and_batch_triggers(
         &mut self,
