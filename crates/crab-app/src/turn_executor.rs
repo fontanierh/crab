@@ -559,9 +559,7 @@ impl<R: TurnExecutorRuntime> TurnExecutor<R> {
                             if last_event_was_tool_result && graceful_steer_pending {
                                 // Loop boundary: tools finished, new iteration starting.
                                 // Check immediate steering first so it always wins.
-                                if self
-                                    .check_for_steering_message(&run.logical_session_id)?
-                                {
+                                if self.check_for_steering_message(&run.logical_session_id)? {
                                     // Immediate steer arrived; it takes priority.
                                 }
                                 // Kill before appending/rendering the boundary event.
@@ -621,8 +619,7 @@ impl<R: TurnExecutorRuntime> TurnExecutor<R> {
 
                 // Graceful steering check (does NOT break immediately)
                 if !graceful_steer_pending
-                    && self
-                        .check_for_graceful_steering_trigger(&run.logical_session_id)?
+                    && self.check_for_graceful_steering_trigger(&run.logical_session_id)?
                 {
                     graceful_steer_pending = true;
                 }
