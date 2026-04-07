@@ -560,10 +560,9 @@ impl<R: TurnExecutorRuntime> TurnExecutor<R> {
                                 // Potential loop boundary: tools finished, new iteration starting.
                                 // Fresh-poll for graceful triggers that arrived since last check.
                                 if !graceful_steer_pending {
-                                    graceful_steer_pending = self
-                                        .check_for_graceful_steering_trigger(
-                                            &run.logical_session_id,
-                                        )?;
+                                    let lsid = &run.logical_session_id;
+                                    graceful_steer_pending =
+                                        self.check_for_graceful_steering_trigger(lsid)?;
                                 }
                                 if graceful_steer_pending {
                                     // Drain any immediate steer so it doesn't fire later.
