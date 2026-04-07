@@ -234,12 +234,13 @@ impl<R: TurnExecutorRuntime> TurnExecutor<R> {
     fn check_for_steering_trigger(&mut self, current_logical_session_id: &str) -> CrabResult<bool> {
         let state_root = self.composition.state_stores.root.clone();
         let triggers = crab_core::read_steering_triggers(&state_root)?;
-        self.consume_and_batch_triggers(
+        let (matched, _) = self.consume_and_batch_triggers(
             triggers,
             current_logical_session_id,
             crab_core::consume_steering_trigger,
             "steering",
-        )
+        )?;
+        Ok(matched)
     }
 
     fn check_for_graceful_steering_trigger(
@@ -248,12 +249,13 @@ impl<R: TurnExecutorRuntime> TurnExecutor<R> {
     ) -> CrabResult<bool> {
         let state_root = self.composition.state_stores.root.clone();
         let triggers = crab_core::read_graceful_steering_triggers(&state_root)?;
-        self.consume_and_batch_triggers(
+        let (matched, _) = self.consume_and_batch_triggers(
             triggers,
             current_logical_session_id,
             crab_core::consume_graceful_steering_trigger,
             "graceful steering",
-        )
+        )?;
+        Ok(matched)
     }
 
     /// Consume all trigger files, batch messages by channel_id, and enqueue
@@ -267,15 +269,16 @@ impl<R: TurnExecutorRuntime> TurnExecutor<R> {
     ///   sorts by filename, which embeds timestamp + monotonic counter).
     /// - Message boundaries are preserved with `---` delimiters so the agent
     ///   can distinguish separate user messages from a single multi-line message.
+    /// Returns `(matched_current_lane, consumed_trigger_count)`.
     pub fn consume_and_batch_triggers(
         &mut self,
         triggers: Vec<(PathBuf, crab_core::PendingTrigger)>,
         current_logical_session_id: &str,
         consume_fn: fn(&Path) -> CrabResult<()>,
         _label: &str,
-    ) -> CrabResult<bool> {
+    ) -> CrabResult<(bool, usize)> {
         if triggers.is_empty() {
-            return Ok(false);
+            return Ok((false, 0));
         }
 
         // Group messages and their trigger paths by channel_id, preserving
@@ -289,6 +292,7 @@ impl<R: TurnExecutorRuntime> TurnExecutor<R> {
         }
 
         let mut matched_current_lane = false;
+        let mut consumed_count = 0_usize;
 
         for (channel_id, entries) in &by_channel {
             // Build combined message with explicit delimiters between messages.
@@ -305,17 +309,13 @@ impl<R: TurnExecutorRuntime> TurnExecutor<R> {
             match self.enqueue_pending_trigger(channel_id, &combined) {
                 Ok(queued) => {
                     // Enqueue succeeded — consume all trigger files for this channel.
+                    // Propagate delete errors: if a file can't be removed it will be
+                    // re-enqueued on the next poll, causing duplicate messages. It's
+                    // safer to surface the error than silently duplicate.
                     for (path, _) in entries {
-                        if let Err(_error) = consume_fn(path) {
-                            #[cfg(not(coverage))]
-                            tracing::warn!(
-                                path = %path.display(),
-                                error = %_error,
-                                "failed to consume {} trigger file",
-                                _label,
-                            );
-                        }
+                        consume_fn(path)?;
                     }
+                    consumed_count += entries.len();
                     if queued.logical_session_id == current_logical_session_id {
                         matched_current_lane = true;
                     }
@@ -336,7 +336,7 @@ impl<R: TurnExecutorRuntime> TurnExecutor<R> {
             }
         }
 
-        Ok(matched_current_lane)
+        Ok((matched_current_lane, consumed_count))
     }
 
     pub fn dispatch_next_run(&mut self) -> CrabResult<Option<DispatchedTurn>> {
@@ -5811,6 +5811,242 @@ mod tests {
             .expect("message should dispatch");
 
         assert_eq!(dispatch.status, RunStatus::Succeeded);
+    }
+
+    // ── consume_and_batch_triggers: multi-trigger batching tests ──────
+
+    #[test]
+    fn batch_triggers_combines_same_channel_messages_with_delimiter() {
+        let workspace = TempWorkspace::new("turn-executor", "batch-same-channel");
+        let runtime = FakeRuntime::with_backend_events(Vec::new(), &[1, 2, 3]);
+        let mut executor = build_executor(&workspace, runtime, 8);
+
+        let state_root = state_root(&workspace);
+        fs::create_dir_all(&state_root).expect("state root");
+
+        let p1 = crab_core::write_steering_trigger(
+            &state_root,
+            &crab_core::PendingTrigger {
+                channel_id: "777".to_string(),
+                message: "first message".to_string(),
+            },
+        )
+        .expect("write trigger 1");
+        let p2 = crab_core::write_steering_trigger(
+            &state_root,
+            &crab_core::PendingTrigger {
+                channel_id: "777".to_string(),
+                message: "second message".to_string(),
+            },
+        )
+        .expect("write trigger 2");
+
+        let triggers = crab_core::read_steering_triggers(&state_root)
+            .expect("read triggers");
+        assert_eq!(triggers.len(), 2, "should have 2 trigger files");
+
+        let (matched, consumed) = executor
+            .consume_and_batch_triggers(
+                triggers,
+                "discord:channel:777",
+                crab_core::consume_steering_trigger,
+                "steering",
+            )
+            .expect("batch should succeed");
+
+        assert!(matched, "should match current lane");
+        assert_eq!(consumed, 2, "both triggers should be consumed");
+        assert!(!p1.exists(), "trigger 1 should be deleted");
+        assert!(!p2.exists(), "trigger 2 should be deleted");
+
+        // Verify the queued run contains combined messages with delimiter.
+        let run_ids = executor
+            .composition()
+            .state_stores
+            .run_store
+            .list_run_ids("discord:channel:777")
+            .expect("list run ids should succeed");
+        assert_eq!(run_ids.len(), 1, "should have exactly 1 batched run");
+        let run = executor
+            .composition()
+            .state_stores
+            .run_store
+            .get_run("discord:channel:777", &run_ids[0])
+            .expect("run read should succeed")
+            .expect("run should exist");
+        assert!(
+            run.user_input.contains("first message"),
+            "combined input should contain first message"
+        );
+        assert!(
+            run.user_input.contains("---"),
+            "combined input should contain delimiter"
+        );
+        assert!(
+            run.user_input.contains("second message"),
+            "combined input should contain second message"
+        );
+    }
+
+    #[test]
+    fn batch_triggers_creates_separate_runs_for_different_channels() {
+        let workspace = TempWorkspace::new("turn-executor", "batch-cross-channel");
+        let mut runtime = FakeRuntime::with_backend_events(Vec::new(), &[1, 2, 3, 4, 5, 6, 7, 8]);
+        // Two enqueue calls need two profile resolutions (default has one).
+        runtime.resolve_profile_results.push_back(Ok(sample_profile_telemetry()));
+        let mut executor = build_executor(&workspace, runtime, 8);
+
+        let state_root = state_root(&workspace);
+        fs::create_dir_all(&state_root).expect("state root");
+
+        crab_core::write_steering_trigger(
+            &state_root,
+            &crab_core::PendingTrigger {
+                channel_id: "777".to_string(),
+                message: "msg for 777".to_string(),
+            },
+        )
+        .expect("write trigger for 777");
+        crab_core::write_steering_trigger(
+            &state_root,
+            &crab_core::PendingTrigger {
+                channel_id: "999".to_string(),
+                message: "msg for 999".to_string(),
+            },
+        )
+        .expect("write trigger for 999");
+
+        let triggers = crab_core::read_steering_triggers(&state_root)
+            .expect("read triggers");
+        assert_eq!(triggers.len(), 2);
+
+        let (matched, consumed) = executor
+            .consume_and_batch_triggers(
+                triggers,
+                "discord:channel:777",
+                crab_core::consume_steering_trigger,
+                "steering",
+            )
+            .expect("batch should succeed");
+
+        assert!(matched, "should match current lane (777)");
+        assert_eq!(consumed, 2, "both triggers consumed");
+
+        // Two separate runs should exist, one per channel.
+        assert_eq!(
+            executor.composition().scheduler.queued_count("discord:channel:777").unwrap(),
+            1,
+            "channel 777 should have 1 queued run"
+        );
+        assert_eq!(
+            executor.composition().scheduler.queued_count("discord:channel:999").unwrap(),
+            1,
+            "channel 999 should have 1 queued run"
+        );
+    }
+
+    #[test]
+    fn batch_triggers_single_trigger_not_delimited() {
+        let workspace = TempWorkspace::new("turn-executor", "batch-single");
+        let runtime = FakeRuntime::with_backend_events(Vec::new(), &[1, 2]);
+        let mut executor = build_executor(&workspace, runtime, 8);
+
+        let state_root = state_root(&workspace);
+        fs::create_dir_all(&state_root).expect("state root");
+
+        crab_core::write_steering_trigger(
+            &state_root,
+            &crab_core::PendingTrigger {
+                channel_id: "777".to_string(),
+                message: "solo message".to_string(),
+            },
+        )
+        .expect("write trigger");
+
+        let triggers = crab_core::read_steering_triggers(&state_root)
+            .expect("read triggers");
+
+        let (_, consumed) = executor
+            .consume_and_batch_triggers(
+                triggers,
+                "discord:channel:777",
+                crab_core::consume_steering_trigger,
+                "steering",
+            )
+            .expect("batch should succeed");
+
+        assert_eq!(consumed, 1);
+
+        let run_ids = executor
+            .composition()
+            .state_stores
+            .run_store
+            .list_run_ids("discord:channel:777")
+            .expect("list run ids");
+        assert_eq!(run_ids.len(), 1);
+        let run = executor
+            .composition()
+            .state_stores
+            .run_store
+            .get_run("discord:channel:777", &run_ids[0])
+            .expect("run read")
+            .expect("run should exist");
+        assert_eq!(
+            run.user_input, "solo message",
+            "single trigger should not have delimiter"
+        );
+    }
+
+    #[test]
+    fn batch_triggers_empty_list_returns_false() {
+        let workspace = TempWorkspace::new("turn-executor", "batch-empty");
+        let runtime = FakeRuntime::with_backend_events(Vec::new(), &[1]);
+        let mut executor = build_executor(&workspace, runtime, 8);
+
+        let (matched, consumed) = executor
+            .consume_and_batch_triggers(
+                Vec::new(),
+                "discord:channel:777",
+                crab_core::consume_steering_trigger,
+                "steering",
+            )
+            .expect("empty batch should succeed");
+
+        assert!(!matched);
+        assert_eq!(consumed, 0);
+    }
+
+    #[test]
+    fn batch_triggers_enqueue_failure_retains_files() {
+        let workspace = TempWorkspace::new("turn-executor", "batch-enqueue-fail");
+        let runtime = FakeRuntime::with_backend_events(Vec::new(), &[1]);
+        let mut executor = build_executor(&workspace, runtime, 8);
+
+        let state_root = state_root(&workspace);
+        fs::create_dir_all(&state_root).expect("state root");
+
+        // Write a trigger with blank channel_id directly to bypass validation
+        let triggers_dir = state_root.join("steering_triggers");
+        fs::create_dir_all(&triggers_dir).expect("dir");
+        let bad_path = triggers_dir.join("bad.json");
+        fs::write(&bad_path, r#"{"channel_id":"  ","message":"bad"}"#)
+            .expect("write bad trigger");
+
+        let triggers = crab_core::read_steering_triggers(&state_root)
+            .expect("read triggers");
+
+        let (matched, consumed) = executor
+            .consume_and_batch_triggers(
+                triggers,
+                "",
+                crab_core::consume_steering_trigger,
+                "steering",
+            )
+            .expect("batch should succeed even with enqueue failure");
+
+        assert!(!matched);
+        assert_eq!(consumed, 0, "failed enqueue should not count as consumed");
+        assert!(bad_path.exists(), "file should be retained on enqueue failure");
     }
 
     // ── Bug 3: Bootstrap re-injection flag survives daemon restart ──────

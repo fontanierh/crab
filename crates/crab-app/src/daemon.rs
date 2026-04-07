@@ -1651,24 +1651,22 @@ where
         {
             let state_root = executor.composition().state_stores.root.clone();
             let steering = crab_core::read_steering_triggers(&state_root)?;
-            let steering_count = steering.len() as u64;
-            executor.consume_and_batch_triggers(
+            let (_, consumed) = executor.consume_and_batch_triggers(
                 steering,
                 "", // no current lane when idle
                 crab_core::consume_steering_trigger,
                 "steering",
             )?;
-            stats.ingested_triggers = stats.ingested_triggers.saturating_add(steering_count);
+            stats.ingested_triggers = stats.ingested_triggers.saturating_add(consumed as u64);
 
             let graceful = crab_core::read_graceful_steering_triggers(&state_root)?;
-            let graceful_count = graceful.len() as u64;
-            executor.consume_and_batch_triggers(
+            let (_, consumed) = executor.consume_and_batch_triggers(
                 graceful,
                 "", // no current lane when idle
                 crab_core::consume_graceful_steering_trigger,
                 "graceful steering",
             )?;
-            stats.ingested_triggers = stats.ingested_triggers.saturating_add(graceful_count);
+            stats.ingested_triggers = stats.ingested_triggers.saturating_add(consumed as u64);
         }
 
         while executor.dispatch_next_run()?.is_some() {

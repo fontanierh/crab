@@ -34,7 +34,7 @@ pub(crate) fn write_signal_file<T: Serialize>(
         .as_millis();
     let seq = SIGNAL_COUNTER.fetch_add(1, Ordering::Relaxed);
     let pid = std::process::id();
-    let filename = format!("{timestamp_ms}-{pid}-{seq}.json");
+    let filename = format!("{timestamp_ms}-{pid}-{seq:010}.json");
     let path = dir.join(&filename);
 
     fs::write(&path, &json).map_err(|error| CrabError::Io {
