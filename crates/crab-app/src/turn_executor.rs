@@ -231,27 +231,36 @@ impl<R: TurnExecutorRuntime> TurnExecutor<R> {
         self.check_for_steering_trigger(current_logical_session_id)
     }
 
+    fn consume_and_enqueue_steering(
+        &mut self,
+        current_logical_session_id: &str,
+        channel_id: &str,
+        message: &str,
+    ) -> CrabResult<bool> {
+        if self.lane_has_queued_run(channel_id) {
+            return Ok(false);
+        }
+        match self.enqueue_pending_trigger(channel_id, message) {
+            Ok(queued) => Ok(queued.logical_session_id == current_logical_session_id),
+            Err(_error) => {
+                #[cfg(not(coverage))]
+                tracing::warn!(channel_id, error = %_error, "failed to enqueue steering trigger");
+                Ok(false)
+            }
+        }
+    }
+
     fn check_for_steering_trigger(&mut self, current_logical_session_id: &str) -> CrabResult<bool> {
         let state_root = self.composition.state_stores.root.clone();
         let triggers = crab_core::read_steering_triggers(&state_root)?;
         for (trigger_path, trigger) in triggers {
             crab_core::consume_steering_trigger(&trigger_path)?;
-            if !self.lane_has_queued_run(&trigger.channel_id) {
-                match self.enqueue_pending_trigger(&trigger.channel_id, &trigger.message) {
-                    Ok(queued) => {
-                        if queued.logical_session_id == current_logical_session_id {
-                            return Ok(true);
-                        }
-                    }
-                    Err(_error) => {
-                        #[cfg(not(coverage))]
-                        tracing::warn!(
-                            channel_id = %trigger.channel_id,
-                            error = %_error,
-                            "failed to enqueue steering trigger"
-                        );
-                    }
-                }
+            if self.consume_and_enqueue_steering(
+                current_logical_session_id,
+                &trigger.channel_id,
+                &trigger.message,
+            )? {
+                return Ok(true);
             }
         }
         Ok(false)
@@ -265,22 +274,12 @@ impl<R: TurnExecutorRuntime> TurnExecutor<R> {
         let triggers = crab_core::read_graceful_steering_triggers(&state_root)?;
         for (trigger_path, trigger) in triggers {
             crab_core::consume_graceful_steering_trigger(&trigger_path)?;
-            if !self.lane_has_queued_run(&trigger.channel_id) {
-                match self.enqueue_pending_trigger(&trigger.channel_id, &trigger.message) {
-                    Ok(queued) => {
-                        if queued.logical_session_id == current_logical_session_id {
-                            return Ok(true);
-                        }
-                    }
-                    Err(_error) => {
-                        #[cfg(not(coverage))]
-                        tracing::warn!(
-                            channel_id = %trigger.channel_id,
-                            error = %_error,
-                            "failed to enqueue graceful steering trigger"
-                        );
-                    }
-                }
+            if self.consume_and_enqueue_steering(
+                current_logical_session_id,
+                &trigger.channel_id,
+                &trigger.message,
+            )? {
+                return Ok(true);
             }
         }
         Ok(false)
