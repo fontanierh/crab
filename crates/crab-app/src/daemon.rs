@@ -1666,6 +1666,26 @@ where
             }
         }
 
+        // Also consume graceful steering triggers when idle
+        for (trigger_path, trigger) in
+            crab_core::read_graceful_steering_triggers(&executor.composition().state_stores.root)?
+        {
+            match executor.enqueue_pending_trigger(&trigger.channel_id, &trigger.message) {
+                Ok(_) => {
+                    crab_core::consume_graceful_steering_trigger(&trigger_path)?;
+                    stats.ingested_triggers = stats.ingested_triggers.saturating_add(1);
+                }
+                Err(_error) => {
+                    #[cfg(not(coverage))]
+                    tracing::warn!(
+                        channel_id = %trigger.channel_id,
+                        error = %_error,
+                        "failed to enqueue graceful steering trigger from idle loop"
+                    );
+                }
+            }
+        }
+
         while executor.dispatch_next_run()?.is_some() {
             stats.dispatched_runs = stats.dispatched_runs.saturating_add(1);
         }
@@ -3970,6 +3990,53 @@ mod tests {
         assert!(
             stats.ingested_triggers >= 1,
             "at least one steering trigger should be ingested"
+        );
+    }
+
+    #[test]
+    fn daemon_loop_ingests_graceful_steering_triggers_when_idle() {
+        let workspace = TempWorkspace::new("daemon", "loop-graceful-steering-triggers");
+        let config = runtime_config_for_workspace_with_lanes(&workspace.path, 1);
+        let state_root = workspace.path.join("state");
+        std::fs::create_dir_all(&state_root).expect("state root should be creatable");
+
+        // Write a good graceful steering trigger
+        crab_core::write_graceful_steering_trigger(
+            &state_root,
+            &crab_core::PendingTrigger {
+                channel_id: "999".to_string(),
+                message: "graceful steer me".to_string(),
+            },
+        )
+        .expect("graceful steering trigger should be written");
+
+        // Write a bad graceful steering trigger to exercise the error branch
+        let graceful_dir = state_root.join("graceful_steering");
+        std::fs::create_dir_all(&graceful_dir).expect("graceful dir should be creatable");
+        std::fs::write(
+            graceful_dir.join("bad_graceful.json"),
+            r#"{"channel_id":"  ","message":"bad graceful trigger"}"#,
+        )
+        .expect("bad graceful trigger file should be writable");
+
+        let discord = ScriptedDiscordIo::with_state(DiscordIoState::default());
+        let mut control = OneShotControl {
+            now: 1_739_173_200_000,
+            shutdown: false,
+        };
+
+        let stats = super::run_daemon_loop_with_transport(
+            &config,
+            &daemon_loop_config(),
+            discord,
+            &mut control,
+        )
+        .expect("daemon loop should succeed even with graceful trigger error");
+
+        assert_eq!(stats.iterations, 1);
+        assert!(
+            stats.ingested_triggers >= 1,
+            "at least one graceful steering trigger should be ingested"
         );
     }
 }

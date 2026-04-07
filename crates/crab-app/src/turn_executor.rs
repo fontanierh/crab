@@ -255,6 +255,33 @@ impl<R: TurnExecutorRuntime> TurnExecutor<R> {
         Ok(false)
     }
 
+    fn check_for_graceful_steering_trigger(
+        &mut self,
+        current_logical_session_id: &str,
+    ) -> CrabResult<bool> {
+        let state_root = self.composition.state_stores.root.clone();
+        let triggers = crab_core::read_graceful_steering_triggers(&state_root)?;
+        for (trigger_path, trigger) in triggers {
+            match self.enqueue_pending_trigger(&trigger.channel_id, &trigger.message) {
+                Ok(queued) => {
+                    crab_core::consume_graceful_steering_trigger(&trigger_path)?;
+                    if queued.logical_session_id == current_logical_session_id {
+                        return Ok(true);
+                    }
+                }
+                Err(_error) => {
+                    #[cfg(not(coverage))]
+                    tracing::warn!(
+                        channel_id = %trigger.channel_id,
+                        error = %_error,
+                        "failed to enqueue graceful steering trigger"
+                    );
+                }
+            }
+        }
+        Ok(false)
+    }
+
     pub fn dispatch_next_run(&mut self) -> CrabResult<Option<DispatchedTurn>> {
         let Some(dispatched) = self.composition.scheduler.try_dispatch_next() else {
             return Ok(None);
@@ -512,6 +539,8 @@ impl<R: TurnExecutorRuntime> TurnExecutor<R> {
             });
 
             let steering_poll_interval = Duration::from_millis(200);
+            let mut last_event_was_tool_result = false;
+            let mut graceful_steer_pending = false;
             loop {
                 let maybe_event = match event_rx.recv_timeout(steering_poll_interval) {
                     Ok(event) => Some(event),
@@ -519,6 +548,45 @@ impl<R: TurnExecutorRuntime> TurnExecutor<R> {
                     Err(RecvTimeoutError::Disconnected) => break,
                 };
                 if let Some(backend_event) = maybe_event {
+                    // Graceful steering: detect agentic loop boundaries BEFORE
+                    // appending/rendering the event, so the first event of the
+                    // next iteration is not leaked to the user.
+                    match &backend_event.kind {
+                        BackendEventKind::ToolResult => {
+                            last_event_was_tool_result = true;
+                        }
+                        BackendEventKind::TextDelta | BackendEventKind::ToolCall => {
+                            if last_event_was_tool_result {
+                                // Potential loop boundary: tools finished, new iteration starting.
+                                // Fresh-poll for graceful triggers that arrived since last check.
+                                if !graceful_steer_pending {
+                                    let lsid = &run.logical_session_id;
+                                    graceful_steer_pending =
+                                        self.check_for_graceful_steering_trigger(lsid)?;
+                                }
+                                if graceful_steer_pending {
+                                    // Drain any immediate steer so it doesn't fire later.
+                                    let _ =
+                                        self.check_for_steering_message(&run.logical_session_id)?;
+                                    // Kill before appending/rendering the boundary event.
+                                    let _ = self
+                                        .runtime
+                                        .interrupt_backend_turn(&physical_session, &turn_id);
+                                    steered = true;
+                                    break;
+                                }
+                            }
+                            last_event_was_tool_result = false;
+                        }
+                        BackendEventKind::TurnCompleted => {
+                            // Turn completed naturally while graceful steer was pending.
+                            // The turn's output is valid (not interrupted). The steering
+                            // message is already enqueued and will be dispatched next.
+                            // Do NOT set steered here: the run succeeded normally.
+                        }
+                        _ => {}
+                    }
+
                     let emitted_at_epoch_ms = self.runtime.now_epoch_ms()?;
                     self.append_backend_event(&run, &backend_event, emitted_at_epoch_ms)?;
                     if backend_event.kind == BackendEventKind::ToolCall {
@@ -546,12 +614,21 @@ impl<R: TurnExecutorRuntime> TurnExecutor<R> {
                     }
                     backend_events.push(backend_event);
                 }
+
+                // Immediate steering check (always takes priority)
                 if self.check_for_steering_message(&run.logical_session_id)? {
                     let _ = self
                         .runtime
                         .interrupt_backend_turn(&physical_session, &turn_id);
                     steered = true;
                     break;
+                }
+
+                // Graceful steering check (does NOT break immediately)
+                if !graceful_steer_pending
+                    && self.check_for_graceful_steering_trigger(&run.logical_session_id)?
+                {
+                    graceful_steer_pending = true;
                 }
             }
             drop(event_rx);
@@ -6852,5 +6929,210 @@ mod tests {
         );
 
         drop(workspace);
+    }
+
+    // ── Graceful steering tests ─────────────────────────────────────────
+
+    #[test]
+    fn graceful_steering_waits_for_tool_result_before_interrupting() {
+        // Scenario: graceful trigger is present, events flow:
+        //   TextDelta(1) -> ToolCall(2) -> ToolResult(3) -> TextDelta(4)
+        // The interrupt should fire at TextDelta(4) -- the boundary.
+        let backend_events = vec![
+            backend_event(1, BackendEventKind::TextDelta, &[("text", "thinking")]),
+            backend_event(2, BackendEventKind::ToolCall, &[("tool", "read_file")]),
+            backend_event(3, BackendEventKind::ToolResult, &[("output", "contents")]),
+            backend_event(4, BackendEventKind::TextDelta, &[("text", "next")]),
+            backend_event(5, BackendEventKind::TurnCompleted, &[("finish", "done")]),
+        ];
+        // Generous timestamps: enqueue(1), started(2), event1(3), event2(4), event3(5),
+        // steered_note(6), completed(7)
+        let mut runtime =
+            FakeRuntime::with_backend_events(backend_events, &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+        runtime
+            .resolve_profile_results
+            .push_back(Ok(sample_profile_telemetry()));
+        let (workspace, mut executor) =
+            build_executor_scenario("graceful-steer-boundary", runtime, 8);
+
+        // Pre-write a graceful steering trigger to the state dir
+        let state_root = workspace.path.join("state");
+        crab_core::write_graceful_steering_trigger(
+            &state_root,
+            &crab_core::PendingTrigger {
+                channel_id: "777".to_string(),
+                message: "graceful steer".to_string(),
+            },
+        )
+        .expect("trigger write should succeed");
+
+        let dispatch = executor
+            .process_gateway_message(gateway_message("m-1"))
+            .expect("pipeline should succeed")
+            .expect("message should dispatch");
+
+        assert_eq!(
+            dispatch.status,
+            RunStatus::Cancelled,
+            "graceful steering should mark run as cancelled"
+        );
+
+        // Verify interrupt was called
+        let runtime = executor.runtime_mut();
+        assert_eq!(
+            runtime.interrupt_calls.len(),
+            1,
+            "interrupt_backend_turn should be called once at the boundary"
+        );
+
+        // Verify the boundary event (TextDelta 4) was NOT appended (boundary detection is
+        // before append, so events 1-3 are stored but 4 is not).
+        let events = executor
+            .composition()
+            .state_stores
+            .event_store
+            .replay_run("discord:channel:777", "run:discord:channel:777:m-1")
+            .expect("event replay should succeed");
+        let backend_event_count = events
+            .iter()
+            .filter(|e| {
+                matches!(
+                    e.kind,
+                    EventKind::TextDelta | EventKind::ToolCall | EventKind::ToolResult
+                )
+            })
+            .count();
+        assert_eq!(
+            backend_event_count, 3,
+            "only 3 backend events should be stored (boundary event excluded)"
+        );
+    }
+
+    #[test]
+    fn graceful_steering_turn_completed_stays_succeeded() {
+        // Scenario: graceful trigger present, but turn has no tools -- it completes
+        // naturally. The run should be Succeeded, not Cancelled.
+        let backend_events = vec![
+            backend_event(1, BackendEventKind::TextDelta, &[("text", "response")]),
+            backend_event(2, BackendEventKind::TurnCompleted, &[("finish", "done")]),
+        ];
+        let mut runtime =
+            FakeRuntime::with_backend_events(backend_events, &[1, 2, 3, 4, 5, 6, 7, 8]);
+        runtime
+            .resolve_profile_results
+            .push_back(Ok(sample_profile_telemetry()));
+        let (workspace, mut executor) =
+            build_executor_scenario("graceful-steer-completed", runtime, 8);
+
+        let state_root = workspace.path.join("state");
+        crab_core::write_graceful_steering_trigger(
+            &state_root,
+            &crab_core::PendingTrigger {
+                channel_id: "777".to_string(),
+                message: "graceful steer".to_string(),
+            },
+        )
+        .expect("trigger write should succeed");
+
+        let dispatch = executor
+            .process_gateway_message(gateway_message("m-1"))
+            .expect("pipeline should succeed")
+            .expect("message should dispatch");
+
+        assert_eq!(
+            dispatch.status,
+            RunStatus::Succeeded,
+            "naturally completed turn should stay Succeeded even with graceful steer pending"
+        );
+
+        let runtime = executor.runtime_mut();
+        assert!(
+            runtime.interrupt_calls.is_empty(),
+            "interrupt should not be called when turn completes naturally"
+        );
+    }
+
+    #[test]
+    fn graceful_steering_for_different_lane_does_not_steer() {
+        // Scenario: graceful trigger targets a different channel than the active run.
+        let backend_events = vec![
+            backend_event(1, BackendEventKind::TextDelta, &[("text", "hello")]),
+            backend_event(2, BackendEventKind::ToolCall, &[("tool", "bash")]),
+            backend_event(3, BackendEventKind::ToolResult, &[("output", "ok")]),
+            backend_event(4, BackendEventKind::TextDelta, &[("text", "done")]),
+            backend_event(5, BackendEventKind::TurnCompleted, &[("finish", "done")]),
+        ];
+        let mut runtime =
+            FakeRuntime::with_backend_events(backend_events, &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+        runtime
+            .resolve_profile_results
+            .push_back(Ok(sample_profile_telemetry()));
+        let (workspace, mut executor) =
+            build_executor_scenario("graceful-steer-cross-lane", runtime, 8);
+
+        let state_root = workspace.path.join("state");
+        crab_core::write_graceful_steering_trigger(
+            &state_root,
+            &crab_core::PendingTrigger {
+                channel_id: "888".to_string(), // different channel
+                message: "graceful steer other lane".to_string(),
+            },
+        )
+        .expect("trigger write should succeed");
+
+        let dispatch = executor
+            .process_gateway_message(gateway_message("m-1"))
+            .expect("pipeline should succeed")
+            .expect("message should dispatch");
+
+        assert_eq!(
+            dispatch.status,
+            RunStatus::Succeeded,
+            "cross-lane graceful trigger should not interrupt the run"
+        );
+
+        let runtime = executor.runtime_mut();
+        assert!(
+            runtime.interrupt_calls.is_empty(),
+            "interrupt should not be called for cross-lane graceful triggers"
+        );
+    }
+
+    #[test]
+    fn graceful_steering_boundary_fresh_poll_finds_no_trigger() {
+        // Scenario: no graceful trigger exists. Events include a ToolResult -> TextDelta
+        // boundary. The fresh-poll at the boundary should fire (graceful_steer_pending
+        // is false) and return false, so the turn completes normally.
+        let backend_events = vec![
+            backend_event(1, BackendEventKind::ToolResult, &[("output", "done")]),
+            backend_event(2, BackendEventKind::TextDelta, &[("text", "summary")]),
+            backend_event(3, BackendEventKind::TurnCompleted, &[("finish", "done")]),
+        ];
+        let mut runtime =
+            FakeRuntime::with_backend_events(backend_events, &[1, 2, 3, 4, 5, 6, 7, 8]);
+        runtime
+            .resolve_profile_results
+            .push_back(Ok(sample_profile_telemetry()));
+        let (_workspace, mut executor) =
+            build_executor_scenario("graceful-boundary-no-trigger", runtime, 8);
+
+        // No trigger written -- the fresh-poll at the boundary should find nothing.
+
+        let dispatch = executor
+            .process_gateway_message(gateway_message("m-1"))
+            .expect("pipeline should succeed")
+            .expect("message should dispatch");
+
+        assert_eq!(
+            dispatch.status,
+            RunStatus::Succeeded,
+            "turn should complete normally when no graceful trigger exists"
+        );
+
+        let runtime = executor.runtime_mut();
+        assert!(
+            runtime.interrupt_calls.is_empty(),
+            "interrupt should not be called when no graceful trigger exists"
+        );
     }
 }
