@@ -29,7 +29,7 @@ use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use crate::{run_heartbeat_if_due, TurnExecutor, TurnExecutorRuntime};
+use crate::{run_heartbeat_if_due, TriggerKind, TurnExecutor, TurnExecutorRuntime};
 
 pub const DEFAULT_DAEMON_TICK_INTERVAL_MS: u64 = 250;
 const DAEMON_TURN_CONTEXT_READ: &str = "daemon_turn_context_read";
@@ -1653,13 +1653,13 @@ where
             let steering = crab_core::read_steering_triggers(&state_root)?;
             // Keep on one line: multi-line call sites can produce llvm-cov line-mapping gaps.
             #[rustfmt::skip]
-            let (_, consumed) = executor.consume_and_batch_triggers(steering, "", crab_core::consume_steering_trigger, "steering")?;
+            let (_, consumed) = executor.consume_and_batch_triggers(steering, "", crab_core::consume_steering_trigger, TriggerKind::Steering)?;
             stats.ingested_triggers = stats.ingested_triggers.saturating_add(consumed as u64);
 
             let graceful = crab_core::read_graceful_steering_triggers(&state_root)?;
             // Keep on one line: multi-line call sites can produce llvm-cov line-mapping gaps.
             #[rustfmt::skip]
-            let (_, consumed) = executor.consume_and_batch_triggers(graceful, "", crab_core::consume_graceful_steering_trigger, "graceful steering")?;
+            let (_, consumed) = executor.consume_and_batch_triggers(graceful, "", crab_core::consume_graceful_steering_trigger, TriggerKind::Steering)?;
             stats.ingested_triggers = stats.ingested_triggers.saturating_add(consumed as u64);
         }
 
