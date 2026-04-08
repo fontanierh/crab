@@ -238,10 +238,7 @@ impl<R: TurnExecutorRuntime> TurnExecutor<R> {
         // Only wrap same-lane messages with interruption context. Cross-lane
         // messages did not interrupt any run on their lane, so the text would
         // be misleading.
-        let target_lane = ingress
-            .routing_key
-            .logical_session_id()
-            .unwrap_or_default();
+        let target_lane = ingress.routing_key.logical_session_id().unwrap_or_default();
         if target_lane == current_logical_session_id {
             ingress.content = wrap_steering_message(&ingress.content, 1);
         }
@@ -5692,7 +5689,11 @@ mod tests {
             .run_store
             .list_run_ids("discord:channel:888")
             .expect("list run ids");
-        assert_eq!(cross_run_ids.len(), 1, "cross-lane should have a queued run");
+        assert_eq!(
+            cross_run_ids.len(),
+            1,
+            "cross-lane should have a queued run"
+        );
         let cross_run = executor
             .composition()
             .state_stores
@@ -5978,7 +5979,8 @@ mod tests {
             .expect("run read should succeed")
             .expect("run should exist");
         assert!(
-            run.user_input.contains("first message\n---\nsecond message"),
+            run.user_input
+                .contains("first message\n---\nsecond message"),
             "messages should be joined with delimiter in chronological order"
         );
         assert!(
