@@ -321,10 +321,17 @@ impl<R: TurnExecutorRuntime> TurnExecutor<R> {
                     .join("\n---\n")
             };
 
-            // For steering triggers, prefix the message so the backend knows
-            // this arrived during an active turn and was delivered after
-            // interruption, not as a cold-start request.
-            let enqueue_content = if kind == TriggerKind::Steering {
+            // For steering triggers targeting the currently active lane, prefix
+            // the message so the backend knows this arrived during an active
+            // turn. Cross-lane triggers are not wrapped because no interruption
+            // happened on their target lane.
+            let target_lane = RoutingKey::Channel {
+                channel_id: channel_id.to_string(),
+            }
+            .logical_session_id()
+            .unwrap_or_default();
+            let is_same_lane = target_lane == current_logical_session_id;
+            let enqueue_content = if kind == TriggerKind::Steering && is_same_lane {
                 wrap_steering_message(&combined, entries.len())
             } else {
                 combined.clone()
@@ -5898,6 +5905,31 @@ mod tests {
             runtime.interrupt_calls.len(),
             0,
             "interrupt_backend_turn should not be called for different-lane trigger"
+        );
+
+        // Regression: cross-lane steering triggers should NOT be wrapped because
+        // no interruption happened on their target lane (Codex review round 3).
+        let cross_run_ids = executor
+            .composition()
+            .state_stores
+            .run_store
+            .list_run_ids("discord:channel:999")
+            .expect("list run ids");
+        assert_eq!(
+            cross_run_ids.len(),
+            1,
+            "cross-lane trigger should produce a queued run"
+        );
+        let cross_run = executor
+            .composition()
+            .state_stores
+            .run_store
+            .get_run("discord:channel:999", &cross_run_ids[0])
+            .expect("run lookup")
+            .expect("run should exist");
+        assert!(
+            !cross_run.user_input.contains("[Interruption context:"),
+            "cross-lane trigger should NOT include interruption context wrapper"
         );
     }
 
