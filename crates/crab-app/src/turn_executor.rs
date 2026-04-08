@@ -235,9 +235,16 @@ impl<R: TurnExecutorRuntime> TurnExecutor<R> {
         let Some(mut ingress) = self.composition.gateway_ingress.ingest(message)? else {
             return self.check_for_steering_trigger(current_logical_session_id);
         };
-        // This message arrived while a turn was active, so wrap it with
-        // interruption context before persisting as the next run's input.
-        ingress.content = wrap_steering_message(&ingress.content, 1);
+        // Only wrap same-lane messages with interruption context. Cross-lane
+        // messages did not interrupt any run on their lane, so the text would
+        // be misleading.
+        let target_lane = ingress
+            .routing_key
+            .logical_session_id()
+            .unwrap_or_default();
+        if target_lane == current_logical_session_id {
+            ingress.content = wrap_steering_message(&ingress.content, 1);
+        }
         let queued = self.enqueue_ingress_message(ingress)?;
         if queued.logical_session_id == current_logical_session_id {
             return Ok(true);
@@ -5616,6 +5623,30 @@ mod tests {
             vec!["turn:run:discord:channel:777:m-1".to_string()],
             "interrupt_backend_turn should be called once"
         );
+
+        // Regression: the queued follow-up run from the steering message should
+        // be wrapped with interruption context (Codex review round 1 finding).
+        let follow_up_run_ids = executor
+            .composition()
+            .state_stores
+            .run_store
+            .list_run_ids("discord:channel:777")
+            .expect("list run ids");
+        let follow_up = follow_up_run_ids
+            .iter()
+            .find(|id| *id != "run:discord:channel:777:m-1")
+            .expect("should have a queued follow-up run from steering");
+        let follow_up_run = executor
+            .composition()
+            .state_stores
+            .run_store
+            .get_run("discord:channel:777", follow_up)
+            .expect("run lookup")
+            .expect("run should exist");
+        assert!(
+            follow_up_run.user_input.contains("[Interruption context:"),
+            "same-lane steering follow-up should include interruption context wrapper"
+        );
     }
 
     #[test]
@@ -5651,6 +5682,27 @@ mod tests {
         assert!(
             runtime.interrupt_calls.is_empty(),
             "interrupt_backend_turn should not be called for cross-lane messages"
+        );
+
+        // Regression: cross-lane messages should NOT be wrapped because they
+        // did not interrupt any run on their target lane (Codex review round 2).
+        let cross_run_ids = executor
+            .composition()
+            .state_stores
+            .run_store
+            .list_run_ids("discord:channel:888")
+            .expect("list run ids");
+        assert_eq!(cross_run_ids.len(), 1, "cross-lane should have a queued run");
+        let cross_run = executor
+            .composition()
+            .state_stores
+            .run_store
+            .get_run("discord:channel:888", &cross_run_ids[0])
+            .expect("run lookup")
+            .expect("run should exist");
+        assert!(
+            !cross_run.user_input.contains("[Interruption context:"),
+            "cross-lane message should NOT include interruption context wrapper"
         );
     }
 
