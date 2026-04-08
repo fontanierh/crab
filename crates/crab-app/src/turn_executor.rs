@@ -232,9 +232,13 @@ impl<R: TurnExecutorRuntime> TurnExecutor<R> {
         let Some(message) = self.runtime.next_gateway_message()? else {
             return self.check_for_steering_trigger(current_logical_session_id);
         };
-        let Some(queued) = self.enqueue_gateway_message(message)? else {
+        let Some(mut ingress) = self.composition.gateway_ingress.ingest(message)? else {
             return self.check_for_steering_trigger(current_logical_session_id);
         };
+        // This message arrived while a turn was active, so wrap it with
+        // interruption context before persisting as the next run's input.
+        ingress.content = wrap_steering_message(&ingress.content, 1);
+        let queued = self.enqueue_ingress_message(ingress)?;
         if queued.logical_session_id == current_logical_session_id {
             return Ok(true);
         }

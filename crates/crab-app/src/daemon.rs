@@ -1648,18 +1648,20 @@ where
 
         // Also consume steering triggers when idle (so they don't pile up).
         // Batch by channel so multiple triggers become one combined run.
+        // Use TriggerKind::Pending here: no run was active so no interruption
+        // happened; wrapping with "while you were working" would be false.
         {
             let state_root = executor.composition().state_stores.root.clone();
             let steering = crab_core::read_steering_triggers(&state_root)?;
             // Keep on one line: multi-line call sites can produce llvm-cov line-mapping gaps.
             #[rustfmt::skip]
-            let (_, consumed) = executor.consume_and_batch_triggers(steering, "", crab_core::consume_steering_trigger, TriggerKind::Steering)?;
+            let (_, consumed) = executor.consume_and_batch_triggers(steering, "", crab_core::consume_steering_trigger, TriggerKind::Pending)?;
             stats.ingested_triggers = stats.ingested_triggers.saturating_add(consumed as u64);
 
             let graceful = crab_core::read_graceful_steering_triggers(&state_root)?;
             // Keep on one line: multi-line call sites can produce llvm-cov line-mapping gaps.
             #[rustfmt::skip]
-            let (_, consumed) = executor.consume_and_batch_triggers(graceful, "", crab_core::consume_graceful_steering_trigger, TriggerKind::Steering)?;
+            let (_, consumed) = executor.consume_and_batch_triggers(graceful, "", crab_core::consume_graceful_steering_trigger, TriggerKind::Pending)?;
             stats.ingested_triggers = stats.ingested_triggers.saturating_add(consumed as u64);
         }
 
