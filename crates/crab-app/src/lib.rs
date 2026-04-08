@@ -28,4 +28,6 @@ pub use memory_cli::{run_memory_get_cli, run_memory_search_cli};
 pub use rotate_cli::run_rotate_cli;
 pub use startup::{initialize_runtime_startup, AppStartupOutcome};
 pub use trigger_cli::run_trigger_cli;
-pub use turn_executor::{DispatchedTurn, QueuedTurn, TurnExecutor, TurnExecutorRuntime};
+pub use turn_executor::{
+    DispatchedTurn, QueuedTurn, TriggerKind, TurnExecutor, TurnExecutorRuntime,
+};

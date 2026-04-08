@@ -24,6 +24,16 @@ use futures::StreamExt;
 
 use crate::AppComposition;
 
+/// Classifies triggers so `consume_and_batch_triggers` can decide whether to
+/// wrap the enqueued message with interruption context.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TriggerKind {
+    /// Normal pending trigger (cron, self-trigger). No wrapping.
+    Pending,
+    /// Immediate or graceful steering. Wraps with interruption context.
+    Steering,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct QueuedTurn {
     pub logical_session_id: String,
@@ -222,9 +232,17 @@ impl<R: TurnExecutorRuntime> TurnExecutor<R> {
         let Some(message) = self.runtime.next_gateway_message()? else {
             return self.check_for_steering_trigger(current_logical_session_id);
         };
-        let Some(queued) = self.enqueue_gateway_message(message)? else {
+        let Some(mut ingress) = self.composition.gateway_ingress.ingest(message)? else {
             return self.check_for_steering_trigger(current_logical_session_id);
         };
+        // Only wrap same-lane messages with interruption context. Cross-lane
+        // messages did not interrupt any run on their lane, so the text would
+        // be misleading.
+        let target_lane = ingress.routing_key.logical_session_id().unwrap_or_default();
+        if target_lane == current_logical_session_id {
+            ingress.content = wrap_steering_message(&ingress.content, 1);
+        }
+        let queued = self.enqueue_ingress_message(ingress)?;
         if queued.logical_session_id == current_logical_session_id {
             return Ok(true);
         }
@@ -236,7 +254,7 @@ impl<R: TurnExecutorRuntime> TurnExecutor<R> {
         let triggers = crab_core::read_steering_triggers(&state_root)?;
         // Keep on one line: multi-line call sites can produce llvm-cov line-mapping gaps.
         #[rustfmt::skip]
-        let (matched, _) = self.consume_and_batch_triggers(triggers, current_logical_session_id, crab_core::consume_steering_trigger, "steering")?;
+        let (matched, _) = self.consume_and_batch_triggers(triggers, current_logical_session_id, crab_core::consume_steering_trigger, TriggerKind::Steering)?;
         Ok(matched)
     }
 
@@ -248,7 +266,7 @@ impl<R: TurnExecutorRuntime> TurnExecutor<R> {
         let triggers = crab_core::read_graceful_steering_triggers(&state_root)?;
         // Keep on one line: multi-line call sites can produce llvm-cov line-mapping gaps.
         #[rustfmt::skip]
-        let (matched, _) = self.consume_and_batch_triggers(triggers, current_logical_session_id, crab_core::consume_graceful_steering_trigger, "graceful steering")?;
+        let (matched, _) = self.consume_and_batch_triggers(triggers, current_logical_session_id, crab_core::consume_graceful_steering_trigger, TriggerKind::Steering)?;
         Ok(matched)
     }
 
@@ -271,7 +289,7 @@ impl<R: TurnExecutorRuntime> TurnExecutor<R> {
         triggers: Vec<(PathBuf, crab_core::PendingTrigger)>,
         current_logical_session_id: &str,
         consume_fn: fn(&Path) -> CrabResult<()>,
-        _label: &str,
+        kind: TriggerKind,
     ) -> CrabResult<(bool, usize)> {
         if triggers.is_empty() {
             return Ok((false, 0));
@@ -303,7 +321,23 @@ impl<R: TurnExecutorRuntime> TurnExecutor<R> {
                     .join("\n---\n")
             };
 
-            match self.enqueue_pending_trigger(channel_id, &combined) {
+            // For steering triggers targeting the currently active lane, prefix
+            // the message so the backend knows this arrived during an active
+            // turn. Cross-lane triggers are not wrapped because no interruption
+            // happened on their target lane.
+            let target_lane = RoutingKey::Channel {
+                channel_id: channel_id.to_string(),
+            }
+            .logical_session_id()
+            .unwrap_or_default();
+            let is_same_lane = target_lane == current_logical_session_id;
+            let enqueue_content = if kind == TriggerKind::Steering && is_same_lane {
+                wrap_steering_message(&combined, entries.len())
+            } else {
+                combined.clone()
+            };
+
+            match self.enqueue_pending_trigger(channel_id, &enqueue_content) {
                 Ok(queued) => {
                     // Enqueue succeeded — delete all trigger files for this channel.
                     // Best-effort: attempt ALL deletions even if one fails, so we
@@ -333,8 +367,8 @@ impl<R: TurnExecutorRuntime> TurnExecutor<R> {
                         channel_id = %channel_id,
                         trigger_count = entries.len(),
                         error = %_error,
-                        "failed to enqueue batched {} triggers, files retained for retry",
-                        _label,
+                        "failed to enqueue batched {:?} triggers, files retained for retry",
+                        kind,
                     );
                 }
             }
@@ -2124,6 +2158,27 @@ fn build_user_input_with_attachments(
     }
 }
 
+/// Prefix a steering message with context so the backend agent knows this
+/// input arrived during an active turn and was delivered after interruption.
+///
+/// Uses plain English (not XML pseudo-tags) because this text lands inside
+/// Crab's `<turn_input>` envelope and is not a real system message at the
+/// transport layer.
+fn wrap_steering_message(raw: &str, message_count: usize) -> String {
+    let plurality = if message_count > 1 {
+        "one or more additional messages (separated by --- delimiters)"
+    } else {
+        "an additional message"
+    };
+    format!(
+        "[Interruption context: the user sent {plurality} while you were \
+         working on the prior turn. Treat it as continuing the conversation \
+         unless the content clearly starts a new request. Prioritize the \
+         user's latest instruction.]\n\n\
+         {raw}"
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::{BTreeMap, VecDeque};
@@ -2141,7 +2196,7 @@ mod tests {
 
     use super::{
         attachment_directory, build_user_input_with_attachments, cleanup_attachment_directory,
-        sanitize_attachment_filename, DispatchedTurn, QueuedTurn, TurnExecutor,
+        sanitize_attachment_filename, DispatchedTurn, QueuedTurn, TriggerKind, TurnExecutor,
         TurnExecutorRuntime,
     };
     use crate::composition::compose_runtime_with_queue_limit;
@@ -5572,6 +5627,30 @@ mod tests {
             vec!["turn:run:discord:channel:777:m-1".to_string()],
             "interrupt_backend_turn should be called once"
         );
+
+        // Regression: the queued follow-up run from the steering message should
+        // be wrapped with interruption context (Codex review round 1 finding).
+        let follow_up_run_ids = executor
+            .composition()
+            .state_stores
+            .run_store
+            .list_run_ids("discord:channel:777")
+            .expect("list run ids");
+        let follow_up = follow_up_run_ids
+            .iter()
+            .find(|id| *id != "run:discord:channel:777:m-1")
+            .expect("should have a queued follow-up run from steering");
+        let follow_up_run = executor
+            .composition()
+            .state_stores
+            .run_store
+            .get_run("discord:channel:777", follow_up)
+            .expect("run lookup")
+            .expect("run should exist");
+        assert!(
+            follow_up_run.user_input.contains("[Interruption context:"),
+            "same-lane steering follow-up should include interruption context wrapper"
+        );
     }
 
     #[test]
@@ -5607,6 +5686,31 @@ mod tests {
         assert!(
             runtime.interrupt_calls.is_empty(),
             "interrupt_backend_turn should not be called for cross-lane messages"
+        );
+
+        // Regression: cross-lane messages should NOT be wrapped because they
+        // did not interrupt any run on their target lane (Codex review round 2).
+        let cross_run_ids = executor
+            .composition()
+            .state_stores
+            .run_store
+            .list_run_ids("discord:channel:888")
+            .expect("list run ids");
+        assert_eq!(
+            cross_run_ids.len(),
+            1,
+            "cross-lane should have a queued run"
+        );
+        let cross_run = executor
+            .composition()
+            .state_stores
+            .run_store
+            .get_run("discord:channel:888", &cross_run_ids[0])
+            .expect("run lookup")
+            .expect("run should exist");
+        assert!(
+            !cross_run.user_input.contains("[Interruption context:"),
+            "cross-lane message should NOT include interruption context wrapper"
         );
     }
 
@@ -5802,6 +5906,31 @@ mod tests {
             0,
             "interrupt_backend_turn should not be called for different-lane trigger"
         );
+
+        // Regression: cross-lane steering triggers should NOT be wrapped because
+        // no interruption happened on their target lane (Codex review round 3).
+        let cross_run_ids = executor
+            .composition()
+            .state_stores
+            .run_store
+            .list_run_ids("discord:channel:999")
+            .expect("list run ids");
+        assert_eq!(
+            cross_run_ids.len(),
+            1,
+            "cross-lane trigger should produce a queued run"
+        );
+        let cross_run = executor
+            .composition()
+            .state_stores
+            .run_store
+            .get_run("discord:channel:999", &cross_run_ids[0])
+            .expect("run lookup")
+            .expect("run should exist");
+        assert!(
+            !cross_run.user_input.contains("[Interruption context:"),
+            "cross-lane trigger should NOT include interruption context wrapper"
+        );
     }
 
     #[test]
@@ -5857,7 +5986,7 @@ mod tests {
                 triggers,
                 "discord:channel:777",
                 crab_core::consume_steering_trigger,
-                "steering",
+                TriggerKind::Steering,
             )
             .expect("batch should succeed");
 
@@ -5881,9 +6010,18 @@ mod tests {
             .get_run("discord:channel:777", &run_ids[0])
             .expect("run read should succeed")
             .expect("run should exist");
-        assert_eq!(
-            run.user_input, "first message\n---\nsecond message",
+        assert!(
+            run.user_input
+                .contains("first message\n---\nsecond message"),
             "messages should be joined with delimiter in chronological order"
+        );
+        assert!(
+            run.user_input.contains("[Interruption context:"),
+            "steering triggers should include interruption context prefix"
+        );
+        assert!(
+            run.user_input.contains("one or more additional messages"),
+            "multi-message steering should use plural phrasing"
         );
     }
 
@@ -5925,7 +6063,7 @@ mod tests {
                 triggers,
                 "discord:channel:777",
                 crab_core::consume_steering_trigger,
-                "steering",
+                TriggerKind::Steering,
             )
             .expect("batch should succeed");
 
@@ -5978,7 +6116,7 @@ mod tests {
                 triggers,
                 "discord:channel:777",
                 crab_core::consume_steering_trigger,
-                "steering",
+                TriggerKind::Steering,
             )
             .expect("batch should succeed");
 
@@ -5998,8 +6136,20 @@ mod tests {
             .get_run("discord:channel:777", &run_ids[0])
             .expect("run read")
             .expect("run should exist");
-        assert_eq!(
-            run.user_input, "solo message",
+        assert!(
+            run.user_input.contains("solo message"),
+            "single trigger should contain the original message"
+        );
+        assert!(
+            run.user_input.contains("[Interruption context:"),
+            "steering trigger should include interruption context prefix"
+        );
+        assert!(
+            run.user_input.contains("an additional message"),
+            "single message should use singular phrasing"
+        );
+        assert!(
+            !run.user_input.contains("---"),
             "single trigger should not have delimiter"
         );
     }
@@ -6015,12 +6165,151 @@ mod tests {
                 Vec::new(),
                 "discord:channel:777",
                 crab_core::consume_steering_trigger,
-                "steering",
+                TriggerKind::Steering,
             )
             .expect("empty batch should succeed");
 
         assert!(!matched);
         assert_eq!(consumed, 0);
+    }
+
+    #[test]
+    fn wrap_steering_message_single_uses_singular_phrasing() {
+        let wrapped = super::wrap_steering_message("check the logs", 1);
+        assert!(
+            wrapped.starts_with("[Interruption context:"),
+            "should start with interruption context bracket"
+        );
+        assert!(
+            wrapped.contains("an additional message"),
+            "single message should use singular phrasing"
+        );
+        assert!(
+            wrapped.contains("Prioritize the user's latest instruction."),
+            "should include priority guidance"
+        );
+        assert!(
+            wrapped.ends_with("check the logs"),
+            "raw message should be at the end"
+        );
+    }
+
+    #[test]
+    fn wrap_steering_message_multiple_uses_plural_phrasing() {
+        let wrapped = super::wrap_steering_message("msg1\n---\nmsg2", 2);
+        assert!(
+            wrapped.contains("one or more additional messages"),
+            "multi-message should use plural phrasing"
+        );
+        assert!(
+            wrapped.contains("separated by --- delimiters"),
+            "should mention delimiter format"
+        );
+        assert!(
+            wrapped.contains("msg1\n---\nmsg2"),
+            "raw content should be preserved"
+        );
+    }
+
+    #[test]
+    fn batch_triggers_pending_kind_does_not_wrap() {
+        let workspace = TempWorkspace::new("turn-executor", "batch-pending-no-wrap");
+        let runtime = FakeRuntime::with_backend_events(Vec::new(), &[1, 2]);
+        let mut executor = build_executor(&workspace, runtime, 8);
+
+        let state_root = state_root(&workspace);
+        fs::create_dir_all(&state_root).expect("state root");
+
+        crab_core::write_pending_trigger(
+            &state_root,
+            &crab_core::PendingTrigger {
+                channel_id: "777".to_string(),
+                message: "plain trigger".to_string(),
+            },
+        )
+        .expect("write trigger");
+
+        let triggers = crab_core::read_pending_triggers(&state_root).expect("read triggers");
+
+        executor
+            .consume_and_batch_triggers(
+                triggers,
+                "discord:channel:777",
+                crab_core::consume_pending_trigger,
+                TriggerKind::Pending,
+            )
+            .expect("batch should succeed");
+
+        let run_ids = executor
+            .composition()
+            .state_stores
+            .run_store
+            .list_run_ids("discord:channel:777")
+            .expect("list run ids");
+        let run = executor
+            .composition()
+            .state_stores
+            .run_store
+            .get_run("discord:channel:777", &run_ids[0])
+            .expect("run read")
+            .expect("run should exist");
+        assert_eq!(
+            run.user_input, "plain trigger",
+            "non-steering triggers should not be wrapped"
+        );
+    }
+
+    #[test]
+    fn batch_triggers_graceful_steering_also_wraps() {
+        let workspace = TempWorkspace::new("turn-executor", "batch-graceful-wrap");
+        let runtime = FakeRuntime::with_backend_events(Vec::new(), &[1, 2]);
+        let mut executor = build_executor(&workspace, runtime, 8);
+
+        let state_root = state_root(&workspace);
+        fs::create_dir_all(&state_root).expect("state root");
+
+        crab_core::write_graceful_steering_trigger(
+            &state_root,
+            &crab_core::PendingTrigger {
+                channel_id: "777".to_string(),
+                message: "graceful steer msg".to_string(),
+            },
+        )
+        .expect("write graceful trigger");
+
+        let triggers =
+            crab_core::read_graceful_steering_triggers(&state_root).expect("read triggers");
+
+        executor
+            .consume_and_batch_triggers(
+                triggers,
+                "discord:channel:777",
+                crab_core::consume_graceful_steering_trigger,
+                TriggerKind::Steering,
+            )
+            .expect("batch should succeed");
+
+        let run_ids = executor
+            .composition()
+            .state_stores
+            .run_store
+            .list_run_ids("discord:channel:777")
+            .expect("list run ids");
+        let run = executor
+            .composition()
+            .state_stores
+            .run_store
+            .get_run("discord:channel:777", &run_ids[0])
+            .expect("run read")
+            .expect("run should exist");
+        assert!(
+            run.user_input.contains("[Interruption context:"),
+            "graceful steering should also be wrapped"
+        );
+        assert!(
+            run.user_input.contains("graceful steer msg"),
+            "original message should be preserved"
+        );
     }
 
     #[test]
@@ -6045,7 +6334,7 @@ mod tests {
                 triggers,
                 "",
                 crab_core::consume_steering_trigger,
-                "steering",
+                TriggerKind::Steering,
             )
             .expect("batch should succeed even with enqueue failure");
 
@@ -6084,7 +6373,7 @@ mod tests {
             triggers,
             "discord:channel:777",
             crab_core::consume_steering_trigger,
-            "steering",
+            TriggerKind::Steering,
         );
 
         assert!(result.is_err(), "should return error when consume_fn fails");
