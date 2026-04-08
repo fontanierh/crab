@@ -10,6 +10,9 @@ pub const DEFAULT_HEARTBEAT_INTERVAL_SECS: u64 = 10;
 pub const DEFAULT_RUN_STALL_TIMEOUT_SECS: u64 = 90;
 pub const DEFAULT_BACKEND_STALL_TIMEOUT_SECS: u64 = 180;
 pub const DEFAULT_DISPATCHER_STALL_TIMEOUT_SECS: u64 = 20;
+pub const DEFAULT_SELF_WORK_IDLE_DELAY_MS: u64 = 180_000;
+pub const MIN_SELF_WORK_IDLE_DELAY_MS: u64 = 120_000;
+pub const MAX_SELF_WORK_IDLE_DELAY_MS: u64 = 300_000;
 
 const STARTUP_RECONCILIATION_GRACE_PERIOD_SECS_KEY: &str =
     "CRAB_STARTUP_RECONCILIATION_GRACE_PERIOD_SECS";
@@ -17,6 +20,7 @@ const HEARTBEAT_INTERVAL_SECS_KEY: &str = "CRAB_HEARTBEAT_INTERVAL_SECS";
 const RUN_STALL_TIMEOUT_SECS_KEY: &str = "CRAB_RUN_STALL_TIMEOUT_SECS";
 const BACKEND_STALL_TIMEOUT_SECS_KEY: &str = "CRAB_BACKEND_STALL_TIMEOUT_SECS";
 const DISPATCHER_STALL_TIMEOUT_SECS_KEY: &str = "CRAB_DISPATCHER_STALL_TIMEOUT_SECS";
+const SELF_WORK_IDLE_DELAY_MS_KEY: &str = "CRAB_SELF_WORK_IDLE_DELAY_MS";
 
 const OWNER_DISCORD_USER_IDS_KEY: &str = "CRAB_OWNER_DISCORD_USER_IDS";
 const OWNER_ALIASES_KEY: &str = "CRAB_OWNER_ALIASES";
@@ -55,6 +59,11 @@ pub struct HeartbeatConfig {
     pub dispatcher_stall_timeout_secs: u64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SelfWorkConfig {
+    pub idle_delay_ms: u64,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RuntimeConfig {
     pub discord_token: String,
@@ -62,6 +71,7 @@ pub struct RuntimeConfig {
     pub max_concurrent_lanes: usize,
     pub startup_reconciliation: StartupReconciliationConfig,
     pub heartbeat: HeartbeatConfig,
+    pub self_work: SelfWorkConfig,
     pub owner: OwnerConfig,
 }
 
@@ -87,6 +97,7 @@ impl RuntimeConfig {
 
         let startup_reconciliation = parse_startup_reconciliation_config(values)?;
         let heartbeat = parse_heartbeat_config(values)?;
+        let self_work = parse_self_work_config(values)?;
         let owner = parse_owner_config(values)?;
 
         Ok(Self {
@@ -95,6 +106,7 @@ impl RuntimeConfig {
             max_concurrent_lanes,
             startup_reconciliation,
             heartbeat,
+            self_work,
             owner,
         })
     }
@@ -173,6 +185,23 @@ fn parse_heartbeat_config(values: &HashMap<String, String>) -> CrabResult<Heartb
         backend_stall_timeout_secs,
         dispatcher_stall_timeout_secs,
     })
+}
+
+fn parse_self_work_config(values: &HashMap<String, String>) -> CrabResult<SelfWorkConfig> {
+    let idle_delay_ms = match values.get(SELF_WORK_IDLE_DELAY_MS_KEY) {
+        Some(raw_value) => parse_positive_u64(SELF_WORK_IDLE_DELAY_MS_KEY, raw_value)?,
+        None => DEFAULT_SELF_WORK_IDLE_DELAY_MS,
+    };
+
+    if !(MIN_SELF_WORK_IDLE_DELAY_MS..=MAX_SELF_WORK_IDLE_DELAY_MS).contains(&idle_delay_ms) {
+        return Err(CrabError::InvalidConfig {
+            key: SELF_WORK_IDLE_DELAY_MS_KEY,
+            value: idle_delay_ms.to_string(),
+            reason: "must be between 120000 and 300000 inclusive",
+        });
+    }
+
+    Ok(SelfWorkConfig { idle_delay_ms })
 }
 
 fn parse_owner_config(values: &HashMap<String, String>) -> CrabResult<OwnerConfig> {
@@ -406,10 +435,11 @@ mod tests {
 
     use super::{
         is_discord_user_id, HeartbeatConfig, OwnerConfig, OwnerProfileDefaults, RuntimeConfig,
-        StartupReconciliationConfig, DEFAULT_BACKEND_STALL_TIMEOUT_SECS,
+        SelfWorkConfig, StartupReconciliationConfig, DEFAULT_BACKEND_STALL_TIMEOUT_SECS,
         DEFAULT_DISPATCHER_STALL_TIMEOUT_SECS, DEFAULT_HEARTBEAT_INTERVAL_SECS,
         DEFAULT_MAX_CONCURRENT_LANES, DEFAULT_RUN_STALL_TIMEOUT_SECS,
-        DEFAULT_STARTUP_RECONCILIATION_GRACE_PERIOD_SECS, DEFAULT_WORKSPACE_ROOT,
+        DEFAULT_SELF_WORK_IDLE_DELAY_MS, DEFAULT_STARTUP_RECONCILIATION_GRACE_PERIOD_SECS,
+        DEFAULT_WORKSPACE_ROOT,
     };
     use crate::error::CrabError;
 
@@ -441,6 +471,7 @@ mod tests {
             ("CRAB_RUN_STALL_TIMEOUT_SECS", "91"),
             ("CRAB_BACKEND_STALL_TIMEOUT_SECS", "31"),
             ("CRAB_DISPATCHER_STALL_TIMEOUT_SECS", "21"),
+            ("CRAB_SELF_WORK_IDLE_DELAY_MS", "240000"),
             ("CRAB_OWNER_DISCORD_USER_IDS", "12345,67890"),
             ("CRAB_OWNER_ALIASES", "Alice,Ops"),
             ("CRAB_OWNER_DEFAULT_BACKEND", "claude"),
@@ -467,6 +498,12 @@ mod tests {
                 run_stall_timeout_secs: 91,
                 backend_stall_timeout_secs: 31,
                 dispatcher_stall_timeout_secs: 21,
+            }
+        );
+        assert_eq!(
+            parsed.self_work,
+            SelfWorkConfig {
+                idle_delay_ms: 240_000,
             }
         );
         assert_eq!(
@@ -506,6 +543,12 @@ mod tests {
                 dispatcher_stall_timeout_secs: DEFAULT_DISPATCHER_STALL_TIMEOUT_SECS,
             }
         );
+        assert_eq!(
+            parsed.self_work,
+            SelfWorkConfig {
+                idle_delay_ms: DEFAULT_SELF_WORK_IDLE_DELAY_MS,
+            }
+        );
         assert_eq!(parsed.owner, OwnerConfig::default());
     }
 
@@ -516,6 +559,34 @@ mod tests {
             err,
             CrabError::MissingConfig {
                 key: "CRAB_DISCORD_TOKEN"
+            }
+        );
+    }
+
+    #[test]
+    fn rejects_self_work_idle_delay_below_minimum() {
+        let error = parse_with_token(&[("CRAB_SELF_WORK_IDLE_DELAY_MS", "119999")])
+            .expect_err("idle delay below minimum should fail");
+        assert_eq!(
+            error,
+            CrabError::InvalidConfig {
+                key: "CRAB_SELF_WORK_IDLE_DELAY_MS",
+                value: "119999".to_string(),
+                reason: "must be between 120000 and 300000 inclusive",
+            }
+        );
+    }
+
+    #[test]
+    fn rejects_self_work_idle_delay_above_maximum() {
+        let error = parse_with_token(&[("CRAB_SELF_WORK_IDLE_DELAY_MS", "300001")])
+            .expect_err("idle delay above maximum should fail");
+        assert_eq!(
+            error,
+            CrabError::InvalidConfig {
+                key: "CRAB_SELF_WORK_IDLE_DELAY_MS",
+                value: "300001".to_string(),
+                reason: "must be between 120000 and 300000 inclusive",
             }
         );
     }

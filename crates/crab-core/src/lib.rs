@@ -25,6 +25,7 @@ pub mod profile;
 pub mod prompt_contract;
 pub mod rotation_sequence;
 pub mod self_trigger;
+pub mod self_work;
 pub mod sender_identity;
 pub mod startup_reconciliation;
 pub mod state_schema;
@@ -38,7 +39,10 @@ pub use checkpoint_turn::{
     parse_checkpoint_turn_document, CheckpointTurnArtifact, CheckpointTurnDocument,
 };
 pub use compatibility::AUTO_MODEL_ALIAS;
-pub use config::{OwnerConfig, OwnerProfileDefaults, RuntimeConfig};
+pub use config::{
+    OwnerConfig, OwnerProfileDefaults, RuntimeConfig, SelfWorkConfig,
+    DEFAULT_SELF_WORK_IDLE_DELAY_MS, MAX_SELF_WORK_IDLE_DELAY_MS, MIN_SELF_WORK_IDLE_DELAY_MS,
+};
 pub use context_assembly::{
     assemble_turn_context, ContextAssemblyInput, ContextMemorySnippet, CONTEXT_INJECTION_ORDER,
 };
@@ -133,6 +137,12 @@ pub use self_trigger::{
     validate_pending_trigger, write_graceful_steering_trigger, write_pending_trigger,
     write_steering_trigger, PendingTrigger, GRACEFUL_STEERING_DIR_NAME, PENDING_TRIGGERS_DIR_NAME,
     STEERING_TRIGGERS_DIR_NAME,
+};
+pub use self_work::{
+    read_self_work_session, self_work_session_path, validate_new_self_work_start,
+    validate_self_work_session, write_self_work_session_atomically, SelfWorkSession,
+    SelfWorkSessionLock, SelfWorkSessionStatus, CURRENT_SELF_WORK_SESSION_SCHEMA_VERSION,
+    SELF_WORK_SESSION_FILE_NAME, SELF_WORK_SESSION_LOCK_FILE_NAME,
 };
 pub use sender_identity::{
     resolve_sender_identity, ResolvedSenderIdentity, SenderConversationKind, SenderIdentityInput,
