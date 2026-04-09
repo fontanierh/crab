@@ -321,7 +321,12 @@ impl EventStore {
             "event_append_open",
             &run_log_path,
         )?;
-        write_all_with_context(&mut file, line.as_bytes(), "event_append_write", &run_log_path)?;
+        write_all_with_context(
+            &mut file,
+            line.as_bytes(),
+            "event_append_write",
+            &run_log_path,
+        )?;
 
         Ok(event.sequence)
     }
@@ -659,7 +664,12 @@ impl OutboundRecordStore {
             "outbound_record_open",
             &records_path,
         )?;
-        write_all_with_context(&mut file, line.as_bytes(), "outbound_record_write", &records_path)
+        write_all_with_context(
+            &mut file,
+            line.as_bytes(),
+            "outbound_record_write",
+            &records_path,
+        )
     }
 
     fn ensure_layout(&self) -> CrabResult<()> {
@@ -1067,8 +1077,8 @@ mod tests {
     use super::{
         checkpoint_file_name, clamp_run_timestamps, read_json_file, run_log_file_name,
         session_file_name, write_all_with_context, write_logical_session_atomically,
-        write_session_index_atomically, CheckpointStore, EventStore, OutboundRecordStore,
-        RunStore, SessionIndex, SessionStore,
+        write_session_index_atomically, CheckpointStore, EventStore, OutboundRecordStore, RunStore,
+        SessionIndex, SessionStore,
     };
 
     #[test]
@@ -2676,9 +2686,9 @@ mod tests {
         )
         .expect("test should write malformed sequence log");
 
-        let error = store
-            .replay_run(logical_session_id, run_id)
-            .expect_err("replay should reject a run whose first event does not start at sequence 1");
+        let error = store.replay_run(logical_session_id, run_id).expect_err(
+            "replay should reject a run whose first event does not start at sequence 1",
+        );
         assert!(matches!(
             error,
             CrabError::InvariantViolation {
@@ -2825,7 +2835,9 @@ mod tests {
         }
 
         let mut writer = FailingWriter;
-        writer.flush().expect("flush should succeed before write failure path");
+        writer
+            .flush()
+            .expect("flush should succeed before write failure path");
         let path = Path::new("/tmp/event-write-error.jsonl");
         let error = write_all_with_context(
             &mut writer,

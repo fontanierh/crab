@@ -2112,9 +2112,9 @@ mod tests {
     use futures::StreamExt;
     use std::collections::VecDeque;
     use std::fs;
-    use std::panic::{catch_unwind, AssertUnwindSafe};
     #[cfg(unix)]
     use std::os::fd::FromRawFd;
+    use std::panic::{catch_unwind, AssertUnwindSafe};
     #[cfg(unix)]
     use std::process::Command;
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -4522,8 +4522,8 @@ mod tests {
         fs::write(&state_root, b"not-a-directory")
             .expect("test should be able to block state root creation");
 
-        let error =
-            DaemonInstanceLock::acquire_at(&state_root).expect_err("state root creation should fail");
+        let error = DaemonInstanceLock::acquire_at(&state_root)
+            .expect_err("state root creation should fail");
         assert!(matches!(
             error,
             CrabError::Io {
@@ -4558,7 +4558,10 @@ mod tests {
     #[test]
     fn daemon_instance_lock_reports_non_blocking_lock_system_errors() {
         let workspace = TempWorkspace::new("daemon", "instance-lock-flock-error");
-        let lock_path = workspace.path.join("state").join(CRABD_INSTANCE_LOCK_FILE_NAME);
+        let lock_path = workspace
+            .path
+            .join("state")
+            .join(CRABD_INSTANCE_LOCK_FILE_NAME);
         let mut file_descriptors = [0; 2];
         let result = unsafe { libc::pipe(file_descriptors.as_mut_ptr()) };
         assert_eq!(result, 0, "pipe creation should succeed");
