@@ -1758,10 +1758,19 @@ fn evaluate_self_work<R: TurnExecutorRuntime>(
     let Some(mut lock) = try_acquire_self_work_lock_for_daemon(&state_root, now_epoch_ms)? else {
         return Ok(0);
     };
-    let Some(mut locked_session) = read_self_work_session(&state_root)? else { return Ok(0); };
+    let Some(mut locked_session) = read_self_work_session(&state_root)? else {
+        return Ok(0);
+    };
 
     let locked_lane_status = executor.self_work_lane_status(&locked_session.channel_id)?;
-    if !wake_due(&locked_session, &locked_lane_status, now_epoch_ms, idle_delay_ms) { return Ok(0); }
+    if !wake_due(
+        &locked_session,
+        &locked_lane_status,
+        now_epoch_ms,
+        idle_delay_ms,
+    ) {
+        return Ok(0);
+    }
 
     let trigger = crab_core::PendingTrigger {
         channel_id: locked_session.channel_id.clone(),
@@ -1999,12 +2008,11 @@ mod tests {
     use super::{
         conversation_kind_for_logical_session_id, epoch_ms_from_duration,
         epoch_ms_from_system_time, epoch_ms_to_yyyy_mm_dd, evaluate_self_work,
-        evaluate_self_work_expiry, load_latest_checkpoint_summary,
-        memory_scope_directory_for_run, notify_startup_recovered_runs, read_workspace_markdown,
-        self_work_idle_baseline_epoch_ms, self_work_lane_is_idle,
-        try_acquire_self_work_lock_for_daemon, wake_due,
-        trust_surface_for_logical_session_id, DaemonClaudeProcess, DaemonConfig, DaemonDiscordIo,
-        DaemonLoopControl, DaemonTurnRuntime, SystemDaemonLoopControl,
+        evaluate_self_work_expiry, load_latest_checkpoint_summary, memory_scope_directory_for_run,
+        notify_startup_recovered_runs, read_workspace_markdown, self_work_idle_baseline_epoch_ms,
+        self_work_lane_is_idle, trust_surface_for_logical_session_id,
+        try_acquire_self_work_lock_for_daemon, wake_due, DaemonClaudeProcess, DaemonConfig,
+        DaemonDiscordIo, DaemonLoopControl, DaemonTurnRuntime, SystemDaemonLoopControl,
     };
     use crate::composition::compose_runtime_with_queue_limit;
     use crate::test_support::{runtime_config_for_workspace_with_lanes, TempWorkspace};
@@ -3993,12 +4001,7 @@ mod tests {
         }))
         .is_err());
         assert!(catch_unwind(AssertUnwindSafe(|| {
-            let _ = runtime.execute_backend_turn(
-                &mut physical_session,
-                &run,
-                "turn-1",
-                "context",
-            );
+            let _ = runtime.execute_backend_turn(&mut physical_session, &run, "turn-1", "context");
         }))
         .is_err());
         assert!(catch_unwind(AssertUnwindSafe(|| {
@@ -4273,12 +4276,9 @@ mod tests {
         )
         .expect("active session should persist");
 
-        let before_end = evaluate_self_work_expiry(
-            &mut future_executor,
-            &future_state_root,
-            1_739_173_799_999,
-        )
-        .expect("expiry evaluation should succeed");
+        let before_end =
+            evaluate_self_work_expiry(&mut future_executor, &future_state_root, 1_739_173_799_999)
+                .expect("expiry evaluation should succeed");
         assert_eq!(before_end, 0);
     }
 

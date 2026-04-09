@@ -1,6 +1,6 @@
 use std::fs;
-use std::io::{BufRead, BufReader, Write};
 use std::fs::OpenOptions;
+use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -36,7 +36,13 @@ impl Drop for TempWorkspace {
 }
 
 fn seed_ready_workspace(root: &Path) {
-    for file_name in ["AGENTS.md", "SOUL.md", "IDENTITY.md", "USER.md", "MEMORY.md"] {
+    for file_name in [
+        "AGENTS.md",
+        "SOUL.md",
+        "IDENTITY.md",
+        "USER.md",
+        "MEMORY.md",
+    ] {
         fs::write(root.join(file_name), "seed\n").expect("seed file should be writable");
     }
     let _ = fs::remove_file(root.join("BOOTSTRAP.md"));
@@ -148,7 +154,10 @@ fn crabd_binary_covers_stdin_success_paths() {
     stdout
         .read_line(&mut outbound_line)
         .expect("stdout read should succeed");
-    assert!(!outbound_line.trim().is_empty(), "expected outbound op line");
+    assert!(
+        !outbound_line.trim().is_empty(),
+        "expected outbound op line"
+    );
 
     let outbound: serde_json::Value =
         serde_json::from_str(outbound_line.trim()).expect("stdout line should be valid json");
@@ -161,8 +170,12 @@ fn crabd_binary_covers_stdin_success_paths() {
 
     writeln!(stdin, "{}", receipt_frame_json(op_id, delivery_id))
         .expect("receipt write should succeed");
-    writeln!(stdin, "{}", receipt_frame_json("op-early", "delivery:early"))
-        .expect("early receipt write should succeed");
+    writeln!(
+        stdin,
+        "{}",
+        receipt_frame_json("op-early", "delivery:early")
+    )
+    .expect("early receipt write should succeed");
     drop(stdin);
 
     let output = child.wait_with_output().expect("child should exit");
@@ -193,7 +206,10 @@ fn crabd_binary_reports_invalid_inbound_json() {
     drop(stdin);
 
     let output = child.wait_with_output().expect("child should exit");
-    assert!(!output.status.success(), "process should fail on invalid json");
+    assert!(
+        !output.status.success(),
+        "process should fail on invalid json"
+    );
 }
 
 #[test]
@@ -215,5 +231,8 @@ fn crabd_binary_reports_stdin_read_errors() {
         .output()
         .expect("crabd should run");
 
-    assert!(!output.status.success(), "process should fail on stdin read errors");
+    assert!(
+        !output.status.success(),
+        "process should fail on stdin read errors"
+    );
 }

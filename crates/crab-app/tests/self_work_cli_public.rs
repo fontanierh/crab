@@ -9,7 +9,8 @@ use crab_app::{
 };
 use crab_core::{
     read_pending_triggers, read_self_work_session, write_self_work_session_atomically, CrabResult,
-    RuntimeConfig, SelfWorkSession, SelfWorkSessionStatus, CURRENT_SELF_WORK_SESSION_SCHEMA_VERSION,
+    RuntimeConfig, SelfWorkSession, SelfWorkSessionStatus,
+    CURRENT_SELF_WORK_SESSION_SCHEMA_VERSION,
 };
 use crab_discord::GatewayMessage;
 use time::format_description::well_known::Rfc3339;
@@ -129,12 +130,19 @@ fn public_cli_entry_covers_success_and_error_paths() {
     let mut stderr = Vec::new();
     let status = run_self_work_cli(["crab-self-work", "resume"], &mut stdout, &mut stderr);
     assert_eq!(status, 1);
-    assert!(String::from_utf8(stderr).expect("stderr should be utf-8").contains("unknown subcommand"));
+    assert!(String::from_utf8(stderr)
+        .expect("stderr should be utf-8")
+        .contains("unknown subcommand"));
 
     let mut stdout = Vec::new();
     let mut stderr = Vec::new();
     let status = run_self_work_cli(
-        ["crab-self-work", "status", "--state-dir", state_dir.as_str()],
+        [
+            "crab-self-work",
+            "status",
+            "--state-dir",
+            state_dir.as_str(),
+        ],
         &mut stdout,
         &mut stderr,
     );
@@ -167,8 +175,8 @@ fn public_cli_entry_covers_success_and_error_paths() {
         &mut stderr,
     );
     assert_eq!(status, 0, "stderr: {}", String::from_utf8_lossy(&stderr));
-    let started = serde_json::from_slice::<serde_json::Value>(&stdout)
-        .expect("stdout should be valid json");
+    let started =
+        serde_json::from_slice::<serde_json::Value>(&stdout).expect("stdout should be valid json");
     assert_eq!(started["status"], "active");
     assert_eq!(started["goal"], "Ship the feature");
 
@@ -184,8 +192,8 @@ fn public_cli_entry_covers_success_and_error_paths() {
         &mut stderr,
     );
     assert_eq!(status, 0, "stderr: {}", String::from_utf8_lossy(&stderr));
-    let stopped = serde_json::from_slice::<serde_json::Value>(&stdout)
-        .expect("stdout should be valid json");
+    let stopped =
+        serde_json::from_slice::<serde_json::Value>(&stdout).expect("stdout should be valid json");
     assert_eq!(stopped["status"], "stopped");
 
     let session = read_self_work_session(&workspace.path)
@@ -228,7 +236,10 @@ fn public_daemon_loop_emits_self_work_wake_trigger() {
     let triggers = read_pending_triggers(&state_root).expect("triggers should be readable");
     assert_eq!(triggers.len(), 1);
     assert!(triggers[0].1.message.contains("event: wake"));
-    assert!(triggers[0].1.message.contains("crab-self-work stop --state-dir"));
+    assert!(triggers[0]
+        .1
+        .message
+        .contains("crab-self-work stop --state-dir"));
 }
 
 #[test]
@@ -269,5 +280,8 @@ fn public_daemon_loop_emits_self_work_expiry_trigger() {
         .expect("session lookup should succeed")
         .expect("session should exist");
     assert_eq!(session.status, SelfWorkSessionStatus::Expired);
-    assert_eq!(session.last_expiry_triggered_at_epoch_ms, Some(now_epoch_ms));
+    assert_eq!(
+        session.last_expiry_triggered_at_epoch_ms,
+        Some(now_epoch_ms)
+    );
 }

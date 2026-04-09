@@ -45,8 +45,10 @@ where
     S: Into<String>,
 {
     let argv: Vec<String> = args.into_iter().map(Into::into).collect();
-    let now_epoch_ms =
-        match current_epoch_ms() { Ok(value) => value, Err(message) => return write_error(stderr, &message) };
+    let now_epoch_ms = match current_epoch_ms() {
+        Ok(value) => value,
+        Err(message) => return write_error(stderr, &message),
+    };
     run_self_work_cli_with_now_epoch_ms(&argv, stdout, stderr, now_epoch_ms)
 }
 
@@ -231,7 +233,9 @@ fn parse_end_timestamp(raw_value: &str) -> Result<(u64, String), String> {
         .map_err(parse_end_timestamp_error)?
         .to_offset(time::UtcOffset::UTC);
     let epoch_ms = epoch_ms_from_datetime(parsed)?;
-    let iso8601 = parsed.format(&Rfc3339).map_err(format_end_timestamp_error)?;
+    let iso8601 = parsed
+        .format(&Rfc3339)
+        .map_err(format_end_timestamp_error)?;
     Ok((epoch_ms, iso8601))
 }
 
@@ -369,11 +373,10 @@ mod tests {
 
     use super::{
         build_timestamp_error, crab_error_to_string, current_clock_error, datetime_from_epoch_ms,
-        encode_session_error, epoch_ms_from_datetime,
-        epoch_ms_overflow_error, execute_status, execute_stop, format_end_timestamp_error,
-        format_timestamp_error, parse_end_timestamp_error, run_self_work_cli,
-        run_self_work_cli_with_now_epoch_ms, serialize_command_response_error, stop_response,
-        timestamp_i128_overflow_error,
+        encode_session_error, epoch_ms_from_datetime, epoch_ms_overflow_error, execute_status,
+        execute_stop, format_end_timestamp_error, format_timestamp_error,
+        parse_end_timestamp_error, run_self_work_cli, run_self_work_cli_with_now_epoch_ms,
+        serialize_command_response_error, stop_response, timestamp_i128_overflow_error,
         timestamp_millis_overflow_error, write_command_response_error, write_json,
         MAX_SELF_WORK_DURATION_MS,
     };
@@ -780,8 +783,8 @@ mod tests {
         .expect("stop should succeed");
         assert_eq!(stopped["status"], "stopped");
 
-        let status_after = execute_status(&["--state-dir".to_string(), state_dir])
-            .expect("status should succeed");
+        let status_after =
+            execute_status(&["--state-dir".to_string(), state_dir]).expect("status should succeed");
         assert_eq!(status_after["status"], "stopped");
     }
 
@@ -796,12 +799,14 @@ mod tests {
 
     #[test]
     fn helper_error_renderers_are_stable() {
-        let parse_error = OffsetDateTime::parse("not-a-timestamp", &Rfc3339)
-            .expect_err("parse should fail");
+        let parse_error =
+            OffsetDateTime::parse("not-a-timestamp", &Rfc3339).expect_err("parse should fail");
         assert!(parse_end_timestamp_error(parse_error).contains("invalid --end timestamp"));
 
         let format_error = Format::InvalidComponent("year");
-        assert!(format_end_timestamp_error(format_error).contains("failed to format --end timestamp"));
+        assert!(
+            format_end_timestamp_error(format_error).contains("failed to format --end timestamp")
+        );
         let format_error = Format::InvalidComponent("year");
         assert!(format_timestamp_error(format_error).contains("failed to format timestamp"));
 
@@ -816,7 +821,10 @@ mod tests {
         let overflow_duration = Duration::new(u64::MAX / 1_000 + 1, 0);
         let overflow_error = u64::try_from(overflow_duration.as_millis())
             .expect_err("millisecond conversion should overflow");
-        assert_eq!(epoch_ms_overflow_error(overflow_error), "epoch milliseconds overflow u64");
+        assert_eq!(
+            epoch_ms_overflow_error(overflow_error),
+            "epoch milliseconds overflow u64"
+        );
 
         let timestamp_overflow = u64::try_from(i128::from(u64::MAX) + 1)
             .expect_err("timestamp conversion should overflow");

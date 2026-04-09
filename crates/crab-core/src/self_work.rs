@@ -190,7 +190,11 @@ impl SelfWorkSessionLock {
                 message: "now_epoch_ms must be greater than 0".to_string(),
             });
         }
-        wrap_io(fs::create_dir_all(state_root), "self_work_session_lock", state_root)?;
+        wrap_io(
+            fs::create_dir_all(state_root),
+            "self_work_session_lock",
+            state_root,
+        )?;
 
         let lock_path = state_root.join(SELF_WORK_SESSION_LOCK_FILE_NAME);
         loop {
@@ -207,7 +211,11 @@ impl SelfWorkSessionLock {
                     };
                     let encoded = serde_json::to_string(&lock_file)
                         .expect("self-work session lock serialization is stable");
-                    wrap_io(file.write_all(encoded.as_bytes()), "self_work_session_lock", &lock_path)?;
+                    wrap_io(
+                        file.write_all(encoded.as_bytes()),
+                        "self_work_session_lock",
+                        &lock_path,
+                    )?;
                     return Ok(Self {
                         lock_path,
                         released: false,
@@ -225,11 +233,13 @@ impl SelfWorkSessionLock {
                     }
 
                     if let Err(remove_error) = fs::remove_file(&lock_path) {
-                        if remove_error.kind() != ErrorKind::NotFound { return Err(CrabError::Io {
-                            context: "self_work_session_lock",
-                            path: Some(lock_path.to_string_lossy().to_string()),
-                            message: format!("failed to remove stale lock: {remove_error}"),
-                        }); }
+                        if remove_error.kind() != ErrorKind::NotFound {
+                            return Err(CrabError::Io {
+                                context: "self_work_session_lock",
+                                path: Some(lock_path.to_string_lossy().to_string()),
+                                message: format!("failed to remove stale lock: {remove_error}"),
+                            });
+                        }
                     }
                 }
                 Err(error) => {
@@ -310,9 +320,9 @@ fn wrap_io<T>(result: std::io::Result<T>, context: &'static str, path: &Path) ->
 #[cfg(test)]
 mod tests {
     use std::fs;
-    use std::path::Path;
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
+    use std::path::Path;
 
     use super::{
         read_self_work_session, self_work_session_path, validate_new_self_work_start,
@@ -551,9 +561,11 @@ mod tests {
 
     #[test]
     fn write_rejects_empty_state_root_and_invalid_session() {
-        let empty_path_error =
-            write_self_work_session_atomically(Path::new(""), &sample_session(SelfWorkSessionStatus::Active))
-                .expect_err("empty state root should fail");
+        let empty_path_error = write_self_work_session_atomically(
+            Path::new(""),
+            &sample_session(SelfWorkSessionStatus::Active),
+        )
+        .expect_err("empty state root should fail");
         assert_eq!(
             empty_path_error,
             CrabError::InvariantViolation {
@@ -595,8 +607,8 @@ mod tests {
 
         let write_root = temp.root.join("write-error");
         fs::create_dir_all(&write_root).expect("write error root should be creatable");
-        let temp_path =
-            self_work_session_path(&write_root).with_extension(format!("tmp-{}", std::process::id()));
+        let temp_path = self_work_session_path(&write_root)
+            .with_extension(format!("tmp-{}", std::process::id()));
         fs::create_dir_all(&temp_path).expect("temp path directory should be creatable");
         let write_error = write_self_work_session_atomically(&write_root, &session)
             .expect_err("temp file write error should surface");
@@ -636,8 +648,8 @@ mod tests {
         );
 
         let temp = TempDir::new("self-work", "lock-zero-clock");
-        let zero_clock_error = SelfWorkSessionLock::acquire(&temp.root, 0)
-            .expect_err("zero clock should fail");
+        let zero_clock_error =
+            SelfWorkSessionLock::acquire(&temp.root, 0).expect_err("zero clock should fail");
         assert_eq!(
             zero_clock_error,
             CrabError::InvariantViolation {
@@ -668,7 +680,9 @@ mod tests {
             .expect("lock should be acquirable");
         fs::remove_file(&lock_path).expect("lock file should be removable");
         fs::create_dir_all(&lock_path).expect("lock path directory should be creatable again");
-        let release_error = lock.release().expect_err("directory lock path should fail release");
+        let release_error = lock
+            .release()
+            .expect_err("directory lock path should fail release");
         assert!(matches!(
             release_error,
             CrabError::Io {
