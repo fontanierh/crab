@@ -2081,14 +2081,14 @@ fn civil_from_days(days_since_unix_epoch: i64) -> (i64, u64, u64) {
 #[cfg(test)]
 mod tests {
     use super::{
-        conversation_kind_for_logical_session_id, epoch_ms_from_duration,
+        acquire_lock_on_file, conversation_kind_for_logical_session_id, epoch_ms_from_duration,
         epoch_ms_from_system_time, epoch_ms_to_yyyy_mm_dd, evaluate_self_work,
         evaluate_self_work_expiry, load_latest_checkpoint_summary, memory_scope_directory_for_run,
         notify_startup_recovered_runs, read_workspace_markdown, self_work_idle_baseline_epoch_ms,
         self_work_lane_is_idle, trust_surface_for_logical_session_id,
         try_acquire_self_work_lock_for_daemon, wake_due, DaemonClaudeProcess, DaemonConfig,
         DaemonDiscordIo, DaemonInstanceLock, DaemonLoopControl, DaemonTurnRuntime,
-        SystemDaemonLoopControl,
+        SystemDaemonLoopControl, CRABD_INSTANCE_LOCK_FILE_NAME,
     };
     use crate::composition::compose_runtime_with_queue_limit;
     use crate::test_support::{runtime_config_for_workspace_with_lanes, TempWorkspace};
@@ -2111,7 +2111,10 @@ mod tests {
     use futures::executor::block_on;
     use futures::StreamExt;
     use std::collections::VecDeque;
+    use std::fs;
     use std::panic::{catch_unwind, AssertUnwindSafe};
+    #[cfg(unix)]
+    use std::os::fd::FromRawFd;
     #[cfg(unix)]
     use std::process::Command;
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -4504,6 +4507,77 @@ mod tests {
 
         DaemonInstanceLock::acquire_at(&state_root)
             .expect("lock should be reacquirable after the first holder drops");
+    }
+
+    #[test]
+    fn daemon_instance_lock_reports_state_root_create_error() {
+        let workspace = TempWorkspace::new("daemon", "instance-lock-root-error");
+        let state_root = workspace.path.join("state");
+        fs::create_dir_all(
+            state_root
+                .parent()
+                .expect("state root should have a parent directory"),
+        )
+        .expect("state root parent should be creatable");
+        fs::write(&state_root, b"not-a-directory")
+            .expect("test should be able to block state root creation");
+
+        let error =
+            DaemonInstanceLock::acquire_at(&state_root).expect_err("state root creation should fail");
+        assert!(matches!(
+            error,
+            CrabError::Io {
+                context: "crabd_instance_lock",
+                path: Some(path),
+                ..
+            } if path == state_root.display().to_string()
+        ));
+    }
+
+    #[test]
+    fn daemon_instance_lock_reports_lock_file_open_error() {
+        let workspace = TempWorkspace::new("daemon", "instance-lock-open-error");
+        let state_root = workspace.path.join("state");
+        let lock_path = state_root.join(CRABD_INSTANCE_LOCK_FILE_NAME);
+        fs::create_dir_all(&lock_path)
+            .expect("test should be able to replace lock file path with a directory");
+
+        let error =
+            DaemonInstanceLock::acquire_at(&state_root).expect_err("lock file open should fail");
+        assert!(matches!(
+            error,
+            CrabError::Io {
+                context: "crabd_instance_lock",
+                path: Some(path),
+                ..
+            } if path == lock_path.display().to_string()
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn daemon_instance_lock_reports_non_blocking_lock_system_errors() {
+        let workspace = TempWorkspace::new("daemon", "instance-lock-flock-error");
+        let lock_path = workspace.path.join("state").join(CRABD_INSTANCE_LOCK_FILE_NAME);
+        let mut file_descriptors = [0; 2];
+        let result = unsafe { libc::pipe(file_descriptors.as_mut_ptr()) };
+        assert_eq!(result, 0, "pipe creation should succeed");
+
+        let read_end = unsafe { fs::File::from_raw_fd(file_descriptors[0]) };
+        let write_end = unsafe { fs::File::from_raw_fd(file_descriptors[1]) };
+        drop(write_end);
+
+        let error = acquire_lock_on_file(&read_end, &lock_path)
+            .expect_err("flock on a pipe should surface a system error");
+        assert!(matches!(
+            error,
+            CrabError::Io {
+                context: "crabd_instance_lock",
+                path: Some(path),
+                ref message,
+            } if path == lock_path.display().to_string()
+                && message != "another crabd instance is already running for this state directory"
+        ));
     }
 
     #[test]

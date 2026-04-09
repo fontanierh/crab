@@ -184,6 +184,24 @@ mod tests {
     }
 
     #[test]
+    fn consume_propagates_remove_file_error() {
+        let temp = TempDir::new("pending-rotation", "consume-remove-error");
+        let path = temp.root.join("directory-instead-of-file.json");
+        fs::create_dir_all(&path).expect("test should be able to create directory at signal path");
+
+        let error =
+            consume_pending_rotation(&path).expect_err("consume should fail for non-file paths");
+        assert!(matches!(
+            error,
+            CrabError::Io {
+                context: "pending_rotation_consume",
+                path: Some(ref remove_path),
+                ..
+            } if remove_path == &path.display().to_string()
+        ));
+    }
+
+    #[test]
     fn write_propagates_create_dir_error() {
         let temp = TempDir::new("pending-rotation", "write-create-dir-error");
         let fake_root = temp.root.join("file-not-dir");
