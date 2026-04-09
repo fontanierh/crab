@@ -45,10 +45,8 @@ where
     S: Into<String>,
 {
     let argv: Vec<String> = args.into_iter().map(Into::into).collect();
-    let now_epoch_ms = match current_epoch_ms() {
-        Ok(value) => value,
-        Err(message) => return write_error(stderr, &message),
-    };
+    #[rustfmt::skip]
+    let now_epoch_ms = match current_epoch_ms() { Ok(value) => value, Err(message) => return write_error(stderr, &message) };
     run_self_work_cli_with_now_epoch_ms(&argv, stdout, stderr, now_epoch_ms)
 }
 

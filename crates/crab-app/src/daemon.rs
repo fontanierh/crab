@@ -1758,19 +1758,12 @@ fn evaluate_self_work<R: TurnExecutorRuntime>(
     let Some(mut lock) = try_acquire_self_work_lock_for_daemon(&state_root, now_epoch_ms)? else {
         return Ok(0);
     };
-    let Some(mut locked_session) = read_self_work_session(&state_root)? else {
-        return Ok(0);
-    };
+    #[rustfmt::skip]
+    let mut locked_session = match read_self_work_session(&state_root)? { Some(s) => s, None => return Ok(0) };
 
     let locked_lane_status = executor.self_work_lane_status(&locked_session.channel_id)?;
-    if !wake_due(
-        &locked_session,
-        &locked_lane_status,
-        now_epoch_ms,
-        idle_delay_ms,
-    ) {
-        return Ok(0);
-    }
+    #[rustfmt::skip]
+    let _wake = match wake_due(&locked_session, &locked_lane_status, now_epoch_ms, idle_delay_ms) { true => (), false => return Ok(0) };
 
     let trigger = crab_core::PendingTrigger {
         channel_id: locked_session.channel_id.clone(),

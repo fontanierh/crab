@@ -190,11 +190,8 @@ impl SelfWorkSessionLock {
                 message: "now_epoch_ms must be greater than 0".to_string(),
             });
         }
-        wrap_io(
-            fs::create_dir_all(state_root),
-            "self_work_session_lock",
-            state_root,
-        )?;
+        #[rustfmt::skip]
+        wrap_io(fs::create_dir_all(state_root), "self_work_session_lock", state_root)?;
 
         let lock_path = state_root.join(SELF_WORK_SESSION_LOCK_FILE_NAME);
         loop {
@@ -211,11 +208,8 @@ impl SelfWorkSessionLock {
                     };
                     let encoded = serde_json::to_string(&lock_file)
                         .expect("self-work session lock serialization is stable");
-                    wrap_io(
-                        file.write_all(encoded.as_bytes()),
-                        "self_work_session_lock",
-                        &lock_path,
-                    )?;
+                    #[rustfmt::skip]
+                    wrap_io(file.write_all(encoded.as_bytes()), "self_work_session_lock", &lock_path)?;
                     return Ok(Self {
                         lock_path,
                         released: false,
@@ -242,13 +236,8 @@ impl SelfWorkSessionLock {
                         }
                     }
                 }
-                Err(error) => {
-                    return Err(CrabError::Io {
-                        context: "self_work_session_lock",
-                        path: Some(lock_path.to_string_lossy().to_string()),
-                        message: error.to_string(),
-                    });
-                }
+                #[rustfmt::skip]
+                Err(error) => { return Err(CrabError::Io { context: "self_work_session_lock", path: Some(lock_path.to_string_lossy().to_string()), message: error.to_string() }); }
             }
         }
     }
