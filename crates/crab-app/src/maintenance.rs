@@ -709,7 +709,10 @@ mod tests {
         HeartbeatLoopState,
     };
     use crate::composition::compose_runtime;
-    use crate::test_support::{runtime_config_for_workspace_with_lanes, TempWorkspace};
+    use crate::test_support::{
+        event_log_path, hex_encode, replace_path_with_directory, run_file_path,
+        runtime_config_for_workspace_with_lanes, session_file_path, state_root, TempWorkspace,
+    };
 
     fn sample_profile() -> InferenceProfile {
         InferenceProfile {
@@ -780,31 +783,6 @@ mod tests {
         }
     }
 
-    fn hex_encode(bytes: &[u8]) -> String {
-        const HEX: [char; 16] = [
-            '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'a', 'b', 'c', 'd', 'e', 'f',
-        ];
-        let mut output = String::with_capacity(bytes.len() * 2);
-        for byte in bytes {
-            let upper = usize::from(byte >> 4);
-            let lower = usize::from(byte & 0x0f);
-            output.push(HEX[upper]);
-            output.push(HEX[lower]);
-        }
-        output
-    }
-
-    fn state_root(workspace: &TempWorkspace) -> PathBuf {
-        workspace.path.join("state")
-    }
-
-    fn session_file_path(state_root: &Path, logical_session_id: &str) -> PathBuf {
-        state_root.join("sessions").join(format!(
-            "{}.json",
-            hex_encode(logical_session_id.as_bytes())
-        ))
-    }
-
     fn session_index_path(state_root: &Path) -> PathBuf {
         state_root.join("sessions.index.json")
     }
@@ -813,24 +791,6 @@ mod tests {
         state_root
             .join("runs")
             .join(hex_encode(logical_session_id.as_bytes()))
-    }
-
-    fn run_file_path(state_root: &Path, logical_session_id: &str, run_id: &str) -> PathBuf {
-        run_session_dir(state_root, logical_session_id)
-            .join(format!("{}.json", hex_encode(run_id.as_bytes())))
-    }
-
-    fn event_log_path(state_root: &Path, logical_session_id: &str, run_id: &str) -> PathBuf {
-        state_root
-            .join("events")
-            .join(hex_encode(logical_session_id.as_bytes()))
-            .join(format!("{}.jsonl", hex_encode(run_id.as_bytes())))
-    }
-
-    fn replace_path_with_directory(path: &Path) {
-        let _ = fs::remove_file(path);
-        let _ = fs::remove_dir_all(path);
-        fs::create_dir_all(path).expect("directory fixture should be creatable");
     }
 
     fn replace_path_with_file(path: &Path) {
