@@ -321,13 +321,8 @@ impl EventStore {
             "event_append_open",
             &run_log_path,
         )?;
-        // Keep on one line: multi-line call sites can produce llvm-cov line-mapping gaps.
-        write_all_with_context(
-            &mut file,
-            line.as_bytes(),
-            "event_append_write",
-            &run_log_path,
-        )?;
+        #[rustfmt::skip]
+        write_all_with_context(&mut file, line.as_bytes(), "event_append_write", &run_log_path)?;
 
         Ok(event.sequence)
     }
