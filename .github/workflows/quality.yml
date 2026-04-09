@@ -7,7 +7,7 @@ on:
     branches: [main]
 
 jobs:
-  quality:
+  fast:
     runs-on: ubuntu-latest
 
     steps:
@@ -20,6 +20,39 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+
+      - name: Setup Rust cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install ripgrep
+        run: sudo apt-get update && sudo apt-get install -y ripgrep
+
+      - name: Format check
+        run: make fmt-check
+
+      - name: Clippy
+        run: make clippy
+
+      - name: Dead code check
+        run: make deadcode-check
+
+      - name: Public API check
+        run: make public-api-check
+
+  coverage:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Setup Rust cache
+        uses: Swatinem/rust-cache@v2
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -36,18 +69,6 @@ jobs:
 
       - name: Install ripgrep
         run: sudo apt-get update && sudo apt-get install -y ripgrep
-
-      - name: Format check
-        run: make fmt-check
-
-      - name: Clippy
-        run: make clippy
-
-      - name: Dead code check
-        run: make deadcode-check
-
-      - name: Public API check
-        run: make public-api-check
 
       - name: Coverage gate
         if: github.event_name == 'pull_request'
