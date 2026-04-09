@@ -38,12 +38,49 @@ Project operating rules for all human and AI contributors.
 - Enforce `100%` function coverage and `99%` region coverage in CI.
 - Enforce patch coverage on pull requests: any changed production Rust line must be covered.
 - Coverage reports must be reproducible from a single documented command.
-- Note: `cargo-llvm-cov` enables `cfg(coverage)`. Be careful when adding logging with `tracing::*`
-  macros: they can introduce coverage gaps (especially multi-line invocations or rarely-hit branches).
-  If coverage fails after adding logs, fix it by:
-  - adding tests that exercise the relevant branches, and/or
-  - scoping purely-observability statements behind `#[cfg(not(coverage))]` when the tool's mapping
-    produces false negatives (do not hide business logic from coverage).
+
+### Three-tier coverage gate
+
+| Gate | Threshold | Scope | Enforced by |
+|------|-----------|-------|-------------|
+| Function coverage | `100%` | All production code | `--fail-under-functions 100` |
+| Region coverage | `99%` | All production code | `--fail-under-regions 99` |
+| Patch coverage | `100%` | Changed production lines in PR | Python script in `scripts/coverage_gate.sh` |
+
+### `tracing` macros and `cfg(not(coverage))`
+
+`tracing::*` macros (`info!`, `warn!`, `debug!`) expand under `cargo-llvm-cov` into closures
+and branches that create false coverage gaps, even when the code path is fully exercised by
+tests. This is a known `cargo llvm-cov` + `tracing` interaction.
+
+**Why `cfg(not(coverage))` guards exist:** Removing all 16 guards was tested (2026-04-09). Region
+coverage passes (99.50%), but function coverage drops to 99.96% (1 macro-introduced closure
+counted as an uncovered function). Patch coverage would also reject the changes on PR. The
+guards are necessary to maintain the 100% function threshold.
+
+**Rules for `cfg(not(coverage))` usage:**
+- Only use on `tracing::*` macro invocations and their immediately-surrounding blocks.
+- Never hide business logic, error handling, or state mutations behind `cfg(not(coverage))`.
+- When a block mixes tracing with logic (e.g., computing values only for log output),
+  confine the guard to the smallest scope that includes only the tracing call and any
+  variables used exclusively by that call.
+- Add a `#[cfg(coverage)] let _ = var;` suppression when the guard causes an unused-variable
+  warning in coverage builds.
+
+### Multi-line call sites and `#[rustfmt::skip]`
+
+`cargo llvm-cov` maps coverage regions per source line. When `rustfmt` splits a single
+function call across multiple lines, each line becomes a separate coverage region. If the
+call is on a path not always taken, some lines show as uncovered even though the call is
+atomic. Use `#[rustfmt::skip]` to keep such calls on one line:
+
+```rust
+#[rustfmt::skip]
+let result = some_function(arg1, arg2, arg3)?;
+```
+
+This is only needed for function calls where splitting would create false coverage gaps.
+Do not blanket-apply it.
 
 Required outcome:
 - Total function coverage must remain at `100%`.
