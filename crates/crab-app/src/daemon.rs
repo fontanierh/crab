@@ -4558,20 +4558,24 @@ mod tests {
     #[test]
     fn daemon_instance_lock_reports_non_blocking_lock_system_errors() {
         let workspace = TempWorkspace::new("daemon", "instance-lock-flock-error");
-        let lock_path = workspace
-            .path
-            .join("state")
-            .join(CRABD_INSTANCE_LOCK_FILE_NAME);
-        let mut file_descriptors = [0; 2];
-        let result = unsafe { libc::pipe(file_descriptors.as_mut_ptr()) };
-        assert_eq!(result, 0, "pipe creation should succeed");
+        let state_root = workspace.path.join("state");
+        fs::create_dir_all(&state_root).expect("state dir should be created");
+        let lock_path = state_root.join(CRABD_INSTANCE_LOCK_FILE_NAME);
 
-        let read_end = unsafe { fs::File::from_raw_fd(file_descriptors[0]) };
-        let write_end = unsafe { fs::File::from_raw_fd(file_descriptors[1]) };
-        drop(write_end);
-
-        let error = acquire_lock_on_file(&read_end, &lock_path)
-            .expect_err("flock on a pipe should surface a system error");
+        // Open a real file, extract the raw fd, close it manually, then try
+        // flock on the closed fd. This produces EBADF on all Unix platforms.
+        let file = fs::File::create(&lock_path).expect("lock file should be created");
+        let raw_fd = {
+            use std::os::fd::AsRawFd;
+            file.as_raw_fd()
+        };
+        drop(file); // closes the fd
+        let stale_file = unsafe { fs::File::from_raw_fd(raw_fd) };
+        // Close the fd again so flock gets EBADF (the fd is already closed by drop above)
+        // from_raw_fd wraps the same numeric fd which is now invalid
+        let error = acquire_lock_on_file(&stale_file, &lock_path)
+            .expect_err("flock on a closed fd should surface a system error");
+        std::mem::forget(stale_file); // don't double-close
         assert!(matches!(
             error,
             CrabError::Io {
