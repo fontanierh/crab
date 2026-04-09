@@ -4,19 +4,18 @@ use crab_backends::{
 };
 #[cfg(not(any(test, coverage)))]
 use crab_backends::{map_claude_inference_profile, ClaudeThinkingMode};
-#[cfg(not(coverage))]
-use crab_core::{build_context_diagnostics_report, render_context_diagnostics_fixture};
 use crab_core::{
-    compile_prompt_contract, detect_workspace_bootstrap_state, read_self_work_session,
-    render_budgeted_turn_context, resolve_inference_profile, resolve_scoped_memory_snippets,
-    resolve_sender_identity, resolve_sender_trust_context, write_pending_trigger,
-    write_self_work_session_atomically, BackendKind, ContextAssemblyInput, ContextBudgetPolicy,
-    CrabError, CrabResult, InferenceProfile, InferenceProfileResolutionInput, LaneState,
-    MemoryCitationMode, OwnerConfig, PromptContractInput, ReasoningLevel, Run, RunProfileTelemetry,
-    RuntimeConfig, ScopedMemorySnippetResolverInput, SelfWorkSession, SelfWorkSessionLock,
-    SelfWorkSessionStatus, SenderConversationKind, SenderIdentityInput, TrustSurface,
-    WorkspaceBootstrapState, IDENTITY_FILE_NAME, MEMORY_FILE_NAME, OWNER_MEMORY_SCOPE_DIRECTORY,
-    SOUL_FILE_NAME, USER_FILE_NAME,
+    build_context_diagnostics_report, compile_prompt_contract, detect_workspace_bootstrap_state,
+    read_self_work_session, render_budgeted_turn_context, render_context_diagnostics_fixture,
+    resolve_inference_profile, resolve_scoped_memory_snippets, resolve_sender_identity,
+    resolve_sender_trust_context, write_pending_trigger, write_self_work_session_atomically,
+    BackendKind, ContextAssemblyInput, ContextBudgetPolicy, CrabError, CrabResult,
+    InferenceProfile, InferenceProfileResolutionInput, LaneState, MemoryCitationMode, OwnerConfig,
+    PromptContractInput, ReasoningLevel, Run, RunProfileTelemetry, RuntimeConfig,
+    ScopedMemorySnippetResolverInput, SelfWorkSession, SelfWorkSessionLock, SelfWorkSessionStatus,
+    SenderConversationKind, SenderIdentityInput, TrustSurface, WorkspaceBootstrapState,
+    IDENTITY_FILE_NAME, MEMORY_FILE_NAME, OWNER_MEMORY_SCOPE_DIRECTORY, SOUL_FILE_NAME,
+    USER_FILE_NAME,
 };
 use crab_discord::GatewayMessage;
 use crab_store::CheckpointStore;
@@ -1299,8 +1298,6 @@ impl<D: DaemonDiscordIo> DaemonTurnRuntime<D> {
         physical_session: &crab_core::PhysicalSession,
         inject_bootstrap_context: bool,
     ) -> CrabResult<String> {
-        #[cfg(coverage)]
-        let _ = physical_session;
         let Some(runtime) = self.turn_context_runtime.clone() else {
             return Ok(run.user_input.clone());
         };
@@ -1352,26 +1349,23 @@ impl<D: DaemonDiscordIo> DaemonTurnRuntime<D> {
         let budgeted =
             render_budgeted_turn_context(&context_input, &runtime.context_budget_policy)?;
 
-        #[cfg(not(coverage))]
-        {
-            let report = build_context_diagnostics_report(&budgeted);
-            let fixture = render_context_diagnostics_fixture(&report);
-            tracing::info!(
-                logical_session_id = %run.logical_session_id,
-                physical_session_id = %physical_session.id,
-                run_id = %run.id,
-                injected_context_tokens = report.rendered_context_tokens,
-                injected_context_chars = report.rendered_context_chars,
-                "bootstrap context prepared for physical session"
-            );
-            tracing::debug!(
-                logical_session_id = %run.logical_session_id,
-                physical_session_id = %physical_session.id,
-                run_id = %run.id,
-                context_diagnostics = %fixture,
-                "rendered turn context"
-            );
-        }
+        let report = build_context_diagnostics_report(&budgeted);
+        let fixture = render_context_diagnostics_fixture(&report);
+        tracing::info!(
+            logical_session_id = %run.logical_session_id,
+            physical_session_id = %physical_session.id,
+            run_id = %run.id,
+            injected_context_tokens = report.rendered_context_tokens,
+            injected_context_chars = report.rendered_context_chars,
+            "bootstrap context prepared for physical session"
+        );
+        tracing::debug!(
+            logical_session_id = %run.logical_session_id,
+            physical_session_id = %physical_session.id,
+            run_id = %run.id,
+            context_diagnostics = %fixture,
+            "rendered turn context"
+        );
 
         Ok(budgeted.rendered_context)
     }
@@ -1617,7 +1611,6 @@ where
     daemon_config.validate()?;
     let now_epoch_ms = control.now_epoch_ms()?;
     let boot = crate::boot_runtime(runtime_config, &daemon_config.bot_user_id, now_epoch_ms)?;
-    #[cfg(not(coverage))]
     {
         let migration = &boot.composition.state_schema_migration;
         tracing::info!(
@@ -1627,13 +1620,8 @@ where
             "state schema migration evaluated on startup"
         );
         for event in &migration.events {
-            tracing::debug!(
-                kind = event.kind.as_token(),
-                from_version = event.from_version,
-                to_version = event.to_version,
-                detail = ?event.detail,
-                "state schema migration event"
-            );
+            #[rustfmt::skip]
+            tracing::debug!(kind = event.kind.as_token(), from_version = event.from_version, to_version = event.to_version, detail = ?event.detail, "state schema migration event");
         }
     }
     if !boot.startup_reconciliation.recovered_runs.is_empty()
@@ -1643,18 +1631,8 @@ where
             .repaired_physical_sessions
             .is_empty()
     {
-        // `tracing` macros can produce stubborn per-line coverage gaps under `cargo llvm-cov`
-        // (cfg(coverage)), even when the behavior is exercised. Keep runtime logs, but exclude
-        // them from coverage builds where stdout/stderr output is not the product.
-        #[cfg(not(coverage))]
-        tracing::warn!(
-            recovered_runs = boot.startup_reconciliation.recovered_runs.len(),
-            repaired_sessions = boot.startup_reconciliation.repaired_session_ids.len(),
-            repaired_physical_sessions =
-                boot.startup_reconciliation.repaired_physical_sessions.len(),
-            "startup reconciliation recovered in-flight work"
-        );
-        #[cfg(not(coverage))]
+        #[rustfmt::skip]
+        tracing::warn!(recovered_runs = boot.startup_reconciliation.recovered_runs.len(), repaired_sessions = boot.startup_reconciliation.repaired_session_ids.len(), repaired_physical_sessions = boot.startup_reconciliation.repaired_physical_sessions.len(), "startup reconciliation recovered in-flight work");
         tracing::debug!(
             recovered = ?boot.startup_reconciliation.recovered_runs,
             repaired = ?boot.startup_reconciliation.repaired_session_ids,
@@ -1673,14 +1651,9 @@ where
             &boot.startup_reconciliation.recovered_runs,
             &mut discord,
         );
-        #[cfg(coverage)]
-        let _ = &sent;
-        #[cfg(not(coverage))]
-        if let Err(_error) = sent {
-            tracing::warn!(
-                error = %_error,
-                "failed sending startup reconciliation notifications"
-            );
+        if let Err(error) = sent {
+            #[rustfmt::skip]
+            tracing::warn!(error = %error, "failed sending startup reconciliation notifications");
         }
     }
 
@@ -1721,11 +1694,10 @@ where
                     crab_core::consume_pending_trigger(&trigger_path)?;
                     stats.ingested_triggers = stats.ingested_triggers.saturating_add(1);
                 }
-                Err(_error) => {
-                    #[cfg(not(coverage))]
+                Err(error) => {
                     tracing::warn!(
                         channel_id = %trigger.channel_id,
-                        error = %_error,
+                        error = %error,
                         "failed to enqueue pending trigger"
                     );
                 }
@@ -1739,13 +1711,11 @@ where
         {
             let state_root = executor.composition().state_stores.root.clone();
             let steering = crab_core::read_steering_triggers(&state_root)?;
-            // Keep on one line: multi-line call sites can produce llvm-cov line-mapping gaps.
             #[rustfmt::skip]
             let (_, consumed) = executor.consume_and_batch_triggers(steering, "", crab_core::consume_steering_trigger, TriggerKind::Pending)?;
             stats.ingested_triggers = stats.ingested_triggers.saturating_add(consumed as u64);
 
             let graceful = crab_core::read_graceful_steering_triggers(&state_root)?;
-            // Keep on one line: multi-line call sites can produce llvm-cov line-mapping gaps.
             #[rustfmt::skip]
             let (_, consumed) = executor.consume_and_batch_triggers(graceful, "", crab_core::consume_graceful_steering_trigger, TriggerKind::Pending)?;
             stats.ingested_triggers = stats.ingested_triggers.saturating_add(consumed as u64);
@@ -1766,28 +1736,16 @@ where
         );
         if let Some(outcome) = heartbeat_outcome? {
             stats.heartbeat_cycles = stats.heartbeat_cycles.saturating_add(1);
-            #[cfg(coverage)]
-            let _ = &outcome;
-
-            #[cfg(not(coverage))]
-            {
-                let had_actions = !outcome.cancelled_runs.is_empty()
-                    || !outcome.hard_stopped_runs.is_empty()
-                    || !outcome.restarted_backends.is_empty()
-                    || outcome.dispatcher_nudged;
-                if had_actions {
-                    tracing::warn!(
-                        cancelled_runs = outcome.cancelled_runs.len(),
-                        hard_stopped_runs = outcome.hard_stopped_runs.len(),
-                        restarted_backends = outcome.restarted_backends.len(),
-                        dispatcher_nudged = outcome.dispatcher_nudged,
-                        events = outcome.events.len(),
-                        "heartbeat took corrective action"
-                    );
-                    tracing::debug!(?outcome, "heartbeat outcome details");
-                } else {
-                    tracing::debug!(events = outcome.events.len(), "heartbeat cycle complete");
-                }
+            let had_actions = !outcome.cancelled_runs.is_empty()
+                || !outcome.hard_stopped_runs.is_empty()
+                || !outcome.restarted_backends.is_empty()
+                || outcome.dispatcher_nudged;
+            if had_actions {
+                #[rustfmt::skip]
+                tracing::warn!(cancelled_runs = outcome.cancelled_runs.len(), hard_stopped_runs = outcome.hard_stopped_runs.len(), restarted_backends = outcome.restarted_backends.len(), dispatcher_nudged = outcome.dispatcher_nudged, events = outcome.events.len(), "heartbeat took corrective action");
+                tracing::debug!(?outcome, "heartbeat outcome details");
+            } else {
+                tracing::debug!(events = outcome.events.len(), "heartbeat cycle complete");
             }
         }
 
@@ -1840,7 +1798,7 @@ fn evaluate_self_work<R: TurnExecutorRuntime>(
         return Ok(0);
     };
     #[rustfmt::skip]
-    let mut locked_session = match read_self_work_session(&state_root)? { Some(s) => s, None => return Ok(0) };
+    let mut locked_session = match read_self_work_session(&state_root)? { Some(session) => session, None => return Ok(0) };
 
     let locked_lane_status = executor.self_work_lane_status(&locked_session.channel_id)?;
     #[allow(clippy::let_unit_value)]
@@ -3945,6 +3903,62 @@ mod tests {
     }
 
     #[test]
+    fn daemon_loop_tolerates_startup_reconciliation_notification_failure() {
+        let workspace = TempWorkspace::new("daemon", "loop-reconcile-notify-failure");
+        let config = runtime_config_for_workspace_with_lanes(&workspace.path, 1);
+        let state_root = workspace.path.join("state");
+        std::fs::create_dir_all(&state_root).expect("state root should be creatable");
+
+        let run_store = RunStore::new(&state_root);
+        let mut stale_run = sample_claude_run("111");
+        stale_run.id = "run:discord:dm:111:stale-notify-failure".to_string();
+        stale_run.logical_session_id = "discord:dm:111".to_string();
+        stale_run.status = RunStatus::Running;
+        stale_run.delivery_channel_id = Some("999".to_string());
+        stale_run.started_at_epoch_ms = Some(1);
+        stale_run.queued_at_epoch_ms = 1;
+        run_store
+            .upsert_run(&stale_run)
+            .expect("stale run should persist");
+
+        let session_store = crab_store::SessionStore::new(&state_root);
+        let mut session = sample_session(LaneState::Running, None);
+        session.id = "discord:dm:111".to_string();
+        session_store
+            .upsert_session(&session)
+            .expect("session should persist");
+
+        let discord = ScriptedDiscordIo::with_state(DiscordIoState {
+            post_results: VecDeque::from([Err(CrabError::Io {
+                context: "startup_recovery_notify",
+                path: None,
+                message: "synthetic delivery failure".to_string(),
+            })]),
+            ..DiscordIoState::default()
+        });
+        let discord_state = discord.clone();
+
+        let mut control = OneShotControl {
+            now: 1_739_173_200_000,
+            shutdown: false,
+        };
+
+        let stats = super::run_daemon_loop_with_transport(
+            &config,
+            &daemon_loop_config(),
+            discord,
+            &mut control,
+        )
+        .expect("daemon loop should succeed despite notification failure");
+
+        assert_eq!(stats.iterations, 1);
+        let state = discord_state.state();
+        assert_eq!(state.posted.len(), 1);
+        assert_eq!(state.posted[0].0, "999");
+        assert!(state.posted[0].2.contains(&stale_run.id));
+    }
+
+    #[test]
     fn civil_from_days_covers_january() {
         // 1704067200000 ms = 2024-01-01T00:00:00Z
         let date = epoch_ms_to_yyyy_mm_dd(1_704_067_200_000).expect("January date should convert");
@@ -4837,6 +4851,76 @@ mod tests {
             stats.heartbeat_cycles >= 1,
             "expected at least one heartbeat cycle"
         );
+    }
+
+    #[test]
+    fn daemon_loop_heartbeat_takes_corrective_action_after_boot() {
+        let workspace = TempWorkspace::new("daemon", "loop-heartbeat-corrective");
+        let config = runtime_config_for_workspace_with_lanes(&workspace.path, 1);
+        let state_root = workspace.path.join("state");
+        std::fs::create_dir_all(&state_root).expect("state root should be creatable");
+
+        let base = 1_739_173_200_000;
+        let boot_now = base + 120_000;
+        let started_at = boot_now.saturating_sub(60_000);
+
+        let run_store = RunStore::new(&state_root);
+        let mut stale = sample_claude_run("111");
+        stale.id = "run:discord:channel:777:heartbeat-corrective".to_string();
+        stale.logical_session_id = "discord:channel:777".to_string();
+        stale.status = RunStatus::Running;
+        stale.started_at_epoch_ms = Some(started_at);
+        stale.queued_at_epoch_ms = started_at;
+        run_store.upsert_run(&stale).expect("run should persist");
+
+        let session_store = crab_store::SessionStore::new(&state_root);
+        let mut session = sample_session(LaneState::Running, None);
+        session.id = "discord:channel:777".to_string();
+        session_store
+            .upsert_session(&session)
+            .expect("session should persist");
+
+        let discord = ScriptedDiscordIo::with_state(DiscordIoState::default());
+
+        struct AdvancingControl {
+            call: u64,
+            base: u64,
+        }
+        impl DaemonLoopControl for AdvancingControl {
+            fn now_epoch_ms(&mut self) -> CrabResult<u64> {
+                self.call += 1;
+                Ok(self.base + self.call * 120_000)
+            }
+            fn should_shutdown(&self) -> bool {
+                false
+            }
+            fn sleep_tick(&mut self, _: u64) -> CrabResult<()> {
+                Ok(())
+            }
+        }
+
+        let daemon_config = DaemonConfig {
+            bot_user_id: "999".to_string(),
+            tick_interval_ms: 1,
+            max_iterations: Some(3),
+        };
+
+        let mut control = AdvancingControl { call: 0, base };
+
+        let stats =
+            super::run_daemon_loop_with_transport(&config, &daemon_config, discord, &mut control)
+                .expect("daemon loop with heartbeat corrective action should complete");
+
+        assert!(
+            stats.heartbeat_cycles >= 1,
+            "expected at least one heartbeat cycle"
+        );
+
+        let persisted = run_store
+            .get_run("discord:channel:777", &stale.id)
+            .expect("run lookup should succeed")
+            .expect("run should remain persisted");
+        assert_ne!(persisted.status, RunStatus::Running);
     }
 
     #[test]

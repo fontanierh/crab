@@ -39,11 +39,15 @@ Project operating rules for all human and AI contributors.
 - Enforce patch coverage on pull requests: any changed production Rust line must be covered.
 - Coverage reports must be reproducible from a single documented command.
 - Note: `cargo-llvm-cov` enables `cfg(coverage)`. Be careful when adding logging with `tracing::*`
-  macros: they can introduce coverage gaps (especially multi-line invocations or rarely-hit branches).
+  macros: they can still expose region gaps, but the authoritative gate is now `99%` total region
+  coverage plus `100%` patch coverage on changed production lines.
   If coverage fails after adding logs, fix it by:
   - adding tests that exercise the relevant branches, and/or
-  - scoping purely-observability statements behind `#[cfg(not(coverage))]` when the tool's mapping
-    produces false negatives (do not hide business logic from coverage).
+  - using `#[rustfmt::skip]` only for a narrowly-scoped observability statement or call site whose
+    multi-line formatting is demonstrably the only remaining source of false-negative coverage after
+    tests were added.
+  - Do not hide runtime behavior behind `#[cfg(not(coverage))]`; coverage builds must execute the
+    same production logic.
 
 Required outcome:
 - Total function coverage must remain at `100%`.

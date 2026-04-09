@@ -369,14 +369,8 @@ impl EventStore {
                         && previous_event.idempotency_key.is_some()
                         && previous_event.idempotency_key == parsed.idempotency_key;
                     if is_duplicate {
-                        #[cfg(not(coverage))]
-                        tracing::warn!(
-                            logical_session_id = %logical_session_id,
-                            run_id = %run_id,
-                            sequence = parsed.sequence,
-                            idempotency_key = parsed.idempotency_key.as_deref().unwrap_or(""),
-                            "deduplicated duplicate event log entry during replay"
-                        );
+                        #[rustfmt::skip]
+                        tracing::warn!(logical_session_id = %logical_session_id, run_id = %run_id, sequence = parsed.sequence, idempotency_key = parsed.idempotency_key.as_deref().unwrap_or(""), "deduplicated duplicate event log entry during replay");
                         continue;
                     }
                 }

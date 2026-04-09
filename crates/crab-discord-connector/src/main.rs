@@ -373,17 +373,8 @@ where
                     delivery_id,
                     content,
                 } => {
-                    #[cfg(coverage)]
-                    let _ = (op_id, channel_id, delivery_id, content);
-                    #[cfg(not(coverage))]
-                    tracing::debug!(
-                        op = "post",
-                        op_id = %op_id,
-                        channel_id = %channel_id,
-                        delivery_id = %delivery_id,
-                        content_len = content.len(),
-                        "processing crabd outbound op"
-                    );
+                    #[rustfmt::skip]
+                    tracing::debug!(op = "post", op_id = %op_id, channel_id = %channel_id, delivery_id = %delivery_id, content_len = content.len(), "processing crabd outbound op");
                 }
                 CrabdOutboundOp::Edit {
                     op_id,
@@ -391,31 +382,15 @@ where
                     delivery_id,
                     content,
                 } => {
-                    #[cfg(coverage)]
-                    let _ = (op_id, channel_id, delivery_id, content);
-                    #[cfg(not(coverage))]
-                    tracing::debug!(
-                        op = "edit",
-                        op_id = %op_id,
-                        channel_id = %channel_id,
-                        delivery_id = %delivery_id,
-                        content_len = content.len(),
-                        "processing crabd outbound op"
-                    );
+                    #[rustfmt::skip]
+                    tracing::debug!(op = "edit", op_id = %op_id, channel_id = %channel_id, delivery_id = %delivery_id, content_len = content.len(), "processing crabd outbound op");
                 }
             }
             let receipt =
                 process_outbound_op(discord, delivery_id_map_store, retry_policy, op, &mut stats);
             if receipt.status != CrabdOutboundReceiptStatus::Ok {
-                #[cfg(not(coverage))]
-                tracing::warn!(
-                    op_id = %receipt.op_id,
-                    channel_id = %receipt.channel_id,
-                    delivery_id = %receipt.delivery_id,
-                    discord_message_id = ?receipt.discord_message_id,
-                    error = %receipt.error_message.clone().unwrap_or_else(|| "unknown error".to_string()),
-                    "outbound discord delivery returned error receipt"
-                );
+                #[rustfmt::skip]
+                tracing::warn!(op_id = %receipt.op_id, channel_id = %receipt.channel_id, delivery_id = %receipt.delivery_id, discord_message_id = ?receipt.discord_message_id, error = receipt.error_message.as_deref().unwrap_or("unknown error"), "outbound discord delivery returned error receipt");
             }
             let frame = CrabdInboundFrame::OutboundReceipt(receipt);
             crabd.send_inbound_frame(&frame)?;

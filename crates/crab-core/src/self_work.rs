@@ -228,8 +228,13 @@ impl SelfWorkSessionLock {
 
                     remove_stale_lock_file(&lock_path)?;
                 }
-                #[rustfmt::skip]
-                Err(error) => { return Err(CrabError::Io { context: "self_work_session_lock", path: Some(lock_path.to_string_lossy().to_string()), message: error.to_string() }); }
+                Err(error) => {
+                    return Err(CrabError::Io {
+                        context: "self_work_session_lock",
+                        path: Some(lock_path.to_string_lossy().to_string()),
+                        message: error.to_string(),
+                    });
+                }
             }
         }
     }

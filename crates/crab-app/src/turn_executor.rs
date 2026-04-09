@@ -302,7 +302,6 @@ impl<R: TurnExecutorRuntime> TurnExecutor<R> {
     fn check_for_steering_trigger(&mut self, current_logical_session_id: &str) -> CrabResult<bool> {
         let state_root = self.composition.state_stores.root.clone();
         let triggers = crab_core::read_steering_triggers(&state_root)?;
-        // Keep on one line: multi-line call sites can produce llvm-cov line-mapping gaps.
         #[rustfmt::skip]
         let (matched, _) = self.consume_and_batch_triggers(triggers, current_logical_session_id, crab_core::consume_steering_trigger, TriggerKind::Steering)?;
         Ok(matched)
@@ -314,7 +313,6 @@ impl<R: TurnExecutorRuntime> TurnExecutor<R> {
     ) -> CrabResult<bool> {
         let state_root = self.composition.state_stores.root.clone();
         let triggers = crab_core::read_graceful_steering_triggers(&state_root)?;
-        // Keep on one line: multi-line call sites can produce llvm-cov line-mapping gaps.
         #[rustfmt::skip]
         let (matched, _) = self.consume_and_batch_triggers(triggers, current_logical_session_id, crab_core::consume_graceful_steering_trigger, TriggerKind::Steering)?;
         Ok(matched)
@@ -408,18 +406,12 @@ impl<R: TurnExecutorRuntime> TurnExecutor<R> {
                         matched_current_lane = true;
                     }
                 }
-                Err(_error) => {
+                Err(error) => {
                     // Enqueue failed — leave trigger files on disk for retry.
                     // This avoids the silent message loss that caused the
                     // reverted collapse attempt (commit eebf825).
-                    #[cfg(not(coverage))]
-                    tracing::warn!(
-                        channel_id = %channel_id,
-                        trigger_count = entries.len(),
-                        error = %_error,
-                        "failed to enqueue batched {:?} triggers, files retained for retry",
-                        kind,
-                    );
+                    #[rustfmt::skip]
+                    tracing::warn!(channel_id = %channel_id, trigger_count = entries.len(), error = %error, "failed to enqueue batched {:?} triggers, files retained for retry", kind);
                 }
             }
         }
@@ -614,18 +606,8 @@ impl<R: TurnExecutorRuntime> TurnExecutor<R> {
                 supplemental_emitted_event_count.saturating_add(resolution.emitted_event_count);
         }
 
-        // Note: `tracing` macros can create stubborn per-line coverage gaps under `cargo llvm-cov`
-        // (cfg(coverage)). Keep runtime logs, but exclude them from coverage builds.
-        #[cfg(not(coverage))]
-        tracing::info!(
-            logical_session_id = %run.logical_session_id,
-            run_id = %run.id,
-            turn_id = %turn_id,
-            backend = ?run.profile.resolved_profile.backend,
-            model = %run.profile.resolved_profile.model,
-            reasoning_level = %run.profile.resolved_profile.reasoning_level.as_token(),
-            "run started"
-        );
+        #[rustfmt::skip]
+        tracing::info!(logical_session_id = %run.logical_session_id, run_id = %run.id, turn_id = %turn_id, backend = ?run.profile.resolved_profile.backend, model = %run.profile.resolved_profile.model, reasoning_level = %run.profile.resolved_profile.reasoning_level.as_token(), "run started");
 
         if onboarding_gate_resolution.is_none() {
             onboarding_completion_resolution =
@@ -825,8 +807,6 @@ impl<R: TurnExecutorRuntime> TurnExecutor<R> {
             supplemental_emitted_event_count = supplemental_emitted_event_count.saturating_add(1);
         }
         let token_total_before_rotation = session.token_accounting.context_window_tokens();
-        #[cfg(coverage)]
-        let _ = token_total_before_rotation;
 
         session.lane_state = LaneState::Idle;
         session.queued_run_count = self
@@ -859,19 +839,8 @@ impl<R: TurnExecutorRuntime> TurnExecutor<R> {
                 .saturating_add(rotation_outcome.supplemental_emitted_event_count);
         }
 
-        #[cfg(not(coverage))]
-        tracing::info!(
-            logical_session_id = %run.logical_session_id,
-            run_id = %run.id,
-            turn_id = %turn_id,
-            status = %run_status_token(final_status),
-            backend_events = backend_events.len(),
-            rendered_len = delivery.total_rendered_len,
-            token_total_before_rotation,
-            rotated = rotation_outcome.is_some(),
-            token_total_after_rotation = session.token_accounting.context_window_tokens(),
-            "run completed"
-        );
+        #[rustfmt::skip]
+        tracing::info!(logical_session_id = %run.logical_session_id, run_id = %run.id, turn_id = %turn_id, status = %run_status_token(final_status), backend_events = backend_events.len(), rendered_len = delivery.total_rendered_len, token_total_before_rotation, rotated = rotation_outcome.is_some(), token_total_after_rotation = session.token_accounting.context_window_tokens(), "run completed");
 
         if let Some(onboarding_completion_resolution) = onboarding_completion_resolution {
             let delivery_result = self.deliver_rendered_assistant_output(
@@ -908,7 +877,6 @@ impl<R: TurnExecutorRuntime> TurnExecutor<R> {
                 outcome.checkpoint_id
             );
             let notification_id = format!("delivery:{}:rotation-notification", run.id);
-            // Keep on one line: multi-line call sites can produce llvm-cov line-mapping gaps.
             #[rustfmt::skip]
             let _ = self.deliver_rendered_assistant_output(&run, &notification_id, &notification, 0, completed_at_epoch_ms)?;
         }
@@ -917,7 +885,6 @@ impl<R: TurnExecutorRuntime> TurnExecutor<R> {
             #[allow(clippy::single_match)]
             match Self::render_backend_failure_message(&backend_events, &run) {
                 Some(message) => {
-                    // Keep on one line: multi-line call sites can produce llvm-cov line-mapping gaps.
                     #[rustfmt::skip]
                     let _ = self.deliver_rendered_assistant_output(&run, &delivery_message_id(&run.id, 0), &message, 0, completed_at_epoch_ms)?;
                 }
@@ -1223,18 +1190,11 @@ impl<R: TurnExecutorRuntime> TurnExecutor<R> {
         let mut started_payload = BTreeMap::new();
         started_payload.insert("rotation_event".to_string(), "started".to_string());
         started_payload.insert("trigger".to_string(), "cli_rotation".to_string());
-        // Keep on one line: multi-line call sites can produce llvm-cov line-mapping gaps.
         #[rustfmt::skip]
         self.append_run_event(run, EventKind::RunNote, EventSource::System, started_payload, now_epoch_ms)?;
 
-        #[cfg(not(coverage))]
-        tracing::info!(
-            logical_session_id = %run.logical_session_id,
-            run_id = %run.id,
-            trigger = "cli_rotation",
-            token_usage_total = session.token_accounting.context_window_tokens(),
-            "rotation started"
-        );
+        #[rustfmt::skip]
+        tracing::info!(logical_session_id = %run.logical_session_id, run_id = %run.id, trigger = "cli_rotation", token_usage_total = session.token_accounting.context_window_tokens(), "rotation started");
 
         session.lane_state = LaneState::Rotating;
         self.composition
@@ -1260,20 +1220,13 @@ impl<R: TurnExecutorRuntime> TurnExecutor<R> {
         session.last_successful_checkpoint_id = Some(outcome.checkpoint_id.clone());
         session.lane_state = LaneState::Idle;
 
-        #[cfg(not(coverage))]
-        tracing::info!(
-            logical_session_id = %run.logical_session_id,
-            run_id = %run.id,
-            trigger = "cli_rotation",
-            checkpoint_id = %outcome.checkpoint_id,
-            "rotation completed"
-        );
+        #[rustfmt::skip]
+        tracing::info!(logical_session_id = %run.logical_session_id, run_id = %run.id, trigger = "cli_rotation", checkpoint_id = %outcome.checkpoint_id, "rotation completed");
 
         let mut completed_payload = BTreeMap::new();
         completed_payload.insert("rotation_event".to_string(), "completed".to_string());
         completed_payload.insert("checkpoint_id".to_string(), outcome.checkpoint_id.clone());
         completed_payload.insert("trigger".to_string(), "cli_rotation".to_string());
-        // Keep on one line: multi-line call sites can produce llvm-cov line-mapping gaps.
         #[rustfmt::skip]
         self.append_run_event(run, EventKind::RunNote, EventSource::System, completed_payload, now_epoch_ms)?;
 
