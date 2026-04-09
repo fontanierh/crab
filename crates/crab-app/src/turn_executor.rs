@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::RecvTimeoutError;
 use std::time::Duration;
 
@@ -23,6 +24,8 @@ use futures::future::poll_fn;
 use futures::StreamExt;
 
 use crate::AppComposition;
+
+static TRIGGER_RUN_ID_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// Classifies triggers so `consume_and_batch_triggers` can decide whether to
 /// wrap the enqueued message with interruption context.
@@ -221,7 +224,9 @@ impl<R: TurnExecutorRuntime> TurnExecutor<R> {
                 message: "channel_id must not be empty".to_string(),
             });
         }
-        let trigger_id = format!("trigger:{}", self.runtime.now_epoch_ms()?);
+        let trigger_epoch_ms = self.runtime.now_epoch_ms()?;
+        let counter = TRIGGER_RUN_ID_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let trigger_id = format!("trigger:{trigger_epoch_ms}-{counter}");
         let ingress = crab_discord::IngressMessage {
             message_id: trigger_id,
             // Use a synthetic numeric author ID because sender identity validation
@@ -1491,6 +1496,7 @@ impl<R: TurnExecutorRuntime> TurnExecutor<R> {
             .state_stores
             .event_store
             .append_event(&event)
+            .map(|_| ())
     }
 
     fn append_system_run_note(
@@ -2122,6 +2128,7 @@ impl<R: TurnExecutorRuntime> OnboardingCompletionEventRuntime for TurnExecutor<R
             .state_stores
             .event_store
             .append_event(event)
+            .map(|_| ())
     }
 }
 
@@ -6392,8 +6399,8 @@ mod tests {
     }
 
     #[test]
-    fn batch_triggers_delete_failure_returns_error_after_processing_all_channels() {
-        let workspace = TempWorkspace::new("turn-executor", "batch-delete-fail");
+    fn batch_triggers_missing_file_delete_is_treated_as_success() {
+        let workspace = TempWorkspace::new("turn-executor", "batch-delete-missing");
         let runtime = FakeRuntime::with_backend_events(Vec::new(), &[1, 2, 3]);
         let mut executor = build_executor(&workspace, runtime, 8);
 
@@ -6421,7 +6428,40 @@ mod tests {
             TriggerKind::Steering,
         );
 
-        assert!(result.is_err(), "should return error when consume_fn fails");
+        assert_eq!(result.expect("missing file should be tolerated"), (true, 1));
+    }
+
+    #[test]
+    fn batch_triggers_non_not_found_delete_failure_still_returns_error() {
+        let workspace = TempWorkspace::new("turn-executor", "batch-delete-hard-fail");
+        let runtime = FakeRuntime::with_backend_events(Vec::new(), &[1, 2]);
+        let mut executor = build_executor(&workspace, runtime, 8);
+
+        let triggers = vec![(
+            PathBuf::from("/tmp/not-used.json"),
+            crab_core::PendingTrigger {
+                channel_id: "777".to_string(),
+                message: "will fail delete".to_string(),
+            },
+        )];
+
+        let result = executor.consume_and_batch_triggers(
+            triggers,
+            "discord:channel:777",
+            |_| {
+                Err(CrabError::Io {
+                    context: "steering_trigger_consume",
+                    path: Some("/tmp/not-used.json".to_string()),
+                    message: "permission denied".to_string(),
+                })
+            },
+            TriggerKind::Steering,
+        );
+
+        assert!(
+            result.is_err(),
+            "non-NotFound delete failures should still error"
+        );
     }
 
     // ── Bug 3: Bootstrap re-injection flag survives daemon restart ──────
@@ -6658,6 +6698,28 @@ mod tests {
             .expect("run should exist");
         assert_eq!(run.user_input, "Check deployment status");
         assert_eq!(run.status, RunStatus::Queued);
+    }
+
+    #[test]
+    fn enqueue_pending_trigger_uses_unique_run_ids_within_same_millisecond() {
+        let workspace = TempWorkspace::new("turn-executor", "pending-trigger-same-ms");
+        let mut runtime =
+            FakeRuntime::with_backend_events(Vec::new(), &[42_000, 42_001, 42_000, 42_002]);
+        runtime
+            .resolve_profile_results
+            .push_back(Ok(sample_profile_telemetry()));
+        let mut executor = build_executor(&workspace, runtime, 8);
+
+        let first = executor
+            .enqueue_pending_trigger("777", "first trigger")
+            .expect("first enqueue should succeed");
+        let second = executor
+            .enqueue_pending_trigger("777", "second trigger")
+            .expect("second enqueue should succeed");
+
+        assert_ne!(first.run_id, second.run_id);
+        assert!(first.run_id.contains("trigger:42000-"));
+        assert!(second.run_id.contains("trigger:42000-"));
     }
 
     #[test]

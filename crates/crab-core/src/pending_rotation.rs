@@ -177,17 +177,27 @@ mod tests {
     }
 
     #[test]
-    fn consume_returns_error_for_missing_file() {
+    fn consume_missing_rotation_is_treated_as_success() {
         let temp = TempDir::new("pending-rotation", "consume-missing");
         let path = temp.root.join("nonexistent.json");
+        consume_pending_rotation(&path).expect("consume of missing file should succeed");
+    }
+
+    #[test]
+    fn consume_propagates_remove_file_error() {
+        let temp = TempDir::new("pending-rotation", "consume-remove-error");
+        let path = temp.root.join("directory-instead-of-file.json");
+        fs::create_dir_all(&path).expect("test should be able to create directory at signal path");
+
         let error =
-            consume_pending_rotation(&path).expect_err("consume of missing file should fail");
+            consume_pending_rotation(&path).expect_err("consume should fail for non-file paths");
         assert!(matches!(
             error,
             CrabError::Io {
                 context: "pending_rotation_consume",
+                path: Some(ref remove_path),
                 ..
-            }
+            } if remove_path == &path.display().to_string()
         ));
     }
 

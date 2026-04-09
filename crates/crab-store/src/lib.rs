@@ -279,16 +279,22 @@ impl EventStore {
         Self { root: root.into() }
     }
 
-    pub fn append_event(&self, event: &EventEnvelope) -> CrabResult<()> {
+    pub fn append_event(&self, event: &EventEnvelope) -> CrabResult<u64> {
         self.ensure_layout()?;
         if let Some(profile) = event.profile.as_ref() {
             validate_profile_sender_context("event_validate", profile)?;
         }
 
-        let expected_sequence = self
-            .replay_run(&event.logical_session_id, &event.run_id)?
-            .last()
-            .map_or(1, |last| last.sequence + 1);
+        let replayed = self.replay_run(&event.logical_session_id, &event.run_id)?;
+        if let (Some(last), Some(idempotency_key)) =
+            (replayed.last(), event.idempotency_key.as_deref())
+        {
+            if last.idempotency_key.as_deref() == Some(idempotency_key) {
+                return Ok(last.sequence);
+            }
+        }
+
+        let expected_sequence = replayed.last().map_or(1, |last| last.sequence + 1);
 
         if event.sequence != expected_sequence {
             return Err(CrabError::InvariantViolation {
@@ -315,11 +321,10 @@ impl EventStore {
             "event_append_open",
             &run_log_path,
         )?;
-        wrap_io(
-            file.write_all(line.as_bytes()),
-            "event_append_write",
-            &run_log_path,
-        )
+        #[rustfmt::skip]
+        write_all_with_context(&mut file, line.as_bytes(), "event_append_write", &run_log_path)?;
+
+        Ok(event.sequence)
     }
 
     pub fn replay_run(
@@ -342,6 +347,7 @@ impl EventStore {
 
         let mut events = Vec::new();
         let mut expected_sequence = 1_u64;
+        let mut previous: Option<EventEnvelope> = None;
         for line in content.lines() {
             if line.trim().is_empty() {
                 continue;
@@ -358,6 +364,22 @@ impl EventStore {
             };
 
             if parsed.sequence != expected_sequence {
+                if let Some(previous_event) = previous.as_ref() {
+                    let is_duplicate = parsed.sequence == previous_event.sequence
+                        && previous_event.idempotency_key.is_some()
+                        && previous_event.idempotency_key == parsed.idempotency_key;
+                    if is_duplicate {
+                        #[cfg(not(coverage))]
+                        tracing::warn!(
+                            logical_session_id = %logical_session_id,
+                            run_id = %run_id,
+                            sequence = parsed.sequence,
+                            idempotency_key = parsed.idempotency_key.as_deref().unwrap_or(""),
+                            "deduplicated duplicate event log entry during replay"
+                        );
+                        continue;
+                    }
+                }
                 return Err(CrabError::InvariantViolation {
                     context: "event_replay_sequence",
                     message: format!(
@@ -368,6 +390,7 @@ impl EventStore {
             }
 
             expected_sequence += 1;
+            previous = Some(parsed.clone());
             events.push(parsed);
         }
 
@@ -637,8 +660,9 @@ impl OutboundRecordStore {
             "outbound_record_open",
             &records_path,
         )?;
-        wrap_io(
-            file.write_all(line.as_bytes()),
+        write_all_with_context(
+            &mut file,
+            line.as_bytes(),
             "outbound_record_write",
             &records_path,
         )
@@ -1020,10 +1044,20 @@ fn wrap_io<T>(result: std::io::Result<T>, context: &'static str, path: &Path) ->
     }
 }
 
+fn write_all_with_context(
+    writer: &mut impl Write,
+    bytes: &[u8],
+    context: &'static str,
+    path: &Path,
+) -> CrabResult<()> {
+    wrap_io(writer.write_all(bytes), context, path)
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
     use std::fs;
+    use std::io::Write;
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
     use std::path::Path;
@@ -1038,8 +1072,9 @@ mod tests {
 
     use super::{
         checkpoint_file_name, clamp_run_timestamps, read_json_file, run_log_file_name,
-        session_file_name, write_logical_session_atomically, write_session_index_atomically,
-        CheckpointStore, EventStore, OutboundRecordStore, RunStore, SessionIndex, SessionStore,
+        session_file_name, write_all_with_context, write_logical_session_atomically,
+        write_session_index_atomically, CheckpointStore, EventStore, OutboundRecordStore, RunStore,
+        SessionIndex, SessionStore,
     };
 
     #[test]
@@ -2448,6 +2483,31 @@ mod tests {
     }
 
     #[test]
+    fn event_store_append_skips_duplicate_last_idempotency_key() {
+        let root = temp_root("event-idempotent-append");
+        let store = EventStore::new(&root);
+        let first = sample_event("discord:channel:events", "run-idempotent", 1);
+        let mut duplicate = first.clone();
+        duplicate.event_id = "evt-run-idempotent-duplicate".to_string();
+
+        let first_sequence = store
+            .append_event(&first)
+            .expect("first event append should succeed");
+        let duplicate_sequence = store
+            .append_event(&duplicate)
+            .expect("duplicate append should be treated as idempotent");
+        let replayed = store
+            .replay_run("discord:channel:events", "run-idempotent")
+            .expect("replay should succeed");
+
+        assert_eq!(first_sequence, 1);
+        assert_eq!(duplicate_sequence, 1);
+        assert_eq!(replayed, vec![first]);
+
+        cleanup(&root);
+    }
+
+    #[test]
     fn event_store_replay_accepts_legacy_events_without_extended_metadata() {
         let root = temp_root("event-legacy-schema");
         let store = EventStore::new(&root);
@@ -2600,6 +2660,113 @@ mod tests {
     }
 
     #[test]
+    fn event_store_replay_rejects_first_event_with_non_initial_sequence() {
+        let root = temp_root("event-sequence-first-gap");
+        let store = EventStore::new(&root);
+        let logical_session_id = "discord:channel:events";
+        let run_id = "run-4-first-gap";
+        let second = sample_event(logical_session_id, run_id, 2);
+        let log_path = event_log_path(&root, logical_session_id, run_id);
+        fs::create_dir_all(
+            log_path
+                .parent()
+                .expect("run log path should have a parent"),
+        )
+        .expect("test should create parent directories for log");
+        fs::write(
+            &log_path,
+            format!(
+                "{}\n",
+                serde_json::to_string(&second).expect("serialize second event")
+            ),
+        )
+        .expect("test should write malformed sequence log");
+
+        let error = store.replay_run(logical_session_id, run_id).expect_err(
+            "replay should reject a run whose first event does not start at sequence 1",
+        );
+        assert!(matches!(
+            error,
+            CrabError::InvariantViolation {
+                context: "event_replay_sequence",
+                ..
+            }
+        ));
+
+        cleanup(&root);
+    }
+
+    #[test]
+    fn event_store_replay_deduplicates_exact_duplicate_sequence_entries() {
+        let root = temp_root("event-sequence-duplicate-idempotent");
+        let store = EventStore::new(&root);
+        let logical_session_id = "discord:channel:events";
+        let run_id = "run-duplicate";
+        let first = sample_event(logical_session_id, run_id, 1);
+        let duplicate = first.clone();
+        let second = sample_event(logical_session_id, run_id, 2);
+        let log_path = event_log_path(&root, logical_session_id, run_id);
+        fs::create_dir_all(
+            log_path
+                .parent()
+                .expect("run log path should have a parent"),
+        )
+        .expect("test should create parent directories for log");
+        let lines = format!(
+            "{}\n{}\n{}\n",
+            serde_json::to_string(&first).expect("serialize first event"),
+            serde_json::to_string(&duplicate).expect("serialize duplicate event"),
+            serde_json::to_string(&second).expect("serialize second event")
+        );
+        fs::write(&log_path, lines).expect("test should write duplicated log");
+
+        let replayed = store
+            .replay_run(logical_session_id, run_id)
+            .expect("replay should deduplicate exact duplicates");
+        assert_eq!(replayed, vec![first, second]);
+
+        cleanup(&root);
+    }
+
+    #[test]
+    fn event_store_replay_rejects_duplicate_sequence_with_different_idempotency_key() {
+        let root = temp_root("event-sequence-duplicate-conflict");
+        let store = EventStore::new(&root);
+        let logical_session_id = "discord:channel:events";
+        let run_id = "run-duplicate-conflict";
+        let first = sample_event(logical_session_id, run_id, 1);
+        let mut conflicting = first.clone();
+        conflicting.event_id = "evt-conflicting".to_string();
+        conflicting.idempotency_key = Some("run-duplicate-conflict:1:conflict".to_string());
+        let log_path = event_log_path(&root, logical_session_id, run_id);
+        fs::create_dir_all(
+            log_path
+                .parent()
+                .expect("run log path should have a parent"),
+        )
+        .expect("test should create parent directories for log");
+        let lines = format!(
+            "{}\n{}\n",
+            serde_json::to_string(&first).expect("serialize first event"),
+            serde_json::to_string(&conflicting).expect("serialize conflicting event")
+        );
+        fs::write(&log_path, lines).expect("test should write conflicting log");
+
+        let error = store
+            .replay_run(logical_session_id, run_id)
+            .expect_err("conflicting duplicate sequence should still fail");
+        assert!(matches!(
+            error,
+            CrabError::InvariantViolation {
+                context: "event_replay_sequence",
+                ..
+            }
+        ));
+
+        cleanup(&root);
+    }
+
+    #[test]
     fn event_store_append_propagates_layout_error() {
         let root = root_as_file("event-append-layout-error");
         let store = EventStore::new(&root);
@@ -2643,6 +2810,46 @@ mod tests {
         set_unix_mode(&run_log_path, 0o600);
 
         cleanup(&root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn event_store_append_propagates_write_error() {
+        struct FailingWriter;
+
+        impl Write for FailingWriter {
+            fn write(&mut self, _buf: &[u8]) -> std::io::Result<usize> {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::BrokenPipe,
+                    "forced write failure",
+                ))
+            }
+
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let mut writer = FailingWriter;
+        writer
+            .flush()
+            .expect("flush should succeed before write failure path");
+        let path = Path::new("/tmp/event-write-error.jsonl");
+        let error = write_all_with_context(
+            &mut writer,
+            b"{\"event_id\":\"evt-1\"}\n",
+            "event_append_write",
+            path,
+        )
+        .expect_err("failing writer should surface event append write error");
+        assert_eq!(
+            error,
+            CrabError::Io {
+                context: "event_append_write",
+                path: Some(path.display().to_string()),
+                message: "forced write failure".to_string(),
+            }
+        );
     }
 
     #[test]

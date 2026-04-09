@@ -186,6 +186,7 @@ dependencies = [
  "crab-telemetry",
  "ctrlc",
  "futures",
+ "libc",
  "reqwest 0.12.9",
  "serde_json",
  "time",
@@ -252,6 +253,7 @@ dependencies = [
  "crab-core",
  "serde",
  "serde_json",
+ "tracing",
 ]
 
 [[package]]
