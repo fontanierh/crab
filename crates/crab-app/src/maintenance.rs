@@ -1572,6 +1572,73 @@ mod tests {
     }
 
     #[test]
+    fn run_heartbeat_if_due_surfaces_multiple_running_run_recovery_errors() {
+        let workspace =
+            TempWorkspace::new("maintenance", "heartbeat-multiple-running-recovery-error");
+        let config = runtime_config_for_workspace_with_lanes(&workspace.path, 1);
+        let mut composition = compose_runtime(&config, "999").expect("composition should succeed");
+        let logical_session_id = "discord:channel:multi-error";
+        let run_a = "run-a";
+        let run_b = "run-b";
+
+        composition
+            .state_stores
+            .session_store
+            .upsert_session(&running_session(logical_session_id, 1_739_173_300_000))
+            .expect("session should persist");
+        composition
+            .state_stores
+            .run_store
+            .upsert_run(&running_run(logical_session_id, run_a, 1_739_173_200_000))
+            .expect("run a should persist");
+        composition
+            .state_stores
+            .run_store
+            .upsert_run(&running_run(logical_session_id, run_b, 1_739_173_200_100))
+            .expect("run b should persist");
+
+        let events_root = state_root(&workspace).join("events");
+        replace_path_with_file(&events_root);
+
+        let mut state =
+            HeartbeatLoopState::new(1, 1_739_173_300_000).expect("state should initialize");
+        let error = run_heartbeat_if_due(&mut composition, &mut state, 1_739_173_400_000)
+            .expect_err("event append failure should surface from multiple-running recovery");
+        assert!(matches!(error, CrabError::Io { context, .. } if context == "event_store_layout"));
+        assert_eq!(state.next_heartbeat_due_at_epoch_ms(), 1_739_173_301_000);
+
+        let run_a = composition
+            .state_stores
+            .run_store
+            .get_run(logical_session_id, run_a)
+            .expect("run a lookup should succeed")
+            .expect("run a should exist");
+        assert_eq!(run_a.status, RunStatus::Cancelled);
+        assert_eq!(run_a.completed_at_epoch_ms, Some(1_739_173_400_000));
+
+        let run_b = composition
+            .state_stores
+            .run_store
+            .get_run(logical_session_id, run_b)
+            .expect("run b lookup should succeed")
+            .expect("run b should exist");
+        assert_eq!(run_b.status, RunStatus::Running);
+        assert_eq!(run_b.completed_at_epoch_ms, None);
+
+        let session = composition
+            .state_stores
+            .session_store
+            .get_session(logical_session_id)
+            .expect("session lookup should succeed")
+            .expect("session should exist");
+        assert_eq!(session.lane_state, LaneState::Running);
+        assert_eq!(
+            session.active_physical_session_id,
+            Some("physical-1".to_string())
+        );
+    }
+
+    #[test]
     fn heartbeat_ignores_idle_sessions_without_running_runs() {
         let workspace = TempWorkspace::new("maintenance", "heartbeat-idle-no-run");
         let config = runtime_config_for_workspace_with_lanes(&workspace.path, 1);
