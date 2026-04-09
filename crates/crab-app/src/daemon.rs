@@ -1762,6 +1762,7 @@ fn evaluate_self_work<R: TurnExecutorRuntime>(
     let mut locked_session = match read_self_work_session(&state_root)? { Some(s) => s, None => return Ok(0) };
 
     let locked_lane_status = executor.self_work_lane_status(&locked_session.channel_id)?;
+    #[allow(clippy::let_unit_value)]
     #[rustfmt::skip]
     let _wake = match wake_due(&locked_session, &locked_lane_status, now_epoch_ms, idle_delay_ms) { true => (), false => return Ok(0) };
 
