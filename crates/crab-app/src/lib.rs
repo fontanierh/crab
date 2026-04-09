@@ -6,6 +6,7 @@ mod daemon;
 mod maintenance;
 mod memory_cli;
 mod rotate_cli;
+mod self_work_cli;
 mod startup;
 #[cfg(test)]
 mod test_support;
@@ -26,8 +27,9 @@ pub use maintenance::{
 };
 pub use memory_cli::{run_memory_get_cli, run_memory_search_cli};
 pub use rotate_cli::run_rotate_cli;
+pub use self_work_cli::run_self_work_cli;
 pub use startup::{initialize_runtime_startup, AppStartupOutcome};
 pub use trigger_cli::run_trigger_cli;
 pub use turn_executor::{
-    DispatchedTurn, QueuedTurn, TriggerKind, TurnExecutor, TurnExecutorRuntime,
+    DispatchedTurn, QueuedTurn, SelfWorkLaneStatus, TriggerKind, TurnExecutor, TurnExecutorRuntime,
 };

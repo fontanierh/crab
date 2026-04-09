@@ -1,6 +1,14 @@
 use std::io::Write;
 use std::path::PathBuf;
 
+pub(crate) fn collect_args<I, S>(args: I) -> Vec<String>
+where
+    I: IntoIterator<Item = S>,
+    S: Into<String>,
+{
+    args.into_iter().map(Into::into).collect()
+}
+
 /// Shared CLI runner: checks for --help/-h, dispatches to `execute`, and formats
 /// success (path on stdout) or error (message + usage on stderr).
 pub(crate) fn run_path_cli(

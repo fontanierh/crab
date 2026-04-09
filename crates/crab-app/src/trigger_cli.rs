@@ -23,8 +23,13 @@ where
     I: IntoIterator<Item = S>,
     S: Into<String>,
 {
-    let argv: Vec<String> = args.into_iter().map(Into::into).collect();
-    cli_support::run_path_cli(&argv, USAGE, execute, stdout, stderr)
+    cli_support::run_path_cli(
+        &cli_support::collect_args(args),
+        USAGE,
+        execute,
+        stdout,
+        stderr,
+    )
 }
 
 fn execute(args: &[String]) -> Result<PathBuf, String> {

@@ -7,12 +7,14 @@ use crab_backends::{map_claude_inference_profile, ClaudeThinkingMode};
 #[cfg(not(coverage))]
 use crab_core::{build_context_diagnostics_report, render_context_diagnostics_fixture};
 use crab_core::{
-    compile_prompt_contract, detect_workspace_bootstrap_state, render_budgeted_turn_context,
-    resolve_inference_profile, resolve_scoped_memory_snippets, resolve_sender_identity,
-    resolve_sender_trust_context, BackendKind, ContextAssemblyInput, ContextBudgetPolicy,
-    CrabError, CrabResult, InferenceProfile, InferenceProfileResolutionInput, MemoryCitationMode,
-    OwnerConfig, PromptContractInput, ReasoningLevel, Run, RunProfileTelemetry, RuntimeConfig,
-    ScopedMemorySnippetResolverInput, SenderConversationKind, SenderIdentityInput, TrustSurface,
+    compile_prompt_contract, detect_workspace_bootstrap_state, read_self_work_session,
+    render_budgeted_turn_context, resolve_inference_profile, resolve_scoped_memory_snippets,
+    resolve_sender_identity, resolve_sender_trust_context, write_pending_trigger,
+    write_self_work_session_atomically, BackendKind, ContextAssemblyInput, ContextBudgetPolicy,
+    CrabError, CrabResult, InferenceProfile, InferenceProfileResolutionInput, LaneState,
+    MemoryCitationMode, OwnerConfig, PromptContractInput, ReasoningLevel, Run, RunProfileTelemetry,
+    RuntimeConfig, ScopedMemorySnippetResolverInput, SelfWorkSession, SelfWorkSessionLock,
+    SelfWorkSessionStatus, SenderConversationKind, SenderIdentityInput, TrustSurface,
     WorkspaceBootstrapState, IDENTITY_FILE_NAME, MEMORY_FILE_NAME, OWNER_MEMORY_SCOPE_DIRECTORY,
     SOUL_FILE_NAME, USER_FILE_NAME,
 };
@@ -29,7 +31,10 @@ use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use crate::{run_heartbeat_if_due, TriggerKind, TurnExecutor, TurnExecutorRuntime};
+use crate::self_work_cli::{build_expiry_trigger_message, build_wake_trigger_message};
+use crate::{
+    run_heartbeat_if_due, SelfWorkLaneStatus, TriggerKind, TurnExecutor, TurnExecutorRuntime,
+};
 
 pub const DEFAULT_DAEMON_TICK_INTERVAL_MS: u64 = 250;
 const DAEMON_TURN_CONTEXT_READ: &str = "daemon_turn_context_read";
@@ -1670,6 +1675,8 @@ where
         }
 
         let now_epoch_ms = control.now_epoch_ms()?;
+        #[rustfmt::skip]
+        let _ = evaluate_self_work(&mut executor, now_epoch_ms, runtime_config.self_work.idle_delay_ms)?;
 
         let heartbeat_outcome = run_heartbeat_if_due(
             executor.composition_mut(),
@@ -1716,6 +1723,143 @@ where
     );
     executor.runtime_mut().shutdown_claude_sessions()?;
     Ok(stats)
+}
+
+fn evaluate_self_work<R: TurnExecutorRuntime>(
+    executor: &mut TurnExecutor<R>,
+    now_epoch_ms: u64,
+    idle_delay_ms: u64,
+) -> CrabResult<u64> {
+    let state_root = executor.composition().state_stores.root.clone();
+    let Some(session) = read_self_work_session(&state_root)? else {
+        return Ok(0);
+    };
+    if session.status != SelfWorkSessionStatus::Active {
+        return Ok(0);
+    }
+
+    if now_epoch_ms >= session.end_at_epoch_ms {
+        return evaluate_self_work_expiry(executor, &state_root, now_epoch_ms);
+    }
+    if session.final_trigger_pending {
+        return Ok(0);
+    }
+
+    let lane_status = executor.self_work_lane_status(&session.channel_id)?;
+    if !self_work_lane_is_idle(&lane_status) {
+        return Ok(0);
+    }
+
+    let idle_baseline_epoch_ms = self_work_idle_baseline_epoch_ms(&session, &lane_status);
+    if now_epoch_ms < idle_baseline_epoch_ms.saturating_add(idle_delay_ms) {
+        return Ok(0);
+    }
+
+    let Some(mut lock) = try_acquire_self_work_lock_for_daemon(&state_root, now_epoch_ms)? else {
+        return Ok(0);
+    };
+    #[rustfmt::skip]
+    let mut locked_session = match read_self_work_session(&state_root)? { Some(s) => s, None => return Ok(0) };
+
+    let locked_lane_status = executor.self_work_lane_status(&locked_session.channel_id)?;
+    #[allow(clippy::let_unit_value)]
+    #[rustfmt::skip]
+    let _wake = match wake_due(&locked_session, &locked_lane_status, now_epoch_ms, idle_delay_ms) { true => (), false => return Ok(0) };
+
+    let trigger = crab_core::PendingTrigger {
+        channel_id: locked_session.channel_id.clone(),
+        message: build_wake_trigger_message(&locked_session, &state_root),
+    };
+    write_pending_trigger(&state_root, &trigger)?;
+    locked_session.last_wake_triggered_at_epoch_ms = Some(now_epoch_ms);
+    write_self_work_session_atomically(&state_root, &locked_session)?;
+    lock.release()?;
+    Ok(1)
+}
+
+fn evaluate_self_work_expiry<R: TurnExecutorRuntime>(
+    executor: &mut TurnExecutor<R>,
+    state_root: &Path,
+    now_epoch_ms: u64,
+) -> CrabResult<u64> {
+    let Some(mut lock) = try_acquire_self_work_lock_for_daemon(state_root, now_epoch_ms)? else {
+        return Ok(0);
+    };
+    let Some(mut session) = read_self_work_session(state_root)? else {
+        return Ok(0);
+    };
+    if session.status != SelfWorkSessionStatus::Active {
+        return Ok(0);
+    }
+    if now_epoch_ms < session.end_at_epoch_ms {
+        return Ok(0);
+    }
+    if !session.final_trigger_pending {
+        session.final_trigger_pending = true;
+        write_self_work_session_atomically(state_root, &session)?;
+    }
+
+    let lane_status = executor.self_work_lane_status(&session.channel_id)?;
+    if !self_work_lane_is_idle(&lane_status) {
+        return Ok(0);
+    }
+
+    let trigger = crab_core::PendingTrigger {
+        channel_id: session.channel_id.clone(),
+        message: build_expiry_trigger_message(&session),
+    };
+    write_pending_trigger(state_root, &trigger)?;
+    session.status = SelfWorkSessionStatus::Expired;
+    session.final_trigger_pending = false;
+    session.expired_at_epoch_ms = Some(now_epoch_ms);
+    session.last_expiry_triggered_at_epoch_ms = Some(now_epoch_ms);
+    write_self_work_session_atomically(state_root, &session)?;
+    lock.release()?;
+    Ok(1)
+}
+
+fn self_work_lane_is_idle(lane_status: &SelfWorkLaneStatus) -> bool {
+    !lane_status.has_active_run
+        && lane_status.queued_run_count == 0
+        && lane_status.persisted_lane_state.unwrap_or(LaneState::Idle) == LaneState::Idle
+}
+
+fn try_acquire_self_work_lock_for_daemon(
+    state_root: &Path,
+    now_epoch_ms: u64,
+) -> CrabResult<Option<SelfWorkSessionLock>> {
+    match SelfWorkSessionLock::acquire(state_root, now_epoch_ms) {
+        Ok(lock) => Ok(Some(lock)),
+        Err(CrabError::InvariantViolation {
+            context: "self_work_session_lock",
+            ..
+        }) => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
+fn self_work_idle_baseline_epoch_ms(
+    session: &SelfWorkSession,
+    lane_status: &SelfWorkLaneStatus,
+) -> u64 {
+    session
+        .started_at_epoch_ms
+        .max(session.last_wake_triggered_at_epoch_ms.unwrap_or(0))
+        .max(lane_status.last_activity_epoch_ms.unwrap_or(0))
+}
+
+fn wake_due(
+    session: &SelfWorkSession,
+    lane_status: &SelfWorkLaneStatus,
+    now_epoch_ms: u64,
+    idle_delay_ms: u64,
+) -> bool {
+    session.status == SelfWorkSessionStatus::Active
+        && !session.final_trigger_pending
+        && now_epoch_ms < session.end_at_epoch_ms
+        && self_work_lane_is_idle(lane_status)
+        && now_epoch_ms
+            >= self_work_idle_baseline_epoch_ms(session, lane_status).saturating_add(idle_delay_ms)
 }
 
 fn now_epoch_ms() -> CrabResult<u64> {
@@ -1857,27 +2001,35 @@ fn civil_from_days(days_since_unix_epoch: i64) -> (i64, u64, u64) {
 mod tests {
     use super::{
         conversation_kind_for_logical_session_id, epoch_ms_from_duration,
-        epoch_ms_from_system_time, epoch_ms_to_yyyy_mm_dd, load_latest_checkpoint_summary,
-        memory_scope_directory_for_run, notify_startup_recovered_runs, read_workspace_markdown,
-        trust_surface_for_logical_session_id, DaemonClaudeProcess, DaemonConfig, DaemonDiscordIo,
-        DaemonLoopControl, DaemonTurnRuntime, SystemDaemonLoopControl,
+        epoch_ms_from_system_time, epoch_ms_to_yyyy_mm_dd, evaluate_self_work,
+        evaluate_self_work_expiry, load_latest_checkpoint_summary, memory_scope_directory_for_run,
+        notify_startup_recovered_runs, read_workspace_markdown, self_work_idle_baseline_epoch_ms,
+        self_work_lane_is_idle, trust_surface_for_logical_session_id,
+        try_acquire_self_work_lock_for_daemon, wake_due, DaemonClaudeProcess, DaemonConfig,
+        DaemonDiscordIo, DaemonLoopControl, DaemonTurnRuntime, SystemDaemonLoopControl,
     };
+    use crate::composition::compose_runtime_with_queue_limit;
     use crate::test_support::{runtime_config_for_workspace_with_lanes, TempWorkspace};
-    use crate::TurnExecutorRuntime;
+    use crate::turn_executor::SelfWorkLaneStatus;
+    use crate::{TurnExecutor, TurnExecutorRuntime};
     use crab_backends::{
         claude::{ClaudeRawEvent, ClaudeRawEventStream},
         BackendEvent, BackendEventKind, ClaudeProcess, SessionContext, TurnInput,
     };
     use crab_core::{
+        read_pending_triggers, read_self_work_session, write_self_work_session_atomically,
         BackendKind, Checkpoint, CrabError, CrabResult, InferenceProfile, LaneState,
         LogicalSession, ProfileValueSource, ReasoningLevel, Run, RunProfileTelemetry, RunStatus,
-        SenderConversationKind, TokenAccounting, TrustSurface, WorkspaceBootstrapState,
+        SelfWorkSession, SelfWorkSessionStatus, SenderConversationKind, TokenAccounting,
+        TrustSurface, WorkspaceBootstrapState, CURRENT_SELF_WORK_SESSION_SCHEMA_VERSION,
     };
     use crab_discord::GatewayMessage;
+    use crab_scheduler::QueuedRun;
     use crab_store::{CheckpointStore, RunStore};
     use futures::executor::block_on;
     use futures::StreamExt;
     use std::collections::VecDeque;
+    use std::panic::{catch_unwind, AssertUnwindSafe};
     #[cfg(unix)]
     use std::process::Command;
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -2196,6 +2348,129 @@ mod tests {
                 cache_creation_input_tokens: 0,
             },
             has_injected_bootstrap: false,
+        }
+    }
+
+    #[derive(Debug, Clone, Default)]
+    struct SelfWorkTestRuntime;
+
+    impl TurnExecutorRuntime for SelfWorkTestRuntime {
+        fn now_epoch_ms(&mut self) -> CrabResult<u64> {
+            Err(CrabError::InvariantViolation {
+                context: "daemon_self_work_test_runtime",
+                message: "clock should not be called in self-work evaluator tests".to_string(),
+            })
+        }
+
+        fn resolve_run_profile(
+            &mut self,
+            _logical_session_id: &str,
+            _author_id: &str,
+            _user_input: &str,
+        ) -> CrabResult<RunProfileTelemetry> {
+            unreachable!("resolve_run_profile should not be called in self-work evaluator tests")
+        }
+
+        fn ensure_physical_session(
+            &mut self,
+            _logical_session_id: &str,
+            _profile: &InferenceProfile,
+            _active_physical_session_id: Option<&str>,
+        ) -> CrabResult<crab_core::PhysicalSession> {
+            unreachable!(
+                "ensure_physical_session should not be called in self-work evaluator tests"
+            )
+        }
+
+        fn build_turn_context(
+            &mut self,
+            _run: &Run,
+            _logical_session: &LogicalSession,
+            _physical_session: &crab_core::PhysicalSession,
+            _inject_bootstrap_context: bool,
+        ) -> CrabResult<String> {
+            unreachable!("build_turn_context should not be called in self-work evaluator tests")
+        }
+
+        fn execute_backend_turn(
+            &mut self,
+            _physical_session: &mut crab_core::PhysicalSession,
+            _run: &Run,
+            _turn_id: &str,
+            _turn_context: &str,
+        ) -> CrabResult<crab_backends::BackendEventStream> {
+            unreachable!("execute_backend_turn should not be called in self-work evaluator tests")
+        }
+
+        fn deliver_assistant_output(
+            &mut self,
+            _run: &Run,
+            _channel_id: &str,
+            _message_id: &str,
+            _edit_generation: u32,
+            _content: &str,
+        ) -> CrabResult<()> {
+            unreachable!(
+                "deliver_assistant_output should not be called in self-work evaluator tests"
+            )
+        }
+
+        fn next_gateway_message(&mut self) -> CrabResult<Option<GatewayMessage>> {
+            unreachable!("next_gateway_message should not be called in self-work evaluator tests")
+        }
+
+        fn interrupt_backend_turn(
+            &mut self,
+            _session: &crab_core::PhysicalSession,
+            _turn_id: &str,
+        ) -> CrabResult<()> {
+            unreachable!("interrupt_backend_turn should not be called in self-work evaluator tests")
+        }
+    }
+
+    fn build_self_work_executor(label: &str) -> (TempWorkspace, TurnExecutor<SelfWorkTestRuntime>) {
+        let workspace = TempWorkspace::new("daemon", label);
+        let config = runtime_config_for_workspace_with_lanes(&workspace.path, 1);
+        let composition = compose_runtime_with_queue_limit(&config, "999999999999999999", 8)
+            .expect("composition should build");
+        let executor = TurnExecutor::new(composition, SelfWorkTestRuntime);
+        (workspace, executor)
+    }
+
+    fn sample_self_work_session(status: SelfWorkSessionStatus) -> SelfWorkSession {
+        SelfWorkSession {
+            schema_version: CURRENT_SELF_WORK_SESSION_SCHEMA_VERSION,
+            session_id: "self-work:1739173200000".to_string(),
+            channel_id: "777".to_string(),
+            goal: "Ship the feature".to_string(),
+            started_at_epoch_ms: 1_739_173_200_000,
+            started_at_iso8601: "2025-02-10T10:00:00Z".to_string(),
+            end_at_epoch_ms: 1_739_173_800_000,
+            end_at_iso8601: "2025-02-10T10:10:00Z".to_string(),
+            status,
+            last_wake_triggered_at_epoch_ms: None,
+            final_trigger_pending: false,
+            stopped_at_epoch_ms: (status == SelfWorkSessionStatus::Stopped)
+                .then_some(1_739_173_500_000),
+            expired_at_epoch_ms: (status == SelfWorkSessionStatus::Expired)
+                .then_some(1_739_173_800_000),
+            last_expiry_triggered_at_epoch_ms: (status == SelfWorkSessionStatus::Expired)
+                .then_some(1_739_173_800_000),
+        }
+    }
+
+    fn self_work_lane_status_fixture(
+        persisted_lane_state: Option<LaneState>,
+        has_active_run: bool,
+        queued_run_count: usize,
+        last_activity_epoch_ms: Option<u64>,
+    ) -> SelfWorkLaneStatus {
+        SelfWorkLaneStatus {
+            logical_session_id: "discord:channel:777".to_string(),
+            has_active_run,
+            queued_run_count,
+            persisted_lane_state,
+            last_activity_epoch_ms,
         }
     }
 
@@ -3645,6 +3920,459 @@ mod tests {
         assert!(empty.is_none());
     }
 
+    #[test]
+    fn evaluate_self_work_emits_wake_trigger_after_idle_delay() {
+        let (workspace, mut executor) = build_self_work_executor("self-work-wake");
+        let state_root = workspace.path.join("state");
+        write_self_work_session_atomically(
+            &state_root,
+            &sample_self_work_session(SelfWorkSessionStatus::Active),
+        )
+        .expect("self-work session should persist");
+
+        let emitted = evaluate_self_work(&mut executor, 1_739_173_380_000, 180_000)
+            .expect("self-work evaluation should succeed");
+        assert_eq!(emitted, 1);
+
+        let triggers = read_pending_triggers(&state_root).expect("triggers should be readable");
+        assert_eq!(triggers.len(), 1);
+        assert_eq!(triggers[0].1.channel_id, "777");
+        assert!(triggers[0].1.message.contains("event: wake"));
+
+        let session = read_self_work_session(&state_root)
+            .expect("session should be readable")
+            .expect("session should exist");
+        assert_eq!(
+            session.last_wake_triggered_at_epoch_ms,
+            Some(1_739_173_380_000)
+        );
+        assert_eq!(session.status, SelfWorkSessionStatus::Active);
+    }
+
+    #[test]
+    fn self_work_test_runtime_now_epoch_ms_returns_expected_error() {
+        let mut runtime = SelfWorkTestRuntime;
+        let error = runtime
+            .now_epoch_ms()
+            .expect_err("self-work test runtime clock should not be used");
+        assert_eq!(
+            error,
+            CrabError::InvariantViolation {
+                context: "daemon_self_work_test_runtime",
+                message: "clock should not be called in self-work evaluator tests".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn self_work_test_runtime_unreachable_methods_panic_when_called() {
+        let mut runtime = SelfWorkTestRuntime;
+        let run = sample_run("123");
+        let logical_session = sample_session(LaneState::Idle, None);
+        let mut physical_session = crab_core::PhysicalSession {
+            id: "physical-1".to_string(),
+            logical_session_id: logical_session.id.clone(),
+            backend: BackendKind::Claude,
+            backend_session_id: "claude-session-1".to_string(),
+            created_at_epoch_ms: 1_739_173_200_000,
+            last_turn_id: None,
+        };
+
+        assert!(catch_unwind(AssertUnwindSafe(|| {
+            let _ = runtime.resolve_run_profile("discord:channel:777", "123", "hello");
+        }))
+        .is_err());
+        assert!(catch_unwind(AssertUnwindSafe(|| {
+            let _ = runtime.ensure_physical_session(
+                "discord:channel:777",
+                &claude_profile(),
+                Some("physical-1"),
+            );
+        }))
+        .is_err());
+        assert!(catch_unwind(AssertUnwindSafe(|| {
+            let _ = runtime.build_turn_context(&run, &logical_session, &physical_session, false);
+        }))
+        .is_err());
+        assert!(catch_unwind(AssertUnwindSafe(|| {
+            let _ = runtime.execute_backend_turn(&mut physical_session, &run, "turn-1", "context");
+        }))
+        .is_err());
+        assert!(catch_unwind(AssertUnwindSafe(|| {
+            let _ = runtime.deliver_assistant_output(&run, "777", "m1", 0, "content");
+        }))
+        .is_err());
+        assert!(catch_unwind(AssertUnwindSafe(|| {
+            let _ = runtime.next_gateway_message();
+        }))
+        .is_err());
+        assert!(catch_unwind(AssertUnwindSafe(|| {
+            let _ = runtime.interrupt_backend_turn(&physical_session, "turn-1");
+        }))
+        .is_err());
+    }
+
+    #[test]
+    fn self_work_helpers_cover_idle_state_baseline_and_lock_error_paths() {
+        assert!(self_work_lane_is_idle(&self_work_lane_status_fixture(
+            None, false, 0, None,
+        )));
+        assert!(!self_work_lane_is_idle(&self_work_lane_status_fixture(
+            Some(LaneState::Running),
+            false,
+            0,
+            None,
+        )));
+        assert!(!self_work_lane_is_idle(&self_work_lane_status_fixture(
+            Some(LaneState::Idle),
+            true,
+            0,
+            None,
+        )));
+        assert!(!self_work_lane_is_idle(&self_work_lane_status_fixture(
+            Some(LaneState::Idle),
+            false,
+            1,
+            None,
+        )));
+
+        let mut session = sample_self_work_session(SelfWorkSessionStatus::Active);
+        session.last_wake_triggered_at_epoch_ms = Some(1_739_173_350_000);
+        let idle_lane =
+            self_work_lane_status_fixture(Some(LaneState::Idle), false, 0, Some(1_739_173_360_000));
+        let baseline = self_work_idle_baseline_epoch_ms(&session, &idle_lane);
+        assert_eq!(baseline, 1_739_173_360_000);
+        assert!(wake_due(&session, &idle_lane, 1_739_173_540_000, 180_000));
+        assert!(!wake_due(&session, &idle_lane, 1_739_173_539_999, 180_000));
+
+        let mut pending_session = session.clone();
+        pending_session.final_trigger_pending = true;
+        assert!(!wake_due(
+            &pending_session,
+            &idle_lane,
+            1_739_173_540_000,
+            180_000,
+        ));
+        assert!(!wake_due(
+            &sample_self_work_session(SelfWorkSessionStatus::Stopped),
+            &idle_lane,
+            1_739_173_540_000,
+            180_000,
+        ));
+
+        let workspace = TempWorkspace::new("daemon", "self-work-lock-error");
+        let state_root = workspace.path.join("state");
+        std::fs::create_dir_all(&state_root).expect("state root should be creatable");
+        std::fs::create_dir_all(state_root.join(crab_core::SELF_WORK_SESSION_LOCK_FILE_NAME))
+            .expect("lock path directory should be creatable");
+
+        let error = try_acquire_self_work_lock_for_daemon(&state_root, 1_739_173_380_000)
+            .expect_err("non-invariant lock acquisition errors should surface");
+        assert!(matches!(
+            error,
+            CrabError::Io {
+                context: "self_work_session_lock",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn evaluate_self_work_skips_when_final_trigger_is_already_pending() {
+        let (workspace, mut executor) = build_self_work_executor("self-work-pending");
+        let state_root = workspace.path.join("state");
+        let mut session = sample_self_work_session(SelfWorkSessionStatus::Active);
+        session.final_trigger_pending = true;
+        write_self_work_session_atomically(&state_root, &session)
+            .expect("self-work session should persist");
+
+        let emitted = evaluate_self_work(&mut executor, 1_739_173_380_000, 180_000)
+            .expect("self-work evaluation should succeed");
+        assert_eq!(emitted, 0);
+        assert!(read_pending_triggers(&state_root)
+            .expect("triggers should be readable")
+            .is_empty());
+    }
+
+    #[test]
+    fn evaluate_self_work_suppresses_wake_when_lane_has_queued_run() {
+        let (workspace, mut executor) = build_self_work_executor("self-work-queued");
+        let state_root = workspace.path.join("state");
+        write_self_work_session_atomically(
+            &state_root,
+            &sample_self_work_session(SelfWorkSessionStatus::Active),
+        )
+        .expect("self-work session should persist");
+
+        executor
+            .composition_mut()
+            .scheduler
+            .enqueue(
+                "discord:channel:777",
+                QueuedRun {
+                    run_id: "queued-run".to_string(),
+                },
+            )
+            .expect("queued run should be accepted");
+
+        let emitted = evaluate_self_work(&mut executor, 1_739_173_380_000, 180_000)
+            .expect("self-work evaluation should succeed");
+        assert_eq!(emitted, 0);
+        assert!(read_pending_triggers(&state_root)
+            .expect("triggers should be readable")
+            .is_empty());
+    }
+
+    #[test]
+    fn evaluate_self_work_suppresses_wake_when_lane_has_active_run() {
+        let (workspace, mut executor) = build_self_work_executor("self-work-active");
+        let state_root = workspace.path.join("state");
+        write_self_work_session_atomically(
+            &state_root,
+            &sample_self_work_session(SelfWorkSessionStatus::Active),
+        )
+        .expect("self-work session should persist");
+
+        executor
+            .composition_mut()
+            .scheduler
+            .enqueue(
+                "discord:channel:777",
+                QueuedRun {
+                    run_id: "active-run".to_string(),
+                },
+            )
+            .expect("queued run should be accepted");
+        let dispatched = executor
+            .composition_mut()
+            .scheduler
+            .try_dispatch_next()
+            .expect("queued run should dispatch");
+        assert_eq!(dispatched.logical_session_id, "discord:channel:777");
+
+        let emitted = evaluate_self_work(&mut executor, 1_739_173_380_000, 180_000)
+            .expect("self-work evaluation should succeed");
+        assert_eq!(emitted, 0);
+        assert!(read_pending_triggers(&state_root)
+            .expect("triggers should be readable")
+            .is_empty());
+    }
+
+    #[test]
+    fn evaluate_self_work_uses_last_wake_to_suppress_restart_refire() {
+        let (workspace, mut executor) = build_self_work_executor("self-work-restart");
+        let state_root = workspace.path.join("state");
+        let mut session = sample_self_work_session(SelfWorkSessionStatus::Active);
+        session.last_wake_triggered_at_epoch_ms = Some(1_739_173_300_000);
+        write_self_work_session_atomically(&state_root, &session)
+            .expect("self-work session should persist");
+
+        let early = evaluate_self_work(&mut executor, 1_739_173_479_999, 180_000)
+            .expect("self-work evaluation should succeed");
+        assert_eq!(early, 0);
+        assert!(read_pending_triggers(&state_root)
+            .expect("triggers should be readable")
+            .is_empty());
+
+        let later = evaluate_self_work(&mut executor, 1_739_173_480_000, 180_000)
+            .expect("self-work evaluation should succeed");
+        assert_eq!(later, 1);
+        let triggers = read_pending_triggers(&state_root).expect("triggers should be readable");
+        assert_eq!(triggers.len(), 1);
+        assert!(triggers[0].1.message.contains("event: wake"));
+    }
+
+    #[test]
+    fn evaluate_self_work_ignores_stopped_session() {
+        let (workspace, mut executor) = build_self_work_executor("self-work-stopped");
+        let state_root = workspace.path.join("state");
+        write_self_work_session_atomically(
+            &state_root,
+            &sample_self_work_session(SelfWorkSessionStatus::Stopped),
+        )
+        .expect("self-work session should persist");
+
+        let emitted = evaluate_self_work(&mut executor, 1_739_173_900_000, 180_000)
+            .expect("self-work evaluation should succeed");
+        assert_eq!(emitted, 0);
+        assert!(read_pending_triggers(&state_root)
+            .expect("triggers should be readable")
+            .is_empty());
+    }
+
+    #[test]
+    fn evaluate_self_work_skips_when_lock_is_held() {
+        let (workspace, mut executor) = build_self_work_executor("self-work-lock-held");
+        let state_root = workspace.path.join("state");
+        write_self_work_session_atomically(
+            &state_root,
+            &sample_self_work_session(SelfWorkSessionStatus::Active),
+        )
+        .expect("self-work session should persist");
+        let _lock = crab_core::SelfWorkSessionLock::acquire(&state_root, 1_739_173_379_999)
+            .expect("lock should be acquirable");
+
+        let emitted = evaluate_self_work(&mut executor, 1_739_173_380_000, 180_000)
+            .expect("self-work evaluation should succeed");
+        assert_eq!(emitted, 0);
+        assert!(read_pending_triggers(&state_root)
+            .expect("triggers should be readable")
+            .is_empty());
+    }
+
+    #[test]
+    fn evaluate_self_work_expiry_returns_zero_when_lock_is_held() {
+        let (workspace, mut executor) = build_self_work_executor("self-work-expiry-lock-held");
+        let state_root = workspace.path.join("state");
+        let _lock = crab_core::SelfWorkSessionLock::acquire(&state_root, 1_739_173_799_999)
+            .expect("lock should be acquirable");
+
+        let emitted = evaluate_self_work_expiry(&mut executor, &state_root, 1_739_173_800_000)
+            .expect("expiry evaluation should succeed");
+        assert_eq!(emitted, 0);
+    }
+
+    #[test]
+    fn evaluate_self_work_expiry_returns_zero_when_session_is_missing() {
+        let (workspace, mut executor) = build_self_work_executor("self-work-expiry-missing");
+        let state_root = workspace.path.join("state");
+
+        let emitted = evaluate_self_work_expiry(&mut executor, &state_root, 1_739_173_800_000)
+            .expect("expiry evaluation should succeed");
+        assert_eq!(emitted, 0);
+    }
+
+    #[test]
+    fn evaluate_self_work_expiry_ignores_non_active_and_pre_end_sessions() {
+        let (stopped_workspace, mut stopped_executor) =
+            build_self_work_executor("self-work-expiry-stopped");
+        let stopped_state_root = stopped_workspace.path.join("state");
+        write_self_work_session_atomically(
+            &stopped_state_root,
+            &sample_self_work_session(SelfWorkSessionStatus::Stopped),
+        )
+        .expect("stopped session should persist");
+
+        let stopped = evaluate_self_work_expiry(
+            &mut stopped_executor,
+            &stopped_state_root,
+            1_739_173_800_000,
+        )
+        .expect("expiry evaluation should succeed");
+        assert_eq!(stopped, 0);
+
+        let (future_workspace, mut future_executor) =
+            build_self_work_executor("self-work-expiry-future");
+        let future_state_root = future_workspace.path.join("state");
+        write_self_work_session_atomically(
+            &future_state_root,
+            &sample_self_work_session(SelfWorkSessionStatus::Active),
+        )
+        .expect("active session should persist");
+
+        let before_end =
+            evaluate_self_work_expiry(&mut future_executor, &future_state_root, 1_739_173_799_999)
+                .expect("expiry evaluation should succeed");
+        assert_eq!(before_end, 0);
+    }
+
+    #[test]
+    fn evaluate_self_work_marks_expiry_pending_then_emits_once_when_lane_is_idle() {
+        let (workspace, mut executor) = build_self_work_executor("self-work-expiry");
+        let state_root = workspace.path.join("state");
+        write_self_work_session_atomically(
+            &state_root,
+            &sample_self_work_session(SelfWorkSessionStatus::Active),
+        )
+        .expect("self-work session should persist");
+
+        let mut running_session = sample_session(LaneState::Running, None);
+        running_session.id = "discord:channel:777".to_string();
+        executor
+            .composition()
+            .state_stores
+            .session_store
+            .upsert_session(&running_session)
+            .expect("logical session should persist");
+        executor
+            .composition_mut()
+            .scheduler
+            .enqueue(
+                "discord:channel:777",
+                QueuedRun {
+                    run_id: "run-expiry".to_string(),
+                },
+            )
+            .expect("queued run should be accepted");
+        let dispatched = executor
+            .composition_mut()
+            .scheduler
+            .try_dispatch_next()
+            .expect("queued run should dispatch");
+        assert_eq!(dispatched.logical_session_id, "discord:channel:777");
+
+        let busy = evaluate_self_work(&mut executor, 1_739_173_800_000, 180_000)
+            .expect("self-work evaluation should succeed");
+        assert_eq!(busy, 0);
+        let pending_session = read_self_work_session(&state_root)
+            .expect("session should be readable")
+            .expect("session should exist");
+        assert!(pending_session.final_trigger_pending);
+        assert_eq!(pending_session.status, SelfWorkSessionStatus::Active);
+        assert!(read_pending_triggers(&state_root)
+            .expect("triggers should be readable")
+            .is_empty());
+
+        executor
+            .composition_mut()
+            .scheduler
+            .complete_lane("discord:channel:777")
+            .expect("lane should complete");
+        let mut idle_session = executor
+            .composition()
+            .state_stores
+            .session_store
+            .get_session("discord:channel:777")
+            .expect("logical session read should succeed")
+            .expect("logical session should exist");
+        idle_session.lane_state = LaneState::Idle;
+        executor
+            .composition()
+            .state_stores
+            .session_store
+            .upsert_session(&idle_session)
+            .expect("logical session should persist");
+
+        let emitted = evaluate_self_work(&mut executor, 1_739_173_800_001, 180_000)
+            .expect("self-work evaluation should succeed");
+        assert_eq!(emitted, 1);
+
+        let triggers = read_pending_triggers(&state_root).expect("triggers should be readable");
+        assert_eq!(triggers.len(), 1);
+        assert!(triggers[0].1.message.contains("event: expiry"));
+
+        let expired_session = read_self_work_session(&state_root)
+            .expect("session should be readable")
+            .expect("session should exist");
+        assert_eq!(expired_session.status, SelfWorkSessionStatus::Expired);
+        assert!(!expired_session.final_trigger_pending);
+        assert_eq!(expired_session.expired_at_epoch_ms, Some(1_739_173_800_001));
+        assert_eq!(
+            expired_session.last_expiry_triggered_at_epoch_ms,
+            Some(1_739_173_800_001)
+        );
+
+        let repeated = evaluate_self_work(&mut executor, 1_739_173_800_002, 180_000)
+            .expect("self-work evaluation should succeed");
+        assert_eq!(repeated, 0);
+        assert_eq!(
+            read_pending_triggers(&state_root)
+                .expect("triggers should be readable")
+                .len(),
+            1
+        );
+    }
+
     // ---- Daemon loop integration tests ----
 
     struct OneShotControl {
@@ -4017,5 +4745,37 @@ mod tests {
             stats.ingested_triggers >= 1,
             "at least one graceful steering trigger should be ingested"
         );
+    }
+
+    #[test]
+    fn daemon_loop_evaluates_self_work_and_emits_wake_trigger() {
+        let workspace = TempWorkspace::new("daemon", "loop-self-work");
+        let config = runtime_config_for_workspace_with_lanes(&workspace.path, 1);
+        let state_root = workspace.path.join("state");
+        std::fs::create_dir_all(&state_root).expect("state root should be creatable");
+        write_self_work_session_atomically(
+            &state_root,
+            &sample_self_work_session(SelfWorkSessionStatus::Active),
+        )
+        .expect("self-work session should persist");
+
+        let discord = ScriptedDiscordIo::with_state(DiscordIoState::default());
+        let mut control = OneShotControl {
+            now: 1_739_173_380_000,
+            shutdown: false,
+        };
+
+        let stats = super::run_daemon_loop_with_transport(
+            &config,
+            &daemon_loop_config(),
+            discord,
+            &mut control,
+        )
+        .expect("daemon loop should succeed with self-work session");
+
+        assert_eq!(stats.iterations, 1);
+        let triggers = read_pending_triggers(&state_root).expect("triggers should be readable");
+        assert_eq!(triggers.len(), 1);
+        assert!(triggers[0].1.message.contains("event: wake"));
     }
 }

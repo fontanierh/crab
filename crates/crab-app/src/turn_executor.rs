@@ -45,6 +45,15 @@ pub struct QueuedTurn {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SelfWorkLaneStatus {
+    pub logical_session_id: String,
+    pub has_active_run: bool,
+    pub queued_run_count: usize,
+    pub persisted_lane_state: Option<LaneState>,
+    pub last_activity_epoch_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DispatchedTurn {
     pub logical_session_id: String,
     pub run_id: String,
@@ -226,6 +235,42 @@ impl<R: TurnExecutorRuntime> TurnExecutor<R> {
             attachments: vec![],
         };
         self.enqueue_ingress_message(ingress)
+    }
+
+    pub fn self_work_lane_status(&self, channel_id: &str) -> CrabResult<SelfWorkLaneStatus> {
+        if channel_id.trim().is_empty() {
+            return Err(CrabError::InvariantViolation {
+                context: "self_work_lane_status",
+                message: "channel_id must not be empty".to_string(),
+            });
+        }
+
+        let logical_session_id = RoutingKey::Channel {
+            channel_id: channel_id.to_string(),
+        }
+        .logical_session_id()?;
+        let has_active_run = self
+            .composition
+            .scheduler
+            .active_run(&logical_session_id)?
+            .is_some();
+        let queued_run_count = self
+            .composition
+            .scheduler
+            .queued_count(&logical_session_id)?;
+        let persisted_session = self
+            .composition
+            .state_stores
+            .session_store
+            .get_session(&logical_session_id)?;
+
+        Ok(SelfWorkLaneStatus {
+            logical_session_id,
+            has_active_run,
+            queued_run_count,
+            persisted_lane_state: persisted_session.as_ref().map(|session| session.lane_state),
+            last_activity_epoch_ms: persisted_session.map(|session| session.last_activity_epoch_ms),
+        })
     }
 
     fn check_for_steering_message(&mut self, current_logical_session_id: &str) -> CrabResult<bool> {
@@ -6628,6 +6673,103 @@ mod tests {
             error,
             CrabError::InvariantViolation {
                 context: "pending_trigger_enqueue",
+                message: "channel_id must not be empty".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn self_work_lane_status_reports_missing_lane_state() {
+        let workspace = TempWorkspace::new("turn-executor", "self-work-lane-missing");
+        let runtime = FakeRuntime::with_backend_events(Vec::new(), &[42_000]);
+        let executor = build_executor(&workspace, runtime, 8);
+
+        let status = executor
+            .self_work_lane_status("777")
+            .expect("lane status should load");
+        assert_eq!(status.logical_session_id, "discord:channel:777");
+        assert!(!status.has_active_run);
+        assert_eq!(status.queued_run_count, 0);
+        assert_eq!(status.persisted_lane_state, None);
+        assert_eq!(status.last_activity_epoch_ms, None);
+    }
+
+    #[test]
+    fn self_work_lane_status_reports_queued_lane() {
+        let workspace = TempWorkspace::new("turn-executor", "self-work-lane-queued");
+        let runtime = FakeRuntime::with_backend_events(Vec::new(), &[42_000, 42_001]);
+        let mut executor = build_executor(&workspace, runtime, 8);
+
+        executor
+            .enqueue_pending_trigger("777", "continue working")
+            .expect("queueing should succeed");
+
+        let status = executor
+            .self_work_lane_status("777")
+            .expect("lane status should load");
+        assert_eq!(status.logical_session_id, "discord:channel:777");
+        assert!(!status.has_active_run);
+        assert_eq!(status.queued_run_count, 1);
+        assert_eq!(status.persisted_lane_state, Some(LaneState::Idle));
+        assert_eq!(status.last_activity_epoch_ms, Some(42_001));
+    }
+
+    #[test]
+    fn self_work_lane_status_reports_active_run_and_persisted_session_state() {
+        let workspace = TempWorkspace::new("turn-executor", "self-work-lane-active");
+        let runtime = FakeRuntime::with_backend_events(Vec::new(), &[42_000, 42_001]);
+        let mut executor = build_executor(&workspace, runtime, 8);
+
+        executor
+            .enqueue_pending_trigger("777", "continue working")
+            .expect("queueing should succeed");
+
+        let mut session = executor
+            .composition()
+            .state_stores
+            .session_store
+            .get_session("discord:channel:777")
+            .expect("session lookup should succeed")
+            .expect("session should exist");
+        session.lane_state = LaneState::Running;
+        session.last_activity_epoch_ms = 99;
+        executor
+            .composition()
+            .state_stores
+            .session_store
+            .upsert_session(&session)
+            .expect("session update should persist");
+
+        let dispatched = executor
+            .composition_mut()
+            .scheduler
+            .try_dispatch_next()
+            .expect("queued run should dispatch");
+        assert_eq!(dispatched.logical_session_id, "discord:channel:777");
+
+        let status = executor
+            .self_work_lane_status("777")
+            .expect("lane status should load");
+        assert_eq!(status.logical_session_id, "discord:channel:777");
+        assert!(status.has_active_run);
+        assert_eq!(status.queued_run_count, 0);
+        assert_eq!(status.persisted_lane_state, Some(LaneState::Running));
+        assert_eq!(status.last_activity_epoch_ms, Some(99));
+    }
+
+    #[test]
+    fn self_work_lane_status_rejects_blank_channel_id() {
+        let workspace = TempWorkspace::new("turn-executor", "self-work-lane-blank");
+        let runtime = FakeRuntime::with_backend_events(Vec::new(), &[42_000]);
+        let executor = build_executor(&workspace, runtime, 8);
+
+        let error = executor
+            .self_work_lane_status("  ")
+            .expect_err("blank channel_id should fail");
+        assert_eq!(
+            error,
+            CrabError::InvariantViolation {
+                context: "self_work_lane_status",
                 message: "channel_id must not be empty".to_string(),
             }
         );
