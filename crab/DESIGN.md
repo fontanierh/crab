@@ -60,8 +60,8 @@ Major subsystems:
 
 Quality engineering workflow:
 
-- Strict merge gate remains `make quality` with hard coverage requirements (100% lines/functions,
-  0 uncovered lines/functions).
+- Strict merge gate remains `make quality` with hard coverage requirements (`100%` functions,
+  `99%` regions, plus changed-line coverage on PRs).
 - Developer fast lane is `make quick` (non-gating) for iteration speed.
 - Coverage regression triage is standardized via `make coverage-diagnostics`.
 

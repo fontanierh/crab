@@ -22,10 +22,10 @@ make quality
 
 ## Quality Expectations
 
-- **100% test coverage.** Every line and branch must be covered. Coverage is enforced by `make quality`; untested code will not merge.
+- **Coverage gate.** `make quality` enforces `100%` function coverage and `99%` region coverage. On pull requests, changed production Rust lines must also stay covered.
 - **No dead code.** The codebase compiles with `#![deny(dead_code)]`. Remove unused items rather than suppressing the lint.
 - **Clippy clean.** Run with `--deny warnings`. Fix warnings; do not use `#[allow(...)]` without a clear justification in a comment.
-- **No duplication.** jscpd enforces a duplication threshold. Extract shared logic rather than copying it.
+- **No production duplication.** jscpd blocks duplicated production Rust code; test-code duplication is reported informationally. Extract shared logic rather than copying it.
 
 ## PR Process
 

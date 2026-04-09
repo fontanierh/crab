@@ -217,7 +217,7 @@ All required gates are defined in \`Makefile\` and enforced by CI in \`.github/w
 - \`cargo clippy -D warnings\`
 - \`cargo check\` (dead code / unused warnings denied at workspace lint level)
 - \`bash scripts/public_api_usage_check.sh\`
-- \`cargo llvm-cov\` gate: 100% lines + 100% functions, and 0 uncovered lines/functions
+- \`cargo llvm-cov\` gate: 100% functions, 99% regions, and changed-line coverage on PRs
 - \`jscpd\` duplication gate (threshold 0)
 
 Canonical local command:

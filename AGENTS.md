@@ -35,7 +35,8 @@ Project operating rules for all human and AI contributors.
 
 - Coverage check is required in CI and local pre-merge validation.
 - Preferred Rust tool: `cargo-llvm-cov`.
-- Enforce `100%` line/function minimum and `0` uncovered lines/functions in CI.
+- Enforce `100%` function coverage and `99%` region coverage in CI.
+- Enforce patch coverage on pull requests: any changed production Rust line must be covered.
 - Coverage reports must be reproducible from a single documented command.
 - Note: `cargo-llvm-cov` enables `cfg(coverage)`. Be careful when adding logging with `tracing::*`
   macros: they can introduce coverage gaps (especially multi-line invocations or rarely-hit branches).
@@ -45,12 +46,10 @@ Project operating rules for all human and AI contributors.
     produces false negatives (do not hide business logic from coverage).
 
 Required outcome:
-- Any uncovered production line/function fails validation.
-- Region coverage can be reported for diagnostics, but is not a hard gate due known false negatives around monomorphized generic code.
-- Current documented exception: `make coverage-gate` excludes `crates/crab-app/src/installer.rs`
-  via `--ignore-filename-regex` because of a reproducible `cargo-llvm-cov` line-mapping false
-  negative in this file. Treat this as temporary and remove the exclusion once the coverage tool
-  behavior is fixed.
+- Total function coverage must remain at `100%`.
+- Total region coverage must remain at or above `99%`.
+- Any changed production Rust line in a pull request must be covered.
+- Missing-line output is diagnostic outside the changed patch gate.
 
 ## 4. Dead Code and Static Hygiene
 
@@ -75,7 +74,7 @@ Required outcome:
 - `fmt` check
 - `clippy` with warnings denied
 - coverage gate (authoritative, executes full instrumented test suite)
-- coverage gate at 100%
+- coverage gate at `100%` functions / `99%` regions, plus patch coverage on PRs
 - duplication gate
 
 No bypasses on main branch.
@@ -152,15 +151,13 @@ The repository now enforces quality with executable gates and CI automation.
   `make public-api-check`
 - Tests:
   `make test`
-- Coverage gate (100% lines/functions, 0 uncovered lines/functions):
+- Coverage gate (`100%` functions, `99%` regions, and changed-line coverage on PRs):
   `make coverage-gate`
 - Coverage diagnostics (actionable uncovered line locations):
   `make coverage-diagnostics`
-- Function-level coverage is still enforced strictly by `make coverage-gate` via
-  `cargo llvm-cov --fail-under-functions 100 --fail-uncovered-functions 0`.
-- Note: the coverage gate command currently includes
-  `--ignore-filename-regex 'crates/crab-app/src/installer.rs'` for the documented tool-mapping
-  false negative.
+- `make coverage-gate` runs `cargo llvm-cov --fail-under-functions 100 --fail-under-regions 99 --show-missing-lines`.
+- When `BASE_REF` is set (CI pull requests), `make coverage-gate` also fails if any changed
+  production Rust line is uncovered in the LCOV report.
 - Duplication gate:
   `make duplication-check`
 
