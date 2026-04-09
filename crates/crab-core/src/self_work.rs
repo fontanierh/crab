@@ -1,9 +1,13 @@
 use std::fs::{self, OpenOptions};
-use std::io::{ErrorKind, Write};
+use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::state_file_support::{
+    read_text_file_if_present, remove_file_allow_not_found, remove_file_allow_not_found_with,
+    validate_state_root, wrap_io, write_json_atomically, write_json_to_writer,
+};
 use crate::{CrabError, CrabResult};
 
 pub const SELF_WORK_SESSION_FILE_NAME: &str = "self_work_session.json";
@@ -92,19 +96,11 @@ pub fn write_self_work_session_atomically(
     )?;
 
     let session_path = self_work_session_path(state_root);
-    let temp_path = session_path.with_extension(format!("tmp-{}", std::process::id()));
-    let encoded =
-        serde_json::to_string_pretty(session).expect("self-work session serialization is stable");
-
-    wrap_io(
-        fs::write(&temp_path, encoded),
-        "self_work_session_write",
-        &temp_path,
-    )?;
-    wrap_io(
-        fs::rename(&temp_path, &session_path),
-        "self_work_session_write",
+    write_json_atomically(
         &session_path,
+        session,
+        "self_work_session_write",
+        "self-work session serialization is stable",
     )
 }
 
@@ -209,10 +205,8 @@ impl SelfWorkSessionLock {
                         pid: std::process::id(),
                         acquired_at_epoch_ms: now_epoch_ms,
                     };
-                    let encoded = serde_json::to_string(&lock_file)
-                        .expect("self-work session lock serialization is stable");
                     #[rustfmt::skip]
-                    wrap_io(file.write_all(encoded.as_bytes()), "self_work_session_lock", &lock_path)?;
+                    write_json_to_writer(&mut file, &lock_path, "self_work_session_lock", &lock_file, "self-work session lock serialization is stable")?;
                     return Ok(Self {
                         lock_path,
                         released: false,
@@ -232,15 +226,7 @@ impl SelfWorkSessionLock {
                     #[cfg(test)]
                     simulate_stale_lock_disappearing_before_remove(&lock_path);
 
-                    if let Err(remove_error) = fs::remove_file(&lock_path) {
-                        if remove_error.kind() != ErrorKind::NotFound {
-                            return Err(CrabError::Io {
-                                context: "self_work_session_lock",
-                                path: Some(lock_path.to_string_lossy().to_string()),
-                                message: format!("failed to remove stale lock: {remove_error}"),
-                            });
-                        }
-                    }
+                    remove_stale_lock_file(&lock_path)?;
                 }
                 #[rustfmt::skip]
                 Err(error) => { return Err(CrabError::Io { context: "self_work_session_lock", path: Some(lock_path.to_string_lossy().to_string()), message: error.to_string() }); }
@@ -253,15 +239,11 @@ impl SelfWorkSessionLock {
             return Ok(());
         }
 
-        if let Err(error) = fs::remove_file(&self.lock_path) {
-            if error.kind() != ErrorKind::NotFound {
-                return Err(CrabError::Io {
-                    context: "self_work_session_lock",
-                    path: Some(self.lock_path.to_string_lossy().to_string()),
-                    message: format!("failed to release lock: {error}"),
-                });
-            }
-        }
+        remove_file_allow_not_found(
+            &self.lock_path,
+            "self_work_session_lock",
+            "failed to release lock",
+        )?;
         self.released = true;
         Ok(())
     }
@@ -309,43 +291,31 @@ impl Drop for SelfWorkSessionLock {
     }
 }
 
-fn validate_state_root(state_root: &Path, context: &'static str) -> CrabResult<()> {
-    if state_root.as_os_str().is_empty() {
-        return Err(CrabError::InvariantViolation {
-            context,
-            message: "state_root must not be empty".to_string(),
-        });
-    }
-    Ok(())
+fn remove_stale_lock_file(lock_path: &Path) -> CrabResult<()> {
+    remove_file_allow_not_found_with(
+        lock_path,
+        "self_work_session_lock",
+        "failed to remove stale lock",
+        |_| (),
+    )
 }
 
 fn is_lock_stale(lock_path: &Path, now_epoch_ms: u64) -> CrabResult<bool> {
-    let content = match fs::read_to_string(lock_path) {
-        Ok(content) => content,
-        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(true),
-        Err(error) => {
-            return Err(CrabError::Io {
-                context: "self_work_session_lock",
-                path: Some(lock_path.to_string_lossy().to_string()),
-                message: format!("failed to read lock file: {error}"),
-            });
-        }
+    let Some(content) = read_text_file_if_present(
+        lock_path,
+        "self_work_session_lock",
+        "failed to read lock file",
+    )?
+    else {
+        return Ok(true);
     };
 
-    let lock_file = match serde_json::from_str::<SelfWorkSessionLockFile>(&content) {
-        Ok(lock_file) => lock_file,
+    let acquired_at_epoch_ms = match serde_json::from_str::<SelfWorkSessionLockFile>(&content) {
+        Ok(lock_file) => lock_file.acquired_at_epoch_ms,
         Err(_) => return Ok(true),
     };
-    let age_ms = now_epoch_ms.saturating_sub(lock_file.acquired_at_epoch_ms);
+    let age_ms = now_epoch_ms.saturating_sub(acquired_at_epoch_ms);
     Ok(age_ms >= SELF_WORK_SESSION_LOCK_STALE_AFTER_MS)
-}
-
-fn wrap_io<T>(result: std::io::Result<T>, context: &'static str, path: &Path) -> CrabResult<T> {
-    result.map_err(|error| CrabError::Io {
-        context,
-        path: Some(path.to_string_lossy().to_string()),
-        message: error.to_string(),
-    })
 }
 
 #[cfg(test)]
@@ -753,6 +723,14 @@ mod tests {
         fs::remove_file(&lock_path).expect("lock file should be removable");
         lock.release()
             .expect("missing lock file during release should be treated as success");
+    }
+
+    #[test]
+    fn missing_lock_file_is_treated_as_stale() {
+        let temp = TempDir::new("self-work", "lock-missing");
+        let lock_path = temp.root.join(SELF_WORK_SESSION_LOCK_FILE_NAME);
+        assert!(super::is_lock_stale(&lock_path, 1_739_173_200_000)
+            .expect("missing lock should be stale"));
     }
 
     #[test]

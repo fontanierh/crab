@@ -1,9 +1,15 @@
-use std::fs::{self, OpenOptions};
-use std::io::{ErrorKind, Write};
-use std::path::{Path, PathBuf};
+use std::{
+    fs::{self, OpenOptions},
+    io::ErrorKind,
+    path::{Path, PathBuf},
+};
 
 use serde::{Deserialize, Serialize};
 
+use crate::state_file_support::{
+    read_text_file_if_present, remove_file_allow_not_found, validate_state_root, wrap_io,
+    write_json_atomically, write_json_to_writer,
+};
 use crate::{CrabError, CrabResult};
 
 pub const STATE_SCHEMA_MARKER_FILE_NAME: &str = "schema_version.json";
@@ -247,16 +253,6 @@ fn classify_compatibility_status(
     StateSchemaCompatibilityStatus::Compatible
 }
 
-fn validate_state_root(state_root: &Path, context: &'static str) -> CrabResult<()> {
-    if state_root.as_os_str().is_empty() {
-        return Err(CrabError::InvariantViolation {
-            context,
-            message: "state_root must not be empty".to_string(),
-        });
-    }
-    Ok(())
-}
-
 fn load_marker_if_present(state_root: &Path) -> CrabResult<Option<StateSchemaVersionMarker>> {
     let marker_path = state_schema_marker_path(state_root);
     if !marker_path.exists() {
@@ -303,13 +299,12 @@ fn write_marker_atomically(
     context: &'static str,
 ) -> CrabResult<()> {
     let marker_path = state_schema_marker_path(state_root);
-    let temp_path = marker_path.with_extension(format!("tmp-{}", std::process::id()));
-
-    let encoded =
-        serde_json::to_string_pretty(marker).expect("state schema marker serialization is stable");
-
-    wrap_io(fs::write(&temp_path, encoded), context, &temp_path)?;
-    wrap_io(fs::rename(&temp_path, &marker_path), context, &marker_path)
+    write_json_atomically(
+        &marker_path,
+        marker,
+        context,
+        "state schema marker serialization is stable",
+    )
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -325,6 +320,13 @@ struct MigrationLock {
 }
 
 impl MigrationLock {
+    fn new(lock_path: PathBuf) -> Self {
+        Self {
+            released: false,
+            lock_path,
+        }
+    }
+
     fn acquire(state_root: &Path, now_epoch_ms: u64) -> CrabResult<Self> {
         let lock_path = state_root.join(STATE_SCHEMA_LOCK_FILE_NAME);
 
@@ -340,14 +342,9 @@ impl MigrationLock {
                         pid: std::process::id(),
                         acquired_at_epoch_ms: now_epoch_ms,
                     };
-                    let encoded =
-                        serde_json::to_string(&lock_file).expect("lock serialization is stable");
-                    let context = "state_schema_migration_lock";
-                    wrap_io(file.write_all(encoded.as_bytes()), context, &lock_path)?;
-                    return Ok(Self {
-                        lock_path,
-                        released: false,
-                    });
+                    #[rustfmt::skip]
+                    write_json_to_writer(&mut file, &lock_path, "state_schema_migration_lock", &lock_file, "lock serialization is stable")?;
+                    return Ok(Self::new(lock_path));
                 }
                 Err(error) if error.kind() == ErrorKind::AlreadyExists => {
                     if !is_lock_stale(&lock_path, now_epoch_ms)? {
@@ -360,17 +357,11 @@ impl MigrationLock {
                         });
                     }
 
-                    match fs::remove_file(&lock_path) {
-                        Ok(()) => {}
-                        Err(remove_error) if remove_error.kind() == ErrorKind::NotFound => {}
-                        Err(remove_error) => {
-                            return Err(CrabError::Io {
-                                context: "state_schema_migration_lock",
-                                path: Some(lock_path.to_string_lossy().to_string()),
-                                message: format!("failed to remove stale lock: {remove_error}"),
-                            });
-                        }
-                    }
+                    remove_file_allow_not_found(
+                        &lock_path,
+                        "state_schema_migration_lock",
+                        "failed to remove stale lock",
+                    )?;
                     continue;
                 }
                 Err(error) => {
@@ -389,15 +380,11 @@ impl MigrationLock {
             return Ok(());
         }
 
-        if let Err(error) = fs::remove_file(&self.lock_path) {
-            if error.kind() != ErrorKind::NotFound {
-                return Err(CrabError::Io {
-                    context: "state_schema_migration_lock",
-                    path: Some(self.lock_path.to_string_lossy().to_string()),
-                    message: format!("failed to release lock: {error}"),
-                });
-            }
-        }
+        remove_file_allow_not_found(
+            &self.lock_path,
+            "state_schema_migration_lock",
+            "failed to release lock",
+        )?;
         self.released = true;
         Ok(())
     }
@@ -410,33 +397,22 @@ impl Drop for MigrationLock {
 }
 
 fn is_lock_stale(lock_path: &Path, now_epoch_ms: u64) -> CrabResult<bool> {
-    let content = match fs::read_to_string(lock_path) {
-        Ok(content) => content,
-        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(true),
-        Err(error) => {
-            return Err(CrabError::Io {
-                context: "state_schema_migration_lock",
-                path: Some(lock_path.to_string_lossy().to_string()),
-                message: format!("failed to read lock file: {error}"),
-            });
-        }
+    let Some(content) = read_text_file_if_present(
+        lock_path,
+        "state_schema_migration_lock",
+        "failed to read lock file",
+    )?
+    else {
+        return Ok(true);
     };
 
-    let lock = match serde_json::from_str::<MigrationLockFile>(&content) {
-        Ok(lock) => lock,
+    let acquired_at_epoch_ms = match serde_json::from_str::<MigrationLockFile>(&content) {
+        Ok(lock) => lock.acquired_at_epoch_ms,
         Err(_) => return Ok(true),
     };
 
-    let age_ms = now_epoch_ms.saturating_sub(lock.acquired_at_epoch_ms);
+    let age_ms = now_epoch_ms.saturating_sub(acquired_at_epoch_ms);
     Ok(age_ms >= MIGRATION_LOCK_STALE_AFTER_MS)
-}
-
-fn wrap_io<T>(result: std::io::Result<T>, context: &'static str, path: &Path) -> CrabResult<T> {
-    result.map_err(|error| CrabError::Io {
-        context,
-        path: Some(path.to_string_lossy().to_string()),
-        message: error.to_string(),
-    })
 }
 
 #[cfg(test)]
@@ -446,7 +422,6 @@ mod tests {
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
     use std::path::{Path, PathBuf};
-    use std::sync::atomic::{AtomicU64, Ordering};
 
     use super::{
         classify_compatibility_status, ensure_state_schema_version,
@@ -456,32 +431,11 @@ mod tests {
         CURRENT_STATE_SCHEMA_VERSION, MIGRATION_LOCK_STALE_AFTER_MS,
         MIN_SUPPORTED_STATE_SCHEMA_VERSION,
     };
+    use crate::test_support::TempDir;
     use crate::CrabError;
 
-    static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
-
-    #[derive(Debug)]
-    struct TempDir {
-        path: PathBuf,
-    }
-
-    impl TempDir {
-        fn new(label: &str) -> Self {
-            let suffix = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
-            let path = std::env::temp_dir().join(format!(
-                "crab-state-schema-{label}-{}-{suffix}",
-                std::process::id()
-            ));
-            let _ = fs::remove_dir_all(&path);
-            fs::create_dir_all(&path).expect("temp dir should be creatable");
-            Self { path }
-        }
-    }
-
-    impl Drop for TempDir {
-        fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.path);
-        }
+    fn temp_dir(label: &str) -> TempDir {
+        TempDir::new("state-schema", label)
     }
 
     fn state_root(root: &Path) -> PathBuf {
@@ -490,8 +444,8 @@ mod tests {
 
     #[test]
     fn compatibility_reports_legacy_when_marker_missing() {
-        let root = TempDir::new("compat-legacy");
-        let report = evaluate_state_schema_compatibility(&state_root(&root.path))
+        let root = temp_dir("compat-legacy");
+        let report = evaluate_state_schema_compatibility(&state_root(&root.root))
             .expect("compatibility should evaluate");
 
         assert!(!report.marker_present);
@@ -503,8 +457,8 @@ mod tests {
 
     #[test]
     fn compatibility_reports_too_new_state() {
-        let root = TempDir::new("compat-too-new");
-        let state_root = state_root(&root.path);
+        let root = temp_dir("compat-too-new");
+        let state_root = state_root(&root.root);
         fs::create_dir_all(&state_root).expect("state root should be creatable");
         fs::write(
             state_schema_marker_path(&state_root),
@@ -525,8 +479,8 @@ mod tests {
 
     #[test]
     fn ensure_state_schema_initializes_marker_and_is_noop_on_rerun() {
-        let root = TempDir::new("migrate-init");
-        let state_root = state_root(&root.path);
+        let root = temp_dir("migrate-init");
+        let state_root = state_root(&root.root);
 
         let first = ensure_state_schema_version(&state_root, 1_739_173_200_000)
             .expect("first migration should succeed");
@@ -563,8 +517,8 @@ mod tests {
 
     #[test]
     fn ensure_state_schema_reclaims_stale_lock_and_blocks_active_lock() {
-        let root = TempDir::new("migrate-lock");
-        let state_root = state_root(&root.path);
+        let root = temp_dir("migrate-lock");
+        let state_root = state_root(&root.root);
         fs::create_dir_all(&state_root).expect("state root should be creatable");
 
         let lock_path = state_root.join("schema_migration.lock.json");
@@ -599,8 +553,8 @@ mod tests {
 
     #[test]
     fn ensure_state_schema_rejects_corrupt_marker() {
-        let root = TempDir::new("migrate-corrupt-marker");
-        let state_root = state_root(&root.path);
+        let root = temp_dir("migrate-corrupt-marker");
+        let state_root = state_root(&root.root);
         fs::create_dir_all(&state_root).expect("state root should be creatable");
         fs::write(state_schema_marker_path(&state_root), "not-json")
             .expect("corrupt marker should be writable");
@@ -639,15 +593,15 @@ mod tests {
             .to_string()
             .contains("state_root must not be empty"));
 
-        let zero_now = TempDir::new("migrate-zero-now");
-        let zero_error = ensure_state_schema_version(&state_root(&zero_now.path), 0)
+        let zero_now = temp_dir("migrate-zero-now");
+        let zero_error = ensure_state_schema_version(&state_root(&zero_now.root), 0)
             .expect_err("zero now should fail");
         assert!(zero_error
             .to_string()
             .contains("now_epoch_ms must be greater than 0"));
 
-        let root = TempDir::new("migrate-layout-error");
-        let file_path = root.path.join("state");
+        let root = temp_dir("migrate-layout-error");
+        let file_path = root.root.join("state");
         fs::write(&file_path, "file").expect("fixture file should be writable");
         let layout_error = ensure_state_schema_version(&file_path, 1_739_173_200_000)
             .expect_err("file root should fail");
@@ -660,8 +614,8 @@ mod tests {
             evaluate_state_schema_compatibility(Path::new("")).expect_err("empty path should fail");
         assert!(empty.to_string().contains("state_root must not be empty"));
 
-        let root = TempDir::new("compat-invalid-marker");
-        let state_root = state_root(&root.path);
+        let root = temp_dir("compat-invalid-marker");
+        let state_root = state_root(&root.root);
         fs::create_dir_all(&state_root).expect("state root should exist");
 
         fs::write(
@@ -691,8 +645,8 @@ mod tests {
 
     #[test]
     fn ensure_state_schema_emits_failure_when_step_write_fails() {
-        let root = TempDir::new("migrate-step-write-fail");
-        let state_root = state_root(&root.path);
+        let root = temp_dir("migrate-step-write-fail");
+        let state_root = state_root(&root.root);
         fs::create_dir_all(&state_root).expect("state root should be creatable");
         let temp_path = state_schema_marker_path(&state_root)
             .with_extension(format!("tmp-{}", std::process::id()));
@@ -722,8 +676,8 @@ mod tests {
 
     #[test]
     fn migration_step_rejects_unknown_transition() {
-        let root = TempDir::new("migrate-step-unknown");
-        let state_root = state_root(&root.path);
+        let root = temp_dir("migrate-step-unknown");
+        let state_root = state_root(&root.root);
         fs::create_dir_all(&state_root).expect("state root should exist");
         let error = run_single_migration_step(&state_root, 1_739_173_200_000, 1, 2)
             .expect_err("unknown step should fail");
@@ -741,8 +695,8 @@ mod tests {
 
     #[test]
     fn migration_lock_acquire_release_success_and_missing_lock_release_is_noop() {
-        let root = TempDir::new("lock-acquire-release");
-        let state_root = state_root(&root.path);
+        let root = temp_dir("lock-acquire-release");
+        let state_root = state_root(&root.root);
         fs::create_dir_all(&state_root).expect("state root should exist");
 
         let lock_path = state_root.join("schema_migration.lock.json");
@@ -759,8 +713,8 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn migration_lock_returns_error_when_stale_lock_cannot_be_removed() {
-        let root = TempDir::new("lock-stale-remove-fail");
-        let state_root = state_root(&root.path);
+        let root = temp_dir("lock-stale-remove-fail");
+        let state_root = state_root(&root.root);
         fs::create_dir_all(&state_root).expect("state root should exist");
 
         let lock_path = state_root.join("schema_migration.lock.json");
@@ -795,8 +749,8 @@ mod tests {
 
     #[test]
     fn lock_helpers_cover_error_and_edge_paths() {
-        let root = TempDir::new("lock-helper-paths");
-        let state_root = state_root(&root.path);
+        let root = temp_dir("lock-helper-paths");
+        let state_root = state_root(&root.root);
         fs::create_dir_all(&state_root).expect("state root should exist");
 
         let lock_path = state_root.join("schema_migration.lock.json");
@@ -812,7 +766,7 @@ mod tests {
             is_lock_stale(&read_error_path, 1_739_173_200_000).expect_err("dir lock should fail");
         assert!(read_error.to_string().contains("failed to read lock file"));
 
-        let bad_state_root = root.path.join("state-root-as-file");
+        let bad_state_root = root.root.join("state-root-as-file");
         fs::write(&bad_state_root, "file").expect("file root should be writable");
         let acquire_error = MigrationLock::acquire(&bad_state_root, 1_739_173_200_000)
             .expect_err("acquire should fail");

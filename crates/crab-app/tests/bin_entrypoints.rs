@@ -1,84 +1,27 @@
-use std::fs;
 use std::fs::OpenOptions;
 use std::io::{BufRead, BufReader, Write};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use crab_discord::{
     CrabdInboundFrame, CrabdOutboundReceipt, CrabdOutboundReceiptStatus, GatewayConversationKind,
     GatewayMessage,
 };
 
-static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+mod support;
 
-struct TempWorkspace {
-    path: PathBuf,
-}
+use support::{child_env, seed_ready_workspace, TempWorkspace};
 
-impl TempWorkspace {
-    fn new(label: &str) -> Self {
-        let suffix = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
-        let path = std::env::temp_dir().join(format!(
-            "crab-app-bin-entry-{label}-{}-{suffix}",
-            std::process::id()
-        ));
-        let _ = fs::remove_dir_all(&path);
-        fs::create_dir_all(&path).expect("workspace directory should be creatable");
-        Self { path }
-    }
-}
-
-impl Drop for TempWorkspace {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.path);
-    }
-}
-
-fn seed_ready_workspace(root: &Path) {
-    for file_name in [
-        "AGENTS.md",
-        "SOUL.md",
-        "IDENTITY.md",
-        "USER.md",
-        "MEMORY.md",
-    ] {
-        fs::write(root.join(file_name), "seed\n").expect("seed file should be writable");
-    }
-    let _ = fs::remove_file(root.join("BOOTSTRAP.md"));
-}
-
-fn child_env(command: &mut Command, workspace_root: &Path) {
-    command
-        .env("CRAB_DISCORD_TOKEN", "test-token")
-        .env("CRAB_WORKSPACE_ROOT", workspace_root)
-        .env("CRAB_BOT_USER_ID", "999")
-        .env("CRAB_DAEMON_TICK_INTERVAL_MS", "1")
-        .env("CRAB_DAEMON_MAX_ITERATIONS", "3")
-        .env("CRAB_OUTBOUND_RECEIPT_TIMEOUT_MS", "100")
-        .env("CRAB_DAEMON_FORCE_DETERMINISTIC_CLAUDE_PROCESS", "1");
-}
-
-fn bot_gateway_frame_json(message_id: &str, content: &str) -> String {
+fn gateway_frame_json(
+    message_id: &str,
+    content: &str,
+    author_id: &str,
+    author_is_bot: bool,
+) -> String {
     serde_json::to_string(&CrabdInboundFrame::GatewayMessage(GatewayMessage {
         message_id: message_id.to_string(),
-        author_id: "999".to_string(),
-        author_is_bot: true,
-        channel_id: "777".to_string(),
-        guild_id: Some("555".to_string()),
-        thread_id: None,
-        content: content.to_string(),
-        conversation_kind: GatewayConversationKind::GuildChannel,
-        attachments: vec![],
-    }))
-    .expect("gateway frame should serialize")
-}
-
-fn user_gateway_frame_json(message_id: &str, content: &str) -> String {
-    serde_json::to_string(&CrabdInboundFrame::GatewayMessage(GatewayMessage {
-        message_id: message_id.to_string(),
-        author_id: "111".to_string(),
-        author_is_bot: false,
+        author_id: author_id.to_string(),
+        author_is_bot,
         channel_id: "777".to_string(),
         guild_id: Some("555".to_string()),
         thread_id: None,
@@ -114,6 +57,17 @@ fn assert_help(binary_path: &str) {
     );
 }
 
+fn spawn_crabd(workspace_root: &Path) -> std::process::Child {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_crabd"));
+    child_env(&mut command, workspace_root);
+    command
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("crabd should spawn")
+}
+
 #[test]
 fn thin_bin_wrappers_execute_help_paths() {
     for binary in [
@@ -129,24 +83,24 @@ fn thin_bin_wrappers_execute_help_paths() {
 
 #[test]
 fn crabd_binary_covers_stdin_success_paths() {
-    let workspace = TempWorkspace::new("crabd-success");
+    let workspace = TempWorkspace::new("bin-entry", "crabd-success");
     seed_ready_workspace(&workspace.path);
-
-    let mut command = Command::new(env!("CARGO_BIN_EXE_crabd"));
-    child_env(&mut command, &workspace.path);
-    let mut child = command
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("crabd should spawn");
+    let mut child = spawn_crabd(&workspace.path);
 
     let mut stdin = child.stdin.take().expect("stdin should be piped");
     writeln!(stdin).expect("blank line write should succeed");
-    writeln!(stdin, "{}", bot_gateway_frame_json("m-bot", "ignore me"))
-        .expect("bot frame write should succeed");
-    writeln!(stdin, "{}", user_gateway_frame_json("m-1", "hello daemon"))
-        .expect("user frame write should succeed");
+    writeln!(
+        stdin,
+        "{}",
+        gateway_frame_json("m-bot", "ignore me", "999", true)
+    )
+    .expect("bot frame write should succeed");
+    writeln!(
+        stdin,
+        "{}",
+        gateway_frame_json("m-1", "hello daemon", "111", false)
+    )
+    .expect("user frame write should succeed");
     stdin.flush().expect("stdin flush should succeed");
 
     let mut stdout = BufReader::new(child.stdout.take().expect("stdout should be piped"));
@@ -189,17 +143,9 @@ fn crabd_binary_covers_stdin_success_paths() {
 
 #[test]
 fn crabd_binary_reports_invalid_inbound_json() {
-    let workspace = TempWorkspace::new("crabd-invalid-json");
+    let workspace = TempWorkspace::new("bin-entry", "crabd-invalid-json");
     seed_ready_workspace(&workspace.path);
-
-    let mut command = Command::new(env!("CARGO_BIN_EXE_crabd"));
-    child_env(&mut command, &workspace.path);
-    let mut child = command
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("crabd should spawn");
+    let mut child = spawn_crabd(&workspace.path);
 
     let mut stdin = child.stdin.take().expect("stdin should be piped");
     writeln!(stdin, "{{not-json").expect("invalid json write should succeed");
@@ -214,7 +160,7 @@ fn crabd_binary_reports_invalid_inbound_json() {
 
 #[test]
 fn crabd_binary_reports_stdin_read_errors() {
-    let workspace = TempWorkspace::new("crabd-read-error");
+    let workspace = TempWorkspace::new("bin-entry", "crabd-read-error");
     seed_ready_workspace(&workspace.path);
     let mut command = Command::new(env!("CARGO_BIN_EXE_crabd"));
     child_env(&mut command, &workspace.path);

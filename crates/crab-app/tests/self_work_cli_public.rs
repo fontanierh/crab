@@ -1,44 +1,18 @@
-use std::collections::HashMap;
-use std::fs;
-use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
-
 use crab_app::{
     run_daemon_loop_with_transport, run_self_work_cli, DaemonConfig, DaemonDiscordIo,
     DaemonLoopControl,
 };
 use crab_core::{
     read_pending_triggers, read_self_work_session, write_self_work_session_atomically, CrabResult,
-    RuntimeConfig, SelfWorkSession, SelfWorkSessionStatus,
-    CURRENT_SELF_WORK_SESSION_SCHEMA_VERSION,
+    SelfWorkSession, SelfWorkSessionStatus, CURRENT_SELF_WORK_SESSION_SCHEMA_VERSION,
 };
 use crab_discord::GatewayMessage;
 use time::format_description::well_known::Rfc3339;
 use time::{Duration, OffsetDateTime};
 
-static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+mod support;
 
-struct TempWorkspace {
-    path: PathBuf,
-}
-
-impl TempWorkspace {
-    fn new(label: &str) -> Self {
-        let suffix = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
-        let path = std::env::temp_dir().join(format!(
-            "crab-app-self-work-public-{label}-{}-{suffix}",
-            std::process::id()
-        ));
-        let _ = fs::remove_dir_all(&path);
-        Self { path }
-    }
-}
-
-impl Drop for TempWorkspace {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.path);
-    }
-}
+use support::{runtime_config_for_workspace, TempWorkspace};
 
 #[derive(Default)]
 struct SilentDiscordIo;
@@ -85,16 +59,6 @@ impl DaemonLoopControl for FixedControl {
     }
 }
 
-fn runtime_config_for_workspace(root: &Path) -> RuntimeConfig {
-    let mut values = HashMap::new();
-    values.insert("CRAB_DISCORD_TOKEN".to_string(), "token".to_string());
-    values.insert(
-        "CRAB_WORKSPACE_ROOT".to_string(),
-        root.to_string_lossy().to_string(),
-    );
-    RuntimeConfig::from_map(&values).expect("runtime config should parse")
-}
-
 fn format_epoch_ms(epoch_ms: u64) -> String {
     OffsetDateTime::from_unix_timestamp_nanos(i128::from(epoch_ms) * 1_000_000)
         .expect("timestamp should be valid")
@@ -121,9 +85,41 @@ fn sample_active_session(now_epoch_ms: u64, end_at_epoch_ms: u64) -> SelfWorkSes
     }
 }
 
+fn daemon_config() -> DaemonConfig {
+    DaemonConfig {
+        bot_user_id: "bot-user".to_string(),
+        tick_interval_ms: 1,
+        max_iterations: Some(1),
+    }
+}
+
+fn run_self_work_daemon(
+    label: &str,
+    session: SelfWorkSession,
+    now_epoch_ms: u64,
+) -> (TempWorkspace, std::path::PathBuf) {
+    let workspace = TempWorkspace::new("self-work-public", label);
+    let state_root = workspace.path.join("state");
+
+    write_self_work_session_atomically(&state_root, &session).expect("session should persist");
+
+    let runtime_config = runtime_config_for_workspace(&workspace.path);
+    let mut control = FixedControl { now_epoch_ms };
+    let stats = run_daemon_loop_with_transport(
+        &runtime_config,
+        &daemon_config(),
+        SilentDiscordIo,
+        &mut control,
+    )
+    .expect("daemon loop should succeed");
+    assert_eq!(stats.iterations, 1);
+
+    (workspace, state_root)
+}
+
 #[test]
 fn public_cli_entry_covers_success_and_error_paths() {
-    let workspace = TempWorkspace::new("cli");
+    let workspace = TempWorkspace::new("self-work-public", "cli");
     let state_dir = workspace.path.to_string_lossy().to_string();
 
     let mut stdout = Vec::new();
@@ -205,33 +201,12 @@ fn public_cli_entry_covers_success_and_error_paths() {
 
 #[test]
 fn public_daemon_loop_emits_self_work_wake_trigger() {
-    let workspace = TempWorkspace::new("wake");
-    let state_root = workspace.path.join("state");
     let now_epoch_ms = 1_739_173_600_000;
-
-    write_self_work_session_atomically(
-        &state_root,
-        &sample_active_session(now_epoch_ms - 240_000, now_epoch_ms + 900_000),
-    )
-    .expect("session should persist");
-
-    let runtime_config = runtime_config_for_workspace(&workspace.path);
-    let daemon_config = DaemonConfig {
-        bot_user_id: "bot-user".to_string(),
-        tick_interval_ms: 1,
-        max_iterations: Some(1),
-    };
-    let mut control = FixedControl { now_epoch_ms };
-
-    let stats = run_daemon_loop_with_transport(
-        &runtime_config,
-        &daemon_config,
-        SilentDiscordIo,
-        &mut control,
-    )
-    .expect("daemon loop should succeed");
-
-    assert_eq!(stats.iterations, 1);
+    let (_workspace, state_root) = run_self_work_daemon(
+        "wake",
+        sample_active_session(now_epoch_ms - 240_000, now_epoch_ms + 900_000),
+        now_epoch_ms,
+    );
 
     let triggers = read_pending_triggers(&state_root).expect("triggers should be readable");
     assert_eq!(triggers.len(), 1);
@@ -244,33 +219,12 @@ fn public_daemon_loop_emits_self_work_wake_trigger() {
 
 #[test]
 fn public_daemon_loop_emits_self_work_expiry_trigger() {
-    let workspace = TempWorkspace::new("expiry");
-    let state_root = workspace.path.join("state");
     let now_epoch_ms = 1_739_173_800_000;
-
-    write_self_work_session_atomically(
-        &state_root,
-        &sample_active_session(now_epoch_ms - 600_000, now_epoch_ms - 1),
-    )
-    .expect("session should persist");
-
-    let runtime_config = runtime_config_for_workspace(&workspace.path);
-    let daemon_config = DaemonConfig {
-        bot_user_id: "bot-user".to_string(),
-        tick_interval_ms: 1,
-        max_iterations: Some(1),
-    };
-    let mut control = FixedControl { now_epoch_ms };
-
-    let stats = run_daemon_loop_with_transport(
-        &runtime_config,
-        &daemon_config,
-        SilentDiscordIo,
-        &mut control,
-    )
-    .expect("daemon loop should succeed");
-
-    assert_eq!(stats.iterations, 1);
+    let (_workspace, state_root) = run_self_work_daemon(
+        "expiry",
+        sample_active_session(now_epoch_ms - 600_000, now_epoch_ms - 1),
+        now_epoch_ms,
+    );
 
     let triggers = read_pending_triggers(&state_root).expect("triggers should be readable");
     assert_eq!(triggers.len(), 1);

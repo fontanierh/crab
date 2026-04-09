@@ -28,6 +28,7 @@ pub mod self_trigger;
 pub mod self_work;
 pub mod sender_identity;
 pub mod startup_reconciliation;
+pub(crate) mod state_file_support;
 pub mod state_schema;
 #[cfg(test)]
 pub(crate) mod test_support;

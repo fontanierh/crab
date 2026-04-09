@@ -44,7 +44,7 @@ where
     I: IntoIterator<Item = S>,
     S: Into<String>,
 {
-    let argv: Vec<String> = args.into_iter().map(Into::into).collect();
+    let argv = cli_support::collect_args(args);
     #[rustfmt::skip]
     let now_epoch_ms = match current_epoch_ms() { Ok(value) => value, Err(message) => return write_error(stderr, &message) };
     run_self_work_cli_with_now_epoch_ms(&argv, stdout, stderr, now_epoch_ms)
@@ -416,26 +416,42 @@ mod tests {
         serde_json::from_str(stdout.trim()).expect("stdout should contain valid json")
     }
 
+    fn active_sample_session() -> SelfWorkSession {
+        serde_json::from_value(json!({
+            "schema_version": CURRENT_SELF_WORK_SESSION_SCHEMA_VERSION,
+            "session_id": "self-work:1739173200000",
+            "channel_id": "123456789",
+            "goal": "Ship the feature",
+            "started_at_epoch_ms": 1_739_173_200_000u64,
+            "started_at_iso8601": "2025-02-10T10:00:00Z",
+            "end_at_epoch_ms": 1_739_174_100_000u64,
+            "end_at_iso8601": "2025-02-10T10:15:00Z",
+            "status": "active",
+            "last_wake_triggered_at_epoch_ms": null,
+            "final_trigger_pending": false,
+            "stopped_at_epoch_ms": null,
+            "expired_at_epoch_ms": null,
+            "last_expiry_triggered_at_epoch_ms": null
+        }))
+        .expect("sample session json should parse")
+    }
+
     fn sample_session(status: SelfWorkSessionStatus) -> SelfWorkSession {
-        SelfWorkSession {
-            schema_version: CURRENT_SELF_WORK_SESSION_SCHEMA_VERSION,
-            session_id: "self-work:1739173200000".to_string(),
-            channel_id: "123456789".to_string(),
-            goal: "Ship the feature".to_string(),
-            started_at_epoch_ms: 1_739_173_200_000,
-            started_at_iso8601: "2025-02-10T10:00:00Z".to_string(),
-            end_at_epoch_ms: 1_739_174_100_000,
-            end_at_iso8601: "2025-02-10T10:15:00Z".to_string(),
-            status,
-            last_wake_triggered_at_epoch_ms: None,
-            final_trigger_pending: false,
-            stopped_at_epoch_ms: (status == SelfWorkSessionStatus::Stopped)
-                .then_some(1_739_173_600_000),
-            expired_at_epoch_ms: (status == SelfWorkSessionStatus::Expired)
-                .then_some(1_739_174_100_000),
-            last_expiry_triggered_at_epoch_ms: (status == SelfWorkSessionStatus::Expired)
-                .then_some(1_739_174_100_000),
+        let mut session = active_sample_session();
+        session.status = status;
+
+        match status {
+            SelfWorkSessionStatus::Active => {}
+            SelfWorkSessionStatus::Stopped => {
+                session.stopped_at_epoch_ms = Some(1_739_173_600_000);
+            }
+            SelfWorkSessionStatus::Expired => {
+                session.expired_at_epoch_ms = Some(1_739_174_100_000);
+                session.last_expiry_triggered_at_epoch_ms = Some(1_739_174_100_000);
+            }
         }
+
+        session
     }
 
     #[test]
