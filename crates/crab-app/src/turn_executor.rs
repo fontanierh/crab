@@ -2246,6 +2246,11 @@ mod tests {
     use crab_discord::{GatewayAttachment, GatewayConversationKind, GatewayMessage};
     use futures::stream;
 
+    use crate::test_support::{
+        event_log_path, outbound_log_path, replace_path_with_directory, run_file_path,
+        session_file_path, state_root,
+    };
+
     use super::{
         attachment_directory, build_user_input_with_attachments, cleanup_attachment_directory,
         sanitize_attachment_filename, DispatchedTurn, QueuedTurn, TriggerKind, TurnExecutor,
@@ -2687,63 +2692,6 @@ mod tests {
         let mut profile = sample_profile_telemetry();
         profile.sender_id = " ".to_string();
         profile
-    }
-
-    fn hex_encode(bytes: &[u8]) -> String {
-        const HEX: [char; 16] = [
-            '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'a', 'b', 'c', 'd', 'e', 'f',
-        ];
-        let mut output = String::with_capacity(bytes.len() * 2);
-        for byte in bytes {
-            let upper = usize::from(byte >> 4);
-            let lower = usize::from(byte & 0x0f);
-            output.push(HEX[upper]);
-            output.push(HEX[lower]);
-        }
-        output
-    }
-
-    fn state_root(workspace: &TempWorkspace) -> PathBuf {
-        workspace.path.join("state")
-    }
-
-    fn session_file_path(state_root: &Path, logical_session_id: &str) -> PathBuf {
-        state_root.join("sessions").join(format!(
-            "{}.json",
-            hex_encode(logical_session_id.as_bytes())
-        ))
-    }
-
-    fn run_file_path(state_root: &Path, logical_session_id: &str, run_id: &str) -> PathBuf {
-        state_root
-            .join("runs")
-            .join(hex_encode(logical_session_id.as_bytes()))
-            .join(format!("{}.json", hex_encode(run_id.as_bytes())))
-    }
-
-    fn event_log_path(state_root: &Path, logical_session_id: &str, run_id: &str) -> PathBuf {
-        state_root
-            .join("events")
-            .join(hex_encode(logical_session_id.as_bytes()))
-            .join(format!("{}.jsonl", hex_encode(run_id.as_bytes())))
-    }
-
-    fn outbound_log_path(state_root: &Path, logical_session_id: &str, run_id: &str) -> PathBuf {
-        state_root
-            .join("outbound")
-            .join(hex_encode(logical_session_id.as_bytes()))
-            .join(format!("{}.jsonl", hex_encode(run_id.as_bytes())))
-    }
-
-    fn replace_path_with_directory(path: &Path) {
-        if path.exists() {
-            if path.is_dir() {
-                fs::remove_dir_all(path).expect("existing directory should be removable");
-            } else {
-                fs::remove_file(path).expect("existing file should be removable");
-            }
-        }
-        fs::create_dir_all(path).expect("directory fixture should be creatable");
     }
 
     #[test]
