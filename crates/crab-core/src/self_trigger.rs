@@ -243,18 +243,10 @@ mod tests {
     }
 
     #[test]
-    fn consume_returns_error_for_missing_file() {
+    fn consume_missing_pending_trigger_is_treated_as_success() {
         let temp = TempDir::new("self-trigger", "consume-missing");
         let path = temp.root.join("nonexistent.json");
-        let error =
-            consume_pending_trigger(&path).expect_err("consume of missing file should fail");
-        assert!(matches!(
-            error,
-            CrabError::Io {
-                context: "pending_trigger_consume",
-                ..
-            }
-        ));
+        consume_pending_trigger(&path).expect("consume of missing file should succeed");
     }
 
     #[test]
@@ -405,18 +397,10 @@ mod tests {
     }
 
     #[test]
-    fn steering_consume_returns_error_for_missing_file() {
+    fn steering_consume_missing_file_is_treated_as_success() {
         let temp = TempDir::new("self-trigger", "steering-consume-missing");
         let path = temp.root.join("nonexistent.json");
-        let error =
-            consume_steering_trigger(&path).expect_err("consume of missing file should fail");
-        assert!(matches!(
-            error,
-            CrabError::Io {
-                context: "steering_trigger_consume",
-                ..
-            }
-        ));
+        consume_steering_trigger(&path).expect("consume of missing file should succeed");
     }
 
     // ── Graceful steering trigger tests ─────────────────────────────────
@@ -472,17 +456,9 @@ mod tests {
     }
 
     #[test]
-    fn graceful_steering_consume_returns_error_for_missing_file() {
+    fn graceful_steering_consume_missing_file_is_treated_as_success() {
         let temp = TempDir::new("self-trigger", "graceful-consume-missing");
         let path = temp.root.join("nonexistent.json");
-        let error = consume_graceful_steering_trigger(&path)
-            .expect_err("consume of missing file should fail");
-        assert!(matches!(
-            error,
-            CrabError::Io {
-                context: "graceful_steering_trigger_consume",
-                ..
-            }
-        ));
+        consume_graceful_steering_trigger(&path).expect("consume of missing file should succeed");
     }
 }

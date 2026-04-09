@@ -89,9 +89,13 @@ pub(crate) fn read_signal_files<T: DeserializeOwned>(
 }
 
 pub(crate) fn consume_signal_file(path: &Path, context: &'static str) -> CrabResult<()> {
-    fs::remove_file(path).map_err(|error| CrabError::Io {
-        context,
-        path: Some(path.to_string_lossy().to_string()),
-        message: error.to_string(),
-    })
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(CrabError::Io {
+            context,
+            path: Some(path.to_string_lossy().to_string()),
+            message: error.to_string(),
+        }),
+    }
 }

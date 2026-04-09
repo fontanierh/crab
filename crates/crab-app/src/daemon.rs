@@ -24,7 +24,7 @@ use crab_store::CheckpointStore;
 use futures::channel::mpsc;
 use futures::{executor::block_on, stream};
 use std::collections::BTreeMap;
-use std::fs;
+use std::fs::{self, File, OpenOptions};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -38,6 +38,9 @@ use crate::{
 
 pub const DEFAULT_DAEMON_TICK_INTERVAL_MS: u64 = 250;
 const DAEMON_TURN_CONTEXT_READ: &str = "daemon_turn_context_read";
+const CRABD_INSTANCE_LOCK_CONTEXT: &str = "crabd_instance_lock";
+const CRABD_INSTANCE_LOCK_FILE_NAME: &str = "crabd.lock";
+const CRABD_STATE_DIRECTORY_NAME: &str = "state";
 #[cfg(not(any(test, coverage)))]
 const DAEMON_CLAUDE_TRANSPORT_CONTEXT: &str = "daemon_claude_transport";
 #[cfg(any(test, not(coverage)))]
@@ -87,6 +90,83 @@ const DAEMON_DETERMINISTIC_CLAUDE_PROCESS_ENV: &str =
 pub struct DaemonClaudeProcess {
     #[cfg(not(any(test, coverage)))]
     state: Arc<std::sync::Mutex<DaemonClaudeProcessState>>,
+}
+
+#[derive(Debug)]
+struct DaemonInstanceLock {
+    file: File,
+}
+
+impl DaemonInstanceLock {
+    fn acquire(runtime_config: &RuntimeConfig) -> CrabResult<Self> {
+        let startup = crate::initialize_runtime_startup(runtime_config)?;
+        let state_root = startup.workspace_root.join(CRABD_STATE_DIRECTORY_NAME);
+        Self::acquire_at(&state_root)
+    }
+
+    fn acquire_at(state_root: &Path) -> CrabResult<Self> {
+        fs::create_dir_all(state_root).map_err(|error| CrabError::Io {
+            context: CRABD_INSTANCE_LOCK_CONTEXT,
+            path: Some(state_root.to_string_lossy().to_string()),
+            message: error.to_string(),
+        })?;
+        let lock_path = state_root.join(CRABD_INSTANCE_LOCK_FILE_NAME);
+        let file = OpenOptions::new()
+            .create(true)
+            .read(true)
+            .write(true)
+            .truncate(false)
+            .open(&lock_path)
+            .map_err(|error| CrabError::Io {
+                context: CRABD_INSTANCE_LOCK_CONTEXT,
+                path: Some(lock_path.to_string_lossy().to_string()),
+                message: error.to_string(),
+            })?;
+        acquire_lock_on_file(&file, &lock_path)?;
+        Ok(Self { file })
+    }
+}
+
+impl Drop for DaemonInstanceLock {
+    fn drop(&mut self) {
+        #[cfg(unix)]
+        {
+            use std::os::fd::AsRawFd;
+
+            let _ = unsafe { libc::flock(self.file.as_raw_fd(), libc::LOCK_UN) };
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = &self.file;
+        }
+    }
+}
+
+#[cfg(unix)]
+fn acquire_lock_on_file(file: &File, lock_path: &Path) -> CrabResult<()> {
+    use std::os::fd::AsRawFd;
+
+    let result = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+    if result == 0 {
+        return Ok(());
+    }
+
+    let error = std::io::Error::last_os_error();
+    let message = if error.kind() == std::io::ErrorKind::WouldBlock {
+        "another crabd instance is already running for this state directory".to_string()
+    } else {
+        error.to_string()
+    };
+    Err(CrabError::Io {
+        context: CRABD_INSTANCE_LOCK_CONTEXT,
+        path: Some(lock_path.to_string_lossy().to_string()),
+        message,
+    })
+}
+
+#[cfg(not(unix))]
+fn acquire_lock_on_file(_file: &File, _lock_path: &Path) -> CrabResult<()> {
+    Ok(())
 }
 
 #[cfg(not(any(test, coverage)))]
@@ -1532,6 +1612,7 @@ where
     C: DaemonLoopControl + ?Sized,
     RB: FnOnce(OwnerConfig, D) -> CrabResult<DaemonTurnRuntime<D>>,
 {
+    let _instance_lock = DaemonInstanceLock::acquire(runtime_config)?;
     let mut discord = discord;
     daemon_config.validate()?;
     let now_epoch_ms = control.now_epoch_ms()?;
@@ -2006,7 +2087,8 @@ mod tests {
         notify_startup_recovered_runs, read_workspace_markdown, self_work_idle_baseline_epoch_ms,
         self_work_lane_is_idle, trust_surface_for_logical_session_id,
         try_acquire_self_work_lock_for_daemon, wake_due, DaemonClaudeProcess, DaemonConfig,
-        DaemonDiscordIo, DaemonLoopControl, DaemonTurnRuntime, SystemDaemonLoopControl,
+        DaemonDiscordIo, DaemonInstanceLock, DaemonLoopControl, DaemonTurnRuntime,
+        SystemDaemonLoopControl,
     };
     use crate::composition::compose_runtime_with_queue_limit;
     use crate::test_support::{runtime_config_for_workspace_with_lanes, TempWorkspace};
@@ -4398,6 +4480,30 @@ mod tests {
             tick_interval_ms: 1,
             max_iterations: Some(1),
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn daemon_instance_lock_rejects_second_holder_for_same_state_root() {
+        let workspace = TempWorkspace::new("daemon", "instance-lock");
+        let state_root = workspace.path.join("state");
+
+        let first_lock =
+            DaemonInstanceLock::acquire_at(&state_root).expect("first lock should succeed");
+        let second = DaemonInstanceLock::acquire_at(&state_root)
+            .expect_err("second lock should fail while first is held");
+        assert!(matches!(
+            second,
+            CrabError::Io {
+                context: "crabd_instance_lock",
+                ..
+            }
+        ));
+
+        drop(first_lock);
+
+        DaemonInstanceLock::acquire_at(&state_root)
+            .expect("lock should be reacquirable after the first holder drops");
     }
 
     #[test]

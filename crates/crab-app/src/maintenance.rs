@@ -206,6 +206,7 @@ impl StartupReconciliationRuntime for StartupRuntimeAdapter<'_> {
             .state_stores
             .event_store
             .append_event(event)
+            .map(|_| ())
     }
 
     fn repair_session_lane_state(&mut self, logical_session_id: &str) -> CrabResult<()> {
@@ -687,7 +688,7 @@ fn append_runtime_event(
             run.logical_session_id, run.id
         )),
     };
-    event_store.append_event(&event)
+    event_store.append_event(&event).map(|_| ())
 }
 
 #[cfg(test)]
