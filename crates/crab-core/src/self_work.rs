@@ -11,6 +11,9 @@ pub const SELF_WORK_SESSION_LOCK_FILE_NAME: &str = "self_work_session.lock.json"
 const SELF_WORK_SESSION_LOCK_STALE_AFTER_MS: u64 = 5 * 60 * 1_000;
 pub const CURRENT_SELF_WORK_SESSION_SCHEMA_VERSION: u32 = 1;
 
+#[cfg(test)]
+static STALE_LOCK_REMOVE_RACE_PATH: std::sync::Mutex<Option<PathBuf>> = std::sync::Mutex::new(None);
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SelfWorkSessionStatus {
@@ -226,6 +229,9 @@ impl SelfWorkSessionLock {
                         });
                     }
 
+                    #[cfg(test)]
+                    simulate_stale_lock_disappearing_before_remove(&lock_path);
+
                     if let Err(remove_error) = fs::remove_file(&lock_path) {
                         if remove_error.kind() != ErrorKind::NotFound {
                             return Err(CrabError::Io {
@@ -258,6 +264,42 @@ impl SelfWorkSessionLock {
         }
         self.released = true;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+struct StaleLockRemoveRaceGuard;
+
+#[cfg(test)]
+fn arm_stale_lock_remove_not_found_race(lock_path: &Path) -> StaleLockRemoveRaceGuard {
+    *STALE_LOCK_REMOVE_RACE_PATH
+        .lock()
+        .expect("stale lock race hook mutex should not be poisoned") =
+        Some(lock_path.to_path_buf());
+    StaleLockRemoveRaceGuard
+}
+
+#[cfg(test)]
+fn simulate_stale_lock_disappearing_before_remove(lock_path: &Path) {
+    let should_remove = {
+        let mut armed_path = STALE_LOCK_REMOVE_RACE_PATH
+            .lock()
+            .expect("stale lock race hook mutex should not be poisoned");
+        matches!(armed_path.take(), Some(path) if path == lock_path)
+    };
+
+    if should_remove {
+        fs::remove_file(lock_path).expect("race hook should remove stale lock before retry");
+    }
+}
+
+#[cfg(test)]
+impl Drop for StaleLockRemoveRaceGuard {
+    fn drop(&mut self) {
+        STALE_LOCK_REMOVE_RACE_PATH
+            .lock()
+            .expect("stale lock race hook mutex should not be poisoned")
+            .take();
     }
 }
 
@@ -420,6 +462,25 @@ mod tests {
         let mut lock = SelfWorkSessionLock::acquire(&temp.root, 1_739_173_600_001)
             .expect("stale lock should be replaced");
         assert!(stale_lock.exists(), "fresh lock should exist");
+        lock.release().expect("release should succeed");
+        assert!(!stale_lock.exists(), "lock should be removed after release");
+    }
+
+    #[test]
+    fn lock_ignores_not_found_when_stale_lock_disappears_before_remove() {
+        let temp = TempDir::new("self-work", "stale-lock-removed-race");
+        let stale_lock = temp.root.join(SELF_WORK_SESSION_LOCK_FILE_NAME);
+        fs::write(
+            &stale_lock,
+            r#"{"pid":42,"acquired_at_epoch_ms":1739173200000}"#,
+        )
+        .expect("stale lock should be writable");
+
+        let _race = super::arm_stale_lock_remove_not_found_race(&stale_lock);
+        let mut lock = SelfWorkSessionLock::acquire(&temp.root, 1_739_173_600_001)
+            .expect("stale lock disappearing during reclaim should be ignored");
+
+        assert!(stale_lock.exists(), "fresh lock should exist after retry");
         lock.release().expect("release should succeed");
         assert!(!stale_lock.exists(), "lock should be removed after release");
     }
