@@ -6757,6 +6757,24 @@ mod tests {
         assert_eq!(status.last_activity_epoch_ms, Some(99));
     }
 
+    #[test]
+    fn self_work_lane_status_rejects_blank_channel_id() {
+        let workspace = TempWorkspace::new("turn-executor", "self-work-lane-blank");
+        let runtime = FakeRuntime::with_backend_events(Vec::new(), &[42_000]);
+        let executor = build_executor(&workspace, runtime, 8);
+
+        let error = executor
+            .self_work_lane_status("  ")
+            .expect_err("blank channel_id should fail");
+        assert_eq!(
+            error,
+            CrabError::InvariantViolation {
+                context: "self_work_lane_status",
+                message: "channel_id must not be empty".to_string(),
+            }
+        );
+    }
+
     fn temp_state_root(label: &str) -> PathBuf {
         let workspace = TempWorkspace::new("turn-executor", label);
         let root = workspace.path.join("state");

@@ -190,11 +190,7 @@ impl SelfWorkSessionLock {
                 message: "now_epoch_ms must be greater than 0".to_string(),
             });
         }
-        wrap_io(
-            fs::create_dir_all(state_root),
-            "self_work_session_lock",
-            state_root,
-        )?;
+        wrap_io(fs::create_dir_all(state_root), "self_work_session_lock", state_root)?;
 
         let lock_path = state_root.join(SELF_WORK_SESSION_LOCK_FILE_NAME);
         loop {
@@ -211,11 +207,7 @@ impl SelfWorkSessionLock {
                     };
                     let encoded = serde_json::to_string(&lock_file)
                         .expect("self-work session lock serialization is stable");
-                    wrap_io(
-                        file.write_all(encoded.as_bytes()),
-                        "self_work_session_lock",
-                        &lock_path,
-                    )?;
+                    wrap_io(file.write_all(encoded.as_bytes()), "self_work_session_lock", &lock_path)?;
                     return Ok(Self {
                         lock_path,
                         released: false,
@@ -232,16 +224,12 @@ impl SelfWorkSessionLock {
                         });
                     }
 
-                    match fs::remove_file(&lock_path) {
-                        Ok(()) => {}
-                        Err(remove_error) if remove_error.kind() == ErrorKind::NotFound => {}
-                        Err(remove_error) => {
-                            return Err(CrabError::Io {
-                                context: "self_work_session_lock",
-                                path: Some(lock_path.to_string_lossy().to_string()),
-                                message: format!("failed to remove stale lock: {remove_error}"),
-                            });
-                        }
+                    if let Err(remove_error) = fs::remove_file(&lock_path) {
+                        if remove_error.kind() != ErrorKind::NotFound { return Err(CrabError::Io {
+                            context: "self_work_session_lock",
+                            path: Some(lock_path.to_string_lossy().to_string()),
+                            message: format!("failed to remove stale lock: {remove_error}"),
+                        }); }
                     }
                 }
                 Err(error) => {
@@ -322,11 +310,14 @@ fn wrap_io<T>(result: std::io::Result<T>, context: &'static str, path: &Path) ->
 #[cfg(test)]
 mod tests {
     use std::fs;
+    use std::path::Path;
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
 
     use super::{
         read_self_work_session, self_work_session_path, validate_new_self_work_start,
-        write_self_work_session_atomically, SelfWorkSession, SelfWorkSessionLock,
-        SelfWorkSessionStatus, CURRENT_SELF_WORK_SESSION_SCHEMA_VERSION,
+        validate_self_work_session, write_self_work_session_atomically, SelfWorkSession,
+        SelfWorkSessionLock, SelfWorkSessionStatus, CURRENT_SELF_WORK_SESSION_SCHEMA_VERSION,
         SELF_WORK_SESSION_FILE_NAME, SELF_WORK_SESSION_LOCK_FILE_NAME,
     };
     use crate::test_support::TempDir;
@@ -449,5 +440,323 @@ mod tests {
                 path: path.to_string_lossy().to_string(),
             }
         );
+    }
+
+    #[test]
+    fn validate_session_rejects_each_invalid_field() {
+        let invalid_cases = [
+            (
+                {
+                    let mut session = sample_session(SelfWorkSessionStatus::Active);
+                    session.schema_version = 0;
+                    session
+                },
+                "schema_version must be 1, got 0",
+            ),
+            (
+                {
+                    let mut session = sample_session(SelfWorkSessionStatus::Active);
+                    session.session_id = "  ".to_string();
+                    session
+                },
+                "session_id must not be empty",
+            ),
+            (
+                {
+                    let mut session = sample_session(SelfWorkSessionStatus::Active);
+                    session.channel_id = "  ".to_string();
+                    session
+                },
+                "channel_id must not be empty",
+            ),
+            (
+                {
+                    let mut session = sample_session(SelfWorkSessionStatus::Active);
+                    session.goal = " ".to_string();
+                    session
+                },
+                "goal must not be empty",
+            ),
+            (
+                {
+                    let mut session = sample_session(SelfWorkSessionStatus::Active);
+                    session.started_at_epoch_ms = 0;
+                    session
+                },
+                "started_at_epoch_ms must be greater than 0",
+            ),
+            (
+                {
+                    let mut session = sample_session(SelfWorkSessionStatus::Active);
+                    session.end_at_epoch_ms = 0;
+                    session
+                },
+                "end_at_epoch_ms must be greater than 0",
+            ),
+            (
+                {
+                    let mut session = sample_session(SelfWorkSessionStatus::Active);
+                    session.end_at_epoch_ms = session.started_at_epoch_ms;
+                    session
+                },
+                "end_at_epoch_ms must be greater than started_at_epoch_ms",
+            ),
+            (
+                {
+                    let mut session = sample_session(SelfWorkSessionStatus::Active);
+                    session.started_at_iso8601 = " ".to_string();
+                    session
+                },
+                "started_at_iso8601 must not be empty",
+            ),
+            (
+                {
+                    let mut session = sample_session(SelfWorkSessionStatus::Active);
+                    session.end_at_iso8601 = " ".to_string();
+                    session
+                },
+                "end_at_iso8601 must not be empty",
+            ),
+        ];
+
+        for (session, expected_message) in invalid_cases {
+            let error =
+                validate_self_work_session(&session).expect_err("invalid session should fail");
+            assert_eq!(
+                error,
+                CrabError::InvariantViolation {
+                    context: "self_work_session_validation",
+                    message: expected_message.to_string(),
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn read_surfaces_io_error_when_session_path_is_a_directory() {
+        let temp = TempDir::new("self-work", "read-io-error");
+        let session_path = temp.root.join(SELF_WORK_SESSION_FILE_NAME);
+        fs::create_dir_all(&session_path).expect("directory should be creatable");
+
+        let error =
+            read_self_work_session(&temp.root).expect_err("directory session path should fail");
+        assert!(matches!(
+            error,
+            CrabError::Io {
+                context: "self_work_session_read",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn write_rejects_empty_state_root_and_invalid_session() {
+        let empty_path_error =
+            write_self_work_session_atomically(Path::new(""), &sample_session(SelfWorkSessionStatus::Active))
+                .expect_err("empty state root should fail");
+        assert_eq!(
+            empty_path_error,
+            CrabError::InvariantViolation {
+                context: "self_work_session_write",
+                message: "state_root must not be empty".to_string(),
+            }
+        );
+
+        let temp = TempDir::new("self-work", "write-invalid-session");
+        let mut invalid_session = sample_session(SelfWorkSessionStatus::Active);
+        invalid_session.goal = " ".to_string();
+        let error = write_self_work_session_atomically(&temp.root, &invalid_session)
+            .expect_err("invalid session should fail validation");
+        assert_eq!(
+            error,
+            CrabError::InvariantViolation {
+                context: "self_work_session_validation",
+                message: "goal must not be empty".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn write_surfaces_create_write_and_rename_errors() {
+        let temp = TempDir::new("self-work", "write-io-errors");
+        let session = sample_session(SelfWorkSessionStatus::Active);
+
+        let create_dir_root = temp.root.join("create-dir-error");
+        fs::write(&create_dir_root, "not a directory").expect("file sentinel should be writable");
+        let create_error = write_self_work_session_atomically(&create_dir_root, &session)
+            .expect_err("create_dir_all error should surface");
+        assert!(matches!(
+            create_error,
+            CrabError::Io {
+                context: "self_work_session_write",
+                ..
+            }
+        ));
+
+        let write_root = temp.root.join("write-error");
+        fs::create_dir_all(&write_root).expect("write error root should be creatable");
+        let temp_path =
+            self_work_session_path(&write_root).with_extension(format!("tmp-{}", std::process::id()));
+        fs::create_dir_all(&temp_path).expect("temp path directory should be creatable");
+        let write_error = write_self_work_session_atomically(&write_root, &session)
+            .expect_err("temp file write error should surface");
+        assert!(matches!(
+            write_error,
+            CrabError::Io {
+                context: "self_work_session_write",
+                ..
+            }
+        ));
+
+        let rename_root = temp.root.join("rename-error");
+        fs::create_dir_all(&rename_root).expect("rename error root should be creatable");
+        fs::create_dir_all(rename_root.join(SELF_WORK_SESSION_FILE_NAME))
+            .expect("session path directory should be creatable");
+        let rename_error = write_self_work_session_atomically(&rename_root, &session)
+            .expect_err("rename error should surface");
+        assert!(matches!(
+            rename_error,
+            CrabError::Io {
+                context: "self_work_session_write",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn lock_rejects_empty_state_root_and_zero_clock() {
+        let empty_path_error = SelfWorkSessionLock::acquire(Path::new(""), 1)
+            .expect_err("empty state root should fail");
+        assert_eq!(
+            empty_path_error,
+            CrabError::InvariantViolation {
+                context: "self_work_session_lock",
+                message: "state_root must not be empty".to_string(),
+            }
+        );
+
+        let temp = TempDir::new("self-work", "lock-zero-clock");
+        let zero_clock_error = SelfWorkSessionLock::acquire(&temp.root, 0)
+            .expect_err("zero clock should fail");
+        assert_eq!(
+            zero_clock_error,
+            CrabError::InvariantViolation {
+                context: "self_work_session_lock",
+                message: "now_epoch_ms must be greater than 0".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn lock_surfaces_lock_read_and_release_errors() {
+        let temp = TempDir::new("self-work", "lock-io-errors");
+        let lock_path = temp.root.join(SELF_WORK_SESSION_LOCK_FILE_NAME);
+        fs::create_dir_all(&lock_path).expect("lock path directory should be creatable");
+
+        let read_error = SelfWorkSessionLock::acquire(&temp.root, 1_739_173_200_000)
+            .expect_err("directory lock path should fail to read");
+        assert!(matches!(
+            read_error,
+            CrabError::Io {
+                context: "self_work_session_lock",
+                ..
+            }
+        ));
+
+        fs::remove_dir_all(&lock_path).expect("directory lock path should be removable");
+        let mut lock = SelfWorkSessionLock::acquire(&temp.root, 1_739_173_200_001)
+            .expect("lock should be acquirable");
+        fs::remove_file(&lock_path).expect("lock file should be removable");
+        fs::create_dir_all(&lock_path).expect("lock path directory should be creatable again");
+        let release_error = lock.release().expect_err("directory lock path should fail release");
+        assert!(matches!(
+            release_error,
+            CrabError::Io {
+                context: "self_work_session_lock",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn malformed_stale_lock_is_reclaimed_and_missing_release_file_is_ignored() {
+        let temp = TempDir::new("self-work", "lock-invalid-json");
+        let lock_path = temp.root.join(SELF_WORK_SESSION_LOCK_FILE_NAME);
+        fs::write(&lock_path, "not-json").expect("invalid stale lock should be writable");
+
+        let mut lock = SelfWorkSessionLock::acquire(&temp.root, 1_739_173_200_000)
+            .expect("invalid stale lock should be replaced");
+        fs::remove_file(&lock_path).expect("lock file should be removable");
+        lock.release()
+            .expect("missing lock file during release should be treated as success");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn lock_surfaces_stale_remove_and_open_permission_errors() {
+        let temp = TempDir::new("self-work", "lock-permissions");
+        let remove_root = temp.root.join("remove-error");
+        fs::create_dir_all(&remove_root).expect("remove error root should be creatable");
+        let stale_lock = remove_root.join(SELF_WORK_SESSION_LOCK_FILE_NAME);
+        fs::write(
+            &stale_lock,
+            r#"{"pid":42,"acquired_at_epoch_ms":1739173200000}"#,
+        )
+        .expect("stale lock should be writable");
+
+        let original_permissions = fs::metadata(&remove_root)
+            .expect("metadata should load")
+            .permissions();
+        let mut read_only_permissions = original_permissions.clone();
+        read_only_permissions.set_mode(0o555);
+        fs::set_permissions(&remove_root, read_only_permissions)
+            .expect("directory should become read only");
+
+        let remove_error = SelfWorkSessionLock::acquire(&remove_root, 1_739_173_800_000)
+            .expect_err("stale lock removal permission error should surface");
+
+        fs::set_permissions(&remove_root, original_permissions)
+            .expect("directory permissions should be restorable");
+
+        assert!(matches!(
+            remove_error,
+            CrabError::Io {
+                context: "self_work_session_lock",
+                ..
+            }
+        ));
+
+        let open_root = temp.root.join("open-error");
+        fs::create_dir_all(&open_root).expect("open error root should be creatable");
+        let original_permissions = fs::metadata(&open_root)
+            .expect("metadata should load")
+            .permissions();
+        let mut read_only_permissions = original_permissions.clone();
+        read_only_permissions.set_mode(0o555);
+        fs::set_permissions(&open_root, read_only_permissions)
+            .expect("directory should become read only");
+
+        let open_error = SelfWorkSessionLock::acquire(&open_root, 1_739_173_200_001)
+            .expect_err("lock file open permission error should surface");
+
+        fs::set_permissions(&open_root, original_permissions)
+            .expect("directory permissions should be restorable");
+
+        assert!(matches!(
+            open_error,
+            CrabError::Io {
+                context: "self_work_session_lock",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn lock_release_is_idempotent_after_success() {
+        let temp = TempDir::new("self-work", "lock-release-idempotent");
+        let mut lock = SelfWorkSessionLock::acquire(&temp.root, 1_739_173_200_000)
+            .expect("lock should be acquirable");
+        lock.release().expect("initial release should succeed");
+        lock.release().expect("second release should be a no-op");
     }
 }
