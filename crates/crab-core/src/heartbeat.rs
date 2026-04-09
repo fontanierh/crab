@@ -125,7 +125,7 @@ pub fn execute_heartbeat_cycle<R: HeartbeatRuntime>(
             });
         }
 
-        let elapsed_since_progress_ms = now_epoch_ms - run.last_progress_at_epoch_ms;
+        let elapsed_since_progress_ms = now_epoch_ms.saturating_sub(run.last_progress_at_epoch_ms);
         if elapsed_since_progress_ms < run_stall_timeout_ms {
             continue;
         }
@@ -176,7 +176,8 @@ pub fn execute_heartbeat_cycle<R: HeartbeatRuntime>(
             continue;
         }
 
-        let unhealthy_duration_ms = now_epoch_ms - backend_heartbeat.last_healthy_at_epoch_ms;
+        let unhealthy_duration_ms =
+            now_epoch_ms.saturating_sub(backend_heartbeat.last_healthy_at_epoch_ms);
         if unhealthy_duration_ms < backend_stall_timeout_ms {
             continue;
         }
@@ -194,7 +195,8 @@ pub fn execute_heartbeat_cycle<R: HeartbeatRuntime>(
 
     let dispatcher_heartbeat = runtime.dispatcher_heartbeat()?;
     validate_dispatcher_heartbeat(dispatcher_heartbeat, now_epoch_ms)?;
-    let dispatcher_idle_duration_ms = now_epoch_ms - dispatcher_heartbeat.last_dispatch_at_epoch_ms;
+    let dispatcher_idle_duration_ms =
+        now_epoch_ms.saturating_sub(dispatcher_heartbeat.last_dispatch_at_epoch_ms);
     if dispatcher_heartbeat.queued_run_count > 0
         && dispatcher_heartbeat.active_lane_count == 0
         && dispatcher_idle_duration_ms >= dispatcher_stall_timeout_ms
@@ -265,28 +267,12 @@ fn validate_active_run_heartbeat(run: &ActiveRunHeartbeat, now_epoch_ms: u64) ->
         &run.logical_session_id,
     )?;
     crate::validation::validate_non_empty_text("heartbeat_cycle", "run_id", &run.run_id)?;
-    if run.last_progress_at_epoch_ms > now_epoch_ms {
-        return Err(CrabError::InvariantViolation {
-            context: "heartbeat_cycle",
-            message: format!(
-                "active run {}/{} has last_progress_at_epoch_ms {} in the future relative to now_epoch_ms {}",
-                run.logical_session_id, run.run_id, run.last_progress_at_epoch_ms, now_epoch_ms
-            ),
-        });
-    }
+    let _ = now_epoch_ms;
     Ok(())
 }
 
 fn validate_backend_heartbeat(heartbeat: BackendHeartbeat, now_epoch_ms: u64) -> CrabResult<()> {
-    if heartbeat.last_healthy_at_epoch_ms > now_epoch_ms {
-        return Err(CrabError::InvariantViolation {
-            context: "heartbeat_cycle",
-            message: format!(
-                "backend {:?} has last_healthy_at_epoch_ms {} in the future relative to now_epoch_ms {}",
-                heartbeat.backend, heartbeat.last_healthy_at_epoch_ms, now_epoch_ms
-            ),
-        });
-    }
+    let _ = (heartbeat, now_epoch_ms);
     Ok(())
 }
 
@@ -294,15 +280,7 @@ fn validate_dispatcher_heartbeat(
     heartbeat: DispatcherHeartbeat,
     now_epoch_ms: u64,
 ) -> CrabResult<()> {
-    if heartbeat.last_dispatch_at_epoch_ms > now_epoch_ms {
-        return Err(CrabError::InvariantViolation {
-            context: "heartbeat_cycle",
-            message: format!(
-                "dispatcher has last_dispatch_at_epoch_ms {} in the future relative to now_epoch_ms {}",
-                heartbeat.last_dispatch_at_epoch_ms, now_epoch_ms
-            ),
-        });
-    }
+    let _ = (heartbeat, now_epoch_ms);
     Ok(())
 }
 
@@ -769,58 +747,52 @@ mod tests {
                 reason: "must be greater than 0",
             }
         );
+    }
 
-        let mut run_clock_skew_runtime = FakeRuntime::new();
-        run_clock_skew_runtime.list_active_runs_result = Ok(vec![active_run(
+    #[test]
+    fn heartbeat_cycle_tolerates_last_progress_slightly_in_future() {
+        let mut runtime = FakeRuntime::new();
+        runtime.list_active_runs_result = Ok(vec![active_run(
             "discord:channel:a",
             "run-1",
             LaneState::Running,
-            2_000,
+            1_001,
         )]);
-        let run_clock_skew_error =
-            execute_heartbeat_cycle(&mut run_clock_skew_runtime, &policy(), 1_000)
-                .expect_err("run timestamps cannot be in the future");
-        assert_eq!(
-            run_clock_skew_error,
-            CrabError::InvariantViolation {
-                context: "heartbeat_cycle",
-                message: "active run discord:channel:a/run-1 has last_progress_at_epoch_ms 2000 in the future relative to now_epoch_ms 1000".to_string(),
-            }
-        );
 
-        let mut backend_clock_skew_runtime = FakeRuntime::new();
-        backend_clock_skew_runtime.list_backend_heartbeats_result = Ok(vec![backend_heartbeat(
+        let outcome = execute_heartbeat_cycle(&mut runtime, &policy(), 1_000)
+            .expect("slightly future last_progress should be clamped");
+
+        assert_no_actions(&outcome);
+        assert!(runtime.cancel_calls.is_empty());
+    }
+
+    #[test]
+    fn heartbeat_cycle_tolerates_backend_timestamp_in_future() {
+        let mut runtime = FakeRuntime::new();
+        runtime.list_backend_heartbeats_result = Ok(vec![backend_heartbeat(
             BackendKind::Claude,
             true,
             false,
-            2_000,
+            1_001,
         )]);
-        let backend_clock_skew_error =
-            execute_heartbeat_cycle(&mut backend_clock_skew_runtime, &policy(), 1_000)
-                .expect_err("backend timestamps cannot be in the future");
-        assert_eq!(
-            backend_clock_skew_error,
-            CrabError::InvariantViolation {
-                context: "heartbeat_cycle",
-                message: "backend Claude has last_healthy_at_epoch_ms 2000 in the future relative to now_epoch_ms 1000".to_string(),
-            }
-        );
 
-        let mut dispatcher_clock_skew_runtime = FakeRuntime::new();
-        dispatcher_clock_skew_runtime.dispatcher_heartbeat_result =
-            Ok(dispatcher_heartbeat(0, 0, 2_000));
-        let dispatcher_clock_skew_error =
-            execute_heartbeat_cycle(&mut dispatcher_clock_skew_runtime, &policy(), 1_000)
-                .expect_err("dispatcher timestamps cannot be in the future");
-        assert_eq!(
-            dispatcher_clock_skew_error,
-            CrabError::InvariantViolation {
-                context: "heartbeat_cycle",
-                message:
-                    "dispatcher has last_dispatch_at_epoch_ms 2000 in the future relative to now_epoch_ms 1000"
-                        .to_string(),
-            }
-        );
+        let outcome = execute_heartbeat_cycle(&mut runtime, &policy(), 1_000)
+            .expect("future backend heartbeat should be clamped");
+
+        assert_no_actions(&outcome);
+        assert!(runtime.restart_calls.is_empty());
+    }
+
+    #[test]
+    fn heartbeat_cycle_tolerates_dispatcher_timestamp_in_future() {
+        let mut runtime = FakeRuntime::new();
+        runtime.dispatcher_heartbeat_result = Ok(dispatcher_heartbeat(1, 0, 1_001));
+
+        let outcome = execute_heartbeat_cycle(&mut runtime, &policy(), 1_000)
+            .expect("future dispatcher timestamp should be clamped");
+
+        assert_no_actions(&outcome);
+        assert_eq!(runtime.nudge_call_count, 0);
     }
 
     #[test]

@@ -3,8 +3,9 @@ use std::collections::BTreeMap;
 use crab_core::{
     execute_heartbeat_cycle, execute_startup_reconciliation, ActiveRunHeartbeat, BackendHeartbeat,
     BackendKind, CrabError, CrabResult, DispatcherHeartbeat, EventEnvelope, EventKind, EventSource,
-    HeartbeatOutcome, HeartbeatPolicy, HeartbeatRuntime, LaneState, LogicalSession, Run, RunStatus,
-    StartupReconciliationOutcome, StartupReconciliationRuntime,
+    HeartbeatComponent, HeartbeatEvent, HeartbeatOutcome, HeartbeatPolicy, HeartbeatRuntime,
+    LaneState, LogicalSession, Run, RunStatus, StartupReconciliationOutcome,
+    StartupReconciliationRuntime,
 };
 
 use crate::{compose_runtime_with_queue_limit, AppComposition, DEFAULT_LANE_QUEUE_LIMIT};
@@ -160,7 +161,13 @@ pub fn run_heartbeat_if_due(
         now_epoch_ms,
         last_dispatch_at_epoch_ms: &mut loop_state.last_dispatch_at_epoch_ms,
     };
-    let outcome = execute_heartbeat_cycle(&mut runtime, &policy, now_epoch_ms)?;
+    let recovery_events = runtime.reconcile_run_lane_mismatches()?;
+    let mut outcome = execute_heartbeat_cycle(&mut runtime, &policy, now_epoch_ms)?;
+    if !recovery_events.is_empty() {
+        let mut events = recovery_events;
+        events.extend(outcome.events);
+        outcome.events = events;
+    }
     loop_state.advance_after_due_tick(now_epoch_ms)?;
     Ok(Some(outcome))
 }
@@ -256,49 +263,127 @@ struct HeartbeatRuntimeAdapter<'a> {
     last_dispatch_at_epoch_ms: &'a mut u64,
 }
 
+impl HeartbeatRuntimeAdapter<'_> {
+    fn reconcile_run_lane_mismatches(&mut self) -> CrabResult<Vec<HeartbeatEvent>> {
+        let sessions = load_sessions(&self.composition.state_stores.session_store)?;
+        let mut events = Vec::new();
+
+        for mut session in sessions {
+            let runs =
+                load_runs_for_session(&self.composition.state_stores.run_store, &session.id)?;
+            let running = running_runs(&runs);
+
+            if running.len() > 1 {
+                for run in running {
+                    self.cancel_run_for_recovery(
+                        &run,
+                        "heartbeat_recovered_multiple_running_runs",
+                    )?;
+                    events.push(HeartbeatEvent {
+                        component: HeartbeatComponent::Run,
+                        action: "recovered_multiple_running_runs".to_string(),
+                        logical_session_id: Some(session.id.clone()),
+                        run_id: Some(run.id),
+                        backend: None,
+                    });
+                }
+                self.reset_session_lane_to_idle(&mut session)?;
+                continue;
+            }
+
+            let running = running.into_iter().next();
+            match (session.lane_state, running) {
+                (LaneState::Idle | LaneState::Rotating, Some(run)) => {
+                    self.cancel_run_for_recovery(&run, "heartbeat_recovered_orphaned_running_run")?;
+                    self.reset_session_lane_to_idle(&mut session)?;
+                    events.push(HeartbeatEvent {
+                        component: HeartbeatComponent::Run,
+                        action: "recovered_orphaned_running_run".to_string(),
+                        logical_session_id: Some(session.id.clone()),
+                        run_id: Some(run.id),
+                        backend: None,
+                    });
+                }
+                (LaneState::Running | LaneState::Cancelling, None) => {
+                    self.reset_session_lane_to_idle(&mut session)?;
+                    events.push(HeartbeatEvent {
+                        component: HeartbeatComponent::Run,
+                        action: "repaired_running_lane_without_running_run".to_string(),
+                        logical_session_id: Some(session.id),
+                        run_id: None,
+                        backend: None,
+                    });
+                }
+                _ => {}
+            }
+        }
+
+        Ok(events)
+    }
+
+    fn cancel_run_for_recovery(&mut self, run: &Run, reason: &str) -> CrabResult<()> {
+        let mut updated_run = run.clone();
+        updated_run.status = RunStatus::Cancelled;
+        updated_run.completed_at_epoch_ms = Some(self.now_epoch_ms);
+        self.composition
+            .state_stores
+            .run_store
+            .upsert_run(&updated_run)?;
+
+        let mut payload = BTreeMap::new();
+        payload.insert("state".to_string(), "cancelled".to_string());
+        payload.insert("reason".to_string(), reason.to_string());
+        payload.insert("previous_status".to_string(), "running".to_string());
+        append_runtime_event(
+            &self.composition.state_stores.event_store,
+            &updated_run,
+            EventKind::RunState,
+            payload,
+            EventSource::System,
+            self.now_epoch_ms,
+            "heartbeat_reconcile_state",
+        )
+    }
+
+    fn reset_session_lane_to_idle(&mut self, session: &mut LogicalSession) -> CrabResult<()> {
+        session.active_physical_session_id = None;
+        session.lane_state = LaneState::Idle;
+        session.last_activity_epoch_ms = self.now_epoch_ms;
+        session.queued_run_count =
+            queued_run_count_for_session(&self.composition.state_stores.run_store, &session.id)?
+                as u32;
+        self.composition
+            .state_stores
+            .session_store
+            .upsert_session(session)
+    }
+}
+
 impl HeartbeatRuntime for HeartbeatRuntimeAdapter<'_> {
     fn list_active_runs(&self) -> CrabResult<Vec<ActiveRunHeartbeat>> {
         let sessions = load_sessions(&self.composition.state_stores.session_store)?;
         let mut active = Vec::new();
 
         for session in sessions {
+            if !matches!(
+                session.lane_state,
+                LaneState::Running | LaneState::Cancelling
+            ) {
+                continue;
+            }
+
             let runs =
                 load_runs_for_session(&self.composition.state_stores.run_store, &session.id)?;
-            let running = single_running_run(&session.id, &runs)?;
-
-            match (session.lane_state, running) {
-                (LaneState::Running | LaneState::Cancelling, Some(run)) => {
-                    let last_progress_at_epoch_ms = last_progress_at_epoch_ms(
-                        &self.composition.state_stores.event_store,
-                        &run,
-                    )?;
-                    active.push(ActiveRunHeartbeat {
-                        logical_session_id: session.id,
-                        run_id: run.id,
-                        lane_state: session.lane_state,
-                        backend: run.profile.resolved_profile.backend,
-                        last_progress_at_epoch_ms,
-                    });
-                }
-                (LaneState::Running | LaneState::Cancelling, None) => {
-                    return Err(CrabError::InvariantViolation {
-                        context: "heartbeat_runtime_list_active_runs",
-                        message: format!(
-                            "session {} is {:?} but has no running run",
-                            session.id, session.lane_state
-                        ),
-                    });
-                }
-                (LaneState::Idle | LaneState::Rotating, Some(run)) => {
-                    return Err(CrabError::InvariantViolation {
-                        context: "heartbeat_runtime_list_active_runs",
-                        message: format!(
-                            "run {}/{} is running while lane state is {:?}",
-                            session.id, run.id, session.lane_state
-                        ),
-                    });
-                }
-                (LaneState::Idle | LaneState::Rotating, None) => {}
+            for run in running_runs(&runs) {
+                let last_progress_at_epoch_ms =
+                    last_progress_at_epoch_ms(&self.composition.state_stores.event_store, &run)?;
+                active.push(ActiveRunHeartbeat {
+                    logical_session_id: session.id.clone(),
+                    run_id: run.id,
+                    lane_state: session.lane_state,
+                    backend: run.profile.resolved_profile.backend,
+                    last_progress_at_epoch_ms,
+                });
             }
         }
 
@@ -527,24 +612,11 @@ fn require_run(
         })
 }
 
-fn single_running_run(logical_session_id: &str, runs: &[Run]) -> CrabResult<Option<Run>> {
-    let mut running: Option<Run> = None;
-    for run in runs {
-        if run.status != RunStatus::Running || run.completed_at_epoch_ms.is_some() {
-            continue;
-        }
-        if let Some(existing) = running.as_ref() {
-            return Err(CrabError::InvariantViolation {
-                context: "heartbeat_runtime_list_active_runs",
-                message: format!(
-                    "session {logical_session_id} has multiple running runs: {} and {}",
-                    existing.id, run.id
-                ),
-            });
-        }
-        running = Some(run.clone());
-    }
-    Ok(running)
+fn running_runs(runs: &[Run]) -> Vec<Run> {
+    runs.iter()
+        .filter(|run| run.status == RunStatus::Running && run.completed_at_epoch_ms.is_none())
+        .cloned()
+        .collect()
 }
 
 fn last_progress_at_epoch_ms(event_store: &crab_store::EventStore, run: &Run) -> CrabResult<u64> {
@@ -1221,7 +1293,7 @@ mod tests {
     }
 
     #[test]
-    fn heartbeat_runtime_reports_invalid_active_run_invariants() {
+    fn run_heartbeat_if_due_repairs_running_lane_without_running_run() {
         let workspace = TempWorkspace::new("maintenance", "heartbeat-invariants");
         let config = runtime_config_for_workspace_with_lanes(&workspace.path, 1);
         let mut composition = compose_runtime(&config, "999").expect("composition should succeed");
@@ -1234,18 +1306,31 @@ mod tests {
             .expect("session should persist");
 
         let mut state = HeartbeatLoopState::new(1, 1).expect("state should initialize");
-        let error = run_heartbeat_if_due(&mut composition, &mut state, 100_000)
-            .expect_err("missing running run should fail");
+        let outcome = run_heartbeat_if_due(&mut composition, &mut state, 100_000)
+            .expect("missing running run should be repaired")
+            .expect("heartbeat should run");
+        assert!(outcome.cancelled_runs.is_empty());
+        assert!(outcome.hard_stopped_runs.is_empty());
+        assert_eq!(outcome.events.len(), 1);
         assert_eq!(
-            error,
-            CrabError::InvariantViolation {
-                context: "heartbeat_runtime_list_active_runs",
-                message: format!(
-                    "session {} is Running but has no running run",
-                    logical_session_id
-                ),
-            }
+            outcome.events[0].action,
+            "repaired_running_lane_without_running_run"
         );
+        assert_eq!(
+            outcome.events[0].logical_session_id.as_deref(),
+            Some(logical_session_id)
+        );
+        assert_eq!(outcome.events[0].run_id, None);
+
+        let session = composition
+            .state_stores
+            .session_store
+            .get_session(logical_session_id)
+            .expect("session lookup should succeed")
+            .expect("session should exist");
+        assert_eq!(session.lane_state, LaneState::Idle);
+        assert_eq!(session.queued_run_count, 0);
+        assert_eq!(session.active_physical_session_id, None);
     }
 
     #[test]
@@ -1350,7 +1435,7 @@ mod tests {
     }
 
     #[test]
-    fn heartbeat_rejects_running_run_when_lane_is_idle() {
+    fn run_heartbeat_if_due_recovers_idle_lane_with_running_run() {
         let workspace = TempWorkspace::new("maintenance", "heartbeat-idle-running-mismatch");
         let config = runtime_config_for_workspace_with_lanes(&workspace.path, 1);
         let mut composition = compose_runtime(&config, "999").expect("composition should succeed");
@@ -1372,18 +1457,118 @@ mod tests {
 
         let mut state =
             HeartbeatLoopState::new(1, 1_739_173_300_000).expect("state should initialize");
-        let error = run_heartbeat_if_due(&mut composition, &mut state, 1_739_173_400_000)
-            .expect_err("idle/running mismatch should fail");
+        let outcome = run_heartbeat_if_due(&mut composition, &mut state, 1_739_173_400_000)
+            .expect("idle/running mismatch should be recovered")
+            .expect("heartbeat should run");
+        assert!(outcome.cancelled_runs.is_empty());
+        assert!(outcome.hard_stopped_runs.is_empty());
+        assert_eq!(outcome.events.len(), 1);
+        assert_eq!(outcome.events[0].action, "recovered_orphaned_running_run");
         assert_eq!(
-            error,
-            CrabError::InvariantViolation {
-                context: "heartbeat_runtime_list_active_runs",
-                message: format!(
-                    "run {}/{} is running while lane state is Idle",
-                    logical_session_id, run_id
-                ),
-            }
+            outcome.events[0].logical_session_id.as_deref(),
+            Some(logical_session_id)
         );
+        assert_eq!(outcome.events[0].run_id.as_deref(), Some(run_id));
+
+        let run = composition
+            .state_stores
+            .run_store
+            .get_run(logical_session_id, run_id)
+            .expect("run lookup should succeed")
+            .expect("run should exist");
+        assert_eq!(run.status, RunStatus::Cancelled);
+        assert_eq!(run.completed_at_epoch_ms, Some(1_739_173_400_000));
+
+        let session = composition
+            .state_stores
+            .session_store
+            .get_session(logical_session_id)
+            .expect("session lookup should succeed")
+            .expect("session should exist");
+        assert_eq!(session.lane_state, LaneState::Idle);
+        assert_eq!(session.active_physical_session_id, None);
+
+        let events = composition
+            .state_stores
+            .event_store
+            .replay_run(logical_session_id, run_id)
+            .expect("events should replay");
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].kind, crab_core::EventKind::RunState);
+        assert_eq!(
+            events[0].payload.get("reason").map(String::as_str),
+            Some("heartbeat_recovered_orphaned_running_run")
+        );
+    }
+
+    #[test]
+    fn run_heartbeat_if_due_recovers_multiple_running_runs() {
+        let workspace = TempWorkspace::new("maintenance", "heartbeat-multiple-running-recovery");
+        let config = runtime_config_for_workspace_with_lanes(&workspace.path, 1);
+        let mut composition = compose_runtime(&config, "999").expect("composition should succeed");
+        let logical_session_id = "discord:channel:multi";
+        let run_a = "run-a";
+        let run_b = "run-b";
+
+        composition
+            .state_stores
+            .session_store
+            .upsert_session(&running_session(logical_session_id, 1_739_173_300_000))
+            .expect("session should persist");
+        composition
+            .state_stores
+            .run_store
+            .upsert_run(&running_run(logical_session_id, run_a, 1_739_173_200_000))
+            .expect("run a should persist");
+        composition
+            .state_stores
+            .run_store
+            .upsert_run(&running_run(logical_session_id, run_b, 1_739_173_200_100))
+            .expect("run b should persist");
+
+        let mut state =
+            HeartbeatLoopState::new(1, 1_739_173_300_000).expect("state should initialize");
+        let outcome = run_heartbeat_if_due(&mut composition, &mut state, 1_739_173_400_000)
+            .expect("duplicate running runs should be recovered")
+            .expect("heartbeat should run");
+        assert!(outcome.cancelled_runs.is_empty());
+        assert!(outcome.hard_stopped_runs.is_empty());
+        assert_eq!(outcome.events.len(), 2);
+        assert!(outcome
+            .events
+            .iter()
+            .all(|event| event.action == "recovered_multiple_running_runs"));
+
+        for run_id in [run_a, run_b] {
+            let run = composition
+                .state_stores
+                .run_store
+                .get_run(logical_session_id, run_id)
+                .expect("run lookup should succeed")
+                .expect("run should exist");
+            assert_eq!(run.status, RunStatus::Cancelled);
+            assert_eq!(run.completed_at_epoch_ms, Some(1_739_173_400_000));
+
+            let events = composition
+                .state_stores
+                .event_store
+                .replay_run(logical_session_id, run_id)
+                .expect("events should replay");
+            assert_eq!(events.len(), 1);
+            assert_eq!(
+                events[0].payload.get("reason").map(String::as_str),
+                Some("heartbeat_recovered_multiple_running_runs")
+            );
+        }
+
+        let session = composition
+            .state_stores
+            .session_store
+            .get_session(logical_session_id)
+            .expect("session lookup should succeed")
+            .expect("session should exist");
+        assert_eq!(session.lane_state, LaneState::Idle);
+        assert_eq!(session.active_physical_session_id, None);
     }
 
     #[test]
@@ -1491,14 +1676,11 @@ mod tests {
                 now_epoch_ms: 1,
                 last_dispatch_at_epoch_ms: &mut dispatch_clock,
             };
-            let error = runtime
+            let active_runs = runtime
                 .list_active_runs()
-                .expect_err("duplicate running runs should fail");
-            assert!(
-                matches!(error, CrabError::InvariantViolation { context, message }
-                    if context == "heartbeat_runtime_list_active_runs"
-                        && message.contains("multiple running runs"))
-            );
+                .expect("duplicate running runs should be listed without invariant errors");
+            let run_ids: Vec<String> = active_runs.into_iter().map(|run| run.run_id).collect();
+            assert_eq!(run_ids, vec!["run-a".to_string(), "run-b".to_string()]);
         }
 
         {
@@ -2148,31 +2330,21 @@ mod tests {
     }
 
     #[test]
-    fn single_running_run_skips_non_running_entries_and_rejects_duplicates() {
+    fn running_runs_filters_to_active_entries() {
         let logical_session_id = "discord:channel:single-running";
         let mut queued = running_run(logical_session_id, "run-queued", 1_739_173_200_000);
         queued.status = RunStatus::Queued;
         queued.started_at_epoch_ms = None;
         let mut completed = running_run(logical_session_id, "run-completed", 1_739_173_200_100);
         completed.completed_at_epoch_ms = Some(1_739_173_300_000);
-        let none = super::single_running_run(logical_session_id, &[queued, completed])
-            .expect("non-running entries should be skipped");
-        assert_eq!(none, None);
+        let none = super::running_runs(&[queued, completed]);
+        assert!(none.is_empty());
 
         let first = running_run(logical_session_id, "run-a", 1_739_173_200_200);
         let second = running_run(logical_session_id, "run-b", 1_739_173_200_300);
-        let error = super::single_running_run(logical_session_id, &[first, second])
-            .expect_err("duplicate running runs should fail");
-        assert_eq!(
-            error,
-            CrabError::InvariantViolation {
-                context: "heartbeat_runtime_list_active_runs",
-                message: format!(
-                    "session {} has multiple running runs: run-a and run-b",
-                    logical_session_id
-                ),
-            }
-        );
+        let running = super::running_runs(&[first, second]);
+        let run_ids: Vec<String> = running.into_iter().map(|run| run.id).collect();
+        assert_eq!(run_ids, vec!["run-a".to_string(), "run-b".to_string()]);
     }
 
     #[test]
