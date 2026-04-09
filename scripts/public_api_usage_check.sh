@@ -6,7 +6,10 @@ if ! command -v rg >/dev/null 2>&1; then
   exit 2
 fi
 
-mapfile -t defs < <(rg -n '^[[:space:]]*pub (async )?fn ([A-Za-z0-9_]+)' crates --glob '*.rs')
+defs=()
+while IFS= read -r def; do
+  defs+=("$def")
+done < <(rg -n '^[[:space:]]*pub (async )?fn ([A-Za-z0-9_]+)' crates --glob '*.rs')
 
 if [[ ${#defs[@]} -eq 0 ]]; then
   echo "public-api-check: no pub functions found"
