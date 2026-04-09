@@ -321,6 +321,7 @@ impl EventStore {
             "event_append_open",
             &run_log_path,
         )?;
+        // Keep on one line: multi-line call sites can produce llvm-cov line-mapping gaps.
         write_all_with_context(
             &mut file,
             line.as_bytes(),
