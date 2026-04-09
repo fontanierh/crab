@@ -710,8 +710,8 @@ mod tests {
     };
     use crate::composition::compose_runtime;
     use crate::test_support::{
-        event_log_path, hex_encode, replace_path_with_directory, run_file_path, runtime_config_for_workspace_with_lanes,
-        session_file_path, state_root, TempWorkspace,
+        event_log_path, hex_encode, replace_path_with_directory, run_file_path,
+        runtime_config_for_workspace_with_lanes, session_file_path, state_root, TempWorkspace,
     };
 
     fn sample_profile() -> InferenceProfile {

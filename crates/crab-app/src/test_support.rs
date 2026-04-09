@@ -90,22 +90,14 @@ pub(crate) fn session_file_path(state_root: &Path, logical_session_id: &str) -> 
     ))
 }
 
-pub(crate) fn run_file_path(
-    state_root: &Path,
-    logical_session_id: &str,
-    run_id: &str,
-) -> PathBuf {
+pub(crate) fn run_file_path(state_root: &Path, logical_session_id: &str, run_id: &str) -> PathBuf {
     state_root
         .join("runs")
         .join(hex_encode(logical_session_id.as_bytes()))
         .join(format!("{}.json", hex_encode(run_id.as_bytes())))
 }
 
-pub(crate) fn event_log_path(
-    state_root: &Path,
-    logical_session_id: &str,
-    run_id: &str,
-) -> PathBuf {
+pub(crate) fn event_log_path(state_root: &Path, logical_session_id: &str, run_id: &str) -> PathBuf {
     state_root
         .join("events")
         .join(hex_encode(logical_session_id.as_bytes()))
