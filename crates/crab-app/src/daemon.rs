@@ -716,6 +716,19 @@ fn build_claude_session_id(logical_session_id: &str) -> String {
     )
 }
 
+#[cfg(any(test, not(coverage)))]
+fn append_claude_cli_base_args(command: &mut std::process::Command) {
+    command
+        .arg("--print")
+        .arg("--verbose")
+        .arg("--output-format")
+        .arg("stream-json")
+        .arg("--include-partial-messages")
+        .arg("--dangerously-skip-permissions")
+        .arg("--disallowed-tools")
+        .arg("Agent");
+}
+
 #[cfg(not(any(test, coverage)))]
 fn run_claude_turn(
     backend_session_id: &str,
@@ -730,13 +743,7 @@ fn run_claude_turn(
     use std::sync::mpsc as std_mpsc;
 
     let mut command = std::process::Command::new("claude");
-    command
-        .arg("--print")
-        .arg("--verbose")
-        .arg("--output-format")
-        .arg("stream-json")
-        .arg("--include-partial-messages")
-        .arg("--dangerously-skip-permissions");
+    append_claude_cli_base_args(&mut command);
     if let Ok(workspace_root) = std::env::var("CRAB_WORKSPACE_ROOT") {
         let trimmed = workspace_root.trim();
         if !trimmed.is_empty() {
@@ -3590,6 +3597,21 @@ mod tests {
         let max_date = epoch_ms_to_yyyy_mm_dd(u64::MAX)
             .expect("maximum epoch milliseconds should still map to a calendar day");
         assert_eq!(max_date, "584556019-04-03".to_string());
+    }
+
+    #[test]
+    fn claude_cli_base_args_disable_agent_tool() {
+        let mut command = std::process::Command::new("claude");
+        super::append_claude_cli_base_args(&mut command);
+
+        let args = command
+            .get_args()
+            .map(|value| value.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+
+        assert!(args
+            .windows(2)
+            .any(|window| window == ["--disallowed-tools", "Agent"]));
     }
 
     #[test]
