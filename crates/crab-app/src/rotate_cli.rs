@@ -1,22 +1,26 @@
 use std::io::{Read, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crab_core::{parse_checkpoint_turn_document, write_pending_rotation, PendingRotation};
 
 use crate::cli_support;
 
 const USAGE: &str = "Usage:
-  crab-rotate --state-dir <path> --checkpoint <json>
-  crab-rotate --state-dir <path> --checkpoint-file <path>
-  cat checkpoint.json | crab-rotate --state-dir <path>
+  crab-rotate --state-dir <path> --checkpoint <json> [--force]
+  crab-rotate --state-dir <path> --checkpoint-file <path> [--force]
+  cat checkpoint.json | crab-rotate --state-dir <path> [--force]
 
 Flags:
   --state-dir        path to the Crab state directory (e.g. /path/to/workspace/state)
   --checkpoint       checkpoint JSON string
   --checkpoint-file  path to JSON file containing checkpoint
+  --force            bypass the 300-second rotation cooldown
   --help             show this help
 
 If neither --checkpoint nor --checkpoint-file is given, reads JSON from stdin.";
+
+const LAST_ROTATE_MARKER_FILE_NAME: &str = ".last_rotate_epoch_ms";
+const ROTATION_COOLDOWN_SECONDS: u128 = 300;
 
 pub fn run_rotate_cli<I, S>(
     args: I,
@@ -44,9 +48,22 @@ fn execute(args: &[String], stdin: &mut dyn Read) -> Result<PathBuf, String> {
     let mut state_dir: Option<String> = None;
     let mut checkpoint_json: Option<String> = None;
     let mut checkpoint_file: Option<String> = None;
+    let mut force = false;
+
+    let filtered: Vec<String> = args
+        .iter()
+        .filter(|arg| match arg.as_str() {
+            "--force" => {
+                force = true;
+                false
+            }
+            _ => true,
+        })
+        .cloned()
+        .collect();
 
     cli_support::parse_flag_pairs(
-        args,
+        &filtered,
         |flag| matches!(flag, "--state-dir" | "--checkpoint" | "--checkpoint-file"),
         |flag, value| {
             let slot = match flag {
@@ -62,6 +79,26 @@ fn execute(args: &[String], stdin: &mut dyn Read) -> Result<PathBuf, String> {
 
     if checkpoint_json.is_some() && checkpoint_file.is_some() {
         return Err("cannot use both --checkpoint and --checkpoint-file".to_string());
+    }
+
+    let state_path = PathBuf::from(&state_dir);
+
+    if !force {
+        let marker_path = rotation_marker_path(&state_path);
+        if let Ok(contents) = std::fs::read_to_string(&marker_path) {
+            if let Ok(last_ms) = contents.trim().parse::<u128>() {
+                let now_ms = current_epoch_ms();
+                if now_ms > last_ms {
+                    let elapsed_s = (now_ms - last_ms) / 1000;
+                    if elapsed_s < ROTATION_COOLDOWN_SECONDS {
+                        return Err(format!(
+                            "rotation cooldown: last rotation was {}s ago (minimum {}s). Use --force to override.",
+                            elapsed_s, ROTATION_COOLDOWN_SECONDS
+                        ));
+                    }
+                }
+            }
+        }
     }
 
     let raw_json = if let Some(json) = checkpoint_json {
@@ -84,7 +121,25 @@ fn execute(args: &[String], stdin: &mut dyn Read) -> Result<PathBuf, String> {
         parse_checkpoint_turn_document(&raw_json).map_err(|error| error.to_string())?;
 
     let rotation = PendingRotation { checkpoint };
-    write_pending_rotation(&PathBuf::from(state_dir), &rotation).map_err(|error| error.to_string())
+    let path = write_pending_rotation(&state_path, &rotation).map_err(|error| error.to_string())?;
+    stamp_rotation_marker(&state_path);
+    Ok(path)
+}
+
+fn rotation_marker_path(state_dir: &Path) -> PathBuf {
+    state_dir.join(LAST_ROTATE_MARKER_FILE_NAME)
+}
+
+fn current_epoch_ms() -> u128 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("system clock before epoch")
+        .as_millis()
+}
+
+fn stamp_rotation_marker(state_dir: &Path) {
+    let marker_path = rotation_marker_path(state_dir);
+    let _ = std::fs::write(&marker_path, current_epoch_ms().to_string());
 }
 
 #[cfg(test)]
@@ -95,7 +150,9 @@ mod tests {
 
     use crab_core::PENDING_ROTATIONS_DIR_NAME;
 
-    use super::run_rotate_cli;
+    use super::{
+        current_epoch_ms, rotation_marker_path, run_rotate_cli, ROTATION_COOLDOWN_SECONDS,
+    };
     use crate::cli_support::test_helpers::FailWriter;
     use crate::test_support::TempWorkspace;
 
@@ -151,12 +208,30 @@ mod tests {
         assert!(PathBuf::from(printed_path).exists());
     }
 
+    fn marker_path(workspace: &TempWorkspace) -> PathBuf {
+        rotation_marker_path(&workspace.path)
+    }
+
+    fn write_marker(workspace: &TempWorkspace, timestamp_ms: u128) -> String {
+        fs::create_dir_all(&workspace.path).expect("dir should be creatable");
+        fs::write(marker_path(workspace), timestamp_ms.to_string())
+            .expect("marker write should succeed");
+        workspace.path.to_string_lossy().to_string()
+    }
+
+    fn write_marker_contents(workspace: &TempWorkspace, contents: &str) -> String {
+        fs::create_dir_all(&workspace.path).expect("dir should be creatable");
+        fs::write(marker_path(workspace), contents).expect("marker write should succeed");
+        workspace.path.to_string_lossy().to_string()
+    }
+
     #[test]
     fn help_flag_prints_usage() {
         let (status, stdout, stderr) = run(&["crab-rotate", "--help"]);
         assert_eq!(status, 0);
         assert!(stdout.contains("Usage:"));
         assert!(stdout.contains("crab-rotate"));
+        assert!(stdout.contains("--force"));
         assert!(stderr.is_empty());
     }
 
@@ -165,6 +240,7 @@ mod tests {
         let (status, stdout, stderr) = run(&["crab-rotate", "-h"]);
         assert_eq!(status, 0);
         assert!(stdout.contains("Usage:"));
+        assert!(stdout.contains("--force"));
         assert!(stderr.is_empty());
     }
 
@@ -210,6 +286,134 @@ mod tests {
             &["crab-rotate", "--state-dir", &state_dir],
             valid_checkpoint_json(),
         );
+        assert_success_wrote_rotation(status, &stdout, &stderr);
+    }
+
+    #[test]
+    fn auto_stamps_marker_on_success() {
+        let temp = TempWorkspace::new("rotate-cli", "marker-success");
+        let state_dir = temp.path.to_string_lossy().to_string();
+        let before_ms = current_epoch_ms();
+
+        let (status, stdout, stderr) = run(&[
+            "crab-rotate",
+            "--state-dir",
+            &state_dir,
+            "--checkpoint",
+            valid_checkpoint_json(),
+        ]);
+        assert_success_wrote_rotation(status, &stdout, &stderr);
+
+        let marker_contents =
+            fs::read_to_string(marker_path(&temp)).expect("marker file should be written");
+        let stamped_ms = marker_contents
+            .trim()
+            .parse::<u128>()
+            .expect("marker should contain epoch milliseconds");
+        let after_ms = current_epoch_ms();
+        assert!(
+            stamped_ms >= before_ms,
+            "stamped_ms={stamped_ms} before_ms={before_ms}"
+        );
+        assert!(
+            stamped_ms <= after_ms,
+            "stamped_ms={stamped_ms} after_ms={after_ms}"
+        );
+    }
+
+    #[test]
+    fn cooldown_blocks_rapid_rotation() {
+        let temp = TempWorkspace::new("rotate-cli", "cooldown-block");
+        let state_dir = write_marker(&temp, current_epoch_ms());
+
+        let (status, _, stderr) = run(&[
+            "crab-rotate",
+            "--state-dir",
+            &state_dir,
+            "--checkpoint",
+            valid_checkpoint_json(),
+        ]);
+        assert_eq!(status, 1);
+        assert!(stderr.contains("rotation cooldown"));
+        assert!(stderr.contains(&format!("minimum {}s", ROTATION_COOLDOWN_SECONDS)));
+    }
+
+    #[test]
+    fn force_flag_bypasses_cooldown() {
+        let temp = TempWorkspace::new("rotate-cli", "force-cooldown");
+        let state_dir = write_marker(&temp, current_epoch_ms());
+
+        let (status, stdout, stderr) = run(&[
+            "crab-rotate",
+            "--state-dir",
+            &state_dir,
+            "--checkpoint",
+            valid_checkpoint_json(),
+            "--force",
+        ]);
+        assert_success_wrote_rotation(status, &stdout, &stderr);
+    }
+
+    #[test]
+    fn stale_marker_allows_rotation() {
+        let temp = TempWorkspace::new("rotate-cli", "stale-marker");
+        let stale_ms = current_epoch_ms() - ((ROTATION_COOLDOWN_SECONDS + 1) * 1000);
+        let state_dir = write_marker(&temp, stale_ms);
+
+        let (status, stdout, stderr) = run(&[
+            "crab-rotate",
+            "--state-dir",
+            &state_dir,
+            "--checkpoint",
+            valid_checkpoint_json(),
+        ]);
+        assert_success_wrote_rotation(status, &stdout, &stderr);
+    }
+
+    #[test]
+    fn future_marker_allows_rotation() {
+        let temp = TempWorkspace::new("rotate-cli", "future-marker");
+        let future_ms = current_epoch_ms() + ((ROTATION_COOLDOWN_SECONDS + 1) * 1000);
+        let state_dir = write_marker(&temp, future_ms);
+
+        let (status, stdout, stderr) = run(&[
+            "crab-rotate",
+            "--state-dir",
+            &state_dir,
+            "--checkpoint",
+            valid_checkpoint_json(),
+        ]);
+        assert_success_wrote_rotation(status, &stdout, &stderr);
+    }
+
+    #[test]
+    fn malformed_marker_allows_rotation() {
+        let temp = TempWorkspace::new("rotate-cli", "bad-marker");
+        let state_dir = write_marker_contents(&temp, "not-a-number");
+
+        let (status, stdout, stderr) = run(&[
+            "crab-rotate",
+            "--state-dir",
+            &state_dir,
+            "--checkpoint",
+            valid_checkpoint_json(),
+        ]);
+        assert_success_wrote_rotation(status, &stdout, &stderr);
+    }
+
+    #[test]
+    fn missing_marker_allows_rotation() {
+        let temp = TempWorkspace::new("rotate-cli", "missing-marker");
+        let state_dir = temp.path.to_string_lossy().to_string();
+        assert!(!marker_path(&temp).exists());
+
+        let (status, stdout, stderr) = run(&[
+            "crab-rotate",
+            "--state-dir",
+            &state_dir,
+            "--checkpoint",
+            valid_checkpoint_json(),
+        ]);
         assert_success_wrote_rotation(status, &stdout, &stderr);
     }
 

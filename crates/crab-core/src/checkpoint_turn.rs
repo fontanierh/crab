@@ -12,9 +12,13 @@ pub struct CheckpointTurnArtifact {
 #[serde(deny_unknown_fields)]
 pub struct CheckpointTurnDocument {
     pub summary: String,
+    #[serde(default)]
     pub decisions: Vec<String>,
+    #[serde(default)]
     pub open_questions: Vec<String>,
+    #[serde(default)]
     pub next_actions: Vec<String>,
+    #[serde(default)]
     pub artifacts: Vec<CheckpointTurnArtifact>,
 }
 
@@ -99,6 +103,34 @@ mod tests {
         let parsed =
             parse_checkpoint_turn_document(&output).expect("whitespace should still parse");
         assert_eq!(parsed.summary, "Session summary");
+    }
+
+    #[test]
+    fn parses_summary_only_checkpoint() {
+        let parsed = parse_checkpoint_turn_document(r#"{"summary":"Idle watchdog rotation"}"#)
+            .expect("summary-only checkpoint should parse");
+
+        assert_eq!(parsed.summary, "Idle watchdog rotation");
+        assert!(parsed.decisions.is_empty());
+        assert!(parsed.open_questions.is_empty());
+        assert!(parsed.next_actions.is_empty());
+        assert!(parsed.artifacts.is_empty());
+    }
+
+    #[test]
+    fn parses_partial_fields() {
+        let parsed = parse_checkpoint_turn_document(
+            r#"{"summary":"Rotation ready","decisions":["Rotate now"],"artifacts":[{"path":"notes.md","note":"captured"}]}"#,
+        )
+        .expect("partial checkpoint should parse");
+
+        assert_eq!(parsed.summary, "Rotation ready");
+        assert_eq!(parsed.decisions, vec!["Rotate now".to_string()]);
+        assert!(parsed.open_questions.is_empty());
+        assert!(parsed.next_actions.is_empty());
+        assert_eq!(parsed.artifacts.len(), 1);
+        assert_eq!(parsed.artifacts[0].path, "notes.md");
+        assert_eq!(parsed.artifacts[0].note, "captured");
     }
 
     #[test]
