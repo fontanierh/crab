@@ -88,7 +88,7 @@ fn execute(args: &[String], stdin: &mut dyn Read) -> Result<PathBuf, String> {
         if let Ok(contents) = std::fs::read_to_string(&marker_path) {
             if let Ok(last_ms) = contents.trim().parse::<u128>() {
                 let now_ms = current_epoch_ms();
-                if now_ms > last_ms {
+                if now_ms >= last_ms {
                     let elapsed_s = (now_ms - last_ms) / 1000;
                     if elapsed_s < ROTATION_COOLDOWN_SECONDS {
                         return Err(format!(
