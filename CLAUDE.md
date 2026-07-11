@@ -4,8 +4,8 @@ Concise agent guide for this repository. See AGENTS.md for complete project rule
 
 ## Quick Start
 - Build: `cargo build --workspace`
-- Fast validation: `make quick` (~13s)
-- Full quality gate: `make quality` (~20s)
+- Fast validation: `make quick`
+- Full quality gate: `make quality`
 - Tests only: `make test`
 
 ## Repo Map
@@ -17,6 +17,7 @@ Concise agent guide for this repository. See AGENTS.md for complete project rule
 - `crab-store`: Persistent storage; sessions, runs, events, checkpoints, outbound records
 - `crab-scheduler`: Lane-based FIFO scheduler with global concurrency cap
 - `crab-telemetry`: Structured logging setup
+- `crab-factory`: Repository developer tooling; isolated worktree and multi-model change pipeline
 
 ## Hotspot Files
 - `crates/crab-app/src/turn_executor.rs` (7913 lines): Turn lifecycle, context building, backend dispatch, streaming, rotation
@@ -43,7 +44,8 @@ Concise agent guide for this repository. See AGENTS.md for complete project rule
 ## Common Agent Tasks
 - New feature: implement in the appropriate crate, add tests, run `make quality`
 - Bug fix: add a regression test first, fix the bug, run `make coverage-gate`
-- New CLI binary: add it under `crates/crab-app/src/bin/` and wire it in `Cargo.toml`
+- New runtime CLI binary: add it under `crates/crab-app/src/bin/` and wire it in `Cargo.toml`
+- Repository developer tooling: keep it in `crab-factory`, separate from the live runtime
 
 ## Key Conventions
 - No `TODO` or `FIXME` without a linked GitHub issue

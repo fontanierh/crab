@@ -25,7 +25,7 @@ Discord Gateway
   -> Self-Trigger (crab-trigger)
 ```
 
-Eight Rust crates: `crab-core`, `crab-store`, `crab-scheduler`, `crab-backends`, `crab-discord`, `crab-discord-connector`, `crab-app`, `crab-telemetry`.
+Nine Rust crates: `crab-core`, `crab-store`, `crab-scheduler`, `crab-backends`, `crab-discord`, `crab-discord-connector`, `crab-app`, `crab-telemetry`, and the repository developer tool `crab-factory`.
 
 ## Quick Start
 
@@ -78,6 +78,22 @@ sleep 1800 && crab-trigger --state-dir "$CRAB_STATE_DIR" --channel <channel_id> 
 
 See [PHILOSOPHY.md](PHILOSOPHY.md) for why this matters.
 
+## Code Factory (Developer Tooling)
+
+`crab-factory` runs Crab coding requests through the repository-owned, isolated multi-model review
+pipeline. It operates on a dedicated Git worktree and does not replace the live Discord backend.
+By intentional operator policy, every model worker has unrestricted host permissions and network
+access; nested model-agent fan-out remains disabled and advisory stages are mutation-checked.
+
+```bash
+cargo build -p crab-factory
+./target/debug/crab-factory run --prompt-file request.md --repo .
+./target/debug/crab-factory start --prompt-file request.md --repo .
+```
+
+See the [code factory operator guide](crab/docs/16-code-factory.md) for prerequisites, review
+rounds, artifacts, launch adapters, stopping, and handoff.
+
 ## Memory
 
 Crab uses file-based memory -- markdown files in `~/.crab/workspace/memory/`. No vector database, no embeddings. The agent reads and writes its own memory files. Two CLI commands expose recall to the agent runtime:
@@ -124,7 +140,11 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the full quality bar and PR process.
 | [09](crab/docs/09-discord-provisioning-and-secrets.md) | Discord provisioning and secrets |
 | [10](crab/docs/10-target-machine-operations.md) | Target machine operations |
 | [11](crab/docs/11-feature-integration-matrix.md) | Feature integration matrix |
+| [12](crab/docs/12-snapshot-restore-design-note.md) | Snapshot and restore design note |
+| [13](crab/docs/13-deployment-acceptance-evidence.md) | Deployment acceptance evidence |
 | [14](crab/docs/14-overall-chat-flow-2026-02-12.md) | End-to-end runtime chat flow |
+| [15](crab/docs/15-self-trigger.md) | Self-trigger architecture and operation |
+| [16](crab/docs/16-code-factory.md) | Repository-owned code factory |
 
 ## License
 
