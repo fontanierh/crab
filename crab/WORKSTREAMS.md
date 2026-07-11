@@ -7,7 +7,7 @@ This document breaks the Crab implementation into execution workstreams and issu
 - Track all issues and tasks only in this repository.
 - Keep tasks small enough for one PR each whenever possible.
 - Preserve project quality gates from `AGENTS.md`:
-  - 100% test coverage (with enforcement command in CI)
+  - demanding aggregate and changed-line coverage (with enforcement commands in CI)
   - minimal mocking, meaningful tests
   - dead-code checks
   - duplication checks

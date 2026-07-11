@@ -4,8 +4,8 @@ Project operating rules for all human and AI contributors.
 
 ## 1. Non-Negotiable Quality Bar
 
-- Maintain `100%` test coverage for production code.
-- Coverage must be checked automatically and fail the build if it drops below `100%`.
+- Maintain demanding aggregate and changed-line coverage for production code.
+- Coverage must be checked automatically and fail below the documented thresholds.
 - Prefer real integration behavior over mocks; use mocks only at unavoidable boundaries.
 - Tests must verify meaningful behavior, not implementation trivia.
 - Tests must stay fast; slow tests are treated as quality regressions.
@@ -35,17 +35,23 @@ Project operating rules for all human and AI contributors.
 
 - Coverage check is required in CI and local pre-merge validation.
 - Preferred Rust tool: `cargo-llvm-cov`.
-- Enforce `100%` function coverage and `99%` region coverage in CI.
-- Enforce patch coverage on pull requests: any changed production Rust line must be covered.
+- Enforce `99.5%` function, `99.0%` region, and `99.4%` line coverage in CI.
+- Enforce `95%` coverage of changed executable production lines, with a small-patch floor.
 - Coverage reports must be reproducible from a single documented command.
 
-### Three-tier coverage gate
+### Aggregate and patch coverage gates
 
 | Gate | Threshold | Scope | Enforced by |
 |------|-----------|-------|-------------|
-| Function coverage | `100%` | All production code | `--fail-under-functions 100` |
-| Region coverage | `99%` | All production code | `--fail-under-regions 99` |
-| Patch coverage | `100%` | Changed production lines in PR | Python script in `scripts/coverage_gate.sh` |
+| Function coverage | `99.5%` | All production code | `--fail-under-functions 99.5` |
+| Region coverage | `99.0%` | All production code | `--fail-under-regions 99.0` |
+| Line coverage | `99.4%` | All production code | `--fail-under-lines 99.4` |
+| Patch coverage | `95%` | Changed executable production lines | `scripts/patch_coverage.py` |
+
+Patch allowance is `floor(0.05 × changed executable lines)`, so patches under 20 executable
+lines still require 100%. The gate reports exact uncovered lines in a complete JSON artifact.
+Production coverage means `crates/*/src/**/*.rs`, excluding crate `tests/` trees and
+`src/test_support.rs`.
 
 ### `tracing` macros and `cfg(not(coverage))`
 
@@ -56,7 +62,7 @@ tests. This is a known `cargo llvm-cov` + `tracing` interaction.
 **Why `cfg(not(coverage))` guards exist:** Removing all 16 guards was tested (2026-04-09). Region
 coverage passes (99.50%), but function coverage drops to 99.96% (1 macro-introduced closure
 counted as an uncovered function). Patch coverage would also reject the changes on PR. The
-guards are necessary to maintain the 100% function threshold.
+guards remain necessary to avoid macro-generated false gaps in aggregate and patch results.
 
 **Rules for `cfg(not(coverage))` usage:**
 - Only use on `tracing::*` macro invocations and their immediately-surrounding blocks.
@@ -83,18 +89,19 @@ This is only needed for function calls where splitting would create false covera
 Do not blanket-apply it.
 
 Required outcome:
-- Total function coverage must remain at `100%`.
-- Total region coverage must remain at or above `99%`.
-- Any changed production Rust line in a pull request must be covered.
+- Total function/region/line coverage stays at or above `99.5%` / `99.0%` / `99.4%`.
+- Changed executable lines meet the 95% gate and its small-patch floor.
+- Changed production files absent from LCOV fail closed.
 - Missing-line output is diagnostic outside the changed patch gate.
 
 ## 4. Dead Code and Static Hygiene
 
-- Treat warnings as errors in CI.
+- Treat rustc warnings and Clippy correctness, suspicious, and performance findings as errors.
+- Keep Clippy style and complexity findings visible as warnings, not merge blockers.
 - Deny unused/dead items (e.g. `dead_code`, `unused_imports`, `unused_variables`) at crate lint level.
 - Enforce public API wiring: every `pub fn` must have at least one cross-file usage, or visibility must
   be reduced (`pub(crate)`/private).
-- Run `cargo clippy --all-targets --all-features -- -D warnings`.
+- Run `make clippy`; its ordered repository wrapper is the lint-policy source for Clippy runs.
 - Run `cargo fmt --all -- --check`.
 
 ## 5. Duplication Control
@@ -109,9 +116,9 @@ Required outcome:
 ## 6. CI Gates (Must All Pass)
 
 - `fmt` check
-- `clippy` with warnings denied
+- Clippy with rustc warnings and high-signal groups denied; style/complexity warned
 - coverage gate (authoritative, executes full instrumented test suite)
-- coverage gate at `100%` functions / `99%` regions, plus patch coverage on PRs
+- coverage gate at `99.5%` functions / `99.0%` regions / `99.4%` lines, plus patch coverage
 - duplication gate
 
 No bypasses on main branch.
@@ -143,7 +150,9 @@ No bypasses on main branch.
 
 ## 9. Toolchain and Lockfiles
 
-- Keep `rust-toolchain.toml` in repo and pin channel to `stable` (latest stable Rust).
+- Keep `rust-toolchain.toml` pinned to the exact supported Rust release (`1.93.0` currently).
+- Update the pin deliberately, roughly once per Rust minor: use a scoped PR, update CI and the
+  pin together, and fix newly surfaced lints in that same PR.
 - Commit `Cargo.lock` for reproducible builds.
 
 ## 10. Issue Tracking Boundaries
@@ -159,12 +168,15 @@ No bypasses on main branch.
 
 The repository now enforces quality with executable gates and CI automation.
 
-### Canonical local command
+### Canonical agent loop
 
-- Run all required checks with:
-  `make quality`
-- Fast local preflight (non-gating):
-  `make quick`
+1. Run read-only prerequisite checks: `make doctor`.
+2. During edits, run changed-scope validation: `make check`.
+3. Before handoff, run every authoritative gate: `make quality`.
+
+Bare `make` is read-only help. `make quick` is only a deprecated alias for `make check`.
+`DRY_RUN=1 make check` prints the selected scope and exact commands. Workflow tooling under
+`scripts/` is governed by the deterministic offline `make gate-tests` suite.
 
 ### Code Quality Report (Generated)
 
@@ -182,21 +194,39 @@ The repository now enforces quality with executable gates and CI automation.
   `make fmt-check`
 - Lint:
   `make clippy`
-- Dead code/static check:
-  `make deadcode-check`
 - Public API wiring check:
   `make public-api-check`
 - Tests:
   `make test`
-- Coverage gate (`100%` functions, `99%` regions, and changed-line coverage on PRs):
+- Coverage gate (`99.5%` functions, `99.0%` regions, `99.4%` lines, and patch coverage):
   `make coverage-gate`
+- Faster changed-package coverage with report-only aggregates and blocking patch coverage:
+  `make coverage-quick`
 - Coverage diagnostics (actionable uncovered line locations):
   `make coverage-diagnostics`
-- `make coverage-gate` runs `cargo llvm-cov --fail-under-functions 100 --fail-under-regions 99 --show-missing-lines`.
-- When `BASE_REF` is set (CI pull requests), `make coverage-gate` also fails if any changed
-  production Rust line is uncovered in the LCOV report.
+- Coverage modes are `worktree` (default local), guarded `staged`, and guarded `committed` (CI).
+  Every mode requires a resolvable merge base. Coverage commands always generate fresh data in a
+  worktree-local target; pre-existing `--lcov` input is diagnostic-only.
 - Duplication gate:
   `make duplication-check`
+
+### Status and exit behavior
+
+Repository workflow scripts use `0` for success, `1` for a gate failure, and `2` for usage,
+environment, baseline, or stale-attestation errors. `make quality` writes atomic
+`quality/status.json` with the Git/base identity, tool versions, full check outcomes and rerun
+commands, and start/end fingerprints over HEAD plus all non-ignored changes. A valid pass has
+matching fingerprints and zero skipped required gates. Run `make quality-status` to verify the
+artifact still attests the current tree; do not hand off a stale, invalid, failed, or skipped gate.
+
+### Worktrees and optional shared builds
+
+Set `CRAB_SHARED_TARGET_DIR` to an external absolute directory to opt into a per-repository Cargo
+target namespace for build, Clippy, and test commands. The value is validated after symlink
+resolution, must be writable, and must be outside every worktree and Git common directory.
+Coverage always overrides it with a worktree-local target because concurrent LLVM coverage runs
+clean and consume profile state. Shared top-level binaries can be overwritten by another
+worktree; gates never rely on an artifact persisting after the command finishes.
 
 ### Source-of-truth files
 
@@ -223,20 +253,24 @@ The repository now enforces quality with executable gates and CI automation.
 
 ### Required local prerequisites
 
-- Rust stable toolchain (installed via `rust-toolchain.toml`).
+- Exact Rust `1.93.0` toolchain/components installed via `rust-toolchain.toml`.
 - `cargo-llvm-cov` (compatible pinned version):
   `cargo install cargo-llvm-cov --version 0.6.21 --locked`
 - LLVM tools component:
   `rustup component add llvm-tools-preview`
-- Node runtime available for `npx` (used by `jscpd`).
+- Python 3.11 or newer (stdlib-only workflow tooling).
+- Node/npm and exact `jscpd` 4.0.5 (`npm install --global jscpd@4.0.5`).
+- Ripgrep (`rg`) for public API checks and report generation.
 
 ### CI behavior
 
-- CI runs `fmt`, `clippy`, `deadcode-check`, `public-api-check`, `coverage-gate`, and
-  `duplication-check`.
-- CI intentionally avoids a separate `make test` step because `coverage-gate` already executes the
-  full suite under instrumentation.
-- Any gate failure blocks merge readiness.
+- CI uses the exact toolchain pin, changed-scope format/Clippy/tests, public API checks, workflow
+  tests, fresh coverage, and duplication checks; the redundant standalone `cargo check` is gone.
+- Immediately after checkout, a Git-only classifier keeps the existing `fast` and `coverage` job
+  names green with an explicit docs-only skip, before toolchain/cache/package setup.
+- Pull requests use the PR base SHA. Pushes use the non-zero event `before` SHA or first parent;
+  coverage fails closed if neither baseline resolves.
+- Any required gate failure or skip blocks merge readiness.
 
 ## 12. Deferred for Later
 

@@ -16,28 +16,67 @@ jobs:
         with:
           fetch-depth: 0
 
+      # This must remain immediately after checkout: docs-only changes do no Rust/Node setup.
+      - name: Classify changed paths
+        id: scope
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PUSH_BEFORE: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+          base=""
+          if [[ "$EVENT_NAME" == "pull_request" ]]; then
+            base="$PR_BASE_SHA"
+          elif [[ -n "$PUSH_BEFORE" && ! "$PUSH_BEFORE" =~ ^0+$ ]] && git cat-file -e "$PUSH_BEFORE^{commit}" 2>/dev/null; then
+            base="$PUSH_BEFORE"
+          elif git rev-parse --verify HEAD^ >/dev/null 2>&1; then
+            base="$(git rev-parse HEAD^)"
+          fi
+          args=(--mode committed --docs-only-check --github-output "$GITHUB_OUTPUT")
+          if [[ -n "$base" ]]; then args+=(--base-sha "$base"); fi
+          python3 scripts/changed_scope.py "${args[@]}"
+
       - name: Setup Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        if: steps.scope.outputs.docs_only != 'true'
+        uses: dtolnay/rust-toolchain@master
         with:
-          components: rustfmt, clippy
+          toolchain: "1.93.0"
+          components: rustfmt, clippy, llvm-tools-preview
 
       - name: Setup Rust cache
+        if: steps.scope.outputs.docs_only != 'true'
         uses: Swatinem/rust-cache@v2
 
       - name: Install ripgrep
+        if: steps.scope.outputs.docs_only != 'true'
         run: sudo apt-get update && sudo apt-get install -y ripgrep
 
-      - name: Format check
-        run: make fmt-check
-
-      - name: Clippy
-        run: make clippy
-
-      - name: Dead code check
-        run: make deadcode-check
+      - name: Changed-scope format, Clippy, and tests
+        if: steps.scope.outputs.docs_only != 'true'
+        env:
+          BASE_SHA: ${{ steps.scope.outputs.base_sha }}
+          DIFF_MODE: committed
+        run: make check
 
       - name: Public API check
+        if: steps.scope.outputs.docs_only != 'true'
         run: make public-api-check
+
+      - name: Workflow gate tests
+        if: steps.scope.outputs.docs_only != 'true'
+        run: make gate-tests
+
+      - name: Job summary
+        if: always()
+        shell: bash
+        run: |
+          if [[ "${{ steps.scope.outputs.docs_only }}" == "true" ]]; then
+            echo "### fast: skipped (docs-only)" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "### fast: changed-scope gates executed" >> "$GITHUB_STEP_SUMMARY"
+          fi
 
   coverage:
     runs-on: ubuntu-latest
@@ -48,37 +87,77 @@ jobs:
         with:
           fetch-depth: 0
 
+      # Keep classification before every setup/cache/install step for an honest green skip.
+      - name: Classify changed paths
+        id: scope
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PUSH_BEFORE: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+          base=""
+          if [[ "$EVENT_NAME" == "pull_request" ]]; then
+            base="$PR_BASE_SHA"
+          elif [[ -n "$PUSH_BEFORE" && ! "$PUSH_BEFORE" =~ ^0+$ ]] && git cat-file -e "$PUSH_BEFORE^{commit}" 2>/dev/null; then
+            base="$PUSH_BEFORE"
+          elif git rev-parse --verify HEAD^ >/dev/null 2>&1; then
+            base="$(git rev-parse HEAD^)"
+          fi
+          args=(--mode committed --docs-only-check --github-output "$GITHUB_OUTPUT")
+          if [[ -n "$base" ]]; then args+=(--base-sha "$base"); fi
+          python3 scripts/changed_scope.py "${args[@]}"
+
       - name: Setup Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        if: steps.scope.outputs.docs_only != 'true'
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.93.0"
+          components: rustfmt, clippy, llvm-tools-preview
 
       - name: Setup Rust cache
+        if: steps.scope.outputs.docs_only != 'true'
         uses: Swatinem/rust-cache@v2
 
       - name: Setup Node
+        if: steps.scope.outputs.docs_only != 'true'
         uses: actions/setup-node@v4
         with:
           node-version: "20"
 
-      - name: Install llvm-tools
-        run: rustup component add llvm-tools-preview
+      - name: Install pinned jscpd
+        if: steps.scope.outputs.docs_only != 'true'
+        run: npm install --global jscpd@4.0.5
 
       - name: Install cargo-llvm-cov
+        if: steps.scope.outputs.docs_only != 'true'
         uses: taiki-e/install-action@v2
         with:
           tool: cargo-llvm-cov@0.6.21
 
-      - name: Install ripgrep
-        run: sudo apt-get update && sudo apt-get install -y ripgrep
-
-      - name: Coverage gate
-        if: github.event_name == 'pull_request'
+      - name: Fresh aggregate and patch coverage
+        if: steps.scope.outputs.docs_only != 'true'
         env:
-          BASE_REF: ${{ github.event.pull_request.base.sha || 'origin/main' }}
-        run: make coverage-gate
-
-      - name: Coverage gate
-        if: github.event_name != 'pull_request'
-        run: make coverage-gate
+          BASE_SHA: ${{ steps.scope.outputs.base_sha }}
+          PATCH_MODE: committed
+        run: |
+          if [[ -z "$BASE_SHA" ]]; then
+            echo "coverage: no push/PR baseline resolved" >&2
+            exit 2
+          fi
+          make coverage-gate
 
       - name: Duplication gate
+        if: steps.scope.outputs.docs_only != 'true'
         run: make duplication-check
+
+      - name: Job summary
+        if: always()
+        shell: bash
+        run: |
+          if [[ "${{ steps.scope.outputs.docs_only }}" == "true" ]]; then
+            echo "### coverage: skipped (docs-only)" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "### coverage: fresh aggregate, patch, and duplication gates executed" >> "$GITHUB_STEP_SUMMARY"
+          fi

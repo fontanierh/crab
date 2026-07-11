@@ -60,9 +60,10 @@ Major subsystems:
 
 Quality engineering workflow:
 
-- Strict merge gate remains `make quality` with hard coverage requirements (`100%` functions,
-  `99%` regions, plus changed-line coverage on PRs).
-- Developer fast lane is `make quick` (non-gating) for iteration speed.
+- Deterministic preflight is `make doctor`; the changed-scope developer lane is `make check`.
+- Strict handoff remains `make quality` with 99.5% functions, 99.0% regions, 99.4% lines,
+  and high changed-executable-line coverage.
+- The strict gate emits an atomic exact-tree attestation at `quality/status.json`.
 - Coverage regression triage is standardized via `make coverage-diagnostics`.
 
 ## 4) Session and Lane Model

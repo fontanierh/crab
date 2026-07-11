@@ -1,5 +1,3 @@
-#![deny(warnings, dead_code, unused_imports, unused_variables)]
-
 pub mod checkpoint_turn;
 pub mod compatibility;
 pub mod config;

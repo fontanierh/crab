@@ -1,0 +1,63 @@
+{
+  "packages": [
+    {
+      "name": "crab-core",
+      "manifest_path": "$ROOT/crates/crab-core/Cargo.toml",
+      "dependencies": []
+    },
+    {
+      "name": "crab-telemetry",
+      "manifest_path": "$ROOT/crates/crab-telemetry/Cargo.toml",
+      "dependencies": []
+    },
+    {
+      "name": "crab-store",
+      "manifest_path": "$ROOT/crates/crab-store/Cargo.toml",
+      "dependencies": [{"name": "crab-core", "path": "$ROOT/crates/crab-core"}]
+    },
+    {
+      "name": "crab-scheduler",
+      "manifest_path": "$ROOT/crates/crab-scheduler/Cargo.toml",
+      "dependencies": [{"name": "crab-core", "path": "$ROOT/crates/crab-core"}]
+    },
+    {
+      "name": "crab-discord",
+      "manifest_path": "$ROOT/crates/crab-discord/Cargo.toml",
+      "dependencies": [
+        {"name": "crab-core", "path": "$ROOT/crates/crab-core"},
+        {"name": "crab-store", "path": "$ROOT/crates/crab-store"}
+      ]
+    },
+    {
+      "name": "crab-discord-connector",
+      "manifest_path": "$ROOT/crates/crab-discord-connector/Cargo.toml",
+      "dependencies": [
+        {"name": "crab-core", "path": "$ROOT/crates/crab-core"},
+        {"name": "crab-discord", "path": "$ROOT/crates/crab-discord"},
+        {"name": "crab-telemetry", "path": "$ROOT/crates/crab-telemetry"}
+      ]
+    },
+    {
+      "name": "crab-backends",
+      "manifest_path": "$ROOT/crates/crab-backends/Cargo.toml",
+      "dependencies": [{"name": "crab-core", "path": "$ROOT/crates/crab-core"}]
+    },
+    {
+      "name": "crab-app",
+      "manifest_path": "$ROOT/crates/crab-app/Cargo.toml",
+      "dependencies": [
+        {"name": "crab-backends", "path": "$ROOT/crates/crab-backends"},
+        {"name": "crab-core", "path": "$ROOT/crates/crab-core"},
+        {"name": "crab-discord", "path": "$ROOT/crates/crab-discord"},
+        {"name": "crab-scheduler", "path": "$ROOT/crates/crab-scheduler"},
+        {"name": "crab-store", "path": "$ROOT/crates/crab-store"},
+        {"name": "crab-telemetry", "path": "$ROOT/crates/crab-telemetry"}
+      ]
+    }
+  ],
+  "workspace_members": [],
+  "resolve": null,
+  "workspace_root": "$ROOT",
+  "target_directory": "$ROOT/target",
+  "version": 1
+}

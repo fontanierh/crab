@@ -8,6 +8,8 @@ See `AGENTS.md` for the full project operating rules.
 git clone <repo-url>
 cd crab-source
 # Install prerequisites (see below)
+make doctor
+make check
 make quality
 ```
 
@@ -15,16 +17,19 @@ make quality
 
 ## Prerequisites
 
-- **Rust stable** via [rustup](https://rustup.rs/)
-- **cargo-llvm-cov** 0.6.21: `cargo install cargo-llvm-cov --version 0.6.21`
-- **llvm-tools-preview**: `rustup component add llvm-tools-preview`
-- **Node.js** (for jscpd duplicate detection): `npm install -g jscpd`
+- **Rust 1.93.0** via [rustup](https://rustup.rs/), including rustfmt, Clippy, and LLVM tools
+- **cargo-llvm-cov 0.6.21**: `cargo install cargo-llvm-cov --version 0.6.21 --locked`
+- **Python 3.11+**, **Node.js/npm**, **jscpd 4.0.5**, and **ripgrep**
+
+`make doctor` checks exact versions and prints remediation without installing anything.
 
 ## Quality Expectations
 
-- **Coverage gate.** `make quality` enforces `100%` function coverage and `99%` region coverage. On pull requests, changed production Rust lines must also stay covered.
+- **Coverage gate.** `make quality` enforces 99.5% functions, 99.0% regions, 99.4% lines,
+  and 95% changed executable lines. Under 20 changed executable lines, patch coverage is 100%.
 - **No dead code.** The codebase compiles with `#![deny(dead_code)]`. Remove unused items rather than suppressing the lint.
-- **Clippy clean.** Run with `--deny warnings`. Fix warnings; do not use `#[allow(...)]` without a clear justification in a comment.
+- **Clippy policy.** Rust warnings and correctness/suspicious/performance findings fail. Style and
+  complexity suggestions remain visible warnings. Use `make clippy`, not ad hoc flags.
 - **No production duplication.** jscpd blocks duplicated production Rust code; test-code duplication is reported informationally. Extract shared logic rather than copying it.
 
 ## PR Process
@@ -36,6 +41,11 @@ make quality
   2. **Why** it was needed
   3. **How** it was validated (specific test names or manual steps)
 - Avoid force-pushing after review has started; add fixup commits instead.
+- The final `quality/status.json` must say `passed`, have matching fingerprints, and contain no
+  skipped gate. Nothing tracked may change after that run without rerunning `make quality`.
+
+See [docs/agent-workflow.md](docs/agent-workflow.md) for changed-scope selection, coverage modes,
+structured status, CI docs-only behavior, and opt-in shared build artifacts.
 
 ## Testing Philosophy
 

@@ -47,8 +47,9 @@ These docs focus on:
 
 ## Quality Workflow Notes
 
-- Canonical strict gate: `make quality` (coverage gate + duplication gate are blocking).
-- Fast local preflight: `make quick` (non-gating).
+- Read-only environment preflight: `make doctor`.
+- Changed-scope edit loop: `make check`.
+- Canonical strict handoff: `make quality` (no required gate may skip).
 - Coverage failure diagnostics: `make coverage-diagnostics` (writes actionable uncovered
   line details to `coverage/uncovered_locations.txt`).
 - Baseline capture/trend inputs: `make quality-baseline` and `make quality-report`.

@@ -3,20 +3,17 @@
 - Why:
 
 ## Validation
-- [ ] `make fmt-check`
-- [ ] `make clippy`
-- [ ] `make deadcode-check`
-- [ ] `make public-api-check`
-- [ ] `make coverage-gate`
-- [ ] `make duplication-check`
+- [ ] `make doctor`
+- [ ] `make check`
+- [ ] `make gate-tests` (required for workflow/config changes)
+- [ ] `make quality`
+- [ ] `quality/status.json` says `passed`, fingerprints match, and no gate was skipped
 
-Optional fast preflight (non-gating):
-- [ ] `make quick`
-
-Paste key output snippets for failed/flaky areas if relevant.
+Include exact rerun commands or focused log excerpts for any unusual failure investigation.
 
 ## Coverage
-- Confirm production code remains at 100% coverage.
+- Aggregate floors remain 99.5% functions / 99.0% regions / 99.4% lines.
+- Changed executable lines meet 95% and the small-patch floor.
 
 ## Risk and Rollback
 - Risk:

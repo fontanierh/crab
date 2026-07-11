@@ -1,0 +1,203 @@
+from __future__ import annotations
+
+import os
+import re
+import shutil
+import subprocess
+import tempfile
+import tomllib
+import unittest
+from pathlib import Path
+
+from scripts.clippy_policy import CLIPPY_POLICY_ARGS
+
+
+ROOT = Path(__file__).resolve().parents[2]
+FIXTURE = Path(__file__).parent / "fixtures" / "lint-policy"
+
+
+class LintPolicyFixtureTests(unittest.TestCase):
+    def fixture_toolchain(self, pin: str) -> str:
+        installed = subprocess.run(
+            ["rustup", "toolchain", "list"],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+        if installed.returncode == 0 and any(
+            line.split()[0] == pin or line.split()[0].startswith(f"{pin}-")
+            for line in installed.stdout.splitlines()
+            if line.split()
+        ):
+            return pin
+        stable = subprocess.run(
+            ["rustc", "+stable", "-V"],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+        self.assertEqual(stable.returncode, 0, stable.stderr)
+        self.assertRegex(stable.stdout, rf"^rustc {re.escape(pin)}\b")
+        return "stable"
+
+    def run_case(self, case: str) -> subprocess.CompletedProcess[str]:
+        pin = tomllib.loads((ROOT / "rust-toolchain.toml").read_text(encoding="utf-8"))[
+            "toolchain"
+        ]["channel"]
+        toolchain = self.fixture_toolchain(pin)
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        fixture_root = Path(temporary.name) / "fixture"
+        fixture_root.mkdir()
+        shutil.copy2(FIXTURE / "Cargo.toml", fixture_root / "Cargo.toml")
+        (fixture_root / "src").mkdir()
+        shutil.copy2(FIXTURE / "cases" / f"{case}.rs", fixture_root / "src" / "lib.rs")
+        environment = dict(os.environ)
+        environment["CARGO_TARGET_DIR"] = str(Path(temporary.name) / "target")
+        environment["CARGO_NET_OFFLINE"] = "true"
+        return subprocess.run(
+            [
+                "cargo",
+                f"+{toolchain}",
+                "clippy",
+                "--offline",
+                "--",
+                *CLIPPY_POLICY_ARGS,
+            ],
+            cwd=fixture_root,
+            env=environment,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=False,
+        )
+
+    def test_style_and_complexity_are_visible_but_nonfatal(self) -> None:
+        result = self.run_case("style_complexity")
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn("warning:", result.stdout)
+        self.assertRegex(result.stdout, r"clippy::(bool-comparison|needless-bool|needless-return)")
+
+    def test_correctness_is_fatal(self) -> None:
+        result = self.run_case("correctness")
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertIn("clippy::erasing_op", result.stdout)
+
+    def test_suspicious_is_fatal(self) -> None:
+        result = self.run_case("suspicious")
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertIn("clippy::almost_swapped", result.stdout)
+
+    def test_perf_is_fatal(self) -> None:
+        result = self.run_case("perf")
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertIn("clippy::manual_memcpy", result.stdout)
+
+    def test_rustc_warning_is_fatal(self) -> None:
+        result = self.run_case("rust_warning")
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertIn("unused variable", result.stdout)
+
+
+class RepositoryPolicyTests(unittest.TestCase):
+    def test_bare_make_is_read_only_help(self) -> None:
+        before = subprocess.run(
+            ["git", "status", "--porcelain=v1", "--untracked-files=all"],
+            cwd=ROOT,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=True,
+        ).stdout
+        result = subprocess.run(
+            ["make"],
+            cwd=ROOT,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=False,
+        )
+        after = subprocess.run(
+            ["git", "status", "--porcelain=v1", "--untracked-files=all"],
+            cwd=ROOT,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=True,
+        ).stdout
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertEqual(before, after)
+        self.assertIn("make doctor", result.stdout)
+        self.assertIn("make check", result.stdout)
+        self.assertIn("make quality", result.stdout)
+
+    def test_every_workspace_member_inherits_workspace_lints(self) -> None:
+        workspace = tomllib.loads((ROOT / "Cargo.toml").read_text(encoding="utf-8"))
+        for member in workspace["workspace"]["members"]:
+            with self.subTest(member=member):
+                manifest = tomllib.loads(
+                    (ROOT / member / "Cargo.toml").read_text(encoding="utf-8")
+                )
+                self.assertTrue(manifest.get("lints", {}).get("workspace"))
+
+    def test_ci_toolchain_pin_matches_rust_toolchain_file(self) -> None:
+        pin = tomllib.loads((ROOT / "rust-toolchain.toml").read_text(encoding="utf-8"))[
+            "toolchain"
+        ]["channel"]
+        workflow = (ROOT / ".github" / "workflows" / "quality.yml").read_text(
+            encoding="utf-8"
+        )
+        references = re.findall(r"toolchain:\s*[\"']?([^\s\"']+)", workflow)
+        self.assertTrue(references, "CI must state its Rust toolchain explicitly")
+        self.assertEqual(set(references), {pin})
+
+    def test_ci_docs_classifier_precedes_every_setup_step(self) -> None:
+        workflow = (ROOT / ".github" / "workflows" / "quality.yml").read_text(
+            encoding="utf-8"
+        )
+        job_sections = workflow.split("      - name: Checkout")[1:]
+        self.assertEqual(len(job_sections), 2)
+        for section in job_sections:
+            classifier = section.index("- name: Classify changed paths")
+            setup = section.index("- name: Setup Rust toolchain")
+            self.assertLess(classifier, setup)
+
+    def test_coverage_entry_points_use_the_local_target_wrapper(self) -> None:
+        workflow = (ROOT / "scripts" / "coverage_workflow.py").read_text(encoding="utf-8")
+        diagnostics = (ROOT / "scripts" / "coverage_diagnostics.sh").read_text(encoding="utf-8")
+        makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+        self.assertIn("cargo_target.py", workflow)
+        self.assertIn("coverage_workflow.py", diagnostics)
+        self.assertNotIn("cargo llvm-cov", makefile)
+        self.assertIn(
+            '["cargo-llvm-cov", "llvm-cov", "--version"]',
+            (ROOT / "scripts" / "run_gates.py").read_text(encoding="utf-8"),
+        )
+
+    def test_make_clippy_uses_the_ordered_policy_wrapper(self) -> None:
+        makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+        orchestrator = (ROOT / "scripts" / "run_gates.py").read_text(encoding="utf-8")
+        self.assertIn("scripts/clippy_policy.py", makefile)
+        self.assertIn("clippy_policy.py", orchestrator)
+
+    def test_report_fallback_text_cannot_execute_markdown_backticks(self) -> None:
+        generator = (ROOT / "scripts" / "gen_code_quality_report.sh").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("baseline_latest_md='No recorded baseline", generator)
+        self.assertIn("baseline_trend_md='No baseline trend", generator)
+
+    def test_duplication_gate_never_installs_implicitly(self) -> None:
+        gate = (ROOT / "scripts" / "duplication_check.sh").read_text(encoding="utf-8")
+        workflow = (ROOT / ".github" / "workflows" / "quality.yml").read_text(
+            encoding="utf-8"
+        )
+        self.assertNotIn("npx --yes", gate)
+        self.assertIn("jscpd --version", gate)
+        self.assertIn("npm install --global jscpd@4.0.5", workflow)
+
+
+if __name__ == "__main__":
+    unittest.main()

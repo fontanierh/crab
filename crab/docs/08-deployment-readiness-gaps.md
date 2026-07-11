@@ -81,8 +81,9 @@ Implemented and validated in repository code/tests:
   - recoverable session faults rotated sessions through a single recovery primitive with
     deterministic bookkeeping
 - Quality engineering ergonomics are standardized:
+  - read-only environment preflight: `make doctor`
+  - changed-scope edit validation: `make check`
   - strict gate: `make quality`
-  - fast local preflight: `make quick`
   - coverage diagnostics helper (`lines`): `make coverage-diagnostics`
   - baseline/trend capture helpers: `make quality-baseline` + `make quality-report`
 
