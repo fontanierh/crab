@@ -174,7 +174,7 @@ fn materialize_snippets(
         return Ok(Vec::new());
     }
 
-    candidates.sort_by(|left, right| right.date.cmp(&left.date));
+    candidates.sort_by_key(|candidate| std::cmp::Reverse(candidate.date));
 
     let mut snippets = Vec::new();
     for candidate in candidates.into_iter().take(max_files) {
