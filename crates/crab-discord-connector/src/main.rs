@@ -1101,10 +1101,8 @@ mod live_discord {
             let value = payload.get("retry_after")?;
             let retry_secs = if let Some(seconds) = value.as_f64() {
                 seconds
-            } else if let Some(seconds) = value.as_u64() {
-                seconds as f64
             } else {
-                return None;
+                value.as_u64()? as f64
             };
 
             if !retry_secs.is_finite() || retry_secs < 0.0 {

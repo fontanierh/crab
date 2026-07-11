@@ -59,7 +59,10 @@ fn managed_process_cleanup_confirms_reparented_sigkill() {
     let ready = root.join("pid");
     let child = r#"import os, pathlib, signal, sys, time
 signal.signal(signal.SIGTERM, signal.SIG_IGN)
-pathlib.Path(sys.argv[1]).write_text(str(os.getpid()), encoding="utf-8")
+path = pathlib.Path(sys.argv[1])
+temporary = path.with_suffix(".tmp")
+temporary.write_text(str(os.getpid()), encoding="utf-8")
+temporary.replace(path)
 while True:
     time.sleep(60)
 "#;
