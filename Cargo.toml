@@ -8,6 +8,7 @@ members = [
     "crates/crab-discord-connector",
     "crates/crab-backends",
     "crates/crab-app",
+    "crates/crab-factory",
 ]
 resolver = "2"
 
