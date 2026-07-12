@@ -75,7 +75,7 @@ impl Pipeline<'_> {
 
         #[rustfmt::skip]
         let critique_prompt = self.prompt(Path::new("02-plan-critiques.md"), prompts::critique(&self.request, &plan, &self.worktree, &self.base_sha))?;
-        let critique_specs = (1..=4)
+        let critique_specs = (1..=2)
             .map(|index| {
                 let label = format!("02-critique-codex-{index:02}");
                 codex_agent(

@@ -83,7 +83,7 @@ run_codex() {
   /bin/cat > "$prompt_file"
   write_receipt "$@"
 
-  if /usr/bin/grep -Fq "one of four independent plan critics" "$prompt_file"; then
+  if /usr/bin/grep -Fq "one of two independent plan critics" "$prompt_file"; then
     if [ "$scenario" = worker-fail ] && [ "$output_name" = codex-01.md ]; then
       printf 'intentional failure\n' >&2
       exit 7

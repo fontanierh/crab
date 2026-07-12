@@ -12,7 +12,7 @@ use crate::{io_result, result_context, sha256_hex, FactoryError, FactoryResult};
 
 pub(crate) const CLAUDE_MODEL: &str = "claude-fable-5";
 pub(crate) const CODEX_MODEL: &str = "gpt-5.6-sol";
-pub(crate) const REASONING_EFFORT: &str = "max";
+pub(crate) const REASONING_EFFORT: &str = "high";
 pub(crate) const CODEX_PERMISSION_MODE: &str = "dangerously-bypass-approvals-and-sandbox";
 pub(crate) const CLAUDE_PERMISSION_MODE: &str = "dangerously-skip-permissions";
 pub(crate) const WORKER_HOST_PERMISSIONS: &str = "unrestricted";

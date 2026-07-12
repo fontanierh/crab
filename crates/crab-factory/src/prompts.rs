@@ -43,7 +43,7 @@ pub(crate) fn planning(request: &str, worktree: &Path, base_sha: &str) -> String
 }
 
 pub(crate) fn critique(request: &str, plan: &str, worktree: &Path, base_sha: &str) -> String {
-    let role = "You are one of four independent plan critics. Review the entire task and plan yourself. Do not spawn agents, delegate, assign a specialty, coordinate with other critics, or edit files.";
+    let role = "You are one of two independent plan critics. Review the entire task and plan yourself. Do not spawn agents, delegate, assign a specialty, coordinate with other critics, or edit files.";
     let repo = repository(worktree, base_sha, true);
     let deliverable = format!(
         "Find concrete omissions, incorrect assumptions, architectural risks, missing tests, quality-policy violations, and unnecessary complexity. Tie findings to files, symbols, or observed behavior where possible. Rank findings by severity and give an actionable correction. Do not merely restate the plan. If the plan has no actionable defect, output exactly `{NO_ACTIONABLE_FINDINGS}`."
@@ -230,7 +230,7 @@ mod tests {
         assert!(plan.contains("sole planning agent"));
         assert!(plan.contains(request));
         let critique = critique(request, "plan", worktree, base);
-        assert!(critique.contains("one of four independent plan critics"));
+        assert!(critique.contains("one of two independent plan critics"));
         assert!(critique.contains(NO_ACTIONABLE_FINDINGS));
         let synthesis = critique_synthesis(request, "plan", &["a".into(), "b".into()]);
         assert!(synthesis.contains("sole critique compiler"));

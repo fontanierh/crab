@@ -9,7 +9,7 @@ use support::{assert_failure, assert_success, read_json, Fixture};
 
 #[test]
 fn invalid_verdict_is_terminal() {
-    assert_pipeline_failure("invalid", "invalid-verdict", "no valid first-line verdict");
+    assert_pipeline_failure("invalid", "invalid-verdict", "no exact verdict line");
 }
 
 #[test]
