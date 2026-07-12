@@ -11,6 +11,9 @@ on:
   pull_request:
     branches: [main]
 
+permissions:
+  contents: read
+
 jobs:
   fast:
     runs-on: ubuntu-24.04
@@ -20,6 +23,7 @@ jobs:
         uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       # This must remain immediately after checkout: docs-only changes do no Rust/Node setup.
       - name: Classify changed paths
@@ -91,6 +95,7 @@ jobs:
         uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       # Keep classification before every setup/cache/install step for an honest green skip.
       - name: Classify changed paths

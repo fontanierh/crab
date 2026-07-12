@@ -1,152 +1,152 @@
-# Agent Workflow Implementation Report
+# Agent Workflow Remediation Implementation Report
 
-## Scope and repository identity
+## Scope and provenance
 
-This final audit applies to committed implementation `57866774c0843e9637cc73df99e625e368fd82cc`.
-Its merge base with `origin/main` is `1e0e51f8efb1dfd6cde8b9f7a0d5605e057927a7`, the merged
-`crab-factory` base. The workspace has nine members, including `crates/crab-factory`, and all nine
-inherit the workspace lint table.
+This report covers the uncommitted agent/code-factory workflow remediation based on commit
+`ad41a780166a1af5a7e6582212121520ea215e3d`. The Rust workspace has nine members, including
+`crab-factory`; all nine inherit the workspace lint policy. The remediation changes workflow
+tooling, deterministic tests, CI policy, generated evidence, and documentation only. It changes no
+Crab production Rust behavior or persisted runtime state, so authoritative patch coverage is an
+explicit 0/0 pass.
 
-The final-audit patch changes repository workflow tooling, deterministic workflow tests, CI, and
-documentation only. It adds no Rust production changes; the authoritative patch-coverage result is
-therefore an explicit 0/0 pass. Crab runtime behavior and persisted-state compatibility are unchanged.
-
-The canonical surface remains:
+The canonical workflow remains:
 
 ```text
 make doctor  ->  make check  ->  make quality
 preflight        edit loop       seven-gate handoff attestation
 ```
 
-## Final audit decisions
+The generated `CODE_QUALITY_REPORT.md` derives provenance from the body actually published. Its
+current header correctly identifies the base commit plus uncommitted worktree changes.
 
-- The authoritative gate retains all seven checks, in fixed order: `fmt`, `clippy`, `tests`,
-  `public-api`, `duplication`, `gate-tests`, and `coverage`. The standalone normal-configuration
-  test traversal has measured correctness value and is not redundant with coverage. In
-  `crates/crab-app/src/daemon.rs`, lines 472-494 provide the deterministic
-  `cfg(any(test, coverage))` `ClaudeProcess`, while lines 496-537 begin production-only state and
-  the real `cfg(not(any(test, coverage)))` implementation. `turn_executor.rs:2153` similarly
-  selects the real attachment downloader only outside test/coverage builds, and
-  `crab-discord-connector/src/main.rs:376` has explicit coverage-only branches. LLVM coverage sets
-  `cfg(coverage)`, so normal `cargo test --workspace` is the only quality gate compiling and
-  exercising the non-coverage binary configuration through integration entrypoints. It also keeps
-  native doctest execution automatic.
-- Changed-scope collection includes deletions and disables rename detection, causing both sides of
-  cross-package renames to participate. Deleted crate paths map lexically, deleted workflow inputs
-  force full scope, and unmapped paths fail conservatively to the full workspace.
-- Docs-only classification now requires both an approved suffix and an exact documentation
-  location/file allowlist. Files under `crates/`, `scripts/`, `crab/config/`, unknown root paths,
-  and binary assets under docs locations run code gates.
-- Patch diff parsing is hunk-state-aware, including added content beginning with `++`; type changes
-  participate because the production-line collector no longer filters diff statuses.
-- Direct Cargo-target dry-run parsing splits on the first literal `--`, accepts conventional flag
-  ordering, performs all validation, and creates no local/shared target directory.
-- Staged and committed patch modes reject every non-documentation divergence between the working
-  tree and selected snapshot, including manifests, lockfiles, fixtures, configuration, and the gate
-  tooling itself. This conservative clean-tree policy is intentional because gates execute their
-  working copies.
-- Status schema 2 fingerprints HEAD plus non-ignored working content and executable modes. It
-  rejects split staged/unstaged content, restored staged deletions, conflicts, hidden
-  `assume-unchanged`/`skip-worktree` entries, and `core.filemode=false`. The check record must match
-  the exact ordered seven-gate policy with seven successful exit-zero entries and no setup error.
-  Staging exactly the validated bytes remains valid, preserving quality → `git add -A` → verify →
-  commit.
-- Repository-managed target, quality/log, status, and coverage paths reject symlink components and
-  unsafe final files. Shared namespaces are independently validated. Ambient external
-  `CARGO_TARGET_DIR` is rejected; explicit external sharing remains available only through
-  `CRAB_SHARED_TARGET_DIR`.
-- Coverage gate, quick, report, and diagnostic entrypoints invalidate the exact artifacts they will
-  produce before execution. A failed run cannot leave prior green LCOV, summary, patch, or
-  diagnostic output looking current.
-- Doctor mirrors coverage baseline precedence (`BASE_SHA`, `BASE_REF`, `origin/main`) and verifies a
-  merge base. Node/npm become informational when exact runnable jscpd 4.0.5 is already available.
-- Both CI jobs retain the stable `fast` and `coverage` names, classify docs immediately after
-  checkout, run on `ubuntu-24.04`, pin every action to a verified 40-hex commit, and pin Node
-  20.20.2. Accepted residual drift is explicitly limited to npm's transitive resolution for exact
-  `jscpd@4.0.5` and apt-provided ripgrep.
-- Generated-report provenance now distinguishes a bare commit from that commit plus uncommitted
-  worktree changes. Unused workflow helpers were removed, Python caches are ignored, all workspace
-  lint inheritance is tested, and the Cargo manifest explains why the ordered Clippy wrapper is
-  required for the style/complexity warning policy.
+## Remediation decisions
 
-## Historical evidence retained from the implementation
+1. Missing-baseline and Git-diff failures in `make check` now select full-workspace fmt, Clippy, and
+   tests instead of treating an empty changed-file list as a successful skip. Dry-run exposes the
+   fallback and exact full commands.
+2. Schema-3 attestation rejects intent-to-add entries and any cross-file mixture of staged and
+   unstaged/untracked paths. The index must globally be HEAD or the fully staged validated tree;
+   complete `quality -> git add -A -> quality-status` remains valid.
+3. Staged and committed coverage guards use the same `core.filemode` and hidden-index-flag
+   preflight as tree attestation. Worktree mode remains intentionally permissive at that standalone
+   guard because authoritative quality already fingerprints it.
+4. Coverage validates the lexical `target/llvm-cov-worktree/instrumented` child, rejects symlinks,
+   drops shared-target opt-in, and overrides both `CARGO_LLVM_COV_TARGET_DIR` and
+   `CARGO_LLVM_COV_BUILD_DIR`. Coverage dry-run prints all three target variables without creating
+   directories.
+5. Working-tree mode hashing follows Git's owner-execute bit (`stat.S_IXUSR`); group/other execute
+   bits no longer create false identity changes or mask an owner-execute change.
+6. One shared policy excludes `src/test_support.rs` from patch classification and every aggregate
+   LCOV/summary export. Each fresh LCOV is checked after generation and fails closed if an excluded
+   source appears.
+7. `scripts/lcov_stats.py` makes `LF`/`LH` authoritative for single-record totals and treats `DA:0`
+   only as location evidence. Duplicate records merge hits per source line and fail when incomplete
+   DA universes cannot be reconciled. Diagnostics, baselines, and generated hotspots share it.
+8. Report, gate, and diagnostic commands invalidate the complete authoritative companion set
+   (`lcov.info`, `summary.json`, `patch-coverage.json`, and `uncovered_locations.txt`) before
+   replacing LCOV. Focused coverage retains its separate `quick-*` provenance set.
+9. `scripts/quality_baseline.py` replaces the shell collector. It validates the baseline directory
+   and four leaves before execution, preserves child exit classification, requires valid LCOV,
+   atomically rewrites history, and publishes `latest.json` last. Production LOC now uses the same
+   exclusion predicate as coverage.
+10. GitHub Actions grants only `contents: read`; both checkout steps set
+    `persist-credentials: false`. The stable `fast` and `coverage` names and classifier-first
+    ordering are unchanged.
+11. Quality/check validate `quality` and `quality/logs` lexically before scope/status work. Every
+    planned log leaf is validated before the first gate executes, so internal and external symlink
+    redirection cannot receive logs or status side effects.
+12. `quality-status` returns 1 only for the genuine fail-fast gate-result shape while the failed
+    artifact still attests the live tree. Invalid, unknown, malformed, non-UTF-8, setup-error, or
+    stale artifacts return 2; passing artifacts require an explicit null `setup_error`.
+13. A shared Cargo target base and its final repository namespace must be disjoint from every Git
+    worktree and the Git common directory in both containment directions. Tests use real detached
+    linked worktrees at and beneath the candidate cache.
+14. `scripts/publish_report.py` compares the rendered body with the committed report body. Equal
+    content preserves committed bytes; changed content receives dirty provenance and is published
+    through a mode-preserving atomic replace. Malformed baseline history now fails report generation
+    closed.
+15. `AGENTS.md` names the exact seven gates once and in authoritative order: fmt, Clippy, tests,
+    public API, duplication, workflow gate tests, and coverage. Contributor, workflow, factory, CI,
+    and generated-report documentation use the same policy.
 
-These figures predate this final rebased audit and are retained as historical evidence, not
-re-measured claims:
+## Coverage universe and threshold evidence
 
-- Legacy loop: 998.73s cold and 39.68s warm median.
-- Changed-scope loop: 463.60s cold and 15.98s warm median.
-- Divergent-worktree shared cache: both worktrees clean and successful; approximately 34s Clippy
-  plus 39s tests cold and approximately 1.2s each warm.
-- Old-base coverage: 100.0000% functions, 99.6020% regions, and 99.9223% lines.
-- Pre-rebase implementation coverage: 100.0000% functions, 99.6076% regions, and 99.9304% lines.
-- Prior quality median: 303.71s; three implementation-stage quality runs passed with matching
-  fingerprints and zero skips.
+Aggregate production coverage is Rust under `crates/*/src/**/*.rs`, excluding crate `tests/` trees
+and every `src/test_support.rs`. The exclusion reduced the measured function universe from the
+historical 2,896 functions to 2,862 and the line universe from 40,758 to 40,457; it did not conceal
+uncovered production code. The patch gate remains 95%, with 100% required below 20 changed
+executable lines.
 
-## Untouched rebased baseline
+The first fresh post-exclusion measurement (`make coverage`) reported 58,134/58,699 regions, or
+99.03746231%. Applying the documented rule
+`floor((R - 0.10) * 100) / 100` selects a 98.93% region floor. The dedicated measurement-quality
+run exercised one additional region (58,135/58,699), while the final report-bearing quality run
+returned to 58,134/58,699. The report therefore uses the lower reproducible result, which leaves
+0.10746231 percentage points of headroom and safely covers the observed one-region execution
+variance. Functions stay at 99.5% and lines at 99.4%; uncovered regions remain visible in LLVM
+diagnostics and the generated hotspot evidence.
 
-Before the first final-audit edit, a full `make quality` run passed on the untouched
-`57866774…` tree in 1501.70s wall time. Per-gate durations from schema-1 `status.json` were:
-
-| Gate | Seconds |
-|---|---:|
-| fmt | 2.287 |
-| clippy | 244.388 |
-| tests | 450.726 |
-| public-api | 19.780 |
-| duplication | 15.875 |
-| gate-tests (pre-audit suite) | 26.923 |
-| coverage | 740.006 |
-
-This was a cold/cache-confounded baseline. It is recorded to satisfy before/after evidence, not to
-attribute the later wall-time difference to removal of a gate; no gate was removed.
-
-## Post-change measurement run
-
-After all implementation changes and initial report regeneration, a refreshed full worktree-mode
-`make quality` passed in 501.27s wall time. Schema-2 status recorded matching 24-entry dirty-tree
-fingerprints, no setup error, seven successful checks, zero skips, and these durations:
-
-| Gate | Seconds |
-|---|---:|
-| fmt | 2.042 |
-| clippy | 1.860 |
-| tests | 101.433 |
-| public-api | 18.887 |
-| duplication | 16.020 |
-| gate-tests (90 tests) | 68.787 |
-| coverage | 290.550 |
-
-The 1000.43s wall-time reduction from the untouched run is primarily warm-cache/runtime variance;
-it is not presented as a structural speedup. The correctness-motivated normal test gate remains.
-
-Fresh authoritative coverage from that measurement run was:
+Fresh final report-bearing coverage was:
 
 | Measure | Covered / total | Result | Floor |
 |---|---:|---:|---:|
-| Functions | 2896 / 2896 | 100.0000% | 99.5% |
-| Regions | 58512 / 59077 | 99.0436% | 99.0% |
-| Lines | 40643 / 40758 | 99.7178% | 99.4% |
+| Functions | 2,862 / 2,862 | 100.0000% | 99.5% |
+| Regions | 58,134 / 58,699 | 99.0375% | 98.93% |
+| Lines | 40,342 / 40,457 | 99.7157% | 99.4% |
 | Changed executable production lines | 0 / 0 | 100.0000% | 95% with small-patch floor |
 
-## Deterministic validation coverage
+Shared LCOV accounting reports 115 uncovered lines across 10 production files. The baseline metric
+universe contains 58,153 production source lines after excluding `test_support.rs`, 1,170 Rust test
+attributes, 20.12 test attributes/KLOC, and 17 `cfg(not(coverage))` occurrences.
 
-`make gate-tests` now runs 90 offline tests. The regressions cover deletion-only and rename scope,
-the exact docs allowlist, hunk line mapping, type changes, whole-tree snapshot guards, schema-2
-attestation and malformed artifacts, mode/rename/untracked mutations, staging validated bytes,
-hidden index flags, non-mutating dry-run argument orders, local/shared path symlinks, stale coverage
-artifacts, doctor baseline precedence and jscpd installer nuance, coverage failure propagation,
-immutable CI pins, generated-artifact ignores, and nine-member lint inheritance.
+## Deterministic regression coverage
 
-Before report regeneration, `make doctor`, `DRY_RUN=1 make check`, `make gate-tests`, and the required
-deprecated `make quick` compatibility path all passed. `make quick` conservatively selected the full
-workspace and passed format (2.34s), Clippy (21.65s), and normal tests (102.04s).
+`make gate-tests` runs 149 offline tests. New regressions cover conservative changed-scope fallback,
+partial staging/reset and intent-to-add, hidden coverage inputs, owner-execute semantics, LLVM build
+directory isolation, real linked-worktree cache collisions, generated LCOV exclusion, LF/LH gaps
+without zero-hit rows, duplicate-record merging, cross-command artifact invalidation, baseline and
+report symlink/atomicity failures, CI least privilege, lexical gate-log validation, and every
+`quality-status` exit-classification/tampering case.
 
-## Final attestation sequencing
+Repeated final coverage validation also exposed an existing 40ms process-startup assumption in a
+`crab-factory` timeout diagnostic test. The test now uses a bounded one-second timeout, preserving
+the same timeout behavior and separator-branch coverage while remaining reliable under LLVM
+instrumentation; production supervisor behavior is unchanged.
 
-This report and `CODE_QUALITY_REPORT.md` are tracked inputs, so the measurement status is intentionally
-made stale by report generation. The final sequence is `make doctor` → `make gate-tests` →
-`make quality` → `make quality-status`, with no tracked edits afterward. The resulting ignored
-schema-2 `quality/status.json` is the proof that the final report-bearing tree has matching
-fingerprints and zero skipped required gates. Failed runs invalidate status and their output
-artifacts first; an unavailable baseline fails closed with fetch/`BASE_SHA` guidance.
+The workspace contains 1,168 discovered tests under `cargo test --workspace --all-features --locked
+-- --list`. Attribute count and discovered-test count intentionally differ because generated or
+parameterized test surfaces do not map one-to-one to source attributes.
+
+## Baseline and measurement runs
+
+The real hardened baseline capture succeeded and atomically published one deduplicated history
+entry. It measured a cold normal test run at 677s and a warm isolated coverage gate at 282s. Those
+figures are environment/cache evidence, not a claimed structural speedup.
+
+After implementation, threshold propagation, documentation, and baseline capture—but before the two
+tracked reports were published—the dedicated schema-3 measurement `make quality` passed in 782.96s
+wall time with matching 29-entry fingerprints, null setup error, seven successes, and zero skips:
+
+| Gate | Seconds |
+|---|---:|
+| fmt | 2.163 |
+| clippy | 229.394 |
+| tests | 98.158 |
+| public-api | 19.013 |
+| duplication | 15.865 |
+| gate-tests (149 tests) | 136.570 |
+| coverage | 280.753 |
+
+Earlier checkpoint evidence is retained only as historical context: the pre-remediation report
+recorded 2,896/2,896 functions, 58,512/59,077 regions (99.0436%), and 40,643/40,758 lines
+(99.7178%) before the production-file exclusion. Those figures are not used for the new threshold
+or final claims.
+
+## Final attestation sequence
+
+The measurement status is intentionally made stale when this tracked report and
+`CODE_QUALITY_REPORT.md` are published. Final proof therefore follows report publication in this
+order: `make doctor`, `make gate-tests`, `make quality`, then `make quality-status`, with no tracked
+edit afterward. The resulting ignored schema-3 `quality/status.json` is the authoritative proof of
+matching fingerprints and zero required skips; coverage totals are compared read-only with the
+measurement table above.

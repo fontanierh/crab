@@ -280,9 +280,9 @@ def collect_checks(
         Check(
             "rg",
             "passed" if rg_location else "failed",
-            f"ripgrep for public API checks and report generation: {rg_location}"
+            f"ripgrep for public API checks: {rg_location}"
             if rg_location
-            else "ripgrep for public API checks and report generation: not found on PATH",
+            else "ripgrep for public API checks: not found on PATH",
             None if rg_location else "install rg and retry",
         )
     )

@@ -98,4 +98,4 @@ quality-report: ## Regenerate the tracked code-quality report.
 	@bash scripts/gen_code_quality_report.sh
 
 quality-baseline: ## Capture local performance/density data.
-	@bash scripts/collect_quality_baseline.sh
+	@$(PYTHON) scripts/quality_baseline.py

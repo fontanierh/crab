@@ -15,6 +15,10 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 
+COVERAGE_EXCLUDED_BASENAME = "test_support.rs"
+COVERAGE_IGNORE_FILENAME_REGEX = r"(^|/)test_support\.rs$"
+
+
 class WorkflowError(RuntimeError):
     """An environment or repository error that should exit with status 2."""
 
@@ -189,12 +193,6 @@ def validate_shared_target_base(root: Path, raw_value: str) -> Path:
     resolved = candidate.resolve(strict=False)
     forbidden = set(worktree_roots(root))
     forbidden.add(git_common_dir(root))
-    for location in forbidden:
-        if path_is_within(resolved, location):
-            raise WorkflowError(
-                "CRAB_SHARED_TARGET_DIR resolves inside a worktree or Git directory: "
-                f"{resolved} (inside {location})"
-            )
     existing_parent = _nearest_existing_parent(resolved)
     if not existing_parent.exists() or not existing_parent.is_dir():
         raise WorkflowError(
@@ -207,10 +205,23 @@ def validate_shared_target_base(root: Path, raw_value: str) -> Path:
     if resolved.exists() and not resolved.is_dir():
         raise WorkflowError(f"CRAB_SHARED_TARGET_DIR is not a directory: {resolved}")
     namespaced = resolved / repository_namespace(root)
-    if not path_is_within(namespaced.resolve(strict=False), resolved):
+    resolved_namespaced = namespaced.resolve(strict=False)
+    if not path_is_within(resolved_namespaced, resolved):
         raise WorkflowError(
             f"shared Cargo target namespace escapes its validated base: {namespaced}"
         )
+    for candidate_path, label in (
+        (resolved, "CRAB_SHARED_TARGET_DIR"),
+        (resolved_namespaced, "shared Cargo target namespace"),
+    ):
+        for location in forbidden:
+            if path_is_within(candidate_path, location) or path_is_within(
+                location, candidate_path
+            ):
+                raise WorkflowError(
+                    f"{label} must be disjoint from every worktree and Git directory: "
+                    f"{candidate_path} is inside or contains {location}"
+                )
     if _path_exists(namespaced):
         try:
             mode = namespaced.lstat().st_mode
@@ -280,8 +291,14 @@ def coverage_target_environment(
     local_target = validate_local_directory(
         root, Path("target") / "llvm-cov-worktree", create=create
     )
+    instrumented = validate_local_directory(
+        root,
+        Path("target") / "llvm-cov-worktree" / "instrumented",
+        create=create,
+    )
     result["CARGO_TARGET_DIR"] = str(local_target)
-    result["CARGO_LLVM_COV_TARGET_DIR"] = str(local_target / "instrumented")
+    result["CARGO_LLVM_COV_TARGET_DIR"] = str(instrumented)
+    result["CARGO_LLVM_COV_BUILD_DIR"] = str(instrumented)
     result.pop("CRAB_SHARED_TARGET_DIR", None)
     return result
 
@@ -297,7 +314,7 @@ def _working_blob_hash(path: Path) -> str:
                 "utf-8", errors="surrogateescape"
             )
         elif path.is_file():
-            executable = bool(path.stat().st_mode & 0o111)
+            executable = bool(path.stat().st_mode & stat.S_IXUSR)
             mode = b"100755" if executable else b"100644"
             payload = b"file:" + mode + b"\0" + path.read_bytes()
         elif path.exists():
@@ -370,6 +387,9 @@ def _status_paths(root: Path) -> list[str]:
     split_paths: list[str] = []
     restored_deletions: list[str] = []
     unmerged_paths: list[str] = []
+    intent_to_add_paths: list[str] = []
+    staged_paths: list[str] = []
+    unstaged_paths: list[str] = []
     for raw in result.stdout.split(b"\0"):
         if not raw:
             continue
@@ -382,12 +402,20 @@ def _status_paths(root: Path) -> list[str]:
             index_state, worktree_state = fields[1]
             path = fields[8]
             paths.append(path)
+            if index_state != ".":
+                staged_paths.append(path)
+            if worktree_state != ".":
+                unstaged_paths.append(path)
             if index_state != "." and worktree_state != ".":
                 split_paths.append(path)
             if index_state == "D" and _path_exists(root / path):
                 restored_deletions.append(path)
+            if worktree_state == "A":
+                intent_to_add_paths.append(path)
         elif kind == "?" and record.startswith("? "):
-            paths.append(record[2:])
+            path = record[2:]
+            paths.append(path)
+            unstaged_paths.append(path)
         elif kind == "u" and record.startswith("u "):
             fields = record.split(" ", 10)
             unmerged_paths.append(fields[-1])
@@ -412,10 +440,22 @@ def _status_paths(root: Path) -> list[str]:
         raise WorkflowError(
             f"unmerged paths prevent attestation: {_preview_paths(unmerged_paths)}; resolve conflicts and rerun"
         )
+    if intent_to_add_paths:
+        raise WorkflowError(
+            "intent-to-add entries prevent attestation: "
+            f"{_preview_paths(intent_to_add_paths)}; fully git add the files or git reset them, then rerun"
+        )
+    if staged_paths and unstaged_paths:
+        raise WorkflowError(
+            "the Git index must be entirely HEAD or the fully staged validated worktree; "
+            f"staged: {_preview_paths(staged_paths)}; unstaged/untracked: {_preview_paths(unstaged_paths)}. "
+            "Run git add -A to stage the exact validated tree, or git reset to unstage everything, then rerun"
+        )
     return paths
 
 
-def tree_fingerprint(root: Path) -> Fingerprint:
+def attestation_preflight(root: Path) -> None:
+    """Reject Git settings and index flags that hide snapshot inputs."""
     filemode = run_text(
         ["git", "config", "--bool", "--get", "core.filemode"],
         cwd=root,
@@ -431,6 +471,10 @@ def tree_fingerprint(root: Path) -> Fingerprint:
             "assume-unchanged or skip-worktree flags hide paths from attestation: "
             f"{_preview_paths(flagged)}; clear assume-unchanged/skip-worktree flags and rerun"
         )
+
+
+def tree_fingerprint(root: Path) -> Fingerprint:
+    attestation_preflight(root)
     paths = sorted(set(_status_paths(root)))
     entries = tuple((path, _working_blob_hash(root / path)) for path in paths)
     head = git_output(root, "rev-parse", "HEAD")

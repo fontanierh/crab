@@ -36,7 +36,7 @@ from scripts.workflow_common import (
 )
 
 
-STATUS_SCHEMA_VERSION = 2
+STATUS_SCHEMA_VERSION = 3
 QUALITY_GATE_NAMES = (
     "fmt",
     "clippy",
@@ -136,19 +136,32 @@ def run_specs(
     verbose: bool = False,
     executor: Executor = execute_command,
 ) -> list[GateRecord]:
+    lexical_root = root if root.is_absolute() else root.absolute()
     resolved_root = root.resolve()
-    try:
-        relative_log_directory = log_directory.resolve(strict=False).relative_to(
-            resolved_root
-        )
-    except ValueError as error:
-        raise WorkflowError(
-            f"gate log directory must remain inside the repository: {log_directory}"
-        ) from error
+    if log_directory.is_absolute():
+        try:
+            relative_log_directory = log_directory.relative_to(lexical_root)
+        except ValueError as error:
+            try:
+                relative_log_directory = log_directory.relative_to(resolved_root)
+            except ValueError:
+                raise WorkflowError(
+                    f"gate log directory must remain inside the repository: {log_directory}"
+                ) from error
+    else:
+        relative_log_directory = log_directory
     root = resolved_root
     log_directory = validate_local_directory(
         root, relative_log_directory, create=True
     )
+    planned_logs: dict[int, Path] = {}
+    for index, spec in enumerate(specs, start=1):
+        if spec.skip_reason:
+            continue
+        planned_logs[index] = validate_managed_file(
+            root,
+            (log_directory / f"{index:02d}-{spec.name}.log").relative_to(root),
+        )
     records: list[GateRecord] = []
     blocked_reason: str | None = None
     for index, spec in enumerate(specs, start=1):
@@ -166,10 +179,7 @@ def run_specs(
             records.append(record)
             print(f"gates: SKIP {spec.name}: {reason}")
             continue
-        log_path = validate_managed_file(
-            root,
-            (log_directory / f"{index:02d}-{spec.name}.log").relative_to(root),
-        )
+        log_path = planned_logs[index]
         returncode, duration = executor(root, spec, log_path, verbose)
         status = "passed" if returncode == 0 else "failed"
         record = GateRecord(
@@ -221,7 +231,11 @@ def check_specs(root: Path, scope: ScopeResult) -> list[GateSpec]:
     skip_reason: str | None = None
     if scope.docs_only:
         skip_reason = "docs-only change"
-    elif not scope.changed_files:
+    elif (
+        not scope.changed_files
+        and not scope.full_workspace
+        and scope.fallback_reason is None
+    ):
         skip_reason = "no changed files"
     package_args = _package_arguments(scope)
     return [
@@ -445,6 +459,8 @@ def orchestrate_quality(
     specs_override: Sequence[GateSpec] | None = None,
     versions_override: dict[str, str] | None = None,
 ) -> int:
+    validate_local_directory(root, "quality", create=False)
+    validate_local_directory(root, Path("quality") / "logs", create=False)
     status_path = prepare_status_path(root)
     started_at = utc_now()
     start = tree_fingerprint(root)
@@ -504,7 +520,15 @@ def orchestrate_quality(
     return exit_code
 
 
-def run_check(root: Path, mode: str, explicit_base: str | None, dry_run: bool) -> int:
+def run_check(
+    root: Path,
+    mode: str,
+    explicit_base: str | None,
+    dry_run: bool,
+    executor: Executor = execute_command,
+) -> int:
+    validate_local_directory(root, "quality", create=False)
+    validate_local_directory(root, Path("quality") / "logs", create=False)
     scope = select_scope(root, mode=mode, explicit_base=explicit_base)
     if scope.docs_only:
         print("check: scope docs-only")
@@ -530,6 +554,7 @@ def run_check(root: Path, mode: str, explicit_base: str | None, dry_run: bool) -
         specs,
         root / "quality" / "logs" / stamp,
         verbose=os.environ.get("VERBOSE") == "1",
+        executor=executor,
     )
     failed = [record for record in records if record.status == "failed"]
     if any(record.exit_code == 2 for record in failed):
@@ -544,8 +569,11 @@ def verify_status(root: Path) -> int:
     except FileNotFoundError:
         print("quality-status: missing quality/status.json; run make quality", file=sys.stderr)
         return 2
-    except (OSError, json.JSONDecodeError) as error:
-        print(f"quality-status: invalid status artifact: {error}", file=sys.stderr)
+    except (OSError, ValueError) as error:
+        print(
+            f"quality-status: status artifact is not valid UTF-8/JSON: {error}",
+            file=sys.stderr,
+        )
         return 2
     except WorkflowError as error:
         print(f"quality-status: unsafe status artifact: {error}", file=sys.stderr)
@@ -559,10 +587,13 @@ def verify_status(root: Path) -> int:
             file=sys.stderr,
         )
         return 2
-    if payload.get("result") != "passed":
-        print(f"quality-status: last result is {payload.get('result', 'unknown')}", file=sys.stderr)
-        return 1
-
+    result = payload.get("result")
+    if result not in ("passed", "failed", "invalid"):
+        print(
+            f"quality-status: unknown result value {result!r}; rerun make quality",
+            file=sys.stderr,
+        )
+        return 2
     checks = payload.get("checks")
     if not isinstance(checks, list):
         print("quality-status: checks must be a list", file=sys.stderr)
@@ -570,6 +601,18 @@ def verify_status(root: Path) -> int:
     if not all(isinstance(check, Mapping) for check in checks):
         print("quality-status: every check must be an object", file=sys.stderr)
         return 2
+    if "setup_error" not in payload:
+        print("quality-status: setup_error key is missing; rerun make quality", file=sys.stderr)
+        return 2
+    if result == "invalid":
+        print("quality-status: last result is invalid", file=sys.stderr)
+        actions = payload.get("next_actions")
+        if isinstance(actions, list):
+            for action in actions:
+                if isinstance(action, str):
+                    print(f"quality-status: next: {action}", file=sys.stderr)
+        return 2
+
     names = tuple(check.get("name") for check in checks)
     if names != QUALITY_GATE_NAMES:
         print(
@@ -577,15 +620,52 @@ def verify_status(root: Path) -> int:
             file=sys.stderr,
         )
         return 2
-    if any(
-        check.get("status") != "passed" or check.get("exit_code") != 0
-        for check in checks
-    ):
-        print("quality-status: passed artifact contains a non-passing check", file=sys.stderr)
-        return 2
     if payload.get("setup_error") is not None:
-        print("quality-status: passed artifact contains a setup error", file=sys.stderr)
+        print(
+            f"quality-status: {result} artifact contains a setup error",
+            file=sys.stderr,
+        )
         return 2
+
+    if result == "passed":
+        if any(
+            check.get("status") != "passed" or check.get("exit_code") != 0
+            for check in checks
+        ):
+            print("quality-status: passed artifact contains a non-passing check", file=sys.stderr)
+            return 2
+    else:
+        failed_seen = False
+        failed_shape_valid = False
+        for check in checks:
+            status = check.get("status")
+            exit_code = check.get("exit_code")
+            if not failed_seen and status == "passed" and exit_code == 0:
+                continue
+            if not failed_seen and status == "failed":
+                if (
+                    isinstance(exit_code, bool)
+                    or not isinstance(exit_code, int)
+                    or exit_code in (0, 2)
+                    or not isinstance(check.get("log_path"), str)
+                    or not check.get("log_path")
+                    or not isinstance(check.get("rerun_command"), str)
+                    or not check.get("rerun_command")
+                ):
+                    break
+                failed_seen = True
+                continue
+            if failed_seen and status == "skipped" and exit_code is None:
+                continue
+            break
+        else:
+            failed_shape_valid = failed_seen
+        if not failed_shape_valid:
+            print(
+                "quality-status: artifact claims failure but its checks are inconsistent; rerun make quality",
+                file=sys.stderr,
+            )
+            return 2
 
     start = payload.get("start_fingerprint")
     end = payload.get("end_fingerprint")
@@ -605,8 +685,20 @@ def verify_status(root: Path) -> int:
         print(f"quality-status: current tree cannot be attested: {error}", file=sys.stderr)
         return 2
     if dict(end) != fingerprint_payload(current):
-        print("quality-status: tree differs from the validated fingerprint; rerun make quality", file=sys.stderr)
+        qualifier = "stale failed artifact; " if result == "failed" else ""
+        print(
+            f"quality-status: {qualifier}tree differs from the validated fingerprint; rerun make quality",
+            file=sys.stderr,
+        )
         return 2
+    if result == "failed":
+        print("quality-status: last result is failed", file=sys.stderr)
+        actions = payload.get("next_actions")
+        if isinstance(actions, list):
+            for action in actions:
+                if isinstance(action, str):
+                    print(f"quality-status: next: {action}", file=sys.stderr)
+        return 1
     print("quality-status: passed artifact matches the exact current tree")
     return 0
 

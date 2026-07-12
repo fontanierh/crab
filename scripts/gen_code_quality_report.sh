@@ -12,15 +12,10 @@ OUT_PATH="${1:-CODE_QUALITY_REPORT.md}"
 BASELINE_LATEST_PATH="$ROOT_DIR/quality/baselines/latest.json"
 BASELINE_HISTORY_PATH="$ROOT_DIR/quality/baselines/history.jsonl"
 LCOV_PATH="$ROOT_DIR/coverage/lcov.info"
+SUMMARY_PATH="$ROOT_DIR/coverage/summary.json"
+PATCH_COVERAGE_PATH="$ROOT_DIR/coverage/patch-coverage.json"
 
 have() { command -v "$1" >/dev/null 2>&1; }
-
-git_sha="$(git rev-parse HEAD)"
-git_commit_date="$(git show -s --format=%cs HEAD)"
-tree_provenance="commit \`$git_sha\`"
-if [ -n "$(git status --porcelain=v1 --untracked-files=all)" ]; then
-  tree_provenance="commit \`$git_sha\` plus uncommitted worktree changes"
-fi
 
 rustc_version="$(rustc -V)"
 cargo_version="$(cargo -V)"
@@ -56,22 +51,40 @@ if have scc; then
   sloc_table_md="$(printf '```text\n%s\n```' "$(scc crates)")"
 fi
 
-production_loc="$(find crates -type f -path '*/src/*.rs' -print0 | xargs -0 wc -l | tail -n 1 | awk '{print $1}')"
-test_attribute_count="$(rg -n '^\s*#\[(tokio::)?test\]' crates | wc -l | tr -d ' ')"
-tests_per_kloc="$(python3 - "$production_loc" "$test_attribute_count" <<'PY'
+metrics_json="$(python3 scripts/quality_baseline.py --print-metrics)"
+metric_values="$(python3 - "$metrics_json" <<'PY'
+import json
 import sys
-loc = float(sys.argv[1])
-tests = float(sys.argv[2])
-if loc <= 0:
-    print('0.00')
-else:
-    print(f"{(tests / (loc / 1000.0)):.2f}")
+
+payload = json.loads(sys.argv[1])
+repo = payload["repo_metrics"]
+churn = payload["churn"]
+print(
+    repo["production_loc"],
+    repo["test_attribute_count"],
+    repo["tests_per_kloc"],
+    repo["cfg_not_coverage_count"],
+    churn["quality_fix_like_commits_last_30d"],
+    churn["quality_fix_like_commits_last_90d"],
+    sep="\t",
+)
 PY
 )"
+IFS=$'\t' read -r production_loc test_attribute_count tests_per_kloc coverage_cfg_not_count quality_churn_30d quality_churn_90d <<<"$metric_values"
 
-coverage_cfg_not_count="$(rg -n 'cfg\(not\(coverage\)\)' crates | wc -l | tr -d ' ')"
-quality_churn_30d="$(git log --since='30 days ago' --oneline --grep='coverage\|quality[- ]gate' | wc -l | tr -d ' ')"
-quality_churn_90d="$(git log --since='90 days ago' --oneline --grep='coverage\|quality[- ]gate' | wc -l | tr -d ' ')"
+workspace_member_count="$(python3 - <<'PY'
+import pathlib
+import sys
+import tomllib
+
+try:
+    payload = tomllib.loads(pathlib.Path("Cargo.toml").read_text(encoding="utf-8"))
+    print(len(payload["workspace"]["members"]))
+except (OSError, UnicodeError, tomllib.TOMLDecodeError, KeyError, TypeError) as error:
+    print(f"invalid workspace manifest while generating report: {error}", file=sys.stderr)
+    raise SystemExit(2)
+PY
+)"
 
 tests_total="$({
   cargo test --quiet --workspace --all-features --locked -- --list | python3 -c '
@@ -87,31 +100,47 @@ print(count)
 
 coverage_hotspots_md='Coverage hotspot view unavailable: run `make coverage` first to generate `coverage/lcov.info`.'
 if [ -f "$LCOV_PATH" ]; then
-  coverage_hotspots_md="$(python3 - "$LCOV_PATH" <<'PY'
+  coverage_hotspots_md="$(python3 scripts/lcov_stats.py hotspots --root "$ROOT_DIR" --lcov "$LCOV_PATH")"
+fi
+
+coverage_totals_md='Coverage totals unavailable: run `make coverage-gate` to generate fresh summary and patch artifacts.'
+if [ -f "$SUMMARY_PATH" ] && [ -f "$PATCH_COVERAGE_PATH" ]; then
+  coverage_totals_md="$(python3 - "$SUMMARY_PATH" "$PATCH_COVERAGE_PATH" <<'PY'
+import json
 import pathlib
 import sys
 
-path = pathlib.Path(sys.argv[1])
-current = None
-counts = {}
-for raw in path.read_text(encoding="utf-8", errors="replace").splitlines():
-    if raw.startswith("SF:"):
-        current = raw[3:]
-        counts.setdefault(current, 0)
-    elif raw.startswith("DA:") and current is not None:
-        _, hits = raw[3:].split(",", 1)
-        if int(hits) == 0:
-            counts[current] = counts.get(current, 0) + 1
+try:
+    summary = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+    patch = json.loads(pathlib.Path(sys.argv[2]).read_text(encoding="utf-8"))
+    totals = summary["data"][0]["totals"]
+    rows = []
+    for name, floor in (("functions", "99.5%"), ("regions", "98.93%"), ("lines", "99.4%")):
+        item = totals[name]
+        rows.append(
+            f"| {name.title()} | {item['covered']} / {item['count']} | "
+            f"{item['percent']:.4f}% | {floor} |"
+        )
+    rows.append(
+        "| Changed executable production lines | "
+        f"{patch['covered_changed_lines']} / {patch['changed_executable_lines']} | "
+        f"{patch['patch_percent']:.4f}% | 95% with small-patch floor |"
+    )
+except (
+    OSError,
+    UnicodeError,
+    json.JSONDecodeError,
+    KeyError,
+    IndexError,
+    TypeError,
+    ValueError,
+) as error:
+    print(f"invalid coverage summary artifact: {error}", file=sys.stderr)
+    raise SystemExit(2)
 
-rows = [(name, value) for name, value in counts.items() if value > 0]
-rows.sort(key=lambda item: (-item[1], item[0]))
-if not rows:
-    print("No uncovered lines reported in coverage/lcov.info.")
-else:
-    print("| File | Uncovered lines |")
-    print("|---|---:|")
-    for name, value in rows[:15]:
-        print(f"| `{name}` | {value} |")
+print("| Measure | Covered / total | Result | Floor |")
+print("|---|---:|---:|---:|")
+print("\n".join(rows))
 PY
 )"
 fi
@@ -125,10 +154,20 @@ import json
 import pathlib
 import sys
 
-payload = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding='utf-8'))
+try:
+    payload = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding='utf-8'))
+except (OSError, UnicodeError, json.JSONDecodeError) as error:
+    print(f"invalid baseline latest artifact: {error}", file=sys.stderr)
+    raise SystemExit(2)
+if not isinstance(payload, dict):
+    print("invalid baseline latest artifact: root must be a JSON object", file=sys.stderr)
+    raise SystemExit(2)
 runtime = payload.get('runtime_seconds', {})
 repo = payload.get('repo_metrics', {})
 churn = payload.get('churn', {})
+if not all(isinstance(value, dict) for value in (runtime, repo, churn)):
+    print("invalid baseline latest artifact: metric groups must be objects", file=sys.stderr)
+    raise SystemExit(2)
 print(f"- Captured at: `{payload.get('timestamp_utc', 'unknown')}`")
 print(f"- Baseline commit: `{payload.get('git_sha', 'unknown')}`")
 print(f"- `make test`: `{runtime.get('make_test', 'n/a')}s`")
@@ -150,58 +189,62 @@ import json
 import pathlib
 import sys
 
-entries = []
-for line in pathlib.Path(sys.argv[1]).read_text(encoding='utf-8').splitlines():
-    line = line.strip()
-    if not line:
-        continue
-    try:
-        entries.append(json.loads(line))
-    except json.JSONDecodeError:
-        continue
+def render() -> None:
+    entries = []
+    for line in pathlib.Path(sys.argv[1]).read_text(encoding='utf-8').splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        payload = json.loads(line)
+        if not isinstance(payload, dict):
+            raise ValueError("each history line must be a JSON object")
+        entries.append(payload)
 
-if len(entries) < 2:
-    print("No baseline trend yet. Capture at least two baselines with `make quality-baseline`.")
-    raise SystemExit(0)
+    if len(entries) < 2:
+        print("No baseline trend yet. Capture at least two baselines with `make quality-baseline`.")
+        return
 
-prev = entries[-2]
-last = entries[-1]
+    prev = entries[-2]
+    last = entries[-1]
+    prev_rt = prev.get('runtime_seconds', {})
+    last_rt = last.get('runtime_seconds', {})
+    prev_repo = prev.get('repo_metrics', {})
+    last_repo = last.get('repo_metrics', {})
+    if not all(isinstance(value, dict) for value in (prev_rt, last_rt, prev_repo, last_repo)):
+        raise ValueError("history metric groups must be objects")
 
-prev_rt = prev.get('runtime_seconds', {})
-last_rt = last.get('runtime_seconds', {})
-prev_repo = prev.get('repo_metrics', {})
-last_repo = last.get('repo_metrics', {})
+    def delta(name: str) -> str:
+        a = prev_rt.get(name)
+        b = last_rt.get(name)
+        if a is None or b is None:
+            return "n/a"
+        change = b - a
+        sign = "+" if change >= 0 else ""
+        return f"{sign}{change}s (from {a}s to {b}s)"
 
-def delta(name: str) -> str:
-    a = prev_rt.get(name)
-    b = last_rt.get(name)
-    if a is None or b is None:
-        return "n/a"
-    change = b - a
-    sign = "+" if change >= 0 else ""
-    return f"{sign}{change}s (from {a}s to {b}s)"
+    print(f"- Previous baseline: `{prev.get('timestamp_utc', 'unknown')}` @ `{prev.get('git_sha', 'unknown')}`")
+    print(f"- Latest baseline: `{last.get('timestamp_utc', 'unknown')}` @ `{last.get('git_sha', 'unknown')}`")
+    print(f"- `make test` delta: `{delta('make_test')}`")
+    print(f"- `make coverage-gate` delta: `{delta('make_coverage_gate')}`")
+    print(
+        f"- Uncovered lines delta: "
+        f"`{last_repo.get('uncovered_lines', 'n/a')} - {prev_repo.get('uncovered_lines', 'n/a')}`"
+    )
+    print(
+        f"- Uncovered files delta: "
+        f"`{last_repo.get('uncovered_files', 'n/a')} - {prev_repo.get('uncovered_files', 'n/a')}`"
+    )
 
-print(f"- Previous baseline: `{prev.get('timestamp_utc', 'unknown')}` @ `{prev.get('git_sha', 'unknown')}`")
-print(f"- Latest baseline: `{last.get('timestamp_utc', 'unknown')}` @ `{last.get('git_sha', 'unknown')}`")
-print(f"- `make test` delta: `{delta('make_test')}`")
-print(f"- `make coverage-gate` delta: `{delta('make_coverage_gate')}`")
-print(
-    f"- Uncovered lines delta: "
-    f"`{last_repo.get('uncovered_lines', 'n/a')} - {prev_repo.get('uncovered_lines', 'n/a')}`"
-)
-print(
-    f"- Uncovered files delta: "
-    f"`{last_repo.get('uncovered_files', 'n/a')} - {prev_repo.get('uncovered_files', 'n/a')}`"
-)
+try:
+    render()
+except (OSError, UnicodeError, json.JSONDecodeError, TypeError, ValueError) as error:
+    print(f"invalid baseline history artifact: {error}", file=sys.stderr)
+    raise SystemExit(2)
 PY
 )"
 fi
 
-cat >"$OUT_PATH" <<REPORT
-# Code Quality Report — Crab Project
-
-Generated for $tree_provenance (commit date: $git_commit_date).
-
+python3 scripts/publish_report.py --out-path "$OUT_PATH" <<REPORT
 This report is generated by \`scripts/gen_code_quality_report.sh\`.
 
 ## Tool Versions
@@ -219,16 +262,17 @@ This report is generated by \`scripts/gen_code_quality_report.sh\`.
 
 All required gates are defined in \`Makefile\` and enforced by CI in \`.github/workflows/quality.yml\`:
 
-- \`cargo fmt --check\`
-- repository Clippy policy: rustc warnings and correctness/suspicious/perf denied;
+- \`fmt\`: \`cargo fmt --all -- --check\`
+- \`clippy\`: repository policy with rustc warnings and correctness/suspicious/perf denied;
   style/complexity force-warned
-- full workspace tests in the normal build configuration (the only gate compiling
+- \`tests\`: full workspace tests in the normal build configuration (the only gate compiling
   \`cfg(not(any(test, coverage)))\` production paths)
-- deterministic offline workflow tests (\`make gate-tests\`)
-- \`bash scripts/public_api_usage_check.sh\`
-- \`cargo llvm-cov\` gate: 99.5% functions, 99.0% regions, 99.4% lines, and 95% patch coverage
+- \`public-api\`: cross-file public API wiring check
+- \`duplication\`: production Rust \`jscpd\` gate (threshold 0)
+- \`gate-tests\`: deterministic offline workflow tests
+- \`coverage\`: fresh \`cargo llvm-cov\` gate: 99.5% functions, 98.93% regions, 99.4% lines,
+  and 95% patch coverage
   (the workspace suite is re-executed under instrumentation and \`cfg(coverage)\`)
-- \`jscpd\` duplication gate (threshold 0)
 
 Canonical agent loop:
 
@@ -247,7 +291,8 @@ $sloc_table_md
 
 ## Runtime + Density Metrics
 
-- Production LOC (\`crates/*/src/*.rs\`): $production_loc
+- Workspace crates: $workspace_member_count
+- Production LOC (production Rust, excluding \`src/test_support.rs\`): $production_loc
 - Workspace test attributes (\`#[test]\`, \`#[tokio::test]\`): $test_attribute_count
 - Tests/KLOC: $tests_per_kloc
 - \`cfg(not(coverage))\` occurrences: $coverage_cfg_not_count
@@ -263,6 +308,11 @@ $baseline_latest_md
 $baseline_trend_md
 
 ## Coverage Hotspots (from \`coverage/lcov.info\` when present)
+
+$coverage_totals_md
+
+Aggregate production coverage excludes every \`src/test_support.rs\` through the shared export
+policy. Hotspots below use LCOV \`LF\`/\`LH\` totals; \`DA:0\` rows supply locations only.
 
 $coverage_hotspots_md
 

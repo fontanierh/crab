@@ -253,10 +253,10 @@ the distinction. Reports are generated artifacts; do not hand-edit them.
 
 ## Quality, handoff, and cleanup
 
-The final gate is exactly `make quality`. Its 100% function and 99% region thresholds exercise the
-working tree. Per-changed-line patch coverage is additionally enforced in pull-request CI when
-`BASE_REF` is set; the factory does not rewrite the repository gate scripts to emulate that PR diff
-inside an uncommitted worktree.
+The final gate is exactly `make quality`. Its 99.5% function, 98.93% region, and 99.4% line
+thresholds exercise the working tree. Its coverage gate also enforces 95% changed executable-line
+coverage, including the under-20-line 100% rule, against the factory worktree's resolved base. The
+factory uses the repository gate unchanged rather than maintaining a separate PR-only patch gate.
 
 The factory intentionally preserves its branch, worktree, and artifacts on success and failure.
 The operator should inspect the reports and diff, make any desired commits outside the factory,

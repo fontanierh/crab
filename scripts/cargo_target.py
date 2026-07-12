@@ -58,7 +58,17 @@ def main(arguments: list[str] | None = None) -> int:
 
     if args.dry_run:
         target = environment.get("CARGO_TARGET_DIR", "<cargo default>")
-        print(f"CARGO_TARGET_DIR={target} {shell_join(args.command)}")
+        variables = [f"CARGO_TARGET_DIR={target}"]
+        if args.mode == "coverage":
+            variables.extend(
+                (
+                    "CARGO_LLVM_COV_TARGET_DIR="
+                    + environment["CARGO_LLVM_COV_TARGET_DIR"],
+                    "CARGO_LLVM_COV_BUILD_DIR="
+                    + environment["CARGO_LLVM_COV_BUILD_DIR"],
+                )
+            )
+        print(f"{' '.join(variables)} {shell_join(args.command)}")
         return 0
 
     try:

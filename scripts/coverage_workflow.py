@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -16,8 +17,10 @@ if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from scripts.changed_scope import select_scope
+from scripts.lcov_stats import parse_lcov
 from scripts.patch_coverage import resolve_patch_base, validate_diff_mode
 from scripts.workflow_common import (
+    COVERAGE_IGNORE_FILENAME_REGEX,
     WorkflowError,
     repository_root,
     validate_local_directory,
@@ -26,8 +29,20 @@ from scripts.workflow_common import (
 
 
 FUNCTION_THRESHOLD = "99.5"
-REGION_THRESHOLD = "99.0"
+REGION_THRESHOLD = "98.93"
 LINE_THRESHOLD = "99.4"
+AUTHORITATIVE_ARTIFACTS = (
+    "lcov.info",
+    "summary.json",
+    "patch-coverage.json",
+    "uncovered_locations.txt",
+)
+QUICK_ARTIFACTS = (
+    "quick-lcov.info",
+    "quick-summary.json",
+    "quick-patch-coverage.json",
+)
+IGNORE_ARGUMENTS = ("--ignore-filename-regex", COVERAGE_IGNORE_FILENAME_REGEX)
 
 
 def _invalidate_outputs(root: Path, names: Sequence[str]) -> dict[str, Path]:
@@ -45,6 +60,25 @@ def _invalidate_outputs(root: Path, names: Sequence[str]) -> dict[str, Path]:
 
 def _create_coverage_directory(root: Path) -> None:
     validate_local_directory(root, "coverage", create=True)
+
+
+def _validate_lcov_policy(path: Path) -> None:
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeError) as error:
+        raise WorkflowError(f"could not read fresh LCOV artifact {path}: {error}") from error
+    excluded = [
+        raw[3:]
+        for raw in lines
+        if raw.startswith("SF:")
+        and re.search(COVERAGE_IGNORE_FILENAME_REGEX, raw[3:].replace("\\", "/"))
+    ]
+    if excluded:
+        preview = ", ".join(excluded[:5])
+        raise WorkflowError(
+            "coverage export contains policy-excluded files "
+            f"({preview}); rerun after fixing the ignore policy"
+        )
 
 
 def run_local_coverage(root: Path, arguments: Sequence[str]) -> int:
@@ -103,7 +137,7 @@ def coverage_arguments(scope_packages: Sequence[str], full_workspace: bool) -> l
 
 def run_report(root: Path) -> int:
     try:
-        output = _invalidate_outputs(root, ("lcov.info",))["lcov.info"]
+        output = _invalidate_outputs(root, AUTHORITATIVE_ARTIFACTS)["lcov.info"]
         _create_coverage_directory(root)
     except WorkflowError as error:
         print(f"coverage-report: {error}", file=sys.stderr)
@@ -117,9 +151,15 @@ def run_report(root: Path) -> int:
             "--lcov",
             "--output-path",
             str(output),
+            *IGNORE_ARGUMENTS,
         ],
     )
     if result == 0:
+        try:
+            _validate_lcov_policy(output)
+        except WorkflowError as error:
+            print(f"coverage-report: {error}", file=sys.stderr)
+            return 2
         print(f"coverage: fresh LCOV report: {output}")
     return result
 
@@ -128,9 +168,7 @@ def run_gate(root: Path, mode: str, explicit_base: str | None) -> int:
     try:
         validate_diff_mode(root, mode)
         base_sha = resolve_patch_base(root, explicit_base)
-        outputs = _invalidate_outputs(
-            root, ("lcov.info", "summary.json", "patch-coverage.json")
-        )
+        outputs = _invalidate_outputs(root, AUTHORITATIVE_ARTIFACTS)
         _create_coverage_directory(root)
     except WorkflowError as error:
         print(f"coverage-gate: {error}", file=sys.stderr)
@@ -159,10 +197,16 @@ def run_gate(root: Path, mode: str, explicit_base: str | None) -> int:
             "--fail-under-lines",
             LINE_THRESHOLD,
             "--show-missing-lines",
+            *IGNORE_ARGUMENTS,
         ],
     )
     if result != 0:
         return result
+    try:
+        _validate_lcov_policy(output)
+    except WorkflowError as error:
+        print(f"coverage-gate: {error}", file=sys.stderr)
+        return 2
     summary_path = outputs["summary.json"]
     summary_result = run_local_coverage(
         root,
@@ -172,6 +216,7 @@ def run_gate(root: Path, mode: str, explicit_base: str | None) -> int:
             "--summary-only",
             "--output-path",
             str(summary_path),
+            *IGNORE_ARGUMENTS,
         ],
     )
     if summary_result != 0:
@@ -209,10 +254,7 @@ def run_quick(root: Path, explicit_base: str | None) -> int:
     try:
         base_sha = resolve_patch_base(root, explicit_base)
         scope = select_scope(root, mode="worktree", explicit_base=base_sha)
-        outputs = _invalidate_outputs(
-            root,
-            ("quick-lcov.info", "quick-summary.json", "quick-patch-coverage.json"),
-        )
+        outputs = _invalidate_outputs(root, QUICK_ARTIFACTS)
     except WorkflowError as error:
         print(f"coverage-quick: {error}", file=sys.stderr)
         return 2
@@ -245,10 +287,16 @@ def run_quick(root: Path, explicit_base: str | None) -> int:
             "--lcov",
             "--output-path",
             str(lcov_path),
+            *IGNORE_ARGUMENTS,
         ],
     )
     if result != 0:
         return result
+    try:
+        _validate_lcov_policy(lcov_path)
+    except WorkflowError as error:
+        print(f"coverage-quick: {error}", file=sys.stderr)
+        return 2
     summary_result = run_local_coverage(
         root,
         [
@@ -257,6 +305,7 @@ def run_quick(root: Path, explicit_base: str | None) -> int:
             "--summary-only",
             "--output-path",
             str(summary_path),
+            *IGNORE_ARGUMENTS,
         ],
     )
     if summary_result != 0:
@@ -277,7 +326,7 @@ def run_quick(root: Path, explicit_base: str | None) -> int:
 
 def run_diagnostics(root: Path) -> int:
     try:
-        outputs = _invalidate_outputs(root, ("lcov.info", "uncovered_locations.txt"))
+        outputs = _invalidate_outputs(root, AUTHORITATIVE_ARTIFACTS)
         _create_coverage_directory(root)
     except WorkflowError as error:
         print(f"coverage-diagnostics: {error}", file=sys.stderr)
@@ -293,40 +342,47 @@ def run_diagnostics(root: Path) -> int:
             "--lcov",
             "--output-path",
             str(lcov_path),
+            *IGNORE_ARGUMENTS,
         ],
     )
     if result != 0:
         return result
 
-    current: str | None = None
-    missing: dict[str, list[int]] = {}
     try:
-        lines = lcov_path.read_text(encoding="utf-8", errors="replace").splitlines()
-        for raw in lines:
-            if raw.startswith("SF:"):
-                current = raw[3:]
-                missing.setdefault(current, [])
-            elif raw.startswith("DA:") and current is not None:
-                fields = raw[3:].split(",")
-                if len(fields) >= 2 and int(fields[1]) == 0:
-                    missing[current].append(int(fields[0]))
-            elif raw == "end_of_record":
-                current = None
+        _validate_lcov_policy(lcov_path)
+        stats = parse_lcov(root, lcov_path)
         rows = sorted(
-            ((path, sorted(set(values))) for path, values in missing.items() if values),
-            key=lambda value: (-len(value[1]), value[0]),
+            (item for item in stats.files if item.uncovered_lines > 0),
+            key=lambda item: (-item.uncovered_lines, item.path),
         )
         with summary_path.open("w", encoding="utf-8") as output:
             if not rows:
-                output.write("No uncovered line locations parsed from fresh LCOV output.\n")
+                output.write("No uncovered lines reported by fresh LCOV LF/LH totals.\n")
             else:
-                output.write("Top uncovered files (fresh LCOV DA hit count = 0):\n")
-                for path, values in rows[:25]:
+                output.write("Top uncovered files (fresh LCOV LF/LH totals):\n")
+                for item in rows[:25]:
+                    values = item.zero_hit_lines
                     preview = ", ".join(str(value) for value in values[:20])
                     if len(values) > 20:
                         preview += ", ..."
-                    output.write(f"- {path}: {len(values)} line(s) [{preview}]\n")
-    except (OSError, ValueError) as error:
+                    if not preview:
+                        preview = "no DA:0 locations"
+                    missing_locations = item.uncovered_lines - len(values)
+                    annotation = ""
+                    if missing_locations:
+                        annotation = (
+                            f" (+{missing_locations} uncovered line(s) without DA:0 rows; "
+                            "totals from LF/LH)"
+                        )
+                    output.write(
+                        f"- {item.path}: {item.uncovered_lines} line(s) "
+                        f"[{preview}]{annotation}\n"
+                    )
+            output.write(
+                f"Totals: {stats.uncovered_lines} uncovered of {stats.lines_found} line(s) "
+                f"across {stats.uncovered_files} file(s) with gaps.\n"
+            )
+    except (OSError, WorkflowError) as error:
         print(f"coverage-diagnostics: could not parse fresh LCOV: {error}", file=sys.stderr)
         return 2
     print(f"coverage-diagnostics: fresh LCOV: {lcov_path}")

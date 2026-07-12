@@ -100,7 +100,8 @@ fn capture_is_bounded_and_timeout_errors_keep_partial_diagnostics() {
     let timeout = supervise(
         shell_spec(
             "printf before-timeout; printf stderr-note >&2; sleep 30",
-            Duration::from_millis(40),
+            // Instrumented process startup can exceed a few dozen milliseconds under load.
+            Duration::from_secs(1),
             no_cancel(),
         ),
         OutputPlan::Capture,

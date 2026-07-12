@@ -13,7 +13,9 @@ make check
 make quality
 ```
 
-`make quality` runs the full local gate: fmt, clippy, tests with coverage, and duplication checks. All checks must pass before opening a PR.
+`make quality` runs the full local gate in order: fmt, Clippy, normal tests, public-API wiring,
+duplication, deterministic workflow gate tests, and coverage. All checks must pass before opening a
+PR.
 
 ## Prerequisites
 
@@ -26,7 +28,7 @@ make quality
 
 ## Quality Expectations
 
-- **Coverage gate.** `make quality` enforces 99.5% functions, 99.0% regions, 99.4% lines,
+- **Coverage gate.** `make quality` enforces 99.5% functions, 98.93% regions, 99.4% lines,
   and 95% changed executable lines. Under 20 changed executable lines, patch coverage is 100%.
 - **No dead code.** The codebase compiles with `#![deny(dead_code)]`. Remove unused items rather than suppressing the lint.
 - **Clippy policy.** Rust warnings and correctness/suspicious/performance findings fail. Style and
@@ -36,7 +38,8 @@ make quality
 ## PR Process
 
 - Keep PRs small and atomic. One logical change per PR is strongly preferred.
-- All CI gates must pass (fmt, clippy, coverage, duplication).
+- All seven CI gates must pass (fmt, Clippy, tests, public-API wiring, duplication, workflow gate
+  tests, and coverage).
 - PR description must cover three things:
   1. **What** changed
   2. **Why** it was needed

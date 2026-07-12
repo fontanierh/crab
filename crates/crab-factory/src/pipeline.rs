@@ -484,12 +484,22 @@ pub(crate) fn assert_quality_unchanged(
 }
 
 pub(crate) fn parse_verdict(report: &str) -> FactoryResult<&'static str> {
-    let first = report.lines().map(str::trim).find(|line| !line.is_empty());
-    match first {
-        Some("VERDICT: CLEAN") => Ok("clean"),
-        Some("VERDICT: CHANGES_REQUIRED") => Ok("changes_required"),
+    let verdicts = report
+        .lines()
+        .map(str::trim)
+        .filter_map(|line| match line {
+            "VERDICT: CLEAN" => Some("clean"),
+            "VERDICT: CHANGES_REQUIRED" => Some("changes_required"),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    match verdicts.as_slice() {
+        [verdict] => Ok(verdict),
+        [] => Err(FactoryError::new(
+            "review has no exact verdict line; expected exactly one VERDICT: CLEAN or VERDICT: CHANGES_REQUIRED",
+        )),
         _ => Err(FactoryError::new(
-            "review has no valid first-line verdict; expected VERDICT: CLEAN or VERDICT: CHANGES_REQUIRED",
+            "review has multiple verdict lines; expected exactly one VERDICT: CLEAN or VERDICT: CHANGES_REQUIRED",
         )),
     }
 }

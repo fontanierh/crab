@@ -3,6 +3,8 @@ from __future__ import annotations
 import contextlib
 import io
 import json
+import os
+import re
 import tempfile
 import unittest
 from pathlib import Path
@@ -13,11 +15,12 @@ from scripts.patch_coverage import (
     allowed_uncovered,
     collect_added_production_lines,
     evaluate_patch,
+    is_production_rust,
     main,
     parse_lcov,
     validate_diff_mode,
 )
-from scripts.workflow_common import WorkflowError
+from scripts.workflow_common import COVERAGE_IGNORE_FILENAME_REGEX, WorkflowError
 from scripts.tests.helpers import init_repo, run_git, write
 
 
@@ -127,6 +130,42 @@ index 111..222 100644
 
 
 class PatchCoverageGitModeTests(unittest.TestCase):
+    def test_guarded_modes_share_hidden_index_and_filemode_preflight(self) -> None:
+        for mode in ("staged", "committed"):
+            for flag in ("--assume-unchanged", "--skip-worktree"):
+                with self.subTest(mode=mode, flag=flag), tempfile.TemporaryDirectory() as directory:
+                    root = Path(directory)
+                    init_repo(root)
+                    run_git(root, "update-index", flag, "Cargo.lock")
+                    with self.assertRaisesRegex(WorkflowError, flag.removeprefix("--")):
+                        validate_diff_mode(root, mode)
+            with self.subTest(mode=mode, policy="filemode"), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                init_repo(root)
+                run_git(root, "config", "core.filemode", "false")
+                os.chmod(root / "Cargo.lock", 0o755)
+                with self.assertRaisesRegex(WorkflowError, "core.filemode=false"):
+                    validate_diff_mode(root, mode)
+
+    def test_worktree_mode_intentionally_does_not_apply_attestation_preflight(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            init_repo(root)
+            run_git(root, "config", "core.filemode", "false")
+            run_git(root, "update-index", "--assume-unchanged", "Cargo.lock")
+            validate_diff_mode(root, "worktree")
+
+    def test_shared_aggregate_ignore_regex_matches_patch_production_policy(self) -> None:
+        cases = (
+            "crates/x/src/test_support.rs",
+            "crates/x/src/sub/test_support.rs",
+            "crates/x/src/lib.rs",
+            "crates/x/src/test_support_extra.rs",
+        )
+        for path in cases:
+            regex_excludes = re.search(COVERAGE_IGNORE_FILENAME_REGEX, path) is not None
+            self.assertEqual(regex_excludes, not is_production_rust(path), path)
+
     def test_staged_mode_rejects_unstaged_rust_even_when_production_is_staged(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

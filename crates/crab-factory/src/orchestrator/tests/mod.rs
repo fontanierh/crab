@@ -104,13 +104,19 @@ fn reject_lock(_: &Path) -> Result<RunLock, RunLockError> {
 }
 
 #[test]
-fn verdict_parser_accepts_only_exact_first_nonblank_line() {
+fn verdict_parser_accepts_one_exact_line_and_rejects_ambiguous_reports() {
     assert_eq!(parse_verdict("\nVERDICT: CLEAN\ntext").unwrap(), "clean");
     assert_eq!(
         parse_verdict("VERDICT: CHANGES_REQUIRED\r\ntext").unwrap(),
         "changes_required"
     );
-    assert!(parse_verdict("text\nVERDICT: CLEAN").is_err());
+    assert_eq!(
+        parse_verdict("preface\nVERDICT: CLEAN\nreport").unwrap(),
+        "clean"
+    );
+    assert!(parse_verdict("text without a verdict").is_err());
+    assert!(parse_verdict("VERDICT: CLEAN\nVERDICT: CLEAN").is_err());
+    assert!(parse_verdict("VERDICT: CLEAN\nVERDICT: CHANGES_REQUIRED").is_err());
     assert_eq!(require_normal_outcome(Some("clean")).unwrap(), "clean");
     assert!(require_normal_outcome(None).is_err());
 }

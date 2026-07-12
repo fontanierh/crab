@@ -19,7 +19,9 @@ if __package__ in (None, ""):
 
 from scripts.changed_scope import is_docs_path
 from scripts.workflow_common import (
+    COVERAGE_EXCLUDED_BASENAME,
     WorkflowError,
+    attestation_preflight,
     atomic_write_json,
     compact_reason,
     repository_root,
@@ -57,7 +59,7 @@ def is_production_rust(path: str) -> bool:
         return False
     if "tests" in candidate.parts or "src" not in candidate.parts:
         return False
-    return candidate.name != "test_support.rs"
+    return candidate.name != COVERAGE_EXCLUDED_BASENAME
 
 
 def allowed_uncovered(changed_executable_lines: int) -> int:
@@ -126,6 +128,7 @@ def _render_snapshot_differences(kinds: Mapping[str, Sequence[str]]) -> str:
 def validate_diff_mode(root: Path, mode: str) -> None:
     if mode == "worktree":
         return
+    attestation_preflight(root)
     if mode == "staged":
         # Guard the whole non-doc tree because the working copies of the gate tooling,
         # manifests, fixtures, and configuration determine what the staged snapshot tests.

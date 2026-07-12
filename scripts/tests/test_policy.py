@@ -10,7 +10,9 @@ import unittest
 from pathlib import Path
 
 from scripts.clippy_policy import CLIPPY_POLICY_ARGS
+from scripts.coverage_workflow import FUNCTION_THRESHOLD, LINE_THRESHOLD, REGION_THRESHOLD
 from scripts.doctor import JSCPD_VERSION, LLVM_COV_VERSION
+from scripts.run_gates import QUALITY_GATE_NAMES
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -189,6 +191,60 @@ class RepositoryPolicyTests(unittest.TestCase):
             classifier = section.index("- name: Classify changed paths")
             setup = section.index("- name: Setup Rust toolchain")
             self.assertLess(classifier, setup)
+
+    def test_ci_declares_read_only_contents_and_checkout_drops_credentials(self) -> None:
+        workflow = (ROOT / ".github" / "workflows" / "quality.yml").read_text(
+            encoding="utf-8"
+        )
+        permission = re.search(r"(?m)^permissions:\n((?:  .+\n)+)\njobs:", workflow)
+        self.assertIsNotNone(permission)
+        self.assertEqual(permission.group(1), "  contents: read\n")
+        checkout_sections = workflow.split(
+            "uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955"
+        )[1:]
+        self.assertEqual(len(checkout_sections), 2)
+        for section in checkout_sections:
+            checkout_step = section.split("\n      - name:", 1)[0]
+            self.assertEqual(checkout_step.count("persist-credentials: false"), 1)
+            self.assertIn("fetch-depth: 0", checkout_step)
+        self.assertEqual(workflow.count("persist-credentials: false"), 2)
+
+    def test_agents_ci_section_matches_authoritative_gate_order_once(self) -> None:
+        agents = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
+        section = agents.split("## 6. CI Gates (Must All Pass)", 1)[1].split(
+            "## 7.", 1
+        )[0]
+        names = tuple(
+            re.findall(r"(?m)^\d+\. `([^`]+)`", section)
+            or re.findall(r"(?m)^- `([^`]+)`", section)
+        )
+        self.assertEqual(names, QUALITY_GATE_NAMES)
+        for name in QUALITY_GATE_NAMES:
+            self.assertEqual(names.count(name), 1)
+
+    def test_documented_threshold_literals_match_runtime_policy(self) -> None:
+        expected = (
+            f"{FUNCTION_THRESHOLD}%",
+            f"{REGION_THRESHOLD}%",
+            f"{LINE_THRESHOLD}%",
+        )
+        paths = (
+            "AGENTS.md",
+            "CLAUDE.md",
+            "CONTRIBUTING.md",
+            ".github/pull_request_template.md",
+            "docs/agent-workflow.md",
+            "crab/DESIGN.md",
+            "crab/docs/16-code-factory.md",
+            "scripts/gen_code_quality_report.sh",
+            "CODE_QUALITY_REPORT.md",
+            "quality/WORKFLOW_IMPLEMENTATION_REPORT.md",
+        )
+        for relative in paths:
+            text = (ROOT / relative).read_text(encoding="utf-8")
+            with self.subTest(path=relative):
+                for literal in expected:
+                    self.assertIn(literal, text)
 
     def test_coverage_entry_points_use_the_local_target_wrapper(self) -> None:
         workflow = (ROOT / "scripts" / "coverage_workflow.py").read_text(encoding="utf-8")
