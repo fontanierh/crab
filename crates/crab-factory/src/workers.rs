@@ -583,21 +583,11 @@ pub(crate) fn codex_agent(
     label: &str,
     output: PathBuf,
 ) -> AgentSpec {
-    codex_agent_with_effort(tools, run_dir, label, output, DEFAULT_EFFORT)
-}
-
-pub(crate) fn codex_agent_with_effort(
-    tools: &ToolPaths,
-    run_dir: &Path,
-    label: &str,
-    output: PathBuf,
-    effort: Effort,
-) -> AgentSpec {
     AgentSpec {
         label: label.to_string(),
         provider: "codex".to_string(),
         program: tools.codex.clone(),
-        args: codex_arguments(&output, effort),
+        args: codex_arguments(&output, DEFAULT_EFFORT),
         output,
         log: run_dir.join("logs").join(format!("{label}.log")),
         sandbox: WORKER_SANDBOX.to_string(),
@@ -613,21 +603,11 @@ pub(crate) fn claude_agent(
     label: &str,
     output: PathBuf,
 ) -> AgentSpec {
-    claude_agent_with_effort(tools, run_dir, label, output, DEFAULT_EFFORT)
-}
-
-pub(crate) fn claude_agent_with_effort(
-    tools: &ToolPaths,
-    run_dir: &Path,
-    label: &str,
-    output: PathBuf,
-    effort: Effort,
-) -> AgentSpec {
     AgentSpec {
         label: label.to_string(),
         provider: "claude-code".to_string(),
         program: tools.claude.clone(),
-        args: claude_arguments(effort),
+        args: claude_arguments(DEFAULT_EFFORT),
         output,
         log: run_dir.join("logs").join(format!("{label}.log")),
         sandbox: WORKER_SANDBOX.to_string(),

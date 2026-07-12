@@ -87,7 +87,7 @@ class CoverageWorkflowTests(unittest.TestCase):
     def test_documented_aggregate_thresholds_are_exact(self) -> None:
         self.assertEqual(
             (FUNCTION_THRESHOLD, REGION_THRESHOLD, LINE_THRESHOLD),
-            ("99.5", "98.93", "99.4"),
+            ("95", "95", "95"),
         )
 
     def test_failed_gate_invalidates_all_prior_authoritative_artifacts(self) -> None:

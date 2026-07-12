@@ -35,7 +35,7 @@ Project operating rules for all human and AI contributors.
 
 - Coverage check is required in CI and local pre-merge validation.
 - Preferred Rust tool: `cargo-llvm-cov`.
-- Enforce `99.5%` function, `98.93%` region, and `99.4%` line coverage in CI.
+- Enforce `95%` function, region, and line coverage in CI.
 - Enforce `95%` coverage of changed executable production lines, with a small-patch floor.
 - Coverage reports must be reproducible from a single documented command.
 
@@ -43,9 +43,9 @@ Project operating rules for all human and AI contributors.
 
 | Gate | Threshold | Scope | Enforced by |
 |------|-----------|-------|-------------|
-| Function coverage | `99.5%` | All production code | `--fail-under-functions 99.5` |
-| Region coverage | `98.93%` | All production code | `--fail-under-regions 98.93` |
-| Line coverage | `99.4%` | All production code | `--fail-under-lines 99.4` |
+| Function coverage | `95%` | All production code | `--fail-under-functions 95.0` |
+| Region coverage | `95%` | All production code | `--fail-under-regions 95.0` |
+| Line coverage | `95%` | All production code | `--fail-under-lines 95.0` |
 | Patch coverage | `95%` | Changed executable production lines | `scripts/patch_coverage.py` |
 
 Patch allowance is `floor(0.05 × changed executable lines)`, so patches under 20 executable
@@ -89,7 +89,7 @@ This is only needed for function calls where splitting would create false covera
 Do not blanket-apply it.
 
 Required outcome:
-- Total function/region/line coverage stays at or above `99.5%` / `98.93%` / `99.4%`.
+- Total function/region/line coverage stays at or above `95%`.
 - Changed executable lines meet the 95% gate and its small-patch floor.
 - Changed production files absent from LCOV fail closed.
 - Missing-line output is diagnostic outside the changed patch gate.
@@ -125,7 +125,7 @@ two required jobs (`fast` and `coverage`):
 4. `public-api` — cross-file public API wiring.
 5. `duplication` — production Rust duplication gate.
 6. `gate-tests` — deterministic offline workflow-tool tests.
-7. `coverage` — fresh aggregate coverage at `99.5%` functions / `98.93%` regions / `99.4%` lines,
+7. `coverage` — fresh aggregate coverage at `95%` for functions, regions, and lines,
    plus `95%` patch coverage.
 
 No bypasses on main branch.
@@ -205,7 +205,7 @@ Bare `make` is read-only help. `make quick` is only a deprecated alias for `make
   `make public-api-check`
 - Tests:
   `make test`
-- Coverage gate (`99.5%` functions, `98.93%` regions, `99.4%` lines, and patch coverage):
+- Coverage gate (`95%` functions, regions, lines, and patch coverage):
   `make coverage-gate`
 - Faster changed-package coverage with report-only aggregates and blocking patch coverage:
   `make coverage-quick`

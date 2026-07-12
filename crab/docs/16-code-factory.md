@@ -190,14 +190,20 @@ Controls apply only at a prompt boundary, before the prompt artifact is written 
 worker or cohort is spawned. They never alter, kill, or restart an already-running model process.
 Steering is appended to later prompts inside explicit delimiters; the immutable request bytes and
 hash remain unchanged. Effort applies at the next worker boundary. Count knobs apply only at their
-own cohort boundary, and a too-late change is recorded and rejected honestly.
+own cohort boundary. Acceptance warns when either the plan-critic or normal-review cohort has
+already passed; the executor later records the per-knob rejection at an applicable boundary or
+terminal sweep.
 
 The private `controls/` directory contains immutable sequence records and the executor-owned
 `state.json` ledger. Records bind the run ID and request hash and carry payload and record hashes.
 Writes use staging, file fsync, atomic rename, and directory fsync; reads reject symlinks and wrong
 ownership or modes. Manifest acceptance/application/rejection events are an idempotent projection
-of the ledger. Terminalization uses the controls lock to reject unresolved knobs, and terminal runs
-reject new controls.
+of the ledger. Before creating the worktree or marking a run running, the executor revalidates the
+prepared metadata, complete controls tree, exact record bytes, authenticated ledger, and effective
+configuration reconstructed from that ledger. Terminalization blocks behind a live control writer,
+holds the same controls lock through the final sweep and terminal manifest write, and audits an
+unsafe-node or failed sweep without concealing the honest terminal result. Terminal runs reject new
+controls.
 
 Status reports lifecycle, the current or between-stages position, active worker labels and PIDs
 where available, launch PID, prepared/effective configuration, per-knob dispositions (including
@@ -206,7 +212,9 @@ exposes the same facts. Configuration and prepared tool-path fields are additive
 schema-version-1 fields:
 legacy runs remain status-readable, while execution and control writes reject them as predating
 live-control support. Persisted identity, request/base, resolved tool paths, paths, timeouts, and
-bounds are validated.
+cohort bounds are validated, including exact request bytes/hash, nonempty tool identities,
+artifact/worktree roots, and derived run/worktree/branch/process names. The final run-directory
+component and every managed leaf reject symlinks; private type, owner, and mode checks fail closed.
 Worker permissions/network, disabled nested agents, and the mandatory thermonuclear stage remain
 structurally hardcoded and argv-tested rather than configurable inputs.
 
@@ -300,7 +308,7 @@ the distinction. Reports are generated artifacts; do not hand-edit them.
 
 ## Quality, handoff, and cleanup
 
-The final gate is exactly `make quality`. Its 99.5% function, 98.93% region, and 99.4% line
+The final gate is exactly `make quality`. Its 95% function, region, and line
 thresholds exercise the working tree. Its coverage gate also enforces 95% changed executable-line
 coverage, including the under-20-line 100% rule, against the factory worktree's resolved base. The
 factory uses the repository gate unchanged rather than maintaining a separate PR-only patch gate.

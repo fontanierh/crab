@@ -12,7 +12,7 @@
 Include exact rerun commands or focused log excerpts for any unusual failure investigation.
 
 ## Coverage
-- Aggregate floors remain 99.5% functions / 98.93% regions / 99.4% lines.
+- Aggregate function, region, and line floors remain 95%.
 - Changed executable lines meet 95% and the small-patch floor.
 
 ## Risk and Rollback

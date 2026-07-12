@@ -1,4 +1,5 @@
 use std::fs;
+use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 
 use super::*;
@@ -36,8 +37,15 @@ fn reservation_marker_is_typed_and_lock_acquisition_never_creates_it() {
             schema_version: RUN_MARKER_SCHEMA_VERSION,
         }
     );
-    let _first = RunLock::acquire(&root).unwrap();
+    let first = RunLock::acquire(&root).unwrap();
     assert!(matches!(RunLock::acquire(&root), Err(RunLockError::Busy)));
+    drop(first);
+    fs::set_permissions(root.join(".lock"), fs::Permissions::from_mode(0o644)).unwrap();
+    match RunLock::acquire(&root) {
+        Err(RunLockError::Other(error)) => assert!(error.to_string().contains("unsafe run lock")),
+        _ => panic!("wrong-mode run lock was accepted"),
+    }
+    fs::set_permissions(root.join(".lock"), fs::Permissions::from_mode(0o600)).unwrap();
 
     let arbitrary = root.join("arbitrary");
     fs::create_dir(&arbitrary).unwrap();

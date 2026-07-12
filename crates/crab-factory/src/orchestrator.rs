@@ -15,8 +15,8 @@ use crate::rubric;
 use crate::run_lock::{RunLock, RunLockError, RunMarker};
 use crate::terminal::{finalize_established_path, finalize_failure, write_success_status};
 use crate::{
-    create_secure_dir, io_result, read_bytes, read_managed_bytes, required_utf8, sha256_hex,
-    FactoryError, FactoryResult,
+    create_secure_dir, io_result, read_managed_bytes, required_utf8, sha256_hex, FactoryError,
+    FactoryResult,
 };
 
 pub(crate) fn execute_run(
@@ -45,11 +45,7 @@ fn execute_run_with_dependencies(
     installer: SignalInstaller,
     acquire_lock: LockAcquirer,
 ) -> FactoryResult<()> {
-    let run_dir = io_result(
-        fs::canonicalize(run_dir),
-        "resolve prepared run directory",
-        run_dir,
-    )?;
+    let run_dir = crate::controls::canonical_run_dir(run_dir)?;
     // Loading the reservation-time marker is the non-mutating trust boundary.
     // Nothing in an arbitrary directory is created or terminalized unless this
     // typed marker proves that crab-factory reserved it.
@@ -142,24 +138,17 @@ fn execute_locked(
             snapshot.status
         )));
     }
-    if request_sha256 != launch.request_sha256 || request_sha256 != snapshot.request_sha256 {
+    if request_sha256 != launch.request_sha256 {
         return Err(FactoryError::new(
             "request SHA-256 does not match prepared run metadata",
         ));
     }
+    if let Err(error) = crate::controls::authenticate_prepared_controls(run_dir) {
+        let _ = journal.event_once("control_invalid", json!({"error": error.to_string()}));
+        return Err(error);
+    }
     let request_path = run_dir.join("00-request.md");
-    if snapshot.request != request_path {
-        return Err(FactoryError::new(
-            "manifest request path is not the managed run snapshot",
-        ));
-    }
-    let request_bytes = read_bytes(&request_path, "managed request snapshot")?;
-    let actual_hash = sha256_hex(&request_bytes);
-    if actual_hash != request_sha256 {
-        return Err(FactoryError::new(format!(
-            "managed request snapshot hash mismatch: expected {request_sha256}, found {actual_hash}"
-        )));
-    }
+    let request_bytes = read_managed_bytes(&request_path, "managed request snapshot", 0o400)?;
     let request = required_utf8(&request_bytes, "managed request snapshot")?;
     journal.set_running()?;
     rubric::verify()?;
@@ -240,6 +229,16 @@ pub(crate) fn validate_prepared_metadata(
         ),
     );
     let maximum_review_rounds = launch.additional_review_rounds.checked_add(1);
+    let artifact_root = io_result(
+        fs::canonicalize(&launch.artifact_root),
+        "canonicalize prepared artifact root",
+        &launch.artifact_root,
+    )?;
+    let worktree_root = io_result(
+        fs::canonicalize(&launch.worktree_root),
+        "canonicalize prepared worktree root",
+        &launch.worktree_root,
+    )?;
     let request_path = run_dir.join("00-request.md");
     let request_bytes = read_managed_bytes(&request_path, "managed request snapshot", 0o400)?;
     let actual_request_sha256 = sha256_hex(&request_bytes);
@@ -260,6 +259,11 @@ pub(crate) fn validate_prepared_metadata(
     let consistent = manifest.schema_version == 1
         && launch.run_id == marker.run_id
         && run_dir.file_name().and_then(|name| name.to_str()) == Some(marker.run_id.as_str())
+        && run_dir == artifact_root.join(&marker.run_id)
+        && run_dir.parent() == Some(artifact_root.as_path())
+        && launch.worktree == worktree_root.join(&marker.run_id)
+        && launch.branch == format!("factory/{}", marker.run_id)
+        && launch.proc_name == crate::config::proc_name_for(&marker.run_id)
         && manifest.run_id == marker.run_id
         && launch.request_sha256 == marker.request_sha256
         && manifest.request_sha256 == marker.request_sha256
@@ -280,7 +284,11 @@ pub(crate) fn validate_prepared_metadata(
         && manifest.thermonuclear_skill.sha256 == crate::rubric::THERMO_SKILL_SHA256
         && manifest.thermonuclear_skill.source == crate::rubric::THERMO_SKILL_SOURCE
         && manifest.thermonuclear_skill.source_commit == crate::rubric::THERMO_SKILL_COMMIT
-        && launch_tools == &manifest.tool_paths;
+        && launch_tools == &manifest.tool_paths
+        && !manifest.tool_versions.git.is_empty()
+        && !manifest.tool_versions.claude.is_empty()
+        && !manifest.tool_versions.codex.is_empty()
+        && !manifest.tool_versions.make_tool.is_empty();
     if !consistent
         || launch_configuration
             != (
@@ -293,27 +301,31 @@ pub(crate) fn validate_prepared_metadata(
         || manifest.models.codex.model != crate::config::CODEX_MODEL
         || manifest.models.claude.effort != manifest.models.codex.reasoning_effort
         || manifest.models.claude.effort != effective.effort.as_str()
-        || ![
-            &manifest.tool_paths.git,
-            &manifest.tool_paths.claude,
-            &manifest.tool_paths.codex,
-            &manifest.tool_paths.make,
-        ]
-        .into_iter()
-        .all(|path| path.is_absolute())
+        || !manifest.tool_paths.git.is_absolute()
+        || !manifest.tool_paths.claude.is_absolute()
+        || !manifest.tool_paths.codex.is_absolute()
+        || !manifest.tool_paths.make.is_absolute()
     {
         return Err(FactoryError::new(
             "prepared run metadata is inconsistent across marker, launch record, and manifest",
         ));
     }
-    crate::config::validate_cohort_size("--plan-critics", prepared.plan_critics)
-        .map_err(|_| FactoryError::new("prepared run configuration is out of bounds"))?;
-    crate::config::validate_cohort_size("--codex-reviewers", prepared.codex_reviewers)
-        .map_err(|_| FactoryError::new("prepared run configuration is out of bounds"))?;
-    crate::config::validate_cohort_size("--plan-critics", effective.plan_critics)
-        .map_err(|_| FactoryError::new("effective run configuration is out of bounds"))?;
-    crate::config::validate_cohort_size("--codex-reviewers", effective.codex_reviewers)
-        .map_err(|_| FactoryError::new("effective run configuration is out of bounds"))?;
+    if crate::config::validate_cohort_size("--plan-critics", prepared.plan_critics).is_err()
+        || crate::config::validate_cohort_size("--codex-reviewers", prepared.codex_reviewers)
+            .is_err()
+    {
+        return Err(FactoryError::new(
+            "prepared run configuration is out of bounds",
+        ));
+    }
+    if crate::config::validate_cohort_size("--plan-critics", effective.plan_critics).is_err()
+        || crate::config::validate_cohort_size("--codex-reviewers", effective.codex_reviewers)
+            .is_err()
+    {
+        return Err(FactoryError::new(
+            "effective run configuration is out of bounds",
+        ));
+    }
     Ok(())
 }
 

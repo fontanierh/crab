@@ -163,38 +163,26 @@ fn parse_steer_options(args: &[String]) -> FactoryResult<(PathBuf, String)> {
     let mut run_dir = None;
     let mut message = None;
     let mut message_file = None;
-    let mut index = 0;
-    while index < args.len() {
-        let flag = &args[index];
-        let value = require_some!(
-            args.get(index + 1),
-            FactoryError::new(format!("missing value for {flag}"))
-        )
-        .clone();
-        match flag.as_str() {
+    for (flag, value) in valued_flags(args)? {
+        match flag {
             "--run-dir" => assign(&mut run_dir, PathBuf::from(value), flag)?,
             "--message" => assign(&mut message, value, flag)?,
             "--message-file" => assign(&mut message_file, PathBuf::from(value), flag)?,
             _ => return Err(FactoryError::new(format!("unknown flag: {flag}"))),
         }
-        index += 2;
     }
-    if message.is_some() == message_file.is_some() {
-        return Err(FactoryError::new(
-            "provide exactly one of --message or --message-file",
-        ));
-    }
-    let message = match message {
-        Some(value) => value,
-        None => {
-            let path = require_some!(
-                message_file,
-                FactoryError::new("--message-file is required")
-            );
+    let message = match (message, message_file) {
+        (Some(value), None) => value,
+        (None, Some(path)) => {
             let bytes = std::fs::read(&path)
                 .map_err(|error| FactoryError::io("read message file", &path, &error))?;
             String::from_utf8(bytes)
                 .map_err(|_| FactoryError::new("steering message file is not UTF-8"))?
+        }
+        _ => {
+            return Err(FactoryError::new(
+                "provide exactly one of --message or --message-file",
+            ));
         }
     };
     Ok((
@@ -208,15 +196,8 @@ fn parse_configure_options(args: &[String]) -> FactoryResult<ConfigureOptions> {
     let mut effort = None;
     let mut plan_critics = None;
     let mut codex_reviewers = None;
-    let mut index = 0;
-    while index < args.len() {
-        let flag = &args[index];
-        let value = require_some!(
-            args.get(index + 1),
-            FactoryError::new(format!("missing value for {flag}"))
-        )
-        .clone();
-        match flag.as_str() {
+    for (flag, value) in valued_flags(args)? {
+        match flag {
             "--run-dir" => assign(&mut run_dir, PathBuf::from(value), flag)?,
             "--effort" => assign(&mut effort, Effort::parse(&value)?, flag)?,
             "--plan-critics" => assign(
@@ -231,7 +212,6 @@ fn parse_configure_options(args: &[String]) -> FactoryResult<ConfigureOptions> {
             )?,
             _ => return Err(FactoryError::new(format!("unknown flag: {flag}"))),
         }
-        index += 2;
     }
     if effort.is_none() && plan_critics.is_none() && codex_reviewers.is_none() {
         return Err(FactoryError::new("configure requires at least one setting"));
@@ -336,20 +316,12 @@ fn parse_launch_options(args: &[String], allow_launcher: bool) -> FactoryResult<
 fn parse_exec_options(args: &[String]) -> FactoryResult<(PathBuf, String)> {
     let mut run_dir = None;
     let mut sha256 = None;
-    let mut index = 0;
-    while index < args.len() {
-        let flag = &args[index];
-        let value = require_some!(
-            args.get(index + 1),
-            FactoryError::new(format!("missing value for {flag}"))
-        )
-        .clone();
-        match flag.as_str() {
+    for (flag, value) in valued_flags(args)? {
+        match flag {
             "--run-dir" => assign(&mut run_dir, PathBuf::from(value), flag)?,
             "--request-sha256" => assign(&mut sha256, value, flag)?,
             _ => return Err(FactoryError::new(format!("unknown flag: {flag}"))),
         }
-        index += 2;
     }
     let run_dir = require_some!(run_dir, FactoryError::new("--run-dir is required"));
     let sha256 = require_some!(sha256, FactoryError::new("--request-sha256 is required"));
@@ -359,6 +331,19 @@ fn parse_exec_options(args: &[String]) -> FactoryResult<(PathBuf, String)> {
         ));
     }
     Ok((run_dir, sha256.to_ascii_lowercase()))
+}
+
+fn valued_flags(args: &[String]) -> FactoryResult<Vec<(&str, String)>> {
+    args.chunks(2)
+        .map(|pair| {
+            let flag = pair[0].as_str();
+            let value = require_some!(
+                pair.get(1),
+                FactoryError::new(format!("missing value for {flag}"))
+            );
+            Ok((flag, value.clone()))
+        })
+        .collect()
 }
 
 fn assign<T>(slot: &mut Option<T>, value: T, flag: &str) -> FactoryResult<()> {

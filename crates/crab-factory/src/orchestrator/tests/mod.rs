@@ -530,7 +530,7 @@ fn executor_rejects_each_tampered_prepared_run_boundary() {
         execute_run(&reserved.run_dir, &reserved.request_sha256, &mut Vec::new())
             .unwrap_err()
             .to_string()
-            .contains("no parent directory")
+            .contains("prepared run metadata is inconsistent")
     );
 
     fixture.run_id = "lock-open-failure".to_string();
@@ -565,6 +565,130 @@ fn executor_rejects_each_tampered_prepared_run_boundary() {
         .success());
     assert!(execute_run(&reserved.run_dir, &reserved.request_sha256, &mut Vec::new()).is_err());
     assert_eq!(fixture.manifest()["status"], "failed");
+}
+
+#[test]
+fn executor_authenticates_immutable_derivations_and_controls_before_worktree_creation() {
+    let _environment = match crate::FACTORY_ENV_LOCK.lock() {
+        Ok(lock) => lock,
+        Err(error) => error.into_inner(),
+    };
+    let mut fixture = Fixture::new("immutable-boundaries", "clean");
+    for field in [
+        "artifact_root",
+        "worktree_root",
+        "worktree",
+        "branch",
+        "proc_name",
+        "tool_versions",
+    ] {
+        fixture.run_id = format!("immutable-{field}");
+        let reserved = prepared(&fixture, None);
+        let launch_path = reserved.run_dir.join("launch.json");
+        let manifest_path = reserved.run_dir.join("manifest.json");
+        if field == "tool_versions" {
+            let mut manifest: serde_json::Value =
+                serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
+            manifest["tool_versions"]["codex"] = serde_json::json!("");
+            atomic_write(
+                &manifest_path,
+                &serde_json::to_vec_pretty(&manifest).unwrap(),
+            )
+            .unwrap();
+        } else {
+            let mut launch: serde_json::Value =
+                serde_json::from_slice(&fs::read(&launch_path).unwrap()).unwrap();
+            launch[field] = match field {
+                "artifact_root" | "worktree_root" => serde_json::json!(fixture.root),
+                "worktree" => serde_json::json!(fixture.root.join("wrong-worktree")),
+                "branch" => serde_json::json!("factory/wrong"),
+                "proc_name" => serde_json::json!("code-factory-wrong"),
+                _ => unreachable!(),
+            };
+            atomic_write(&launch_path, &serde_json::to_vec_pretty(&launch).unwrap()).unwrap();
+        }
+        let error = execute_run(&reserved.run_dir, &reserved.request_sha256, &mut Vec::new())
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("prepared"), "{field}: {error}");
+        assert!(!fixture.worktree().exists(), "{field}");
+    }
+
+    fixture.run_id = "startup-ledger-invalid".into();
+    let reserved = prepared(&fixture, None);
+    let ledger = reserved.run_dir.join("controls/state.json");
+    atomic_write(&ledger, b"not-json\n").unwrap();
+    let error = execute_run(&reserved.run_dir, &reserved.request_sha256, &mut Vec::new())
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("invalid controls ledger"), "{error}");
+    assert!(!fixture.worktree().exists());
+    let manifest = fixture.manifest();
+    assert_eq!(manifest["status"], "failed");
+    assert_eq!(
+        manifest["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|event| event["event"] == "control_invalid")
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn executor_rejects_symlinked_run_argument_and_each_legacy_launch_shape() {
+    let _environment = match crate::FACTORY_ENV_LOCK.lock() {
+        Ok(lock) => lock,
+        Err(error) => error.into_inner(),
+    };
+    let mut fixture = Fixture::new("legacy-launch", "clean");
+    fixture.run_id = "symlinked-run-argument".into();
+    let reserved = prepared(&fixture, None);
+    let alias = fixture.root.join("run-alias");
+    std::os::unix::fs::symlink(&reserved.run_dir, &alias).unwrap();
+    assert!(
+        execute_run(&alias, &reserved.request_sha256, &mut Vec::new())
+            .unwrap_err()
+            .to_string()
+            .contains("unsafe prepared run directory")
+    );
+
+    for field in ["effort", "plan_critics", "codex_reviewers", "tool_paths"] {
+        fixture.run_id = format!("legacy-{field}");
+        let reserved = prepared(&fixture, None);
+        let launch_path = reserved.run_dir.join("launch.json");
+        let mut launch: serde_json::Value =
+            serde_json::from_slice(&fs::read(&launch_path).unwrap()).unwrap();
+        launch.as_object_mut().unwrap().remove(field);
+        atomic_write(&launch_path, &serde_json::to_vec_pretty(&launch).unwrap()).unwrap();
+        assert!(
+            execute_run(&reserved.run_dir, &reserved.request_sha256, &mut Vec::new())
+                .unwrap_err()
+                .to_string()
+                .contains("predates live-control support")
+        );
+    }
+    fixture.run_id = "legacy-effective-configuration".into();
+    let reserved = prepared(&fixture, None);
+    let manifest_path = reserved.run_dir.join("manifest.json");
+    let mut manifest: serde_json::Value =
+        serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
+    manifest
+        .as_object_mut()
+        .unwrap()
+        .remove("effective_configuration");
+    atomic_write(
+        &manifest_path,
+        &serde_json::to_vec_pretty(&manifest).unwrap(),
+    )
+    .unwrap();
+    assert!(
+        execute_run(&reserved.run_dir, &reserved.request_sha256, &mut Vec::new())
+            .unwrap_err()
+            .to_string()
+            .contains("predates live-control support")
+    );
 }
 
 #[test]

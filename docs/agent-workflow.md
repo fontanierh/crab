@@ -74,9 +74,9 @@ and is authoritative:
 
 | Measure | Floor |
 |---|---:|
-| Functions | 99.5% |
-| Regions | 98.93% |
-| Lines | 99.4% |
+| Functions | 95% |
+| Regions | 95% |
+| Lines | 95% |
 | Changed executable lines | 95% |
 
 The patch allowance is `floor(0.05 × changed executable lines)`, so fewer than 20 executable lines

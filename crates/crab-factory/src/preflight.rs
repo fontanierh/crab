@@ -302,11 +302,8 @@ fn reserve_with_journal_creator(
         let _journal = create_journal(validated.run_dir.join("manifest.json"), manifest).map_err(|error| error.context("could not establish run manifest"))?;
         #[rustfmt::skip]
         RunLock::initialize(&validated.run_dir, &validated.launch.run_id, &validated.launch.request_sha256)?;
-        crate::controls::initialize(
-            &validated.run_dir,
-            &validated.launch.run_id,
-            &validated.launch.request_sha256,
-        )?;
+        #[rustfmt::skip]
+        crate::controls::initialize(&validated.run_dir, &validated.launch.run_id, &validated.launch.request_sha256)?;
         create_secure_dir(&validated.run_dir.join("prompts"))?;
         create_secure_dir(&validated.run_dir.join("logs"))?;
         write_new_file(&snapshot_path, &validated.request, 0o400)?;

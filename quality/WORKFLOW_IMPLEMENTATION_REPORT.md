@@ -3,9 +3,9 @@
 ## Scope and provenance
 
 This uncommitted implementation is based on
-`bd08e0f266e7010233e6932f27e06956ec0d1fef`. It changes repository workflow tooling,
-`crab-factory`, deterministic tests, and documentation only. No Crab production runtime crate or
-external service was changed.
+`60b7244b3ff100172c8775359e0cdc861931cc9a`. It changes `crab-factory`, deterministic tests,
+generated quality evidence, and factory documentation only. No Crab production runtime crate or
+external service was changed, and the worktree remains uncommitted.
 
 ## Implemented behavior
 
@@ -48,16 +48,24 @@ external service was changed.
   `controls/state.json` ledger records per-knob accepted/applied/rejected dispositions and is the
   commit point before manifest projection.
 - Control publication uses a private staged file, file fsync, atomic rename, and directory fsync.
-  Reads use `O_NOFOLLOW` and opened-file ownership/mode checks. Writers and terminalization share a
-  bounded controls lock.
+  Reads use `O_NOFOLLOW` and opened-file ownership/mode checks. Writers use a bounded controls-lock
+  deadline; terminalization blocks behind a live writer and holds the same lock continuously through
+  sweep and terminal manifest/status publication. Unsafe or failed sweeps produce idempotent audit
+  evidence without preventing an honest terminal result.
 - Steering and effort apply at the next prompt boundary. Count knobs apply only at their own cohort
-  boundaries; too-late plan-critic changes are rejected honestly. Terminal sweep resolves remaining
-  accepted knobs.
+  boundaries; acceptance warns for both too-late plan-critic and reviewer changes, and later
+  disposition records reject them honestly. Terminal sweep resolves remaining accepted knobs.
 - Applied steering is explicitly delimited before prompt materialization, so prompt artifacts,
   cohort hashes, and worker stdin include the same accumulated bytes while `00-request.md` remains
   unchanged.
 - Manifest events are idempotently projected by sequence/knob. Prepared configuration remains
   immutable; effective configuration and model effort follow the ordered applied ledger.
+- One shared prepared-run validator serves executor startup and every live-control entry point. It
+  rejects symlinked final run-directory components, validates private managed leaves, exact request
+  bytes and hashes, immutable root/identity derivations and tool metadata, strict ledger
+  timestamps/reasons/transitions, and the effective configuration reconstructed from exact record
+  bytes. Startup rejection occurs before worktree creation and emits one idempotent
+  `control_invalid` event.
 - Status reports lifecycle, launch and active worker PIDs where available, configurations, control
   dispositions, and the last applied sequence in human or JSON form. Legacy manifests remain
   status-readable but reject execution/control writes as predating live controls.
@@ -66,21 +74,19 @@ The schema decision is additive-only: manifest schema version remains 1 and no r
 migration is required. Persisted trust fields are validated; permissions/network/nested-agent and
 thermonuclear policies are structurally immutable and argv-tested.
 
+Ownership mismatch is enforced in the same fd-based validator as type, symlink, and mode checks,
+but an unprivileged deterministic test cannot change a file to another owner. The test matrix
+therefore exercises symlink, wrong-type, and wrong-mode failures and does not fake an ownership
+transition. A few impossible-after-validation defense-in-depth error regions intentionally remain;
+they fail closed and are not exercised through pre-rejected private states.
+
 ## Validation completed in this worktree
 
-The authoritative coverage policy remains `99.5%` functions, `98.93%` regions, `99.4%` lines,
-and `95%` changed executable production lines (with the documented small-patch floor).
+The authoritative coverage policy is `95%` for functions, regions, lines, and changed executable
+production lines (with the documented small-patch floor).
 
-- `make gate-tests` — 161 deterministic offline tests passed.
-- `cargo test -p crab-factory --locked` and focused reruns — 54 unit tests, 5 live-control
-  integration tests, 4 end-to-end tests (including count bounds 1 and 8), 13 failure tests, and 3
-  launch tests passed. The final full workspace test run in `make quick` includes the same suites.
-- `make quick` (the deprecated alias for full-scope `make check`) — fmt passed in 2.34s, Clippy
-  passed in 5.10s, and workspace tests passed in 136.44s.
-
-Per the review-round execution contract, the factory runs the fresh authoritative `make quality`
-coverage/attestation gate after final review. No fresh aggregate-coverage or `quality-status` pass is
-claimed by this round-1 remediation report.
+Fresh final-command results, timings, test counts, aggregate/patch percentages, and schema-3
+attestation identity are recorded here only after the exact final validation chain completes.
 
 ## Operator-side home-document follow-up
 

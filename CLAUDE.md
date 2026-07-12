@@ -36,7 +36,7 @@ Concise agent guide for this repository. See AGENTS.md for complete project rule
 | `AGENTS.md` or `docs/` | `make check`; keep docs synced with behavior |
 
 ## Quality Gates
-- `99.5%` function, `98.93%` region, and `99.4%` line coverage
+- `95%` function, region, and line coverage
 - Patch coverage: 95% of changed executable lines, with 100% required below 20 lines
 - Zero duplication on production code
 - No dead code, no unused imports, and every `pub fn` must have cross-file usage

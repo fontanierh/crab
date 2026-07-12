@@ -3,7 +3,7 @@ use std::io;
 use std::io::ErrorKind;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::process::ExitStatusExt;
-use std::sync::atomic::AtomicU64;
+use std::sync::atomic::{AtomicI32, AtomicU64};
 
 use crate::config::LaunchOptions;
 use crate::factory_test_support::Fixture;
@@ -164,6 +164,22 @@ fn cancellation_kills_the_process_group() {
     thread.join().unwrap();
     assert_eq!(error.kind, SupervisorErrorKind::Cancelled);
     assert!(process_is_gone(-error.process_group.unwrap()));
+}
+
+#[test]
+fn spawn_observer_failure_kills_and_reaps_the_process_group() {
+    let observed = Arc::new(AtomicI32::new(0));
+    let mut spec = shell_spec("sleep 120", Duration::from_secs(2), no_cancel());
+    let receipt = Arc::clone(&observed);
+    spec.spawn_observer = Some(Arc::new(move |pid| {
+        receipt.store(pid as i32, Ordering::SeqCst);
+        Err(FactoryError::new("injected observer failure"))
+    }));
+    let error = supervise(spec, OutputPlan::Capture).unwrap_err();
+    assert!(error.detail().contains("could not record spawned process"));
+    let pid = observed.load(Ordering::SeqCst);
+    assert!(pid > 0);
+    assert!(process_is_gone(pid));
 }
 
 #[test]

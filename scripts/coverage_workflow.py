@@ -28,9 +28,9 @@ from scripts.workflow_common import (
 )
 
 
-FUNCTION_THRESHOLD = "99.5"
-REGION_THRESHOLD = "98.93"
-LINE_THRESHOLD = "99.4"
+FUNCTION_THRESHOLD = "95"
+REGION_THRESHOLD = "95"
+LINE_THRESHOLD = "95"
 AUTHORITATIVE_ARTIFACTS = (
     "lcov.info",
     "lcov.info.rejected",

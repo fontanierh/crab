@@ -28,8 +28,8 @@ PR.
 
 ## Quality Expectations
 
-- **Coverage gate.** `make quality` enforces 99.5% functions, 98.93% regions, 99.4% lines,
-  and 95% changed executable lines. Under 20 changed executable lines, patch coverage is 100%.
+- **Coverage gate.** `make quality` enforces 95% functions, regions, lines, and changed executable
+  lines. Under 20 changed executable lines, patch coverage is 100%.
 - **No dead code.** The codebase compiles with `#![deny(dead_code)]`. Remove unused items rather than suppressing the lint.
 - **Clippy policy.** Rust warnings and correctness/suspicious/performance findings fail. Style and
   complexity suggestions remain visible warnings. Use `make clippy`, not ad hoc flags.

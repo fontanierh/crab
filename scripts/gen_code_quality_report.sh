@@ -115,7 +115,7 @@ try:
     patch = json.loads(pathlib.Path(sys.argv[2]).read_text(encoding="utf-8"))
     totals = summary["data"][0]["totals"]
     rows = []
-    for name, floor in (("functions", "99.5%"), ("regions", "98.93%"), ("lines", "99.4%")):
+    for name, floor in (("functions", "95%"), ("regions", "95%"), ("lines", "95%")):
         item = totals[name]
         rows.append(
             f"| {name.title()} | {item['covered']} / {item['count']} | "
@@ -270,8 +270,7 @@ All required gates are defined in \`Makefile\` and enforced by CI in \`.github/w
 - \`public-api\`: cross-file public API wiring check
 - \`duplication\`: production Rust \`jscpd\` gate (threshold 0)
 - \`gate-tests\`: deterministic offline workflow tests
-- \`coverage\`: fresh \`cargo llvm-cov\` gate: 99.5% functions, 98.93% regions, 99.4% lines,
-  and 95% patch coverage
+- \`coverage\`: fresh \`cargo llvm-cov\` gate: 95% functions, regions, lines, and patch coverage
   (the workspace suite is re-executed under instrumentation and \`cfg(coverage)\`)
 
 Canonical agent loop:

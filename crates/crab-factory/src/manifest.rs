@@ -207,13 +207,28 @@ impl Journal {
 
     pub(crate) fn event(&self, event: &str, values: Value) -> FactoryResult<()> {
         self.mutate(|manifest, now| {
-            let mut entry = match values {
-                Value::Object(object) => object,
-                _ => Map::new(),
-            };
+            let mut entry = event_values(event, values);
             entry.insert("at".to_string(), Value::String(now.clone()));
-            entry.insert("event".to_string(), Value::String(event.to_string()));
             manifest.events.push(Value::Object(entry));
+            manifest.updated_at = now;
+        })
+    }
+
+    pub(crate) fn event_once(&self, event: &str, values: Value) -> FactoryResult<()> {
+        self.mutate(|manifest, now| {
+            let mut entry = event_values(event, values);
+            let duplicate = manifest.events.iter().any(|existing| {
+                existing.as_object().is_some_and(|object| {
+                    object.len() == entry.len() + usize::from(object.contains_key("at"))
+                        && entry
+                            .iter()
+                            .all(|(key, value)| object.get(key) == Some(value))
+                })
+            });
+            if !duplicate {
+                entry.insert("at".to_string(), Value::String(now.clone()));
+                manifest.events.push(Value::Object(entry));
+            }
             manifest.updated_at = now;
         })
     }
@@ -221,23 +236,22 @@ impl Journal {
     pub(crate) fn project_controls(
         &self,
         configuration: FactoryConfiguration,
-        entries: Vec<Value>,
+        entries: Vec<Map<String, Value>>,
     ) -> FactoryResult<()> {
         self.mutate(|manifest, now| {
             manifest.effective_configuration = Some(configuration.clone());
             manifest.models.claude.effort = configuration.effort.as_str().to_string();
             manifest.models.codex.reasoning_effort = configuration.effort.as_str().to_string();
             for mut entry in entries {
-                if let Value::Object(object) = &mut entry {
-                    object.insert("at".to_string(), Value::String(now.clone()));
-                    let duplicate = manifest.events.iter().any(|existing| {
-                        existing.get("event") == entry.get("event")
-                            && existing.get("sequence") == entry.get("sequence")
-                            && existing.get("knob") == entry.get("knob")
-                    });
-                    if !duplicate {
-                        manifest.events.push(entry);
-                    }
+                entry.insert("at".to_string(), Value::String(now.clone()));
+                let value = Value::Object(entry);
+                let duplicate = manifest.events.iter().any(|existing| {
+                    existing.get("event") == value.get("event")
+                        && existing.get("sequence") == value.get("sequence")
+                        && existing.get("knob") == value.get("knob")
+                });
+                if !duplicate {
+                    manifest.events.push(value);
                 }
             }
             manifest.updated_at = now;
@@ -348,6 +362,15 @@ impl Journal {
             Err(_) => Err(FactoryError::new("manifest journal lock was poisoned")),
         }
     }
+}
+
+fn event_values(event: &str, values: Value) -> Map<String, Value> {
+    let mut entry = match values {
+        Value::Object(object) => object,
+        _ => Map::new(),
+    };
+    entry.insert("event".to_string(), Value::String(event.to_string()));
+    entry
 }
 
 impl Manifest {

@@ -318,5 +318,28 @@ mod tests {
             numbered_reports("Report", &["x".into()]),
             "## Report 1\n\nx"
         );
+        assert_eq!(append_steering("base".into(), &[], "request-hash"), "base");
+        let steered = append_steering(
+            "base".into(),
+            &[
+                (1, "first-hash".into(), "first-time".into(), "first".into()),
+                (
+                    2,
+                    "second-hash".into(),
+                    "second-time".into(),
+                    "second".into(),
+                ),
+            ],
+            "request-hash",
+        );
+        assert!(steered.contains("request bytes and SHA-256 remain unchanged (`request-hash`)"));
+        assert!(steered.contains("Control 1 (first-time, SHA-256 `first-hash`)"));
+        assert!(steered
+            .contains("--- BEGIN OPERATOR STEERING ---\nfirst\n--- END OPERATOR STEERING ---"));
+        assert!(steered.find("first").unwrap() < steered.find("second").unwrap());
+
+        let (worktree, base) = repo();
+        assert!(review("request", "directive", 1, 1, worktree, base)
+            .contains("sole independent implementation reviewer"));
     }
 }

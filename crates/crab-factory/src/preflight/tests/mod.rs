@@ -51,6 +51,15 @@ fn quality_preflight_enumerates_every_external_gate_command() {
             "mkdir", "pwd",
         ]
     );
+    let fixture = Fixture::new("preflight-cohort-bounds", "clean");
+    for count in [0, 9] {
+        let mut value = options(&fixture);
+        value.plan_critics = Some(count);
+        assert!(validate_without_writes(value, RequestedMode::Run).is_err());
+        let mut value = options(&fixture);
+        value.codex_reviewers = Some(count);
+        assert!(validate_without_writes(value, RequestedMode::Run).is_err());
+    }
 }
 
 #[test]
