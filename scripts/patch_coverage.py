@@ -17,12 +17,14 @@ sys.dont_write_bytecode = True
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from scripts.changed_scope import is_docs_path
 from scripts.workflow_common import (
     WorkflowError,
     atomic_write_json,
     compact_reason,
     repository_root,
     run_text,
+    validate_managed_file,
 )
 
 
@@ -85,13 +87,16 @@ def resolve_patch_base(root: Path, explicit_base: str | None) -> str:
 
 
 def _git_paths(root: Path, arguments: Sequence[str]) -> list[str]:
-    result = subprocess.run(
-        ["git", *arguments],
-        cwd=root,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        check=False,
-    )
+    try:
+        result = subprocess.run(
+            ["git", *arguments],
+            cwd=root,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+    except OSError as error:
+        raise WorkflowError(f"could not execute git {' '.join(arguments)}: {error}") from error
     if result.returncode != 0:
         detail = result.stderr.decode("utf-8", errors="replace").strip()
         raise WorkflowError(f"git {' '.join(arguments)} failed: {detail}")
@@ -102,35 +107,72 @@ def _git_paths(root: Path, arguments: Sequence[str]) -> list[str]:
     ]
 
 
-def rust_worktree_differences(root: Path, *, against_head: bool) -> list[str]:
-    arguments = ["diff", "--name-only", "-z"]
-    if against_head:
-        arguments.append("HEAD")
-    arguments.append("--")
-    paths = _git_paths(root, arguments)
-    paths.extend(_git_paths(root, ["ls-files", "--others", "--exclude-standard", "-z"]))
-    return sorted({path for path in paths if path.endswith(".rs")})
+def _non_doc_paths(paths: Sequence[str]) -> list[str]:
+    return sorted({path for path in paths if not is_docs_path(path)})
+
+
+def _render_snapshot_differences(kinds: Mapping[str, Sequence[str]]) -> str:
+    rendered: list[str] = []
+    for kind, paths in kinds.items():
+        if not paths:
+            continue
+        preview = ", ".join(paths[:8])
+        if len(paths) > 8:
+            preview += f", ... ({len(paths) - 8} more)"
+        rendered.append(f"{kind}: {preview}")
+    return "; ".join(rendered)
 
 
 def validate_diff_mode(root: Path, mode: str) -> None:
     if mode == "worktree":
         return
     if mode == "staged":
-        differences = rust_worktree_differences(root, against_head=False)
-        if differences:
-            preview = ", ".join(differences[:8])
+        # Guard the whole non-doc tree because the working copies of the gate tooling,
+        # manifests, fixtures, and configuration determine what the staged snapshot tests.
+        differences = {
+            "unstaged": _non_doc_paths(
+                _git_paths(root, ["diff", "--name-only", "--no-renames", "-z", "--"])
+            ),
+            "untracked": _non_doc_paths(
+                _git_paths(root, ["ls-files", "--others", "--exclude-standard", "-z"])
+            ),
+        }
+        if any(differences.values()):
             raise WorkflowError(
-                "staged mode requires the index and working tree to match for all Rust "
-                f"content; unstaged/untracked Rust: {preview}. Commit/stash it or use --mode worktree"
+                "staged mode requires every non-documentation working-tree input to match "
+                f"the index; {_render_snapshot_differences(differences)}. Stage/restore it or use --mode worktree"
             )
         return
     if mode == "committed":
-        differences = rust_worktree_differences(root, against_head=True)
-        if differences:
-            preview = ", ".join(differences[:8])
+        differences = {
+            "working tree vs HEAD": _non_doc_paths(
+                _git_paths(
+                    root,
+                    ["diff", "--name-only", "--no-renames", "-z", "HEAD", "--"],
+                )
+            ),
+            "index vs HEAD": _non_doc_paths(
+                _git_paths(
+                    root,
+                    [
+                        "diff",
+                        "--cached",
+                        "--name-only",
+                        "--no-renames",
+                        "-z",
+                        "HEAD",
+                        "--",
+                    ],
+                )
+            ),
+            "untracked": _non_doc_paths(
+                _git_paths(root, ["ls-files", "--others", "--exclude-standard", "-z"])
+            ),
+        }
+        if any(differences.values()):
             raise WorkflowError(
-                "committed mode requires Rust content to match HEAD; dirty Rust: "
-                f"{preview}. Clean the tree or use --mode worktree"
+                "committed mode requires every non-documentation input to match HEAD; "
+                f"{_render_snapshot_differences(differences)}. Clean the tree or use --mode worktree"
             )
         return
     raise WorkflowError(f"unsupported patch mode: {mode}")
@@ -150,13 +192,14 @@ def _added_lines_from_diff(text: str) -> dict[int, str]:
     additions: dict[int, str] = {}
     next_new_line: int | None = None
     for raw_line in text.splitlines():
+        if raw_line.startswith("diff "):
+            next_new_line = None
+            continue
         match = HUNK_PATTERN.match(raw_line)
         if match:
             next_new_line = int(match.group(1))
             continue
         if next_new_line is None:
-            continue
-        if raw_line.startswith("+++") or raw_line.startswith("---"):
             continue
         if raw_line.startswith("+"):
             additions[next_new_line] = raw_line[1:]
@@ -178,7 +221,7 @@ def collect_added_production_lines(
             "diff",
             "--name-only",
             "-z",
-            "--diff-filter=AMCR",
+            "--no-renames",
             *diff_arguments,
             "--",
             "crates",
@@ -195,6 +238,7 @@ def collect_added_production_lines(
                 "--unified=0",
                 "--no-color",
                 "--no-ext-diff",
+                "--no-renames",
                 *diff_arguments,
                 "--",
                 path,
@@ -412,11 +456,22 @@ def main(arguments: list[str] | None = None) -> int:
         validate_diff_mode(root, args.mode)
         base_sha = resolve_patch_base(root, args.base_sha)
         lcov_path = (args.fresh_lcov or args.lcov).resolve()
-        artifact = (
-            args.output_json.resolve()
-            if args.output_json
-            else root / "coverage" / "patch-coverage.json"
-        )
+        if args.output_json:
+            artifact = args.output_json.resolve()
+            try:
+                relative_artifact = artifact.relative_to(root)
+            except ValueError:
+                relative_artifact = None
+            if relative_artifact and relative_artifact.parts[:1] == ("coverage",):
+                artifact = validate_managed_file(
+                    root, relative_artifact, create_parent=True
+                )
+        else:
+            artifact = validate_managed_file(
+                root,
+                Path("coverage") / "patch-coverage.json",
+                create_parent=True,
+            )
         additions = collect_added_production_lines(root, args.mode, base_sha)
         represented, hits = parse_lcov(root, lcov_path)
         result = evaluate_patch(

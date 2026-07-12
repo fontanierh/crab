@@ -7,11 +7,12 @@ import hashlib
 import json
 import os
 import shlex
+import stat
 import subprocess
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any, Mapping, Sequence
 
 
 class WorkflowError(RuntimeError):
@@ -32,15 +33,20 @@ def run_text(
     env: Mapping[str, str] | None = None,
     check: bool = True,
 ) -> subprocess.CompletedProcess[str]:
-    result = subprocess.run(
-        list(command),
-        cwd=cwd,
-        env=dict(env) if env is not None else None,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        check=False,
-    )
+    try:
+        result = subprocess.run(
+            list(command),
+            cwd=cwd,
+            env=dict(env) if env is not None else None,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+    except OSError as error:
+        if check:
+            raise WorkflowError(f"could not execute {' '.join(command)}: {error}") from error
+        return subprocess.CompletedProcess(list(command), 127, "", str(error))
     if check and result.returncode != 0:
         detail = result.stderr.strip() or result.stdout.strip() or "no diagnostic output"
         raise WorkflowError(
@@ -65,6 +71,74 @@ def path_is_within(path: Path, parent: Path) -> bool:
     except ValueError:
         return False
     return True
+
+
+def _path_exists(path: Path) -> bool:
+    return os.path.lexists(path)
+
+
+def validate_local_directory(
+    root: Path, relative: str | Path, *, create: bool = False
+) -> Path:
+    """Validate a workflow-owned directory without following repository symlinks."""
+    root = root.resolve()
+    relative_path = Path(relative)
+    if relative_path.is_absolute() or ".." in relative_path.parts:
+        raise WorkflowError(f"managed directory must be relative to the repository: {relative}")
+    candidate = root / relative_path
+    if not path_is_within(candidate, root) or not path_is_within(
+        candidate.resolve(strict=False), root
+    ):
+        raise WorkflowError(f"managed directory escapes the repository: {candidate}")
+
+    current = root
+    for component in relative_path.parts:
+        current /= component
+        if not _path_exists(current):
+            continue
+        try:
+            mode = current.lstat().st_mode
+        except OSError as error:
+            raise WorkflowError(f"could not inspect managed directory {current}: {error}") from error
+        if not stat.S_ISDIR(mode):
+            raise WorkflowError(
+                f"managed directory component must be a real directory, not a symlink or file: {current}"
+            )
+
+    if create:
+        try:
+            candidate.mkdir(parents=True, exist_ok=True)
+        except OSError as error:
+            raise WorkflowError(f"could not create managed directory {candidate}: {error}") from error
+        return validate_local_directory(root, relative_path, create=False)
+    return candidate
+
+
+def validate_managed_file(
+    root: Path,
+    relative: str | Path,
+    *,
+    create_parent: bool = False,
+) -> Path:
+    """Validate a workflow-owned file and its repository-local directory chain."""
+    root = root.resolve()
+    relative_path = Path(relative)
+    if relative_path.is_absolute() or relative_path.name in ("", ".", ".."):
+        raise WorkflowError(f"managed file must be relative to the repository: {relative}")
+    parent = validate_local_directory(
+        root, relative_path.parent, create=create_parent
+    )
+    candidate = parent / relative_path.name
+    if _path_exists(candidate):
+        try:
+            mode = candidate.lstat().st_mode
+        except OSError as error:
+            raise WorkflowError(f"could not inspect managed file {candidate}: {error}") from error
+        if not stat.S_ISREG(mode):
+            raise WorkflowError(
+                f"managed file must be a regular file, not a symlink or directory: {candidate}"
+            )
+    return candidate
 
 
 def git_common_dir(root: Path) -> Path:
@@ -132,7 +206,24 @@ def validate_shared_target_base(root: Path, raw_value: str) -> Path:
         )
     if resolved.exists() and not resolved.is_dir():
         raise WorkflowError(f"CRAB_SHARED_TARGET_DIR is not a directory: {resolved}")
-    return resolved / repository_namespace(root)
+    namespaced = resolved / repository_namespace(root)
+    if not path_is_within(namespaced.resolve(strict=False), resolved):
+        raise WorkflowError(
+            f"shared Cargo target namespace escapes its validated base: {namespaced}"
+        )
+    if _path_exists(namespaced):
+        try:
+            mode = namespaced.lstat().st_mode
+        except OSError as error:
+            raise WorkflowError(
+                f"could not inspect shared Cargo target namespace {namespaced}: {error}"
+            ) from error
+        if not stat.S_ISDIR(mode):
+            raise WorkflowError(
+                "shared Cargo target namespace must be a real directory, not a symlink "
+                f"or file: {namespaced}"
+            )
+    return namespaced
 
 
 def validate_ambient_target_dir(root: Path, raw_value: str | None) -> Path | None:
@@ -144,44 +235,51 @@ def validate_ambient_target_dir(root: Path, raw_value: str | None) -> Path | Non
     candidate = Path(raw_value).expanduser()
     if not candidate.is_absolute():
         candidate = root / candidate
+    validate_local_directory(root, "target", create=False)
     resolved = candidate.resolve(strict=False)
-    checkout_target = (root / "target").resolve(strict=False)
-    for worktree in worktree_roots(root):
-        if not path_is_within(resolved, worktree):
-            continue
-        if worktree == root and path_is_within(resolved, checkout_target):
-            return resolved
-        raise WorkflowError(
-            "ambient CARGO_TARGET_DIR points inside a repository worktree outside this "
-            f"checkout's ignored target/: {resolved}; unset it or use "
-            "CRAB_SHARED_TARGET_DIR with an external absolute path"
-        )
-    common = git_common_dir(root)
-    if path_is_within(resolved, common):
-        raise WorkflowError(
-            f"ambient CARGO_TARGET_DIR points inside the Git common directory: {resolved}"
-        )
-    return resolved
+    checkout_target = root / "target"
+    if path_is_within(resolved, checkout_target):
+        relative = resolved.relative_to(root)
+        validate_local_directory(root, relative, create=False)
+        return resolved
+    raise WorkflowError(
+        "ambient CARGO_TARGET_DIR must resolve inside this checkout's target/: "
+        f"{resolved}; unset it or opt in to an external cache with CRAB_SHARED_TARGET_DIR"
+    )
 
 
-def build_target_environment(root: Path, environ: Mapping[str, str]) -> dict[str, str]:
+def build_target_environment(
+    root: Path, environ: Mapping[str, str], *, create: bool = True
+) -> dict[str, str]:
     root = root.resolve()
     result = dict(environ)
     shared = environ.get("CRAB_SHARED_TARGET_DIR")
     if shared is not None:
         namespaced = validate_shared_target_base(root, shared)
-        namespaced.mkdir(parents=True, exist_ok=True)
+        if create:
+            try:
+                namespaced.mkdir(parents=True, exist_ok=True)
+            except OSError as error:
+                raise WorkflowError(
+                    f"could not create shared Cargo target namespace {namespaced}: {error}"
+                ) from error
+            validate_shared_target_base(root, shared)
         result["CARGO_TARGET_DIR"] = str(namespaced)
     else:
-        validate_ambient_target_dir(root, environ.get("CARGO_TARGET_DIR"))
+        ambient = validate_ambient_target_dir(root, environ.get("CARGO_TARGET_DIR"))
+        if ambient is None:
+            validate_local_directory(root, "target", create=False)
     return result
 
 
-def coverage_target_environment(root: Path, environ: Mapping[str, str]) -> dict[str, str]:
+def coverage_target_environment(
+    root: Path, environ: Mapping[str, str], *, create: bool = True
+) -> dict[str, str]:
     root = root.resolve()
     result = dict(environ)
-    local_target = (root / "target" / "llvm-cov-worktree").resolve()
-    local_target.mkdir(parents=True, exist_ok=True)
+    local_target = validate_local_directory(
+        root, Path("target") / "llvm-cov-worktree", create=create
+    )
     result["CARGO_TARGET_DIR"] = str(local_target)
     result["CARGO_LLVM_COV_TARGET_DIR"] = str(local_target / "instrumented")
     result.pop("CRAB_SHARED_TARGET_DIR", None)
@@ -192,48 +290,148 @@ def shell_join(command: Sequence[str]) -> str:
     return shlex.join(command)
 
 
-def _nul_paths(root: Path, command: Sequence[str]) -> set[str]:
-    result = subprocess.run(
-        list(command),
-        cwd=root,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        check=False,
-    )
-    if result.returncode != 0:
-        detail = result.stderr.decode("utf-8", errors="replace").strip()
-        raise WorkflowError(f"{' '.join(command)} failed: {detail}")
-    return {
-        item.decode("utf-8", errors="surrogateescape")
-        for item in result.stdout.split(b"\0")
-        if item
-    }
-
-
 def _working_blob_hash(path: Path) -> str:
-    if path.is_symlink():
-        payload = b"symlink\0" + os.readlink(path).encode(
-            "utf-8", errors="surrogateescape"
-        )
-    elif path.is_file():
-        payload = b"file\0" + path.read_bytes()
-    elif path.exists():
-        payload = b"other\0"
-    else:
-        payload = b"deleted\0"
+    try:
+        if path.is_symlink():
+            payload = b"symlink\0" + os.readlink(path).encode(
+                "utf-8", errors="surrogateescape"
+            )
+        elif path.is_file():
+            executable = bool(path.stat().st_mode & 0o111)
+            mode = b"100755" if executable else b"100644"
+            payload = b"file:" + mode + b"\0" + path.read_bytes()
+        elif path.exists():
+            payload = b"other\0"
+        else:
+            payload = b"deleted\0"
+    except OSError as error:
+        raise WorkflowError(f"could not hash working-tree path {path}: {error}") from error
     return hashlib.sha256(payload).hexdigest()
 
 
+def _preview_paths(paths: Sequence[str]) -> str:
+    ordered = sorted(set(paths))
+    preview = ", ".join(ordered[:8])
+    if len(ordered) > 8:
+        preview += f", ... ({len(ordered) - 8} more)"
+    return preview
+
+
+def _index_flags(root: Path) -> list[str]:
+    try:
+        result = subprocess.run(
+            ["git", "ls-files", "-v", "-z"],
+            cwd=root,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+    except OSError as error:
+        raise WorkflowError(f"could not inspect Git index flags: {error}") from error
+    if result.returncode != 0:
+        detail = result.stderr.decode("utf-8", errors="replace").strip()
+        raise WorkflowError(f"git ls-files -v -z failed: {detail}")
+    flagged: list[str] = []
+    for raw in result.stdout.split(b"\0"):
+        if not raw:
+            continue
+        decoded = raw.decode("utf-8", errors="surrogateescape")
+        if len(decoded) < 3 or decoded[1] != " ":
+            raise WorkflowError("git ls-files returned an unrecognized index entry")
+        marker, path = decoded[0], decoded[2:]
+        if marker.islower() or marker in ("S", "s"):
+            flagged.append(path)
+    return flagged
+
+
+def _status_paths(root: Path) -> list[str]:
+    try:
+        result = subprocess.run(
+            [
+                "git",
+                "status",
+                "--porcelain=v2",
+                "-z",
+                "--untracked-files=all",
+                "--no-renames",
+            ],
+            cwd=root,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+    except OSError as error:
+        raise WorkflowError(f"could not inspect Git status: {error}") from error
+    if result.returncode != 0:
+        detail = result.stderr.decode("utf-8", errors="replace").strip()
+        raise WorkflowError(f"git status --porcelain=v2 failed: {detail}")
+
+    paths: list[str] = []
+    split_paths: list[str] = []
+    restored_deletions: list[str] = []
+    unmerged_paths: list[str] = []
+    for raw in result.stdout.split(b"\0"):
+        if not raw:
+            continue
+        record = raw.decode("utf-8", errors="surrogateescape")
+        kind = record[0]
+        if kind == "1" and record.startswith("1 "):
+            fields = record.split(" ", 8)
+            if len(fields) != 9 or len(fields[1]) != 2:
+                raise WorkflowError("git status returned a malformed tracked-file record")
+            index_state, worktree_state = fields[1]
+            path = fields[8]
+            paths.append(path)
+            if index_state != "." and worktree_state != ".":
+                split_paths.append(path)
+            if index_state == "D" and _path_exists(root / path):
+                restored_deletions.append(path)
+        elif kind == "?" and record.startswith("? "):
+            paths.append(record[2:])
+        elif kind == "u" and record.startswith("u "):
+            fields = record.split(" ", 10)
+            unmerged_paths.append(fields[-1])
+        else:
+            preview = record[2:] if len(record) > 2 else record
+            raise WorkflowError(
+                "git status returned an unsupported record for "
+                f"{preview!r}; resolve renames/conflicts and rerun"
+            )
+
+    if split_paths:
+        raise WorkflowError(
+            "index and working tree contain split content for: "
+            f"{_preview_paths(split_paths)}; stage or restore so the index matches the working tree"
+        )
+    if restored_deletions:
+        raise WorkflowError(
+            "staged deletions have paths restored in the working tree: "
+            f"{_preview_paths(restored_deletions)}; stage or restore so the index matches the working tree"
+        )
+    if unmerged_paths:
+        raise WorkflowError(
+            f"unmerged paths prevent attestation: {_preview_paths(unmerged_paths)}; resolve conflicts and rerun"
+        )
+    return paths
+
+
 def tree_fingerprint(root: Path) -> Fingerprint:
-    modified = _nul_paths(
-        root,
-        ["git", "diff", "--name-only", "-z", "HEAD", "--"],
+    filemode = run_text(
+        ["git", "config", "--bool", "--get", "core.filemode"],
+        cwd=root,
+        check=False,
     )
-    untracked = _nul_paths(
-        root,
-        ["git", "ls-files", "--others", "--exclude-standard", "-z"],
-    )
-    paths = sorted(modified | untracked)
+    if filemode.returncode == 0 and filemode.stdout.strip().lower() == "false":
+        raise WorkflowError(
+            "git core.filemode=false prevents executable-mode attestation; set core.filemode=true and rerun"
+        )
+    flagged = _index_flags(root)
+    if flagged:
+        raise WorkflowError(
+            "assume-unchanged or skip-worktree flags hide paths from attestation: "
+            f"{_preview_paths(flagged)}; clear assume-unchanged/skip-worktree flags and rerun"
+        )
+    paths = sorted(set(_status_paths(root)))
     entries = tuple((path, _working_blob_hash(root / path)) for path in paths)
     head = git_output(root, "rev-parse", "HEAD")
     digest_input = json.dumps(
@@ -249,10 +447,13 @@ def tree_fingerprint(root: Path) -> Fingerprint:
 
 
 def atomic_write_json(path: Path, payload: Mapping[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    descriptor, temporary_name = tempfile.mkstemp(
-        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
-    )
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        descriptor, temporary_name = tempfile.mkstemp(
+            prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
+        )
+    except OSError as error:
+        raise WorkflowError(f"could not prepare atomic JSON write for {path}: {error}") from error
     temporary = Path(temporary_name)
     try:
         with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
@@ -261,9 +462,14 @@ def atomic_write_json(path: Path, payload: Mapping[str, Any]) -> None:
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(temporary, path)
+    except OSError as error:
+        raise WorkflowError(f"could not atomically write JSON artifact {path}: {error}") from error
     finally:
         if temporary.exists():
-            temporary.unlink()
+            try:
+                temporary.unlink()
+            except OSError:
+                pass
 
 
 def command_version(root: Path, command: Sequence[str]) -> str:
@@ -279,7 +485,3 @@ def compact_reason(value: str, limit: int = 240) -> str:
     if len(one_line) <= limit:
         return one_line
     return one_line[: limit - 3] + "..."
-
-
-def unique_sorted(values: Iterable[str]) -> list[str]:
-    return sorted(set(values))

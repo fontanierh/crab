@@ -224,25 +224,12 @@ def collect_checks(
             )
         )
 
-    for executable, purpose in (
-        ("node", "Node runtime for duplication checks"),
-        ("npm", f"npm installer for pinned jscpd@{JSCPD_VERSION}"),
-        ("rg", "ripgrep for public API checks and report generation"),
-    ):
-        location = which(executable)
-        checks.append(
-            Check(
-                executable,
-                "passed" if location else "failed",
-                f"{purpose}: {location}" if location else f"{purpose}: not found on PATH",
-                None if location else f"install {executable} and retry",
-            )
-        )
-
+    jscpd_exact = False
     if which("jscpd"):
         returncode, output = _run_check(runner, root, ["jscpd", "--version"])
         found = output.strip().lstrip("v")
         if returncode == 0 and found == JSCPD_VERSION:
+            jscpd_exact = True
             checks.append(Check("jscpd", "passed", f"jscpd {found}"))
         else:
             checks.append(
@@ -260,6 +247,78 @@ def collect_checks(
                 "failed",
                 "not found on PATH; quality gates never install it implicitly",
                 f"npm install --global jscpd@{JSCPD_VERSION}",
+            )
+        )
+
+    for executable, purpose in (
+        ("node", "Node runtime used to install or change jscpd"),
+        ("npm", f"npm installer for pinned jscpd@{JSCPD_VERSION}"),
+    ):
+        location = which(executable)
+        if location:
+            checks.append(Check(executable, "passed", f"{purpose}: {location}"))
+        elif jscpd_exact:
+            checks.append(
+                Check(
+                    executable,
+                    "info",
+                    f"{purpose}: not found; exact runnable jscpd {JSCPD_VERSION} is already present",
+                )
+            )
+        else:
+            checks.append(
+                Check(
+                    executable,
+                    "failed",
+                    f"{purpose}: not found on PATH and jscpd must be installed or corrected",
+                    f"install Node.js/npm, then run npm install --global jscpd@{JSCPD_VERSION}",
+                )
+            )
+
+    rg_location = which("rg")
+    checks.append(
+        Check(
+            "rg",
+            "passed" if rg_location else "failed",
+            f"ripgrep for public API checks and report generation: {rg_location}"
+            if rg_location
+            else "ripgrep for public API checks and report generation: not found on PATH",
+            None if rg_location else "install rg and retry",
+        )
+    )
+
+    baseline_reference = (
+        environment.get("BASE_SHA")
+        or environment.get("BASE_REF")
+        or "origin/main"
+    )
+    baseline_code, baseline_output = _run_check(
+        runner,
+        root,
+        ["git", "cat-file", "-e", f"{baseline_reference}^{{commit}}"],
+    )
+    if baseline_code == 0:
+        merge_code, merge_output = _run_check(
+            runner, root, ["git", "merge-base", baseline_reference, "HEAD"]
+        )
+    else:
+        merge_code, merge_output = 1, baseline_output
+    if merge_code == 0 and merge_output.strip():
+        checks.append(
+            Check(
+                "patch-baseline",
+                "passed",
+                f"{baseline_reference} resolves to merge base {merge_output.strip()}",
+            )
+        )
+    else:
+        detail = merge_output.strip() or baseline_output.strip() or "reference is unavailable"
+        checks.append(
+            Check(
+                "patch-baseline",
+                "failed",
+                f"could not resolve patch baseline {baseline_reference!r}: {detail}",
+                "git fetch origin main or pass BASE_SHA=<commit>",
             )
         )
 

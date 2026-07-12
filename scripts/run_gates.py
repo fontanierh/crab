@@ -9,6 +9,7 @@ import os
 import subprocess
 import sys
 import time
+from collections.abc import Mapping
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -30,10 +31,21 @@ from scripts.workflow_common import (
     repository_root,
     shell_join,
     tree_fingerprint,
+    validate_local_directory,
+    validate_managed_file,
 )
 
 
-STATUS_SCHEMA_VERSION = 1
+STATUS_SCHEMA_VERSION = 2
+QUALITY_GATE_NAMES = (
+    "fmt",
+    "clippy",
+    "tests",
+    "public-api",
+    "duplication",
+    "gate-tests",
+    "coverage",
+)
 LOG_TAIL_LINES = 30
 
 
@@ -65,7 +77,6 @@ def utc_now() -> str:
 
 def execute_command(root: Path, spec: GateSpec, log_path: Path, verbose: bool) -> tuple[int, float]:
     started = time.monotonic()
-    log_path.parent.mkdir(parents=True, exist_ok=True)
     environment = dict(os.environ)
     environment["PYTHONDONTWRITEBYTECODE"] = "1"
     try:
@@ -125,6 +136,19 @@ def run_specs(
     verbose: bool = False,
     executor: Executor = execute_command,
 ) -> list[GateRecord]:
+    resolved_root = root.resolve()
+    try:
+        relative_log_directory = log_directory.resolve(strict=False).relative_to(
+            resolved_root
+        )
+    except ValueError as error:
+        raise WorkflowError(
+            f"gate log directory must remain inside the repository: {log_directory}"
+        ) from error
+    root = resolved_root
+    log_directory = validate_local_directory(
+        root, relative_log_directory, create=True
+    )
     records: list[GateRecord] = []
     blocked_reason: str | None = None
     for index, spec in enumerate(specs, start=1):
@@ -142,7 +166,10 @@ def run_specs(
             records.append(record)
             print(f"gates: SKIP {spec.name}: {reason}")
             continue
-        log_path = log_directory / f"{index:02d}-{spec.name}.log"
+        log_path = validate_managed_file(
+            root,
+            (log_directory / f"{index:02d}-{spec.name}.log").relative_to(root),
+        )
         returncode, duration = executor(root, spec, log_path, verbose)
         status = "passed" if returncode == 0 else "failed"
         record = GateRecord(
@@ -233,9 +260,9 @@ def check_specs(root: Path, scope: ScopeResult) -> list[GateSpec]:
 
 
 def quality_specs(root: Path, mode: str, base_sha: str) -> list[GateSpec]:
-    return [
-        GateSpec("fmt", ("cargo", "fmt", "--all", "--", "--check"), "make fmt-check"),
-        GateSpec(
+    by_name = {
+        "fmt": GateSpec("fmt", ("cargo", "fmt", "--all", "--", "--check"), "make fmt-check"),
+        "clippy": GateSpec(
             "clippy",
             _clippy_wrapper(
                 root,
@@ -246,7 +273,7 @@ def quality_specs(root: Path, mode: str, base_sha: str) -> list[GateSpec]:
             ),
             "make clippy",
         ),
-        GateSpec(
+        "tests": GateSpec(
             "tests",
             _cargo_wrapper(
                 root,
@@ -258,17 +285,17 @@ def quality_specs(root: Path, mode: str, base_sha: str) -> list[GateSpec]:
             ),
             "make test",
         ),
-        GateSpec(
+        "public-api": GateSpec(
             "public-api",
             ("bash", str(root / "scripts" / "public_api_usage_check.sh")),
             "make public-api-check",
         ),
-        GateSpec(
+        "duplication": GateSpec(
             "duplication",
             ("bash", str(root / "scripts" / "duplication_check.sh")),
             "make duplication-check",
         ),
-        GateSpec(
+        "gate-tests": GateSpec(
             "gate-tests",
             (
                 sys.executable,
@@ -282,7 +309,7 @@ def quality_specs(root: Path, mode: str, base_sha: str) -> list[GateSpec]:
             ),
             "make gate-tests",
         ),
-        GateSpec(
+        "coverage": GateSpec(
             "coverage",
             (
                 sys.executable,
@@ -295,7 +322,8 @@ def quality_specs(root: Path, mode: str, base_sha: str) -> list[GateSpec]:
             ),
             f"make coverage-gate PATCH_MODE={mode} BASE_SHA={base_sha}",
         ),
-    ]
+    }
+    return [by_name[name] for name in QUALITY_GATE_NAMES]
 
 
 def fingerprint_payload(value: Fingerprint) -> dict[str, object]:
@@ -317,22 +345,29 @@ def tool_versions(root: Path) -> dict[str, str]:
 
 
 def _branch(root: Path) -> str:
-    result = subprocess.run(
-        ["git", "symbolic-ref", "--quiet", "--short", "HEAD"],
-        cwd=root,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.DEVNULL,
-        check=False,
-    )
+    try:
+        result = subprocess.run(
+            ["git", "symbolic-ref", "--quiet", "--short", "HEAD"],
+            cwd=root,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+    except OSError as error:
+        raise WorkflowError(f"could not resolve current Git branch: {error}") from error
     return result.stdout.strip() if result.returncode == 0 else "(detached)"
 
 
-def prepare_status_path(path: Path) -> None:
+def prepare_status_path(root: Path) -> Path:
+    path = validate_managed_file(
+        root, Path("quality") / "status.json", create_parent=True
+    )
     try:
         path.unlink(missing_ok=True)
     except OSError as error:
         raise WorkflowError(f"could not invalidate stale status {path}: {error}") from error
+    return path
 
 
 def build_status(
@@ -410,8 +445,7 @@ def orchestrate_quality(
     specs_override: Sequence[GateSpec] | None = None,
     versions_override: dict[str, str] | None = None,
 ) -> int:
-    status_path = root / "quality" / "status.json"
-    prepare_status_path(status_path)
+    status_path = prepare_status_path(root)
     started_at = utc_now()
     start = tree_fingerprint(root)
     versions = versions_override if versions_override is not None else tool_versions(root)
@@ -504,8 +538,8 @@ def run_check(root: Path, mode: str, explicit_base: str | None, dry_run: bool) -
 
 
 def verify_status(root: Path) -> int:
-    path = root / "quality" / "status.json"
     try:
+        path = validate_managed_file(root, Path("quality") / "status.json")
         payload = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
         print("quality-status: missing quality/status.json; run make quality", file=sys.stderr)
@@ -513,19 +547,65 @@ def verify_status(root: Path) -> int:
     except (OSError, json.JSONDecodeError) as error:
         print(f"quality-status: invalid status artifact: {error}", file=sys.stderr)
         return 2
+    except WorkflowError as error:
+        print(f"quality-status: unsafe status artifact: {error}", file=sys.stderr)
+        return 2
+    if not isinstance(payload, Mapping):
+        print("quality-status: status artifact must be a JSON object", file=sys.stderr)
+        return 2
+    if payload.get("schema_version") != STATUS_SCHEMA_VERSION:
+        print(
+            "quality-status: status artifact schema is stale; rerun make quality",
+            file=sys.stderr,
+        )
+        return 2
     if payload.get("result") != "passed":
         print(f"quality-status: last result is {payload.get('result', 'unknown')}", file=sys.stderr)
         return 1
-    if any(check.get("status") == "skipped" for check in payload.get("checks", [])):
-        print("quality-status: passed artifact contains a skipped gate", file=sys.stderr)
+
+    checks = payload.get("checks")
+    if not isinstance(checks, list):
+        print("quality-status: checks must be a list", file=sys.stderr)
         return 2
-    current = tree_fingerprint(root)
-    expected = payload.get("end_fingerprint", {}).get("sha256")
-    if current.digest != expected:
-        print("quality-status: tree differs from the validated fingerprint; rerun make quality", file=sys.stderr)
+    if not all(isinstance(check, Mapping) for check in checks):
+        print("quality-status: every check must be an object", file=sys.stderr)
         return 2
-    if payload.get("start_fingerprint") != payload.get("end_fingerprint"):
+    names = tuple(check.get("name") for check in checks)
+    if names != QUALITY_GATE_NAMES:
+        print(
+            "quality-status: check names/order do not match the required seven-gate policy",
+            file=sys.stderr,
+        )
+        return 2
+    if any(
+        check.get("status") != "passed" or check.get("exit_code") != 0
+        for check in checks
+    ):
+        print("quality-status: passed artifact contains a non-passing check", file=sys.stderr)
+        return 2
+    if payload.get("setup_error") is not None:
+        print("quality-status: passed artifact contains a setup error", file=sys.stderr)
+        return 2
+
+    start = payload.get("start_fingerprint")
+    end = payload.get("end_fingerprint")
+    if not isinstance(start, Mapping) or not isinstance(end, Mapping):
+        print("quality-status: fingerprint records are malformed", file=sys.stderr)
+        return 2
+    if start != end:
         print("quality-status: validation fingerprints do not match", file=sys.stderr)
+        return 2
+    expected = end.get("sha256")
+    if not isinstance(expected, str) or not expected:
+        print("quality-status: validated fingerprint digest is missing", file=sys.stderr)
+        return 2
+    try:
+        current = tree_fingerprint(root)
+    except WorkflowError as error:
+        print(f"quality-status: current tree cannot be attested: {error}", file=sys.stderr)
+        return 2
+    if dict(end) != fingerprint_payload(current):
+        print("quality-status: tree differs from the validated fingerprint; rerun make quality", file=sys.stderr)
         return 2
     print("quality-status: passed artifact matches the exact current tree")
     return 0

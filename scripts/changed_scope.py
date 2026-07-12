@@ -22,8 +22,20 @@ from scripts.workflow_common import WorkflowError, compact_reason, repository_ro
 
 FULL_SCOPE_NAMES = {"Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "Makefile"}
 FULL_SCOPE_PREFIXES = ("scripts/", ".github/workflows/", ".cargo/")
-DOC_DIRECTORY_PREFIXES = ("docs/", "crab/docs/")
-DOC_SUFFIXES = (".md", ".mdx", ".rst", ".txt")
+DOC_DIRECTORY_PREFIXES = ("docs/", "crab/docs/", "notes/", "design/")
+DOC_FILES = {
+    "README.md",
+    "AGENTS.md",
+    "CLAUDE.md",
+    "CONTRIBUTING.md",
+    "PHILOSOPHY.md",
+    "CODE_QUALITY_REPORT.md",
+    "crab/DESIGN.md",
+    "crab/WORKSTREAMS.md",
+    "quality/WORKFLOW_IMPLEMENTATION_REPORT.md",
+    ".github/pull_request_template.md",
+}
+DOC_SUFFIXES = {".md", ".mdx", ".rst", ".txt"}
 
 
 @dataclass(frozen=True)
@@ -39,8 +51,9 @@ class ScopeResult:
 
 def is_docs_path(path: str) -> bool:
     normalized = PurePosixPath(path).as_posix()
-    return normalized.startswith(DOC_DIRECTORY_PREFIXES) or normalized.lower().endswith(
-        DOC_SUFFIXES
+    has_document_suffix = PurePosixPath(normalized.lower()).suffix in DOC_SUFFIXES
+    return has_document_suffix and (
+        normalized.startswith(DOC_DIRECTORY_PREFIXES) or normalized in DOC_FILES
     )
 
 
@@ -56,19 +69,22 @@ def is_full_scope_trigger(path: str) -> bool:
 def classify_paths(paths: Sequence[str]) -> tuple[bool, bool]:
     if not paths:
         return False, False
-    docs_only = all(is_docs_path(path) for path in paths)
     full_scope = any(is_full_scope_trigger(path) for path in paths)
+    docs_only = not full_scope and all(is_docs_path(path) for path in paths)
     return docs_only, full_scope
 
 
 def _git_bytes(root: Path, arguments: Sequence[str]) -> list[str]:
-    result = subprocess.run(
-        ["git", *arguments],
-        cwd=root,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        check=False,
-    )
+    try:
+        result = subprocess.run(
+            ["git", *arguments],
+            cwd=root,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+    except OSError as error:
+        raise WorkflowError(f"could not execute git {' '.join(arguments)}: {error}") from error
     if result.returncode != 0:
         detail = result.stderr.decode("utf-8", errors="replace").strip()
         raise WorkflowError(f"git {' '.join(arguments)} failed: {detail}")
@@ -100,12 +116,12 @@ def collect_changed_files(root: Path, mode: str, base_sha: str) -> list[str]:
     if mode == "committed":
         paths = _git_bytes(
             root,
-            ["diff", "--name-only", "-z", "--diff-filter=ACMR", base_sha, "HEAD", "--"],
+            ["diff", "--name-only", "-z", "--no-renames", base_sha, "HEAD", "--"],
         )
     elif mode == "worktree":
         paths = _git_bytes(
             root,
-            ["diff", "--name-only", "-z", "--diff-filter=ACMR", base_sha, "--"],
+            ["diff", "--name-only", "-z", "--no-renames", base_sha, "--"],
         )
         paths.extend(
             _git_bytes(root, ["ls-files", "--others", "--exclude-standard", "-z"])
@@ -243,16 +259,6 @@ def select_scope(
             docs_only=docs_only,
             fallback_reason=None,
         )
-    if docs_only or not changed_files:
-        return ScopeResult(
-            mode=mode,
-            base_sha=base_sha,
-            changed_files=changed_files,
-            selected_packages=[],
-            full_workspace=False,
-            docs_only=docs_only,
-            fallback_reason=None,
-        )
     if full_trigger:
         return ScopeResult(
             mode=mode,
@@ -263,7 +269,16 @@ def select_scope(
             docs_only=False,
             fallback_reason="workspace workflow/configuration change requires full scope",
         )
-
+    if docs_only or not changed_files:
+        return ScopeResult(
+            mode=mode,
+            base_sha=base_sha,
+            changed_files=changed_files,
+            selected_packages=[],
+            full_workspace=False,
+            docs_only=docs_only,
+            fallback_reason=None,
+        )
     try:
         metadata = metadata_loader(root)
         packages, selection_fallback = select_packages_from_metadata(

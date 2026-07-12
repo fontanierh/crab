@@ -17,12 +17,34 @@ if __package__ in (None, ""):
 
 from scripts.changed_scope import select_scope
 from scripts.patch_coverage import resolve_patch_base, validate_diff_mode
-from scripts.workflow_common import WorkflowError, repository_root
+from scripts.workflow_common import (
+    WorkflowError,
+    repository_root,
+    validate_local_directory,
+    validate_managed_file,
+)
 
 
 FUNCTION_THRESHOLD = "99.5"
 REGION_THRESHOLD = "99.0"
 LINE_THRESHOLD = "99.4"
+
+
+def _invalidate_outputs(root: Path, names: Sequence[str]) -> dict[str, Path]:
+    validate_local_directory(root, "coverage", create=False)
+    paths: dict[str, Path] = {}
+    for name in names:
+        path = validate_managed_file(root, Path("coverage") / name)
+        try:
+            path.unlink(missing_ok=True)
+        except OSError as error:
+            raise WorkflowError(f"could not invalidate stale coverage artifact {path}: {error}") from error
+        paths[name] = path
+    return paths
+
+
+def _create_coverage_directory(root: Path) -> None:
+    validate_local_directory(root, "coverage", create=True)
 
 
 def run_local_coverage(root: Path, arguments: Sequence[str]) -> int:
@@ -63,7 +85,11 @@ def run_patch_gate(
         "--output-json",
         str(artifact_path),
     ]
-    return subprocess.run(command, cwd=root, check=False).returncode
+    try:
+        return subprocess.run(command, cwd=root, check=False).returncode
+    except OSError as error:
+        print(f"coverage: could not execute patch gate: {error}", file=sys.stderr)
+        return 2
 
 
 def coverage_arguments(scope_packages: Sequence[str], full_workspace: bool) -> list[str]:
@@ -76,8 +102,12 @@ def coverage_arguments(scope_packages: Sequence[str], full_workspace: bool) -> l
 
 
 def run_report(root: Path) -> int:
-    output = root / "coverage" / "lcov.info"
-    output.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        output = _invalidate_outputs(root, ("lcov.info",))["lcov.info"]
+        _create_coverage_directory(root)
+    except WorkflowError as error:
+        print(f"coverage-report: {error}", file=sys.stderr)
+        return 2
     result = run_local_coverage(
         root,
         [
@@ -98,13 +128,16 @@ def run_gate(root: Path, mode: str, explicit_base: str | None) -> int:
     try:
         validate_diff_mode(root, mode)
         base_sha = resolve_patch_base(root, explicit_base)
+        outputs = _invalidate_outputs(
+            root, ("lcov.info", "summary.json", "patch-coverage.json")
+        )
+        _create_coverage_directory(root)
     except WorkflowError as error:
         print(f"coverage-gate: {error}", file=sys.stderr)
         return 2
 
-    output = root / "coverage" / "lcov.info"
-    artifact = root / "coverage" / "patch-coverage.json"
-    output.parent.mkdir(parents=True, exist_ok=True)
+    output = outputs["lcov.info"]
+    artifact = outputs["patch-coverage.json"]
     print(
         "coverage-gate: fresh aggregate thresholds "
         f"functions {FUNCTION_THRESHOLD}%, regions {REGION_THRESHOLD}%, lines {LINE_THRESHOLD}%",
@@ -130,7 +163,7 @@ def run_gate(root: Path, mode: str, explicit_base: str | None) -> int:
     )
     if result != 0:
         return result
-    summary_path = root / "coverage" / "summary.json"
+    summary_path = outputs["summary.json"]
     summary_result = run_local_coverage(
         root,
         [
@@ -176,6 +209,10 @@ def run_quick(root: Path, explicit_base: str | None) -> int:
     try:
         base_sha = resolve_patch_base(root, explicit_base)
         scope = select_scope(root, mode="worktree", explicit_base=base_sha)
+        outputs = _invalidate_outputs(
+            root,
+            ("quick-lcov.info", "quick-summary.json", "quick-patch-coverage.json"),
+        )
     except WorkflowError as error:
         print(f"coverage-quick: {error}", file=sys.stderr)
         return 2
@@ -190,11 +227,14 @@ def run_quick(root: Path, explicit_base: str | None) -> int:
     else:
         print("coverage-quick: packages: " + ", ".join(scope.selected_packages))
 
-    output_dir = root / "coverage"
-    output_dir.mkdir(parents=True, exist_ok=True)
-    lcov_path = output_dir / "quick-lcov.info"
-    summary_path = output_dir / "quick-summary.json"
-    artifact_path = output_dir / "quick-patch-coverage.json"
+    try:
+        _create_coverage_directory(root)
+    except WorkflowError as error:
+        print(f"coverage-quick: {error}", file=sys.stderr)
+        return 2
+    lcov_path = outputs["quick-lcov.info"]
+    summary_path = outputs["quick-summary.json"]
+    artifact_path = outputs["quick-patch-coverage.json"]
     package_arguments = coverage_arguments(scope.selected_packages, scope.full_workspace)
     result = run_local_coverage(
         root,
@@ -236,10 +276,14 @@ def run_quick(root: Path, explicit_base: str | None) -> int:
 
 
 def run_diagnostics(root: Path) -> int:
-    output_dir = root / "coverage"
-    output_dir.mkdir(parents=True, exist_ok=True)
-    lcov_path = output_dir / "lcov.info"
-    summary_path = output_dir / "uncovered_locations.txt"
+    try:
+        outputs = _invalidate_outputs(root, ("lcov.info", "uncovered_locations.txt"))
+        _create_coverage_directory(root)
+    except WorkflowError as error:
+        print(f"coverage-diagnostics: {error}", file=sys.stderr)
+        return 2
+    lcov_path = outputs["lcov.info"]
+    summary_path = outputs["uncovered_locations.txt"]
     result = run_local_coverage(
         root,
         [

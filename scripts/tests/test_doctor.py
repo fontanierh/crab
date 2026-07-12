@@ -12,7 +12,7 @@ from scripts.workflow_common import (
     validate_ambient_target_dir,
     validate_shared_target_base,
 )
-from scripts.tests.helpers import file_snapshot, init_repo
+from scripts.tests.helpers import file_snapshot, init_repo, run_git, write
 
 
 def completed(command: tuple[str, ...], output: str, returncode: int = 0) -> subprocess.CompletedProcess[str]:
@@ -52,6 +52,15 @@ def fake_runner_factory(
             return completed(key, f"{jscpd_version}\n")
         if key == ("git", "rev-parse", "--git-dir"):
             return completed(key, ".git\n")
+        if key[:2] in (("git", "cat-file"), ("git", "merge-base")):
+            return subprocess.run(
+                list(command),
+                cwd=cwd,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
         return completed(key, "", 1)
 
     return runner
@@ -131,6 +140,87 @@ class DoctorTests(unittest.TestCase):
         )
         self.assertEqual(file_snapshot(root), before)
 
+    def test_exact_jscpd_makes_missing_node_and_npm_informational(self) -> None:
+        root = Path(__file__).resolve().parents[2]
+
+        def without_node_installers(name: str) -> str | None:
+            return None if name in ("node", "npm") else "/fixture/bin/tool"
+
+        checks = collect_checks(
+            root,
+            environ={},
+            runner=fake_runner_factory("1.93.0"),
+            which=without_node_installers,
+        )
+        statuses = {item.name: item.status for item in checks}
+        self.assertEqual(statuses["jscpd"], "passed")
+        self.assertEqual(statuses["node"], "info")
+        self.assertEqual(statuses["npm"], "info")
+        self.assertNotIn("failed", statuses.values())
+
+    def test_missing_jscpd_and_npm_fail_with_install_chain(self) -> None:
+        root = Path(__file__).resolve().parents[2]
+
+        def without_jscpd_or_npm(name: str) -> str | None:
+            return None if name in ("jscpd", "npm") else "/fixture/bin/tool"
+
+        checks = collect_checks(
+            root,
+            environ={},
+            runner=fake_runner_factory("1.93.0"),
+            which=without_jscpd_or_npm,
+        )
+        by_name = {item.name: item for item in checks}
+        self.assertEqual(by_name["jscpd"].status, "failed")
+        self.assertEqual(by_name["npm"].status, "failed")
+        self.assertIn("npm install --global jscpd@4.0.5", by_name["npm"].remediation or "")
+
+    def test_patch_baseline_resolution_order_and_failure_remediation(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            base = init_repo(root)
+            write(
+                root / "rust-toolchain.toml",
+                '[toolchain]\nchannel = "1.93.0"\n',
+            )
+            runner = fake_runner_factory("1.93.0")
+            origin = collect_checks(root, environ={}, runner=runner, which=all_tools)
+            origin_check = next(item for item in origin if item.name == "patch-baseline")
+            self.assertEqual(origin_check.status, "passed")
+            self.assertIn(base, origin_check.detail)
+
+            run_git(root, "update-ref", "-d", "refs/remotes/origin/main")
+            explicit = collect_checks(
+                root,
+                environ={"BASE_SHA": base},
+                runner=runner,
+                which=all_tools,
+            )
+            explicit_check = next(item for item in explicit if item.name == "patch-baseline")
+            self.assertEqual(explicit_check.status, "passed")
+
+            run_git(root, "update-ref", "refs/heads/baseline", base)
+            referenced = collect_checks(
+                root,
+                environ={"BASE_REF": "baseline"},
+                runner=runner,
+                which=all_tools,
+            )
+            referenced_check = next(item for item in referenced if item.name == "patch-baseline")
+            self.assertEqual(referenced_check.status, "passed")
+            self.assertIn("baseline resolves", referenced_check.detail)
+
+            missing = collect_checks(
+                root,
+                environ={"BASE_SHA": "missing"},
+                runner=runner,
+                which=all_tools,
+            )
+            missing_check = next(item for item in missing if item.name == "patch-baseline")
+            self.assertEqual(missing_check.status, "failed")
+            self.assertIn("git fetch origin main", missing_check.remediation or "")
+            self.assertIn("BASE_SHA=<commit>", missing_check.remediation or "")
+
 
 class SharedTargetValidationTests(unittest.TestCase):
     def test_linked_worktrees_receive_the_same_repository_namespace(self) -> None:
@@ -177,7 +267,7 @@ class SharedTargetValidationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory) / "repo"
             init_repo(root)
-            with self.assertRaisesRegex(WorkflowError, "outside .*ignored target"):
+            with self.assertRaisesRegex(WorkflowError, "inside this checkout's target"):
                 validate_ambient_target_dir(root, str(root / "build-cache"))
             allowed = validate_ambient_target_dir(root, str(root / "target" / "custom"))
         self.assertEqual(allowed, (root / "target" / "custom").resolve())
@@ -197,8 +287,24 @@ class SharedTargetValidationTests(unittest.TestCase):
                 check=False,
             )
             self.assertEqual(result.returncode, 0, result.stderr)
-            with self.assertRaisesRegex(WorkflowError, "repository worktree"):
+            with self.assertRaisesRegex(WorkflowError, "inside this checkout's target"):
                 validate_ambient_target_dir(root, str(linked / "target"))
+
+    def test_external_ambient_target_is_rejected_by_doctor(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            parent = Path(directory)
+            root = parent / "repo"
+            init_repo(root)
+            write(root / "rust-toolchain.toml", '[toolchain]\nchannel = "1.93.0"\n')
+            checks = collect_checks(
+                root,
+                environ={"CARGO_TARGET_DIR": str(parent / "external")},
+                runner=fake_runner_factory("1.93.0"),
+                which=all_tools,
+            )
+            ambient = next(item for item in checks if item.name == "ambient-target")
+        self.assertEqual(ambient.status, "failed")
+        self.assertEqual(ambient.remediation, "unset CARGO_TARGET_DIR")
 
 
 if __name__ == "__main__":

@@ -10,6 +10,7 @@ import unittest
 from pathlib import Path
 
 from scripts.clippy_policy import CLIPPY_POLICY_ARGS
+from scripts.doctor import JSCPD_VERSION, LLVM_COV_VERSION
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -153,6 +154,31 @@ class RepositoryPolicyTests(unittest.TestCase):
         self.assertTrue(references, "CI must state its Rust toolchain explicitly")
         self.assertEqual(set(references), {pin})
 
+    def test_ci_actions_runner_and_node_are_immutable(self) -> None:
+        workflow = (ROOT / ".github" / "workflows" / "quality.yml").read_text(
+            encoding="utf-8"
+        )
+        uses_lines = re.findall(r"^\s*uses:\s*(.+)$", workflow, flags=re.MULTILINE)
+        self.assertTrue(uses_lines)
+        for line in uses_lines:
+            with self.subTest(line=line):
+                self.assertRegex(line, r"^[^@\s]+@[0-9a-f]{40}\s+#\s+\S+")
+        runners = re.findall(r"^\s*runs-on:\s*(\S+)", workflow, flags=re.MULTILINE)
+        self.assertEqual(runners, ["ubuntu-24.04", "ubuntu-24.04"])
+        node_versions = re.findall(r"node-version:\s*[\"']?(\d+\.\d+\.\d+)", workflow)
+        self.assertEqual(node_versions, ["20.20.2"])
+
+    def test_ci_pinned_tool_literals_match_repository_policy(self) -> None:
+        workflow = (ROOT / ".github" / "workflows" / "quality.yml").read_text(
+            encoding="utf-8"
+        )
+        duplication = (ROOT / "scripts" / "duplication_check.sh").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn(f"jscpd@{JSCPD_VERSION}", workflow)
+        self.assertIn(f"jscpd {JSCPD_VERSION}", duplication)
+        self.assertIn(f"cargo-llvm-cov@{LLVM_COV_VERSION}", workflow)
+
     def test_ci_docs_classifier_precedes_every_setup_step(self) -> None:
         workflow = (ROOT / ".github" / "workflows" / "quality.yml").read_text(
             encoding="utf-8"
@@ -181,6 +207,10 @@ class RepositoryPolicyTests(unittest.TestCase):
         orchestrator = (ROOT / "scripts" / "run_gates.py").read_text(encoding="utf-8")
         self.assertIn("scripts/clippy_policy.py", makefile)
         self.assertIn("clippy_policy.py", orchestrator)
+        self.assertIn(
+            "scripts/clippy_policy.py",
+            (ROOT / "Cargo.toml").read_text(encoding="utf-8"),
+        )
 
     def test_report_fallback_text_cannot_execute_markdown_backticks(self) -> None:
         generator = (ROOT / "scripts" / "gen_code_quality_report.sh").read_text(
@@ -197,6 +227,28 @@ class RepositoryPolicyTests(unittest.TestCase):
         self.assertNotIn("npx --yes", gate)
         self.assertIn("jscpd --version", gate)
         self.assertIn("npm install --global jscpd@4.0.5", workflow)
+
+    def test_standard_generated_workflow_artifacts_are_ignored(self) -> None:
+        candidates = [
+            "scripts/__pycache__/x.pyc",
+            "scripts/tests/__pycache__/x.pyc",
+            "quality/status.json",
+            "quality/logs/x.log",
+            "quality/baselines/x.json",
+            "coverage/lcov.info",
+            "target/llvm-cov-worktree/x",
+        ]
+        result = subprocess.run(
+            ["git", "check-ignore", "--stdin"],
+            cwd=ROOT,
+            input="\n".join(candidates) + "\n",
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.splitlines(), candidates)
 
 
 if __name__ == "__main__":

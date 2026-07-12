@@ -1,5 +1,10 @@
 name: quality
 
+# Accepted residual drift: jscpd is pinned at 4.0.5 but npm resolves its published
+# transitive dependency graph, and ripgrep comes from Ubuntu 24.04's apt repository.
+# Those tools are narrow duplication/grep boundaries; their behavior-relevant top-level
+# identities are tested here, while vendoring npm or pinning an apt archive adds more risk.
+
 on:
   push:
     branches: [main]
@@ -8,11 +13,11 @@ on:
 
 jobs:
   fast:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
         with:
           fetch-depth: 0
 
@@ -40,14 +45,14 @@ jobs:
 
       - name: Setup Rust toolchain
         if: steps.scope.outputs.docs_only != 'true'
-        uses: dtolnay/rust-toolchain@master
+        uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88 # master, resolved 2026-07-12
         with:
           toolchain: "1.93.0"
           components: rustfmt, clippy, llvm-tools-preview
 
       - name: Setup Rust cache
         if: steps.scope.outputs.docs_only != 'true'
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
 
       - name: Install ripgrep
         if: steps.scope.outputs.docs_only != 'true'
@@ -79,11 +84,11 @@ jobs:
           fi
 
   coverage:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
         with:
           fetch-depth: 0
 
@@ -111,20 +116,20 @@ jobs:
 
       - name: Setup Rust toolchain
         if: steps.scope.outputs.docs_only != 'true'
-        uses: dtolnay/rust-toolchain@master
+        uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88 # master, resolved 2026-07-12
         with:
           toolchain: "1.93.0"
           components: rustfmt, clippy, llvm-tools-preview
 
       - name: Setup Rust cache
         if: steps.scope.outputs.docs_only != 'true'
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
 
       - name: Setup Node
         if: steps.scope.outputs.docs_only != 'true'
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: "20"
+          node-version: "20.20.2"
 
       - name: Install pinned jscpd
         if: steps.scope.outputs.docs_only != 'true'
@@ -132,7 +137,7 @@ jobs:
 
       - name: Install cargo-llvm-cov
         if: steps.scope.outputs.docs_only != 'true'
-        uses: taiki-e/install-action@v2
+        uses: taiki-e/install-action@2ca9b94c269419b7b0c711c09d0b21c4e1d51145 # v2.83.1
         with:
           tool: cargo-llvm-cov@0.6.21
 

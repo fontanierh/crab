@@ -215,9 +215,10 @@ Bare `make` is read-only help. `make quick` is only a deprecated alias for `make
 Repository workflow scripts use `0` for success, `1` for a gate failure, and `2` for usage,
 environment, baseline, or stale-attestation errors. `make quality` writes atomic
 `quality/status.json` with the Git/base identity, tool versions, full check outcomes and rerun
-commands, and start/end fingerprints over HEAD plus all non-ignored changes. A valid pass has
-matching fingerprints and zero skipped required gates. Run `make quality-status` to verify the
-artifact still attests the current tree; do not hand off a stale, invalid, failed, or skipped gate.
+commands, and start/end fingerprints over HEAD, index consistency, file modes, and all non-ignored
+working-tree content. A valid pass has matching fingerprints and zero skipped required gates. Run
+`make quality-status` to verify the artifact still attests the current tree; do not hand off a stale,
+invalid, failed, or skipped gate.
 
 ### Worktrees and optional shared builds
 
@@ -259,7 +260,8 @@ worktree; gates never rely on an artifact persisting after the command finishes.
 - LLVM tools component:
   `rustup component add llvm-tools-preview`
 - Python 3.11 or newer (stdlib-only workflow tooling).
-- Node/npm and exact `jscpd` 4.0.5 (`npm install --global jscpd@4.0.5`).
+- Exact runnable `jscpd` 4.0.5; Node.js/npm are needed only to install or change it
+  (`npm install --global jscpd@4.0.5`).
 - Ripgrep (`rg`) for public API checks and report generation.
 
 ### CI behavior

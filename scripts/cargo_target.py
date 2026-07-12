@@ -24,16 +24,19 @@ from scripts.workflow_common import (
 
 
 def parse_args(arguments: list[str] | None = None) -> argparse.Namespace:
+    raw_arguments = list(sys.argv[1:] if arguments is None else arguments)
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("mode", choices=("build", "coverage"))
     parser.add_argument("--root", type=Path, help=argparse.SUPPRESS)
     parser.add_argument("--dry-run", action="store_true")
-    parser.add_argument("command", nargs=argparse.REMAINDER)
-    args = parser.parse_args(arguments)
-    if args.command and args.command[0] == "--":
-        args.command = args.command[1:]
-    if not args.command:
+    if "--" not in raw_arguments:
         parser.error("a command is required after --")
+    separator = raw_arguments.index("--")
+    command = raw_arguments[separator + 1 :]
+    if not command:
+        parser.error("a command is required after --")
+    args = parser.parse_args(raw_arguments[:separator])
+    args.command = command
     return args
 
 
@@ -42,9 +45,13 @@ def main(arguments: list[str] | None = None) -> int:
     try:
         root = args.root.resolve() if args.root else repository_root(Path(__file__).resolve().parent)
         if args.mode == "coverage":
-            environment = coverage_target_environment(root, os.environ)
+            environment = coverage_target_environment(
+                root, os.environ, create=not args.dry_run
+            )
         else:
-            environment = build_target_environment(root, os.environ)
+            environment = build_target_environment(
+                root, os.environ, create=not args.dry_run
+            )
     except WorkflowError as error:
         print(f"cargo-target: environment error: {error}", file=sys.stderr)
         return 2

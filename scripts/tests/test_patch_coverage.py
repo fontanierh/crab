@@ -9,7 +9,9 @@ from pathlib import Path
 
 from scripts.patch_coverage import (
     HUMAN_RANGE_LIMIT,
+    _added_lines_from_diff,
     allowed_uncovered,
+    collect_added_production_lines,
     evaluate_patch,
     main,
     parse_lcov,
@@ -27,6 +29,35 @@ def lcov_record(root: Path, path: str, values: list[tuple[int, int]]) -> str:
 
 
 class PatchCoverageAccountingTests(unittest.TestCase):
+    def test_diff_parser_maps_plus_prefixed_content_without_shifting(self) -> None:
+        diff = """diff --git a/file b/file
+index 111..222 100644
+--- a/file
++++ b/file
+@@ -1 +1,3 @@
+ original
++++literal
++successor
+"""
+        self.assertEqual(
+            _added_lines_from_diff(diff),
+            {2: "++literal", 3: "successor"},
+        )
+
+    def test_removed_dash_content_and_multiple_hunks_map_exactly(self) -> None:
+        diff = """diff --git a/file b/file
+--- a/file
++++ b/file
+@@ -1,2 +1,2 @@
+ keep
+---removed
++++added
+@@ -10 +10,2 @@
+ ten
++eleven
+"""
+        self.assertEqual(_added_lines_from_diff(diff), {2: "++added", 11: "eleven"})
+
     def test_small_patch_floor_boundaries(self) -> None:
         self.assertEqual(allowed_uncovered(19), 0)
         self.assertEqual(allowed_uncovered(20), 1)
@@ -109,7 +140,7 @@ class PatchCoverageGitModeTests(unittest.TestCase):
             run_git(root, "add", str(production.relative_to(root)))
             write(test_file, "#[test]\nfn unstaged_support() {}\n")
 
-            with self.assertRaisesRegex(WorkflowError, "index and working tree"):
+            with self.assertRaisesRegex(WorkflowError, "match the index"):
                 validate_diff_mode(root, "staged")
 
     def test_committed_mode_rejects_dirty_rust(self) -> None:
@@ -119,6 +150,80 @@ class PatchCoverageGitModeTests(unittest.TestCase):
             write(root / "crates" / "alpha" / "src" / "lib.rs", "pub fn dirty() {}\n")
             with self.assertRaisesRegex(WorkflowError, "match HEAD"):
                 validate_diff_mode(root, "committed")
+
+    def test_guarded_modes_reject_all_non_doc_snapshot_differences(self) -> None:
+        staged_cases = (
+            ("Cargo.toml", "[workspace]\nmembers=[]\n"),
+            ("scripts/patch_coverage.py", "changed tooling\n"),
+            ("crates/alpha/tests/fixtures/data.json", "{}\n"),
+        )
+        for path, content in staged_cases:
+            with self.subTest(mode="staged", path=path), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                init_repo(root)
+                if path == "scripts/patch_coverage.py":
+                    write(root / path, "base tooling\n")
+                    run_git(root, "add", path)
+                    run_git(root, "commit", "-m", "add tooling")
+                write(root / path, content)
+                with self.assertRaisesRegex(WorkflowError, "use --mode worktree"):
+                    validate_diff_mode(root, "staged")
+
+        committed_cases = (
+            ("Cargo.lock", "staged lock change\n", True),
+            ("crates/alpha/fixture.json", "dirty fixture\n", False),
+        )
+        for path, content, stage in committed_cases:
+            with self.subTest(mode="committed", path=path), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                init_repo(root)
+                if path != "Cargo.lock":
+                    write(root / path, "base fixture\n")
+                    run_git(root, "add", path)
+                    run_git(root, "commit", "-m", "add fixture")
+                write(root / path, content)
+                if stage:
+                    run_git(root, "add", path)
+                with self.assertRaisesRegex(WorkflowError, "use --mode worktree"):
+                    validate_diff_mode(root, "committed")
+
+    def test_guarded_modes_tolerate_allowlisted_documentation(self) -> None:
+        for mode in ("staged", "committed"):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                init_repo(root)
+                write(root / "README.md", "dirty documentation\n")
+                validate_diff_mode(root, mode)
+
+    def test_git_diff_maps_added_content_beginning_with_double_plus(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            base = init_repo(root)
+            source = root / "crates" / "alpha" / "src" / "lib.rs"
+            source.write_text(
+                source.read_text(encoding="utf-8") + "++literal\nsuccessor\n",
+                encoding="utf-8",
+            )
+            additions = collect_added_production_lines(root, "worktree", base)
+        self.assertEqual(additions["crates/alpha/src/lib.rs"], {2: "++literal", 3: "successor"})
+
+    def test_symlink_to_regular_type_change_counts_full_new_content(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            init_repo(root)
+            source = root / "crates" / "alpha" / "src" / "lib.rs"
+            source.unlink()
+            source.symlink_to("elsewhere.rs")
+            run_git(root, "add", "crates/alpha/src/lib.rs")
+            run_git(root, "commit", "-m", "make source a symlink")
+            base = run_git(root, "rev-parse", "HEAD")
+            source.unlink()
+            write(source, "pub fn first() {}\npub fn second() {}\n")
+            additions = collect_added_production_lines(root, "worktree", base)
+        self.assertEqual(
+            additions["crates/alpha/src/lib.rs"],
+            {1: "pub fn first() {}", 2: "pub fn second() {}"},
+        )
 
     def test_no_base_exits_two_with_remediation(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

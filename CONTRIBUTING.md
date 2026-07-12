@@ -19,7 +19,8 @@ make quality
 
 - **Rust 1.93.0** via [rustup](https://rustup.rs/), including rustfmt, Clippy, and LLVM tools
 - **cargo-llvm-cov 0.6.21**: `cargo install cargo-llvm-cov --version 0.6.21 --locked`
-- **Python 3.11+**, **Node.js/npm**, **jscpd 4.0.5**, and **ripgrep**
+- **Python 3.11+**, exact runnable **jscpd 4.0.5**, and **ripgrep**; **Node.js/npm** are
+  needed only to install or change jscpd
 
 `make doctor` checks exact versions and prints remediation without installing anything.
 

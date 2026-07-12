@@ -9,6 +9,7 @@ from scripts.changed_scope import (
     ScopeResult,
     classify_paths,
     collect_changed_files,
+    is_docs_path,
     select_packages_from_metadata,
     select_scope,
 )
@@ -28,6 +29,41 @@ class ChangedScopeUnitTests(unittest.TestCase):
         self.assertEqual(classify_paths(["README.md", "crab/docs/guide.md"]), (True, False))
         self.assertEqual(classify_paths(["Makefile"]), (False, True))
         self.assertEqual(classify_paths(["assets/logo.png"]), (False, False))
+
+    def test_docs_allowlist_is_location_and_suffix_exact(self) -> None:
+        positives = [
+            "docs/x.md",
+            "crab/docs/x.txt",
+            "notes/x.md",
+            "design/x.rst",
+            "README.md",
+            "AGENTS.md",
+            "CLAUDE.md",
+            "CONTRIBUTING.md",
+            "PHILOSOPHY.md",
+            "CODE_QUALITY_REPORT.md",
+            "crab/DESIGN.md",
+            "crab/WORKSTREAMS.md",
+            "quality/WORKFLOW_IMPLEMENTATION_REPORT.md",
+            ".github/pull_request_template.md",
+        ]
+        negatives = [
+            "crates/crab-core/tests/fixtures/data.txt",
+            "crates/crab-app/README.md",
+            "scripts/x.md",
+            "crab/config/README.md",
+            "crab/config/crab.env.example",
+            "settings.txt",
+            "LICENSE",
+            "docs/logo.png",
+        ]
+        for path in positives:
+            with self.subTest(path=path):
+                self.assertTrue(is_docs_path(path))
+        for path in negatives:
+            with self.subTest(path=path):
+                self.assertFalse(is_docs_path(path))
+        self.assertEqual(classify_paths(["scripts/x.md"]), (False, True))
 
     def test_core_edit_selects_actual_reverse_dependents_but_not_telemetry(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -51,6 +87,7 @@ class ChangedScopeUnitTests(unittest.TestCase):
             ],
         )
         self.assertNotIn("crab-telemetry", selected)
+        self.assertNotIn("crab-factory", selected)
 
     def test_unknown_code_path_falls_back_to_all_packages(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -58,7 +95,7 @@ class ChangedScopeUnitTests(unittest.TestCase):
             selected, fallback = select_packages_from_metadata(
                 root, ["tools/custom.rs"], fixture_metadata(root)
             )
-        self.assertEqual(len(selected), 8)
+        self.assertEqual(len(selected), 9)
         self.assertIn("unmapped code path", fallback or "")
 
     def test_full_trigger_is_classified_before_metadata(self) -> None:
@@ -91,6 +128,23 @@ class ChangedScopeUnitTests(unittest.TestCase):
 
 
 class ChangedScopeGitIntegrationTests(unittest.TestCase):
+    @staticmethod
+    def two_package_metadata(root: Path) -> dict[str, object]:
+        return {
+            "packages": [
+                {
+                    "name": "alpha",
+                    "manifest_path": str(root / "crates" / "alpha" / "Cargo.toml"),
+                    "dependencies": [],
+                },
+                {
+                    "name": "beta",
+                    "manifest_path": str(root / "crates" / "beta" / "Cargo.toml"),
+                    "dependencies": [{"name": "alpha"}],
+                },
+            ]
+        }
+
     def test_committed_and_worktree_modes_collect_the_deliberate_sets(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -144,6 +198,61 @@ class ChangedScopeGitIntegrationTests(unittest.TestCase):
         self.assertTrue(result.full_workspace)
         self.assertIsNone(result.base_sha)
         self.assertIn("unavailable", result.fallback_reason or "")
+
+    def test_deletion_only_committed_change_selects_package_and_reverse_dependent(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            base = init_repo(root, packages=("alpha", "beta"))
+            run_git(root, "rm", "crates/alpha/src/lib.rs")
+            run_git(root, "commit", "-m", "delete alpha source")
+            result = select_scope(
+                root,
+                mode="committed",
+                explicit_base=base,
+                metadata_loader=self.two_package_metadata,
+            )
+        self.assertEqual(result.changed_files, ["crates/alpha/src/lib.rs"])
+        self.assertEqual(result.selected_packages, ["alpha", "beta"])
+
+    def test_worktree_deletion_is_collected(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            base = init_repo(root)
+            (root / "crates" / "alpha" / "src" / "lib.rs").unlink()
+            changed = collect_changed_files(root, "worktree", base)
+        self.assertEqual(changed, ["crates/alpha/src/lib.rs"])
+
+    def test_deleted_full_scope_file_selects_whole_workspace(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            base = init_repo(root, packages=("alpha", "beta"))
+            run_git(root, "rm", "Cargo.lock")
+            run_git(root, "commit", "-m", "delete lockfile")
+            result = select_scope(root, mode="committed", explicit_base=base)
+        self.assertTrue(result.full_workspace)
+        self.assertEqual(result.selected_packages, ["alpha", "beta"])
+
+    def test_cross_package_rename_accounts_for_both_sides(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            base = init_repo(root, packages=("alpha", "beta"))
+            run_git(
+                root,
+                "mv",
+                "crates/alpha/src/lib.rs",
+                "crates/beta/src/moved.rs",
+            )
+            run_git(root, "commit", "-m", "move source across packages")
+            changed = collect_changed_files(root, "committed", base)
+            selected, fallback = select_packages_from_metadata(
+                root, changed, self.two_package_metadata(root)
+            )
+        self.assertEqual(
+            changed,
+            ["crates/alpha/src/lib.rs", "crates/beta/src/moved.rs"],
+        )
+        self.assertIsNone(fallback)
+        self.assertEqual(selected, ["alpha", "beta"])
 
 
 if __name__ == "__main__":

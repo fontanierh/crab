@@ -18,6 +18,10 @@ rust-version = "1.76"
 license = "MIT"
 
 [workspace.lints.rust]
+# `rust.warnings = deny` also re-fatalizes warn-level Clippy tool groups under bare
+# `cargo clippy`; manifest priorities cannot lower those groups past this setting.
+# The authoritative tri-state policy is applied by scripts/clippy_policy.py with
+# ordered `--force-warn` flags, so use make clippy/check/quality for policy fidelity.
 warnings = { level = "deny", priority = -2 }
 dead_code = "deny"
 unused_imports = "deny"
@@ -29,5 +33,6 @@ unexpected_cfgs = { level = "deny", check-cfg = ['cfg(coverage)'] }
 correctness = { level = "deny", priority = -1 }
 suspicious = { level = "deny", priority = -1 }
 perf = { level = "deny", priority = -1 }
+# See scripts/clippy_policy.py for the ordered nonfatal override of these groups.
 style = { level = "warn", priority = -1 }
 complexity = { level = "warn", priority = -1 }
