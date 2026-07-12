@@ -40,6 +40,12 @@ fn prepared(fixture: &Fixture, launcher: Option<PathBuf>) -> ReservedRun {
     create_secure_dir(&run_dir.join("logs")).unwrap();
     let request = fs::read(&fixture.prompt).unwrap();
     let request_sha256 = sha256_hex(&request);
+    let tools = ToolPaths {
+        git: resolve_executable(OsStr::new("git")).unwrap(),
+        claude: fixture.fake_bin.join("claude"),
+        codex: fixture.fake_bin.join("codex"),
+        make: fixture.fake_bin.join("make"),
+    };
     let launch = LaunchRecord {
         run_id: fixture.run_id.clone(),
         mode: "start".to_string(),
@@ -61,12 +67,10 @@ fn prepared(fixture: &Fixture, launcher: Option<PathBuf>) -> ReservedRun {
         launched_pid: None,
         proc_name: crate::config::proc_name_for(&fixture.run_id),
         launcher: launcher.clone(),
-    };
-    let tools = ToolPaths {
-        git: resolve_executable(OsStr::new("git")).unwrap(),
-        claude: fixture.fake_bin.join("claude"),
-        codex: fixture.fake_bin.join("codex"),
-        make: fixture.fake_bin.join("make"),
+        effort: Some(crate::config::DEFAULT_EFFORT),
+        plan_critics: Some(2),
+        codex_reviewers: Some(2),
+        tool_paths: Some(tools.clone()),
     };
     let manifest = Manifest::initial(
         &launch,
@@ -83,6 +87,7 @@ fn prepared(fixture: &Fixture, launcher: Option<PathBuf>) -> ReservedRun {
     .unwrap();
     Journal::create(run_dir.join("manifest.json"), manifest).unwrap();
     RunLock::initialize(&run_dir, &fixture.run_id, &request_sha256).unwrap();
+    crate::controls::initialize(&run_dir, &fixture.run_id, &request_sha256).unwrap();
     write_new_file(&run_dir.join("00-request.md"), &request, 0o400).unwrap();
     launch.write(&run_dir.join("launch.json")).unwrap();
     ReservedRun {
@@ -104,13 +109,29 @@ fn reject_lock(_: &Path) -> Result<RunLock, RunLockError> {
 }
 
 #[test]
-fn verdict_parser_accepts_only_exact_first_nonblank_line() {
+fn verdict_parser_accepts_one_exact_line_and_rejects_ambiguous_reports() {
     assert_eq!(parse_verdict("\nVERDICT: CLEAN\ntext").unwrap(), "clean");
     assert_eq!(
         parse_verdict("VERDICT: CHANGES_REQUIRED\r\ntext").unwrap(),
         "changes_required"
     );
-    assert!(parse_verdict("text\nVERDICT: CLEAN").is_err());
+    assert_eq!(
+        parse_verdict("preface\nVERDICT: CLEAN\nreport").unwrap(),
+        "clean"
+    );
+    assert_eq!(
+        parse_verdict("preface\n  VERDICT: CLEAN\ntrailing prose").unwrap(),
+        "clean"
+    );
+    assert_eq!(
+        parse_verdict("text without a verdict").unwrap_err().to_string(),
+        "review has no exact verdict line; expected exactly one VERDICT: CLEAN or VERDICT: CHANGES_REQUIRED"
+    );
+    assert_eq!(
+        parse_verdict("VERDICT: CLEAN\nVERDICT: CLEAN").unwrap_err().to_string(),
+        "review has multiple verdict lines; expected exactly one VERDICT: CLEAN or VERDICT: CHANGES_REQUIRED"
+    );
+    assert!(parse_verdict("VERDICT: CLEAN\nVERDICT: CHANGES_REQUIRED").is_err());
     assert_eq!(require_normal_outcome(Some("clean")).unwrap(), "clean");
     assert!(require_normal_outcome(None).is_err());
 }
@@ -201,6 +222,13 @@ fn signal_install_manifest_load_and_final_success_write_failures_terminalize_con
     finalize_failure(&journal, &reserved.run_dir, "final status failed");
     assert_eq!(fixture.manifest()["status"], "failed");
     assert!(status_path.is_file());
+
+    fixture.run_id = "completion-control-sweep-failure".to_string();
+    let reserved = prepared(&fixture, None);
+    fs::write(reserved.run_dir.join("controls/state.json"), "not json").unwrap();
+    let journal = Arc::new(Journal::load(reserved.run_dir.join("manifest.json")).unwrap());
+    finish_successful_run(&journal, &reserved.run_dir, &mut Vec::new(), "clean").unwrap();
+    assert_eq!(journal.snapshot().unwrap().status, "complete");
 
     fixture.run_id = "execution-interrupted".to_string();
     let reserved = prepared(&fixture, None);
@@ -422,6 +450,46 @@ fn executor_rejects_each_tampered_prepared_run_boundary() {
     let reserved = prepared(&fixture, None);
     assert!(execute_run(&reserved.run_dir, &"f".repeat(64), &mut Vec::new()).is_err());
 
+    fixture.run_id = "configuration-mismatch".to_string();
+    let reserved = prepared(&fixture, None);
+    let launch_path = reserved.run_dir.join("launch.json");
+    let mut launch = LaunchRecord::read(&launch_path).unwrap();
+    launch.effort = Some(crate::config::Effort::Max);
+    launch.write(&launch_path).unwrap();
+    assert!(execute_run(&reserved.run_dir, &reserved.request_sha256, &mut Vec::new()).is_err());
+
+    fixture.run_id = "tool-path-mismatch".to_string();
+    let reserved = prepared(&fixture, None);
+    let manifest_path = reserved.run_dir.join("manifest.json");
+    let mut manifest: serde_json::Value =
+        serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
+    manifest["tool_paths"]["git"] = serde_json::Value::String("/usr/bin/false".to_string());
+    atomic_write(
+        &manifest_path,
+        &serde_json::to_vec_pretty(&manifest).unwrap(),
+    )
+    .unwrap();
+    assert!(execute_run(&reserved.run_dir, &reserved.request_sha256, &mut Vec::new()).is_err());
+
+    fixture.run_id = "configuration-out-of-bounds".to_string();
+    let reserved = prepared(&fixture, None);
+    let launch_path = reserved.run_dir.join("launch.json");
+    let mut launch: serde_json::Value =
+        serde_json::from_slice(&fs::read(&launch_path).unwrap()).unwrap();
+    launch["plan_critics"] = serde_json::json!(9);
+    atomic_write(&launch_path, &serde_json::to_vec_pretty(&launch).unwrap()).unwrap();
+    let manifest_path = reserved.run_dir.join("manifest.json");
+    let mut manifest: serde_json::Value =
+        serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
+    manifest["prepared_configuration"]["plan_critics"] = serde_json::json!(9);
+    manifest["effective_configuration"]["plan_critics"] = serde_json::json!(9);
+    atomic_write(
+        &manifest_path,
+        &serde_json::to_vec_pretty(&manifest).unwrap(),
+    )
+    .unwrap();
+    assert!(execute_run(&reserved.run_dir, &reserved.request_sha256, &mut Vec::new()).is_err());
+
     fixture.run_id = "request-path-mismatch".to_string();
     let reserved = prepared(&fixture, None);
     let manifest_path = reserved.run_dir.join("manifest.json");
@@ -462,7 +530,7 @@ fn executor_rejects_each_tampered_prepared_run_boundary() {
         execute_run(&reserved.run_dir, &reserved.request_sha256, &mut Vec::new())
             .unwrap_err()
             .to_string()
-            .contains("no parent directory")
+            .contains("prepared run metadata is inconsistent")
     );
 
     fixture.run_id = "lock-open-failure".to_string();
@@ -497,6 +565,130 @@ fn executor_rejects_each_tampered_prepared_run_boundary() {
         .success());
     assert!(execute_run(&reserved.run_dir, &reserved.request_sha256, &mut Vec::new()).is_err());
     assert_eq!(fixture.manifest()["status"], "failed");
+}
+
+#[test]
+fn executor_authenticates_immutable_derivations_and_controls_before_worktree_creation() {
+    let _environment = match crate::FACTORY_ENV_LOCK.lock() {
+        Ok(lock) => lock,
+        Err(error) => error.into_inner(),
+    };
+    let mut fixture = Fixture::new("immutable-boundaries", "clean");
+    for field in [
+        "artifact_root",
+        "worktree_root",
+        "worktree",
+        "branch",
+        "proc_name",
+        "tool_versions",
+    ] {
+        fixture.run_id = format!("immutable-{field}");
+        let reserved = prepared(&fixture, None);
+        let launch_path = reserved.run_dir.join("launch.json");
+        let manifest_path = reserved.run_dir.join("manifest.json");
+        if field == "tool_versions" {
+            let mut manifest: serde_json::Value =
+                serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
+            manifest["tool_versions"]["codex"] = serde_json::json!("");
+            atomic_write(
+                &manifest_path,
+                &serde_json::to_vec_pretty(&manifest).unwrap(),
+            )
+            .unwrap();
+        } else {
+            let mut launch: serde_json::Value =
+                serde_json::from_slice(&fs::read(&launch_path).unwrap()).unwrap();
+            launch[field] = match field {
+                "artifact_root" | "worktree_root" => serde_json::json!(fixture.root),
+                "worktree" => serde_json::json!(fixture.root.join("wrong-worktree")),
+                "branch" => serde_json::json!("factory/wrong"),
+                "proc_name" => serde_json::json!("code-factory-wrong"),
+                _ => unreachable!(),
+            };
+            atomic_write(&launch_path, &serde_json::to_vec_pretty(&launch).unwrap()).unwrap();
+        }
+        let error = execute_run(&reserved.run_dir, &reserved.request_sha256, &mut Vec::new())
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("prepared"), "{field}: {error}");
+        assert!(!fixture.worktree().exists(), "{field}");
+    }
+
+    fixture.run_id = "startup-ledger-invalid".into();
+    let reserved = prepared(&fixture, None);
+    let ledger = reserved.run_dir.join("controls/state.json");
+    atomic_write(&ledger, b"not-json\n").unwrap();
+    let error = execute_run(&reserved.run_dir, &reserved.request_sha256, &mut Vec::new())
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("invalid controls ledger"), "{error}");
+    assert!(!fixture.worktree().exists());
+    let manifest = fixture.manifest();
+    assert_eq!(manifest["status"], "failed");
+    assert_eq!(
+        manifest["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|event| event["event"] == "control_invalid")
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn executor_rejects_symlinked_run_argument_and_each_legacy_launch_shape() {
+    let _environment = match crate::FACTORY_ENV_LOCK.lock() {
+        Ok(lock) => lock,
+        Err(error) => error.into_inner(),
+    };
+    let mut fixture = Fixture::new("legacy-launch", "clean");
+    fixture.run_id = "symlinked-run-argument".into();
+    let reserved = prepared(&fixture, None);
+    let alias = fixture.root.join("run-alias");
+    std::os::unix::fs::symlink(&reserved.run_dir, &alias).unwrap();
+    assert!(
+        execute_run(&alias, &reserved.request_sha256, &mut Vec::new())
+            .unwrap_err()
+            .to_string()
+            .contains("unsafe prepared run directory")
+    );
+
+    for field in ["effort", "plan_critics", "codex_reviewers", "tool_paths"] {
+        fixture.run_id = format!("legacy-{field}");
+        let reserved = prepared(&fixture, None);
+        let launch_path = reserved.run_dir.join("launch.json");
+        let mut launch: serde_json::Value =
+            serde_json::from_slice(&fs::read(&launch_path).unwrap()).unwrap();
+        launch.as_object_mut().unwrap().remove(field);
+        atomic_write(&launch_path, &serde_json::to_vec_pretty(&launch).unwrap()).unwrap();
+        assert!(
+            execute_run(&reserved.run_dir, &reserved.request_sha256, &mut Vec::new())
+                .unwrap_err()
+                .to_string()
+                .contains("predates live-control support")
+        );
+    }
+    fixture.run_id = "legacy-effective-configuration".into();
+    let reserved = prepared(&fixture, None);
+    let manifest_path = reserved.run_dir.join("manifest.json");
+    let mut manifest: serde_json::Value =
+        serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
+    manifest
+        .as_object_mut()
+        .unwrap()
+        .remove("effective_configuration");
+    atomic_write(
+        &manifest_path,
+        &serde_json::to_vec_pretty(&manifest).unwrap(),
+    )
+    .unwrap();
+    assert!(
+        execute_run(&reserved.run_dir, &reserved.request_sha256, &mut Vec::new())
+            .unwrap_err()
+            .to_string()
+            .contains("predates live-control support")
+    );
 }
 
 #[test]
@@ -541,10 +733,17 @@ fn quality_supervision_reports_timeout_spawn_failure_cancellation_and_output_fai
         tools: snapshot.tool_paths.clone(),
         timeout: Duration::from_millis(50),
         maximum_review_rounds: 1,
+        effort: crate::config::DEFAULT_EFFORT,
+        plan_critics: 2,
+        codex_reviewers: 2,
         journal: Arc::clone(&journal),
         git,
         cancellation: Arc::clone(&cancellation),
         stdout: &mut output,
+        controls: crate::controls::ControlPlane::new(
+            reserved.run_dir.clone(),
+            Arc::clone(&journal),
+        ),
     };
     assert!(pipeline
         .run_quality()

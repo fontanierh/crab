@@ -1,7 +1,10 @@
 use std::io::Write;
 use std::path::PathBuf;
 
-use crate::config::{LaunchOptions, DEFAULT_TIMEOUT_SECONDS};
+use crate::config::{
+    validate_cohort_size, Effort, LaunchOptions, DEFAULT_CODEX_REVIEWERS, DEFAULT_EFFORT,
+    DEFAULT_PLAN_CRITICS, DEFAULT_TIMEOUT_SECONDS,
+};
 use crate::launch::{run_foreground, start_background};
 use crate::orchestrator::execute_run;
 use crate::preflight::{prepare_run, RequestedMode};
@@ -11,15 +14,22 @@ const USAGE: &str = "Usage:
   crab-factory run --prompt-file <request.md> [options]
   crab-factory start --prompt-file <request.md> [options] [--launcher <path>]
   crab-factory exec --run-dir <dir> --request-sha256 <hex>
+  crab-factory status --run-dir <dir> [--json]
+  crab-factory steer --run-dir <dir> (--message <text> | --message-file <path>)
+  crab-factory configure --run-dir <dir> [--effort high|max] [--plan-critics N] [--codex-reviewers N]
 
 Commands:
   run      execute in the foreground for CI and debugging
   start    prepare and launch a durable background run
   exec     internal single-shot executor for a prepared run
+  status   inspect lifecycle, active workers, configuration, and controls
+  steer    queue durable operator context for the next stage boundary
+  configure queue allowed worker configuration for a future boundary
 
 Security policy:
   Every model worker runs with unrestricted host permissions and network access.
   Codex/Claude nested-agent fan-out remains disabled; advisory stages are mutation-checked.
+  Live controls never alter an already-running model process or the original request.
 
 Run/start options:
   --prompt-file <path>              complete original coding request (required)
@@ -27,6 +37,9 @@ Run/start options:
   --base <ref>                      committed worktree base (default: HEAD)
   --run-id <id>                     stable run identifier (sanitized, max 64 chars)
   --additional-review-rounds <N>    rounds after the mandatory first (default: 0, max: 100)
+  --effort <high|max>               effort for every worker (default: high)
+  --plan-critics <N>                Codex plan critics (default: 2, range: 1-8)
+  --codex-reviewers <N>             Codex normal reviewers (default: 2, range: 1-8)
   --artifact-root <path>            artifact root (default: $HOME/.crab/code-factory/runs)
   --worktree-root <path>            worktree root (default: $HOME/.crab/code-factory/worktrees)
   --agent-timeout-seconds <S>       per-process timeout (default: 14400, range: 60-86400)
@@ -37,6 +50,13 @@ Run/start options:
 Example:
   crab-factory run --prompt-file request.md --additional-review-rounds 2
 ";
+
+struct ConfigureOptions {
+    run_dir: PathBuf,
+    effort: Option<Effort>,
+    plan_critics: Option<u8>,
+    codex_reviewers: Option<u8>,
+}
 
 pub fn run_factory_cli<I, S>(args: I, stdout: &mut dyn Write, stderr: &mut dyn Write) -> i32
 where
@@ -86,8 +106,122 @@ fn dispatch(
             let (run_dir, sha256) = parse_exec_options(rest)?;
             execute_run(&run_dir, &sha256, stdout)
         }
+        "status" => {
+            let (run_dir, json) = parse_status_options(rest)?;
+            crate::controls::status(&run_dir, json, stdout)
+        }
+        "steer" => {
+            let (run_dir, message) = parse_steer_options(rest)?;
+            crate::controls::steer(&run_dir, message, stdout)
+        }
+        "configure" => {
+            let options = parse_configure_options(rest)?;
+            crate::controls::configure(
+                &options.run_dir,
+                options.effort,
+                options.plan_critics,
+                options.codex_reviewers,
+                stdout,
+            )
+        }
         unknown => Err(FactoryError::new(format!("unknown subcommand: {unknown}"))),
     }
+}
+
+fn parse_status_options(args: &[String]) -> FactoryResult<(PathBuf, bool)> {
+    let mut run_dir = None;
+    let mut json = false;
+    let mut index = 0;
+    while index < args.len() {
+        if args[index] == "--json" {
+            if json {
+                return Err(FactoryError::new("duplicate flag: --json"));
+            }
+            json = true;
+            index += 1;
+            continue;
+        }
+        let value = require_some!(
+            args.get(index + 1),
+            FactoryError::new(format!("missing value for {}", args[index]))
+        )
+        .clone();
+        if args[index] == "--run-dir" {
+            assign(&mut run_dir, PathBuf::from(value), "--run-dir")?;
+        } else {
+            return Err(FactoryError::new(format!("unknown flag: {}", args[index])));
+        }
+        index += 2;
+    }
+    Ok((
+        require_some!(run_dir, FactoryError::new("--run-dir is required")),
+        json,
+    ))
+}
+
+fn parse_steer_options(args: &[String]) -> FactoryResult<(PathBuf, String)> {
+    let mut run_dir = None;
+    let mut message = None;
+    let mut message_file = None;
+    for (flag, value) in valued_flags(args)? {
+        match flag {
+            "--run-dir" => assign(&mut run_dir, PathBuf::from(value), flag)?,
+            "--message" => assign(&mut message, value, flag)?,
+            "--message-file" => assign(&mut message_file, PathBuf::from(value), flag)?,
+            _ => return Err(FactoryError::new(format!("unknown flag: {flag}"))),
+        }
+    }
+    let message = match (message, message_file) {
+        (Some(value), None) => value,
+        (None, Some(path)) => {
+            let bytes = std::fs::read(&path)
+                .map_err(|error| FactoryError::io("read message file", &path, &error))?;
+            String::from_utf8(bytes)
+                .map_err(|_| FactoryError::new("steering message file is not UTF-8"))?
+        }
+        _ => {
+            return Err(FactoryError::new(
+                "provide exactly one of --message or --message-file",
+            ));
+        }
+    };
+    Ok((
+        require_some!(run_dir, FactoryError::new("--run-dir is required")),
+        message,
+    ))
+}
+
+fn parse_configure_options(args: &[String]) -> FactoryResult<ConfigureOptions> {
+    let mut run_dir = None;
+    let mut effort = None;
+    let mut plan_critics = None;
+    let mut codex_reviewers = None;
+    for (flag, value) in valued_flags(args)? {
+        match flag {
+            "--run-dir" => assign(&mut run_dir, PathBuf::from(value), flag)?,
+            "--effort" => assign(&mut effort, Effort::parse(&value)?, flag)?,
+            "--plan-critics" => assign(
+                &mut plan_critics,
+                validate_cohort_size(flag, parse_number(flag, &value)?)?,
+                flag,
+            )?,
+            "--codex-reviewers" => assign(
+                &mut codex_reviewers,
+                validate_cohort_size(flag, parse_number(flag, &value)?)?,
+                flag,
+            )?,
+            _ => return Err(FactoryError::new(format!("unknown flag: {flag}"))),
+        }
+    }
+    if effort.is_none() && plan_critics.is_none() && codex_reviewers.is_none() {
+        return Err(FactoryError::new("configure requires at least one setting"));
+    }
+    Ok(ConfigureOptions {
+        run_dir: require_some!(run_dir, FactoryError::new("--run-dir is required")),
+        effort,
+        plan_critics,
+        codex_reviewers,
+    })
 }
 
 fn write_help(stdout: &mut dyn Write) -> FactoryResult<()> {
@@ -109,6 +243,9 @@ fn parse_launch_options(args: &[String], allow_launcher: bool) -> FactoryResult<
     let mut timeout = None;
     let mut allow_dirty_source = false;
     let mut launcher = None;
+    let mut effort = None;
+    let mut plan_critics = None;
+    let mut codex_reviewers = None;
     let mut index = 0;
     while index < args.len() {
         let flag = &args[index];
@@ -133,6 +270,15 @@ fn parse_launch_options(args: &[String], allow_launcher: bool) -> FactoryResult<
             "--additional-review-rounds" => {
                 let parsed = parse_number::<u32>(flag, &value)?;
                 assign(&mut additional_review_rounds, parsed, flag)?;
+            }
+            "--effort" => assign(&mut effort, Effort::parse(&value)?, flag)?,
+            "--plan-critics" => {
+                let parsed = validate_cohort_size(flag, parse_number::<u8>(flag, &value)?)?;
+                assign(&mut plan_critics, parsed, flag)?;
+            }
+            "--codex-reviewers" => {
+                let parsed = validate_cohort_size(flag, parse_number::<u8>(flag, &value)?)?;
+                assign(&mut codex_reviewers, parsed, flag)?;
             }
             "--artifact-root" => assign(&mut artifact_root, PathBuf::from(value), flag)?,
             "--worktree-root" => assign(&mut worktree_root, PathBuf::from(value), flag)?,
@@ -161,26 +307,21 @@ fn parse_launch_options(args: &[String], allow_launcher: bool) -> FactoryResult<
         agent_timeout_seconds: timeout.unwrap_or(DEFAULT_TIMEOUT_SECONDS),
         allow_dirty_source,
         launcher,
+        effort: Some(effort.unwrap_or(DEFAULT_EFFORT)),
+        plan_critics: Some(plan_critics.unwrap_or(DEFAULT_PLAN_CRITICS)),
+        codex_reviewers: Some(codex_reviewers.unwrap_or(DEFAULT_CODEX_REVIEWERS)),
     })
 }
 
 fn parse_exec_options(args: &[String]) -> FactoryResult<(PathBuf, String)> {
     let mut run_dir = None;
     let mut sha256 = None;
-    let mut index = 0;
-    while index < args.len() {
-        let flag = &args[index];
-        let value = require_some!(
-            args.get(index + 1),
-            FactoryError::new(format!("missing value for {flag}"))
-        )
-        .clone();
-        match flag.as_str() {
+    for (flag, value) in valued_flags(args)? {
+        match flag {
             "--run-dir" => assign(&mut run_dir, PathBuf::from(value), flag)?,
             "--request-sha256" => assign(&mut sha256, value, flag)?,
             _ => return Err(FactoryError::new(format!("unknown flag: {flag}"))),
         }
-        index += 2;
     }
     let run_dir = require_some!(run_dir, FactoryError::new("--run-dir is required"));
     let sha256 = require_some!(sha256, FactoryError::new("--request-sha256 is required"));
@@ -190,6 +331,19 @@ fn parse_exec_options(args: &[String]) -> FactoryResult<(PathBuf, String)> {
         ));
     }
     Ok((run_dir, sha256.to_ascii_lowercase()))
+}
+
+fn valued_flags(args: &[String]) -> FactoryResult<Vec<(&str, String)>> {
+    args.chunks(2)
+        .map(|pair| {
+            let flag = pair[0].as_str();
+            let value = require_some!(
+                pair.get(1),
+                FactoryError::new(format!("missing value for {flag}"))
+            );
+            Ok((flag, value.clone()))
+        })
+        .collect()
 }
 
 fn assign<T>(slot: &mut Option<T>, value: T, flag: &str) -> FactoryResult<()> {
@@ -294,12 +448,38 @@ mod tests {
                 "--agent-timeout-seconds".into(),
                 "60".into(),
                 "--allow-dirty-source".into(),
+                "--effort".into(),
+                "max".into(),
+                "--plan-critics".into(),
+                "8".into(),
+                "--codex-reviewers".into(),
+                "1".into(),
             ],
             false,
         )
         .unwrap();
         assert_eq!(options.additional_review_rounds, 2);
         assert!(options.allow_dirty_source);
+        assert_eq!(options.effort, Some(Effort::Max));
+        assert_eq!(options.plan_critics, Some(8));
+        assert_eq!(options.codex_reviewers, Some(1));
+        for (flag, value) in [
+            ("--effort", "medium"),
+            ("--plan-critics", "0"),
+            ("--plan-critics", "9"),
+            ("--codex-reviewers", "no"),
+        ] {
+            assert!(parse_launch_options(
+                &[
+                    "--prompt-file".into(),
+                    "x".into(),
+                    flag.into(),
+                    value.into()
+                ],
+                false,
+            )
+            .is_err());
+        }
         assert!(parse_launch_options(&[], false).is_err());
         assert!(parse_launch_options(&["--prompt-file".into()], false).is_err());
         assert!(parse_launch_options(&["--unknown".into(), "x".into()], false).is_err());
@@ -389,6 +569,102 @@ mod tests {
             .1,
             "a".repeat(64)
         );
+    }
+
+    #[test]
+    fn live_control_parsers_cover_success_and_rejection_shapes() {
+        assert_eq!(
+            parse_status_options(&["--run-dir".into(), "run".into(), "--json".into()]).unwrap(),
+            (PathBuf::from("run"), true)
+        );
+        for args in [
+            vec!["--json".into(), "--json".into()],
+            vec!["--run-dir".into()],
+            vec!["--unknown".into(), "x".into()],
+            Vec::new(),
+        ] {
+            assert!(parse_status_options(&args).is_err());
+        }
+
+        assert_eq!(
+            parse_steer_options(&[
+                "--run-dir".into(),
+                "run".into(),
+                "--message".into(),
+                "hello".into(),
+            ])
+            .unwrap(),
+            (PathBuf::from("run"), "hello".to_string())
+        );
+        let root = std::env::temp_dir().join(format!("crab-steer-parser-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let message = root.join("message.txt");
+        std::fs::write(&message, "from file").unwrap();
+        assert_eq!(
+            parse_steer_options(&[
+                "--run-dir".into(),
+                "run".into(),
+                "--message-file".into(),
+                message.to_string_lossy().into_owned(),
+            ])
+            .unwrap()
+            .1,
+            "from file"
+        );
+        std::fs::write(&message, [0xff]).unwrap();
+        assert!(parse_steer_options(&[
+            "--run-dir".into(),
+            "run".into(),
+            "--message-file".into(),
+            message.to_string_lossy().into_owned(),
+        ])
+        .is_err());
+        std::fs::remove_file(&message).unwrap();
+        assert!(parse_steer_options(&[
+            "--run-dir".into(),
+            "run".into(),
+            "--message-file".into(),
+            message.to_string_lossy().into_owned(),
+        ])
+        .is_err());
+        for args in [
+            Vec::new(),
+            vec!["--run-dir".into(), "run".into()],
+            vec![
+                "--message".into(),
+                "one".into(),
+                "--message-file".into(),
+                "two".into(),
+            ],
+            vec!["--unknown".into(), "x".into()],
+            vec!["--message".into()],
+        ] {
+            assert!(parse_steer_options(&args).is_err());
+        }
+        std::fs::remove_dir_all(root).unwrap();
+
+        let configured = parse_configure_options(&[
+            "--run-dir".into(),
+            "run".into(),
+            "--effort".into(),
+            "max".into(),
+            "--plan-critics".into(),
+            "1".into(),
+            "--codex-reviewers".into(),
+            "8".into(),
+        ])
+        .unwrap();
+        assert_eq!(configured.effort, Some(Effort::Max));
+        for args in [
+            Vec::new(),
+            vec!["--run-dir".into(), "run".into()],
+            vec!["--effort".into(), "high".into()],
+            vec!["--unknown".into(), "x".into()],
+            vec!["--effort".into()],
+        ] {
+            assert!(parse_configure_options(&args).is_err());
+        }
     }
 
     #[test]

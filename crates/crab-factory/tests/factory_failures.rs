@@ -9,7 +9,7 @@ use support::{assert_failure, assert_success, read_json, Fixture};
 
 #[test]
 fn invalid_verdict_is_terminal() {
-    assert_pipeline_failure("invalid", "invalid-verdict", "no valid first-line verdict");
+    assert_pipeline_failure("invalid", "invalid-verdict", "no exact verdict line");
 }
 
 #[test]
@@ -240,6 +240,7 @@ fn managed_snapshot_tampering_and_launcher_failure_finalize_the_run() {
     let snapshot = fixture.run_dir().join("00-request.md");
     fs::set_permissions(&snapshot, fs::Permissions::from_mode(0o600)).unwrap();
     fs::write(&snapshot, "tampered").unwrap();
+    fs::set_permissions(&snapshot, fs::Permissions::from_mode(0o400)).unwrap();
     let mut exec = Command::new(env!("CARGO_BIN_EXE_crab-factory"));
     exec.args([
         "exec",

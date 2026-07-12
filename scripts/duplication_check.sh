@@ -8,6 +8,18 @@ ROOT_DIR="$({
 
 cd "$ROOT_DIR"
 
+if ! command -v jscpd >/dev/null 2>&1; then
+  echo "duplication-check: environment error: jscpd 4.0.5 is required" >&2
+  echo "next: npm install --global jscpd@4.0.5" >&2
+  exit 2
+fi
+
+if [[ "$(jscpd --version 2>/dev/null)" != "4.0.5" ]]; then
+  echo "duplication-check: environment error: expected jscpd 4.0.5" >&2
+  echo "next: npm install --global jscpd@4.0.5" >&2
+  exit 2
+fi
+
 RUST_FILES=()
 while IFS= read -r file; do
   RUST_FILES+=("$file")
@@ -32,7 +44,7 @@ if [ "${#PRODUCTION_FILES[@]}" -eq 0 ]; then
 fi
 
 echo "duplication-check: strict production scan"
-npx --yes jscpd@4.0.5 --config .jscpd.json "${PRODUCTION_FILES[@]}"
+jscpd --config .jscpd.json "${PRODUCTION_FILES[@]}"
 
 if [ "${#TEST_FILES[@]}" -eq 0 ]; then
   echo "duplication-check: no test code files found for informational scan"
@@ -41,7 +53,7 @@ fi
 
 echo "duplication-check: informational test-code scan"
 set +e
-npx --yes jscpd@4.0.5 --config .jscpd.json "${TEST_FILES[@]}"
+jscpd --config .jscpd.json "${TEST_FILES[@]}"
 TEST_SCAN_EXIT=$?
 set -e
 

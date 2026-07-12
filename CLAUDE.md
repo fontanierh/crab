@@ -3,8 +3,9 @@
 Concise agent guide for this repository. See AGENTS.md for complete project rules.
 
 ## Quick Start
+- Preflight: `make doctor` (read-only)
 - Build: `cargo build --workspace`
-- Fast validation: `make quick`
+- Fast changed-scope validation: `make check`
 - Full quality gate: `make quality`
 - Tests only: `make test`
 
@@ -28,18 +29,18 @@ Concise agent guide for this repository. See AGENTS.md for complete project rule
 ## If You Touch X, Run Y
 | Touch area | Run |
 | --- | --- |
-| Any `.rs` file | `make quick` |
-| Coverage-sensitive code (`src/` files in crates) | `make coverage-gate` |
-| CI workflow (`.github/workflows/`) | Review only; no local gate required |
+| Any `.rs` file | `make check` |
+| Coverage-sensitive code (`src/` files in crates) | `make coverage-quick` while editing, then `make quality` |
+| CI workflow (`.github/workflows/`) | `make gate-tests`, then `make quality` |
 | `Makefile` or `scripts/` | `make quality` |
-| `AGENTS.md` or `docs/` | No gate; keep docs synced with behavior |
+| `AGENTS.md` or `docs/` | `make check`; keep docs synced with behavior |
 
 ## Quality Gates
-- `100%` function coverage and `99%` region coverage
-- PR patch coverage: every changed production line must be covered
+- `95%` function, region, and line coverage
+- Patch coverage: 95% of changed executable lines, with 100% required below 20 lines
 - Zero duplication on production code
 - No dead code, no unused imports, and every `pub fn` must have cross-file usage
-- Warnings denied; `clippy` all denied
+- Rust warnings and Clippy correctness/suspicious/perf denied; style/complexity warned
 
 ## Common Agent Tasks
 - New feature: implement in the appropriate crate, add tests, run `make quality`

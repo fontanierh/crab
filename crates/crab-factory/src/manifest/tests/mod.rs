@@ -26,6 +26,10 @@ fn launch(root: &Path) -> LaunchRecord {
         launched_pid: None,
         proc_name: "code-factory-test-run".to_string(),
         launcher: None,
+        effort: None,
+        plan_critics: None,
+        codex_reviewers: None,
+        tool_paths: None,
     }
 }
 
@@ -86,6 +90,7 @@ fn journal_persists_lifecycle_and_launch_round_trip() {
                 output: root.join("output"),
                 log: root.join("log"),
                 returncode: None,
+                pid: None,
             },
         )
         .unwrap();

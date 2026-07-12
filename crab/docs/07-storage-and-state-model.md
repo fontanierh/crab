@@ -132,3 +132,14 @@ Structured migration events are emitted in startup state:
 - Crash during delivery can still avoid duplicate output via outbound dedupe store.
 - Corrupted index/log paths can be surfaced with explicit context-rich errors.
 - Upgrade tooling can evaluate state compatibility using `schema_version.json` without mutating data.
+
+## Code-factory control state
+
+The repository-owned code factory uses additive persisted-state evolution. Launch and manifest
+schema version 1 now have optional prepared/effective effort and cohort-count fields, an optional
+launch-side resolved-tool-path binding, and an optional agent PID. New runs always populate them;
+no migration or schema bump is required. Legacy runs
+remain readable through `crab-factory status`, but execution and live-control writes fail closed
+with a clear “predates live-control support” diagnostic. Durable control records and their
+authenticated `controls/state.json` ledger are private factory tooling state, not Crab runtime
+state, and preserve the original request snapshot unchanged.

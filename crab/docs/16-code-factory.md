@@ -51,13 +51,12 @@ Preflight resolves tools to absolute paths, checks the four primary tool version
 `cargo llvm-cov`, verifies the remaining gate commands, resolves the base commit, checks source
 state and destination collisions, and validates path containment before creating any run artifact.
 
-## Fixed pipeline
+## Pipeline and configurable cohorts
 
-Every code-changing request follows this pipeline; model names and effort are not operator
-configurable:
+Every code-changing request follows this pipeline. Both providers default to effort `high`:
 
-1. Claude Code `claude-fable-5`, effort `max`, produces the plan.
-2. Four independent `gpt-5.6-sol` Codex critics run concurrently at `max` reasoning.
+1. Claude Code `claude-fable-5`, effort `high`, produces the plan.
+2. Two independent `gpt-5.6-sol` Codex critics run concurrently at `high` reasoning.
 3. Fable 5 compiles their critiques into one self-contained directive.
 4. One GPT-5.6 Sol agent implements the directive.
 5. Each normal review round runs two Codex reviewers and one Fable reviewer concurrently, then
@@ -70,6 +69,12 @@ configurable:
 There is one mandatory normal review round. `--additional-review-rounds N` permits up to `N`
 more, with a maximum of 100. A finding in the last permitted round is addressed without inventing
 another review. Nested Codex multi-agent behavior and Claude's Agent tool are disabled.
+
+Run/start accepts `--effort high|max`, `--plan-critics N`, and `--codex-reviewers N`; both count
+bounds are 1–8. Selected values are recorded as prepared and effective configuration and apply to
+every matching worker role. Model names, Fable synthesis, the mandatory Fable normal reviewer, and
+the single thermonuclear Codex reviewer are not configurable. Count changes never split a cohort
+into specialties: every member still receives identical prompt bytes.
 
 Every parallel cohort receives one immutable in-memory byte buffer over stdin. The artifact copy,
 cohort record, and every agent record share its SHA-256; the artifact is re-hashed after the cohort.
@@ -170,6 +175,53 @@ command from them. The launcher is trusted
 operator plumbing and is the sole subprocess that inherits the full parent environment; all model,
 Git, and quality processes use the allowlist below.
 
+## Live controls
+
+A prepared, non-terminal run can be inspected and steered without changing its original request:
+
+```bash
+crab-factory status --run-dir /path/to/run --json
+crab-factory steer --run-dir /path/to/run --message "Preserve compatibility."
+crab-factory steer --run-dir /path/to/run --message-file operator-note.md
+crab-factory configure --run-dir /path/to/run --effort max --codex-reviewers 3
+```
+
+Controls apply only at a prompt boundary, before the prompt artifact is written and the next
+worker or cohort is spawned. They never alter, kill, or restart an already-running model process.
+Steering is appended to later prompts inside explicit delimiters; the immutable request bytes and
+hash remain unchanged. Effort applies at the next worker boundary. Count knobs apply only at their
+own cohort boundary. Acceptance warns when either the plan-critic or normal-review cohort has
+already passed; the executor later records the per-knob rejection at an applicable boundary or
+terminal sweep.
+
+The private `controls/` directory contains immutable sequence records and the executor-owned
+`state.json` ledger. Records bind the run ID and request hash and carry payload and record hashes.
+Writes use staging, file fsync, atomic rename, and directory fsync; reads reject symlinks and wrong
+ownership or modes. Manifest acceptance/application/rejection events are an idempotent projection
+of the ledger. Before creating the worktree or marking a run running, the executor revalidates the
+prepared metadata, complete controls tree, exact record bytes, authenticated ledger, and effective
+configuration reconstructed from that ledger. Terminalization blocks behind a live control writer,
+holds the same controls lock through the final sweep and terminal manifest write, and audits an
+unsafe-node or failed sweep without concealing the honest terminal result. Terminal runs reject new
+controls.
+
+Status reports lifecycle, the current or between-stages position, active worker labels and PIDs
+where available, launch PID, prepared/effective configuration, per-knob dispositions (including
+the earliest eligible boundary for pending controls), and the last applied sequence. The JSON form
+exposes the same facts. Configuration and prepared tool-path fields are additive optional
+schema-version-1 fields:
+legacy runs remain status-readable, while execution and control writes reject them as predating
+live-control support. Persisted identity, request/base, resolved tool paths, paths, timeouts, and
+cohort bounds are validated, including exact request bytes/hash, nonempty tool identities,
+artifact/worktree roots, and derived run/worktree/branch/process names. The final run-directory
+component and every managed leaf reject symlinks; private type, owner, and mode checks fail closed.
+Worker permissions/network, disabled nested agents, and the mandatory thermonuclear stage remain
+structurally hardcoded and argv-tested rather than configurable inputs.
+
+Review synthesis accepts exactly one trimmed line equal to `VERDICT: CLEAN` or
+`VERDICT: CHANGES_REQUIRED` anywhere in a report. Prefixed or trailing prose is tolerated; missing,
+duplicated, or conflicting verdict lines fail closed.
+
 ## Isolation and enforcement
 
 The original request is copied byte-for-byte, including Unicode, trailing whitespace, and the
@@ -219,6 +271,9 @@ launch.json
 manifest.json
 .lock
 launcher-pid               # explicit launcher handshake
+controls/.controls.lock
+controls/state.json
+controls/NNNNNN-{steer,configure}.json
 prompts/*.md
 logs/<agent-label>.log
 01-plan/ ... 06-thermo-nuclear-review/
@@ -253,10 +308,10 @@ the distinction. Reports are generated artifacts; do not hand-edit them.
 
 ## Quality, handoff, and cleanup
 
-The final gate is exactly `make quality`. Its 100% function and 99% region thresholds exercise the
-working tree. Per-changed-line patch coverage is additionally enforced in pull-request CI when
-`BASE_REF` is set; the factory does not rewrite the repository gate scripts to emulate that PR diff
-inside an uncommitted worktree.
+The final gate is exactly `make quality`. Its 95% function, region, and line
+thresholds exercise the working tree. Its coverage gate also enforces 95% changed executable-line
+coverage, including the under-20-line 100% rule, against the factory worktree's resolved base. The
+factory uses the repository gate unchanged rather than maintaining a separate PR-only patch gate.
 
 The factory intentionally preserves its branch, worktree, and artifacts on success and failure.
 The operator should inspect the reports and diff, make any desired commits outside the factory,

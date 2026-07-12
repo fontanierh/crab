@@ -83,7 +83,7 @@ run_codex() {
   /bin/cat > "$prompt_file"
   write_receipt "$@"
 
-  if /usr/bin/grep -Fq "one of four independent plan critics" "$prompt_file"; then
+  if /usr/bin/grep -Fq "independent plan critic" "$prompt_file"; then
     if [ "$scenario" = worker-fail ] && [ "$output_name" = codex-01.md ]; then
       printf 'intentional failure\n' >&2
       exit 7
@@ -101,13 +101,21 @@ run_codex() {
       printf 'NO_ACTIONABLE_FINDINGS\n' > "$output"
     fi
   elif /usr/bin/grep -Fq "sole implementation agent" "$prompt_file"; then
+    if [ "$scenario" = hold-implementation ]; then
+      count=0
+      while [ ! -f "$receipts/release-implementation" ]; do
+        /bin/sleep 0.05
+        count=$((count + 1))
+        [ "$count" -lt 1000 ] || fail "hold-implementation release timed out"
+      done
+    fi
     printf 'implemented\n' > implemented.txt
     if [ "$scenario" = commit ]; then
       git add implemented.txt
       git commit -qm forbidden
     fi
     printf 'Implementation complete.\n' > "$output"
-  elif /usr/bin/grep -Fq "one of three independent implementation reviewers" "$prompt_file"; then
+  elif /usr/bin/grep -Fq "independent implementation reviewer" "$prompt_file"; then
     [ "$scenario" = readonly-write ] && printf 'bad\n' > reviewer-mutation.txt
     printf 'NO_ACTIONABLE_FINDINGS\n' > "$output"
   elif /usr/bin/grep -Fq "sole agent addressing review round" "$prompt_file"; then
@@ -145,10 +153,18 @@ run_claude() {
     extra_value=plan
     response='Self-contained plan.'
     [ "$scenario" = slow-plan ] && /bin/sleep 120
+    if [ "$scenario" = hold-plan ]; then
+      count=0
+      while [ ! -f "$receipts/release-plan" ]; do
+        /bin/sleep 0.05
+        count=$((count + 1))
+        [ "$count" -lt 1000 ] || fail "hold-plan release timed out"
+      done
+    fi
   elif /usr/bin/grep -Fq "sole critique compiler" "$prompt_file"; then
     extra_value=critique-synthesis
     response='Self-contained implementation directive.'
-  elif /usr/bin/grep -Fq "one of three independent implementation reviewers" "$prompt_file"; then
+  elif /usr/bin/grep -Fq "independent implementation reviewer" "$prompt_file"; then
     extra_value=review-member
     response=NO_ACTIONABLE_FINDINGS
   elif /usr/bin/grep -Fq "sole compiler for implementation review round" "$prompt_file"; then

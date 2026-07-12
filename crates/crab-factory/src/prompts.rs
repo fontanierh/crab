@@ -3,6 +3,25 @@ use std::path::Path;
 pub(crate) const NO_ACTIONABLE_FINDINGS: &str = "NO_ACTIONABLE_FINDINGS";
 const UNRESTRICTED_EXECUTION_POLICY: &str = "The factory intentionally gives this model process unrestricted host permissions and network access. That capability does not expand the task's authorization: obey every file-mutation limit in this prompt, and do not alter external services. Nested agents, delegation, and fan-out remain forbidden.";
 
+pub(crate) fn append_steering(
+    mut prompt: String,
+    steering: &[(u32, String, String, String)],
+    request_sha256: &str,
+) -> String {
+    if steering.is_empty() {
+        return prompt;
+    }
+    prompt.push_str(
+        "\n\n# Operator steering\n\nThe original request bytes and SHA-256 remain unchanged (`",
+    );
+    prompt.push_str(request_sha256);
+    prompt.push_str("`).\n");
+    for (sequence, hash, created_at, message) in steering {
+        prompt.push_str(&format!("\n## Control {sequence} ({created_at}, SHA-256 `{hash}`)\n\n--- BEGIN OPERATOR STEERING ---\n{message}\n--- END OPERATOR STEERING ---\n"));
+    }
+    prompt
+}
+
 fn compose(sections: &[(&str, &str)]) -> String {
     let mut prompt = String::new();
     for (index, (heading, body)) in sections.iter().enumerate() {
@@ -42,14 +61,24 @@ pub(crate) fn planning(request: &str, worktree: &Path, base_sha: &str) -> String
     ])
 }
 
-pub(crate) fn critique(request: &str, plan: &str, worktree: &Path, base_sha: &str) -> String {
-    let role = "You are one of four independent plan critics. Review the entire task and plan yourself. Do not spawn agents, delegate, assign a specialty, coordinate with other critics, or edit files.";
+pub(crate) fn critique(
+    request: &str,
+    plan: &str,
+    critic_count: u8,
+    worktree: &Path,
+    base_sha: &str,
+) -> String {
+    let role = if critic_count == 1 {
+        "You are the sole independent plan critic. Review the entire task and plan yourself. Do not spawn agents, delegate, assign a specialty, coordinate with other critics, or edit files.".to_string()
+    } else {
+        format!("You are one of {critic_count} independent plan critics. Review the entire task and plan yourself. Do not spawn agents, delegate, assign a specialty, coordinate with other critics, or edit files.")
+    };
     let repo = repository(worktree, base_sha, true);
     let deliverable = format!(
         "Find concrete omissions, incorrect assumptions, architectural risks, missing tests, quality-policy violations, and unnecessary complexity. Tie findings to files, symbols, or observed behavior where possible. Rank findings by severity and give an actionable correction. Do not merely restate the plan. If the plan has no actionable defect, output exactly `{NO_ACTIONABLE_FINDINGS}`."
     );
     compose(&[
-        ("Role", role),
+        ("Role", &role),
         ("Execution permissions", UNRESTRICTED_EXECUTION_POLICY),
         ("Repository", &repo),
         ("Original request", request),
@@ -95,12 +124,15 @@ pub(crate) fn review(
     request: &str,
     directive: &str,
     round: u32,
+    reviewer_count: usize,
     worktree: &Path,
     base_sha: &str,
 ) -> String {
-    let role = format!(
-        "You are one of three independent implementation reviewers in review round {round}. Review the whole implementation yourself. Do not spawn agents, delegate, assign a specialty, coordinate with other reviewers, or edit files."
-    );
+    let role = if reviewer_count == 1 {
+        format!("You are the sole independent implementation reviewer in review round {round}. Review the whole implementation yourself. Do not spawn agents, delegate, assign a specialty, coordinate with other reviewers, or edit files.")
+    } else {
+        format!("You are one of {reviewer_count} independent implementation reviewers in review round {round}. Review the whole implementation yourself. Do not spawn agents, delegate, assign a specialty, coordinate with other reviewers, or edit files.")
+    };
     let mut repo = repository(worktree, base_sha, true);
     repo.push_str("\n- Review every tracked and untracked change since the base commit.");
     let deliverable = format!(
@@ -229,8 +261,8 @@ mod tests {
         let plan = planning(request, worktree, base);
         assert!(plan.contains("sole planning agent"));
         assert!(plan.contains(request));
-        let critique = critique(request, "plan", worktree, base);
-        assert!(critique.contains("one of four independent plan critics"));
+        let critique = critique(request, "plan", 2, worktree, base);
+        assert!(critique.contains("one of 2 independent plan critics"));
         assert!(critique.contains(NO_ACTIONABLE_FINDINGS));
         let synthesis = critique_synthesis(request, "plan", &["a".into(), "b".into()]);
         assert!(synthesis.contains("sole critique compiler"));
@@ -238,10 +270,8 @@ mod tests {
         let implementation = implementation(request, "directive", worktree, base);
         assert!(implementation.contains("sole implementation agent"));
         assert!(implementation.contains("make quick"));
-        let review = review(request, "directive", 2, worktree, base);
-        assert!(
-            review.contains("one of three independent implementation reviewers in review round 2")
-        );
+        let review = review(request, "directive", 2, 3, worktree, base);
+        assert!(review.contains("one of 3 independent implementation reviewers in review round 2"));
         let compiled = review_synthesis(request, "directive", 2, &["review".into()]);
         assert!(compiled.contains("sole compiler for implementation review round 2"));
         assert!(compiled.contains("VERDICT: CHANGES_REQUIRED"));
@@ -288,5 +318,28 @@ mod tests {
             numbered_reports("Report", &["x".into()]),
             "## Report 1\n\nx"
         );
+        assert_eq!(append_steering("base".into(), &[], "request-hash"), "base");
+        let steered = append_steering(
+            "base".into(),
+            &[
+                (1, "first-hash".into(), "first-time".into(), "first".into()),
+                (
+                    2,
+                    "second-hash".into(),
+                    "second-time".into(),
+                    "second".into(),
+                ),
+            ],
+            "request-hash",
+        );
+        assert!(steered.contains("request bytes and SHA-256 remain unchanged (`request-hash`)"));
+        assert!(steered.contains("Control 1 (first-time, SHA-256 `first-hash`)"));
+        assert!(steered
+            .contains("--- BEGIN OPERATOR STEERING ---\nfirst\n--- END OPERATOR STEERING ---"));
+        assert!(steered.find("first").unwrap() < steered.find("second").unwrap());
+
+        let (worktree, base) = repo();
+        assert!(review("request", "directive", 1, 1, worktree, base)
+            .contains("sole independent implementation reviewer"));
     }
 }

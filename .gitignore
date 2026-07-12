@@ -30,6 +30,8 @@ report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
 .eslintcache
 .cache
 *.tsbuildinfo
+__pycache__/
+*.py[cod]
 
 # IntelliJ based IDEs
 .idea
@@ -48,5 +50,7 @@ mutants.out*/
 # local machine credentials / secrets
 .crab-secrets/
 
-# local quality baseline artifacts
-quality/baselines/
+# local quality workflow artifacts (tracked reports in quality/ remain visible)
+/quality/status.json
+/quality/logs/
+/quality/baselines/

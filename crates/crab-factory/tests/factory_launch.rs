@@ -81,7 +81,8 @@ fn launcher_receives_an_argument_vector_and_can_report_the_detached_pid() {
         Duration::from_secs(45),
     );
     wait_for_pid_exit(pid, Duration::from_secs(15));
-    assert_eq!(fixture.manifest()["status"], "complete");
+    let manifest = fixture.manifest();
+    assert_eq!(manifest["status"], "complete", "{manifest:#}");
 }
 
 #[test]

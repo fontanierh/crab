@@ -46,8 +46,10 @@ pub(crate) fn finalize_initialization_failure(
 }
 
 pub(crate) fn finalize_failure(journal: &Arc<Journal>, run_dir: &Path, error: &str) {
-    let _ = journal.fail(error);
-    let _ = write_failure_status(journal, run_dir, error);
+    let _ = crate::controls::terminalize(run_dir, journal, || {
+        let _ = journal.fail(error);
+        write_failure_status(journal, run_dir, error)
+    });
 }
 
 pub(crate) fn write_success_status(

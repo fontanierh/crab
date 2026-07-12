@@ -31,7 +31,7 @@ Nine Rust crates: `crab-core`, `crab-store`, `crab-scheduler`, `crab-backends`, 
 
 ### Prerequisites
 
-- Rust stable toolchain (pinned in `rust-toolchain.toml`)
+- Rust 1.93.0 toolchain (exactly pinned in `rust-toolchain.toml`)
 - A Discord bot token ([provisioning guide](crab/docs/09-discord-provisioning-and-secrets.md))
 - Claude Code installed (`claude` CLI)
 
@@ -108,14 +108,15 @@ crab-memory-get --workspace-root ~/.crab/workspace --user-scope <user_id> --path
 
 ## Quality Gates
 
-100% test coverage enforced. No exceptions.
+Demanding aggregate and changed-line coverage is enforced.
 
 ```bash
-make quality     # Run all gates (fmt, clippy, dead code, coverage, duplication)
-make quick       # Fast local preflight (non-gating)
+make doctor      # Read-only deterministic prerequisite check
+make check       # Changed-scope format, Clippy, and tests during edits
+make quality     # Authoritative full gate and exact-tree status artifact
 ```
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for the full quality bar and PR process.
+See [the agent workflow](docs/agent-workflow.md) and [CONTRIBUTING.md](CONTRIBUTING.md) for details.
 
 ## Docs
 

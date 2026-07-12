@@ -1,0 +1,20 @@
+[workspace]
+
+[workspace.lints.rust]
+warnings = { level = "deny", priority = -2 }
+
+[workspace.lints.clippy]
+correctness = { level = "deny", priority = -1 }
+suspicious = { level = "deny", priority = -1 }
+perf = { level = "deny", priority = -1 }
+style = { level = "warn", priority = -1 }
+complexity = { level = "warn", priority = -1 }
+
+[package]
+name = "lint-policy-fixture"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lints]
+workspace = true

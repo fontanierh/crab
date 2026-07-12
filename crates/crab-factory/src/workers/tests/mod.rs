@@ -3,7 +3,7 @@ use std::io;
 use std::io::ErrorKind;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::process::ExitStatusExt;
-use std::sync::atomic::AtomicU64;
+use std::sync::atomic::{AtomicI32, AtomicU64};
 
 use crate::config::LaunchOptions;
 use crate::factory_test_support::Fixture;
@@ -35,6 +35,7 @@ fn shell_spec(script: &str, timeout: Duration, cancel: CancelFlags) -> CommandSp
         cancellation: cancel,
         inherit_environment: false,
         environment_overrides: std::collections::BTreeMap::new(),
+        spawn_observer: None,
     }
 }
 
@@ -100,7 +101,8 @@ fn capture_is_bounded_and_timeout_errors_keep_partial_diagnostics() {
     let timeout = supervise(
         shell_spec(
             "printf before-timeout; printf stderr-note >&2; sleep 30",
-            Duration::from_millis(40),
+            // Instrumented process startup can exceed a few dozen milliseconds under load.
+            Duration::from_secs(1),
             no_cancel(),
         ),
         OutputPlan::Capture,
@@ -165,6 +167,22 @@ fn cancellation_kills_the_process_group() {
 }
 
 #[test]
+fn spawn_observer_failure_kills_and_reaps_the_process_group() {
+    let observed = Arc::new(AtomicI32::new(0));
+    let mut spec = shell_spec("sleep 120", Duration::from_secs(2), no_cancel());
+    let receipt = Arc::clone(&observed);
+    spec.spawn_observer = Some(Arc::new(move |pid| {
+        receipt.store(pid as i32, Ordering::SeqCst);
+        Err(FactoryError::new("injected observer failure"))
+    }));
+    let error = supervise(spec, OutputPlan::Capture).unwrap_err();
+    assert!(error.detail().contains("could not record spawned process"));
+    let pid = observed.load(Ordering::SeqCst);
+    assert!(pid > 0);
+    assert!(process_is_gone(pid));
+}
+
+#[test]
 fn deadline_overflow_and_pre_cancel_are_reported() {
     assert_eq!(poll_interval(0), Duration::from_millis(1));
     assert_eq!(poll_interval(STARTUP_POLL_LIMIT - 1), STARTUP_POLL_INTERVAL);
@@ -200,6 +218,7 @@ fn deadline_overflow_and_pre_cancel_are_reported() {
             cancellation: no_cancel(),
             inherit_environment: true,
             environment_overrides: std::collections::BTreeMap::new(),
+            spawn_observer: None,
         },
         OutputPlan::Capture,
     )
@@ -361,7 +380,7 @@ mod agent_tests;
 
 #[test]
 fn worker_arguments_pin_models_effort_full_permissions_and_nested_agent_boundaries() {
-    let codex = codex_arguments(Path::new("/tmp/out"));
+    let codex = codex_arguments(Path::new("/tmp/out"), DEFAULT_EFFORT);
     assert_eq!(
         codex,
         [
@@ -369,7 +388,7 @@ fn worker_arguments_pin_models_effort_full_permissions_and_nested_agent_boundari
             "--model",
             CODEX_MODEL,
             "--config",
-            "model_reasoning_effort=\"max\"",
+            "model_reasoning_effort=\"high\"",
             "--dangerously-bypass-approvals-and-sandbox",
             "--disable",
             "multi_agent",
@@ -384,8 +403,10 @@ fn worker_arguments_pin_models_effort_full_permissions_and_nested_agent_boundari
         .map(OsString::from)
         .collect::<Vec<_>>()
     );
+    assert!(codex_arguments(Path::new("/tmp/out"), Effort::Max)
+        .contains(&OsString::from("model_reasoning_effort=\"max\"")));
 
-    let claude_strings: Vec<String> = claude_arguments()
+    let claude_strings: Vec<String> = claude_arguments(DEFAULT_EFFORT)
         .iter()
         .map(|value| value.to_string_lossy().into_owned())
         .collect();
@@ -396,7 +417,7 @@ fn worker_arguments_pin_models_effort_full_permissions_and_nested_agent_boundari
             "--model",
             CLAUDE_MODEL,
             "--effort",
-            "max",
+            "high",
             "--no-session-persistence",
             "--disable-slash-commands",
             "--dangerously-skip-permissions",
@@ -408,6 +429,9 @@ fn worker_arguments_pin_models_effort_full_permissions_and_nested_agent_boundari
             "text",
         ]
     );
+    assert!(claude_arguments(Effort::Max)
+        .windows(2)
+        .any(|pair| pair == [OsString::from("--effort"), OsString::from("max")]));
 }
 
 #[test]

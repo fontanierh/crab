@@ -8,34 +8,48 @@ See `AGENTS.md` for the full project operating rules.
 git clone <repo-url>
 cd crab-source
 # Install prerequisites (see below)
+make doctor
+make check
 make quality
 ```
 
-`make quality` runs the full local gate: fmt, clippy, tests with coverage, and duplication checks. All checks must pass before opening a PR.
+`make quality` runs the full local gate in order: fmt, Clippy, normal tests, public-API wiring,
+duplication, deterministic workflow gate tests, and coverage. All checks must pass before opening a
+PR.
 
 ## Prerequisites
 
-- **Rust stable** via [rustup](https://rustup.rs/)
-- **cargo-llvm-cov** 0.6.21: `cargo install cargo-llvm-cov --version 0.6.21`
-- **llvm-tools-preview**: `rustup component add llvm-tools-preview`
-- **Node.js** (for jscpd duplicate detection): `npm install -g jscpd`
+- **Rust 1.93.0** via [rustup](https://rustup.rs/), including rustfmt, Clippy, and LLVM tools
+- **cargo-llvm-cov 0.6.21**: `cargo install cargo-llvm-cov --version 0.6.21 --locked`
+- **Python 3.11+**, exact runnable **jscpd 4.0.5**, and **ripgrep**; **Node.js/npm** are
+  needed only to install or change jscpd
+
+`make doctor` checks exact versions and prints remediation without installing anything.
 
 ## Quality Expectations
 
-- **Coverage gate.** `make quality` enforces `100%` function coverage and `99%` region coverage. On pull requests, changed production Rust lines must also stay covered.
+- **Coverage gate.** `make quality` enforces 95% functions, regions, lines, and changed executable
+  lines. Under 20 changed executable lines, patch coverage is 100%.
 - **No dead code.** The codebase compiles with `#![deny(dead_code)]`. Remove unused items rather than suppressing the lint.
-- **Clippy clean.** Run with `--deny warnings`. Fix warnings; do not use `#[allow(...)]` without a clear justification in a comment.
+- **Clippy policy.** Rust warnings and correctness/suspicious/performance findings fail. Style and
+  complexity suggestions remain visible warnings. Use `make clippy`, not ad hoc flags.
 - **No production duplication.** jscpd blocks duplicated production Rust code; test-code duplication is reported informationally. Extract shared logic rather than copying it.
 
 ## PR Process
 
 - Keep PRs small and atomic. One logical change per PR is strongly preferred.
-- All CI gates must pass (fmt, clippy, coverage, duplication).
+- All seven CI gates must pass (fmt, Clippy, tests, public-API wiring, duplication, workflow gate
+  tests, and coverage).
 - PR description must cover three things:
   1. **What** changed
   2. **Why** it was needed
   3. **How** it was validated (specific test names or manual steps)
 - Avoid force-pushing after review has started; add fixup commits instead.
+- The final `quality/status.json` must say `passed`, have matching fingerprints, and contain no
+  skipped gate. Nothing tracked may change after that run without rerunning `make quality`.
+
+See [docs/agent-workflow.md](docs/agent-workflow.md) for changed-scope selection, coverage modes,
+structured status, CI docs-only behavior, and opt-in shared build artifacts.
 
 ## Testing Philosophy
 

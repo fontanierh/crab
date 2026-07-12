@@ -7,7 +7,8 @@ use std::time::Duration;
 
 use serde_json::json;
 
-use crate::config::ToolPaths;
+use crate::config::{Effort, ToolPaths};
+use crate::controls::{Boundary, ControlPlane};
 use crate::gitops::{assert_identity, assert_unchanged, GitRunner};
 use crate::manifest::Journal;
 use crate::prompts;
@@ -29,10 +30,14 @@ pub(crate) struct Pipeline<'a> {
     pub(crate) tools: ToolPaths,
     pub(crate) timeout: Duration,
     pub(crate) maximum_review_rounds: u32,
+    pub(crate) effort: Effort,
+    pub(crate) plan_critics: u8,
+    pub(crate) codex_reviewers: u8,
     pub(crate) journal: Arc<Journal>,
     pub(crate) git: GitRunner,
     pub(crate) cancellation: Arc<AtomicBool>,
     pub(crate) stdout: &'a mut dyn Write,
+    pub(crate) controls: ControlPlane,
 }
 
 impl Pipeline<'_> {
@@ -46,10 +51,14 @@ impl Pipeline<'_> {
         tools: ToolPaths,
         timeout: Duration,
         maximum_review_rounds: u32,
+        effort: Effort,
+        plan_critics: u8,
+        codex_reviewers: u8,
         journal: Arc<Journal>,
         git: GitRunner,
         cancellation: Arc<AtomicBool>,
         stdout: &'a mut dyn Write,
+        controls: ControlPlane,
     ) -> Pipeline<'a> {
         Pipeline {
             run_dir,
@@ -60,22 +69,26 @@ impl Pipeline<'_> {
             tools,
             timeout,
             maximum_review_rounds,
+            effort,
+            plan_critics,
+            codex_reviewers,
             journal,
             git,
             cancellation,
             stdout,
+            controls,
         }
     }
 
     pub(crate) fn execute(&mut self) -> FactoryResult<String> {
         #[rustfmt::skip]
-        let plan_prompt = self.prompt(Path::new("01-plan.md"), prompts::planning(&self.request, &self.worktree, &self.base_sha))?;
+        let plan_prompt = self.prompt(Path::new("01-plan.md"), |pipeline| prompts::planning(&pipeline.request, &pipeline.worktree, &pipeline.base_sha))?;
         #[rustfmt::skip]
         let plan = self.readonly_single("planning", claude_agent(&self.tools, &self.run_dir, "01-plan-fable", self.run_dir.join("01-plan/plan.md")), &plan_prompt, self.worktree.clone())?;
 
         #[rustfmt::skip]
-        let critique_prompt = self.prompt(Path::new("02-plan-critiques.md"), prompts::critique(&self.request, &plan, &self.worktree, &self.base_sha))?;
-        let critique_specs = (1..=4)
+        let critique_prompt = self.prompt(Path::new("02-plan-critiques.md"), |pipeline| prompts::critique(&pipeline.request, &plan, pipeline.plan_critics, &pipeline.worktree, &pipeline.base_sha))?;
+        let critique_specs = (1..=self.plan_critics)
             .map(|index| {
                 let label = format!("02-critique-codex-{index:02}");
                 codex_agent(
@@ -95,12 +108,12 @@ impl Pipeline<'_> {
         )?;
 
         #[rustfmt::skip]
-        let synthesis_prompt = self.prompt(Path::new("03-critique-synthesis.md"), prompts::critique_synthesis(&self.request, &plan, &critiques))?;
+        let synthesis_prompt = self.prompt(Path::new("03-critique-synthesis.md"), |pipeline| prompts::critique_synthesis(&pipeline.request, &plan, &critiques))?;
         #[rustfmt::skip]
         let directive = self.readonly_single("critique synthesis", claude_agent(&self.tools, &self.run_dir, "03-critique-synthesis-fable", self.run_dir.join("03-critique-synthesis/compiled-plan.md")), &synthesis_prompt, self.run_dir.clone())?;
 
         #[rustfmt::skip]
-        let implementation_prompt = self.prompt(Path::new("04-address-critiques.md"), prompts::implementation(&self.request, &directive, &self.worktree, &self.base_sha))?;
+        let implementation_prompt = self.prompt(Path::new("04-address-critiques.md"), |pipeline| prompts::implementation(&pipeline.request, &directive, &pipeline.worktree, &pipeline.base_sha))?;
         self.write_single(
             "addressing compiled critiques",
             codex_agent(
@@ -118,8 +131,8 @@ impl Pipeline<'_> {
             let slug = format!("review-round-{round:02}");
             let round_dir = self.run_dir.join(format!("05-{slug}"));
             #[rustfmt::skip]
-            let review_prompt = self.prompt(&PathBuf::from(format!("{slug}/reviews.md")), prompts::review(&self.request, &directive, round, &self.worktree, &self.base_sha))?;
-            let mut review_specs = (1..=2)
+            let review_prompt = self.prompt(&PathBuf::from(format!("{slug}/reviews.md")), |pipeline| prompts::review(&pipeline.request, &directive, round, usize::from(pipeline.codex_reviewers) + 1, &pipeline.worktree, &pipeline.base_sha))?;
+            let mut review_specs = (1..=self.codex_reviewers)
                 .map(|index| {
                     let label = format!("05-{slug}-codex-{index:02}");
                     codex_agent(
@@ -139,7 +152,7 @@ impl Pipeline<'_> {
             let reviews =
                 self.readonly_cohort(&slug, review_specs, &review_prompt, self.worktree.clone())?;
             #[rustfmt::skip]
-            let compile_prompt = self.prompt(&PathBuf::from(format!("{slug}/synthesis.md")), prompts::review_synthesis(&self.request, &directive, round, &reviews))?;
+            let compile_prompt = self.prompt(&PathBuf::from(format!("{slug}/synthesis.md")), |pipeline| prompts::review_synthesis(&pipeline.request, &directive, round, &reviews))?;
             #[rustfmt::skip]
             let synthesis = self.readonly_single(&format!("review round {round} synthesis"), claude_agent(&self.tools, &self.run_dir, &format!("05-{slug}-synthesis-fable"), round_dir.join("compiled-review.md")), &compile_prompt, self.run_dir.clone())?;
             let verdict = parse_verdict(&synthesis)?;
@@ -154,7 +167,7 @@ impl Pipeline<'_> {
             }
             self.journal.checkpoint_review(round, None)?;
             #[rustfmt::skip]
-            let address_prompt = self.prompt(&PathBuf::from(format!("{slug}/address.md")), prompts::review_address(&self.request, &directive, round, &synthesis, &self.worktree, &self.base_sha))?;
+            let address_prompt = self.prompt(&PathBuf::from(format!("{slug}/address.md")), |pipeline| prompts::review_address(&pipeline.request, &directive, round, &synthesis, &pipeline.worktree, &pipeline.base_sha))?;
             #[rustfmt::skip]
             self.write_single(&format!("addressing review round {round}"), codex_agent(&self.tools, &self.run_dir, &format!("05-{slug}-address-codex"), round_dir.join("address-report.md")), &address_prompt)?;
             if round == self.maximum_review_rounds {
@@ -165,7 +178,7 @@ impl Pipeline<'_> {
         let normal_outcome = require_normal_outcome(normal_outcome)?;
 
         #[rustfmt::skip]
-        let thermo_prompt = self.prompt(Path::new("06-thermo-nuclear-review.md"), prompts::thermo_review(&self.request, &directive, rubric::THERMO_RUBRIC, &self.worktree, &self.base_sha))?;
+        let thermo_prompt = self.prompt(Path::new("06-thermo-nuclear-review.md"), |pipeline| prompts::thermo_review(&pipeline.request, &directive, rubric::THERMO_RUBRIC, &pipeline.worktree, &pipeline.base_sha))?;
         #[rustfmt::skip]
         let thermo_review = self.readonly_single("thermonuclear code-quality review", codex_agent(&self.tools, &self.run_dir, "06-thermo-nuclear-review-codex", self.run_dir.join("06-thermo-nuclear-review/review.md")), &thermo_prompt, self.worktree.clone())?;
         let thermo_verdict = parse_verdict(&thermo_review)?;
@@ -177,7 +190,7 @@ impl Pipeline<'_> {
         } else {
             self.journal.checkpoint_thermo("changes_required", None)?;
             #[rustfmt::skip]
-            let address_prompt = self.prompt(Path::new("06-thermo-nuclear-address.md"), prompts::thermo_address(&self.request, &directive, &thermo_review, &self.worktree, &self.base_sha))?;
+            let address_prompt = self.prompt(Path::new("06-thermo-nuclear-address.md"), |pipeline| prompts::thermo_address(&pipeline.request, &directive, &thermo_review, &pipeline.worktree, &pipeline.base_sha))?;
             #[rustfmt::skip]
             self.write_single("addressing thermonuclear review", codex_agent(&self.tools, &self.run_dir, "06-thermo-nuclear-address-codex", self.run_dir.join("06-thermo-nuclear-review/address-report.md")), &address_prompt)?;
             self.journal
@@ -189,7 +202,38 @@ impl Pipeline<'_> {
         Ok(outcome.to_string())
     }
 
-    fn prompt(&self, relative: &Path, content: String) -> FactoryResult<PromptInput> {
+    fn prompt(
+        &mut self,
+        relative: &Path,
+        render: impl FnOnce(&Self) -> String,
+    ) -> FactoryResult<PromptInput> {
+        let display = relative.to_string_lossy();
+        let stage = if display == "02-plan-critiques.md" {
+            "plan-critiques"
+        } else if display.ends_with("/reviews.md") {
+            "normal-reviews"
+        } else if display == "01-plan.md" {
+            "planning"
+        } else {
+            display.as_ref()
+        };
+        let boundary = if stage == "plan-critiques" {
+            Boundary::PlanCritiques(stage)
+        } else if stage == "normal-reviews" {
+            Boundary::Reviews(stage)
+        } else {
+            Boundary::Prompt(stage)
+        };
+        let applied = self.controls.sync(boundary)?;
+        self.effort = applied.configuration.effort;
+        self.plan_critics = applied.configuration.plan_critics;
+        self.codex_reviewers = applied.configuration.codex_reviewers;
+        let content = render(self);
+        let content = prompts::append_steering(
+            content,
+            &applied.steering,
+            &self.journal.snapshot()?.request_sha256,
+        );
         materialize_prompt(&self.run_dir, relative, content, &self.journal)
     }
 
@@ -200,6 +244,7 @@ impl Pipeline<'_> {
         prompt: &PromptInput,
         cwd: PathBuf,
     ) -> FactoryResult<String> {
+        let spec = spec.with_effort(self.effort);
         let before = self.begin_readonly(stage, prompt)?;
         let output_path = spec.output.clone();
         let result = run_single_agent(
@@ -221,6 +266,10 @@ impl Pipeline<'_> {
         prompt: &PromptInput,
         cwd: PathBuf,
     ) -> FactoryResult<Vec<String>> {
+        let specs = specs
+            .into_iter()
+            .map(|spec| spec.with_effort(self.effort))
+            .collect();
         let before = self.begin_readonly(stage, prompt)?;
         let result = run_agent_cohort(
             &self.journal,
@@ -315,6 +364,7 @@ impl Pipeline<'_> {
         spec: AgentSpec,
         prompt: &PromptInput,
     ) -> FactoryResult<String> {
+        let spec = spec.with_effort(self.effort);
         self.check_cancelled()?;
         self.log(&format!("Starting {stage}"))?;
         self.journal.event(
@@ -484,12 +534,22 @@ pub(crate) fn assert_quality_unchanged(
 }
 
 pub(crate) fn parse_verdict(report: &str) -> FactoryResult<&'static str> {
-    let first = report.lines().map(str::trim).find(|line| !line.is_empty());
-    match first {
-        Some("VERDICT: CLEAN") => Ok("clean"),
-        Some("VERDICT: CHANGES_REQUIRED") => Ok("changes_required"),
+    let verdicts = report
+        .lines()
+        .map(str::trim)
+        .filter_map(|line| match line {
+            "VERDICT: CLEAN" => Some("clean"),
+            "VERDICT: CHANGES_REQUIRED" => Some("changes_required"),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    match verdicts.as_slice() {
+        [verdict] => Ok(verdict),
+        [] => Err(FactoryError::new(
+            "review has no exact verdict line; expected exactly one VERDICT: CLEAN or VERDICT: CHANGES_REQUIRED",
+        )),
         _ => Err(FactoryError::new(
-            "review has no valid first-line verdict; expected VERDICT: CLEAN or VERDICT: CHANGES_REQUIRED",
+            "review has multiple verdict lines; expected exactly one VERDICT: CLEAN or VERDICT: CHANGES_REQUIRED",
         )),
     }
 }

@@ -12,6 +12,13 @@ fn validates_bounds_and_checked_round_count() {
     assert!(validate_counts(0, 59).is_err());
     assert!(validate_counts(0, 86_401).is_err());
     assert!(checked_review_rounds(u32::MAX).is_err());
+    assert_eq!(Effort::parse("high").unwrap(), Effort::High);
+    assert_eq!(Effort::parse("max").unwrap(), Effort::Max);
+    assert!(Effort::parse("medium").is_err());
+    assert_eq!(validate_cohort_size("--plan-critics", 1).unwrap(), 1);
+    assert_eq!(validate_cohort_size("--plan-critics", 8).unwrap(), 8);
+    assert!(validate_cohort_size("--plan-critics", 0).is_err());
+    assert!(validate_cohort_size("--plan-critics", 9).is_err());
 }
 
 #[test]
