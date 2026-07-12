@@ -60,6 +60,7 @@ class LintPolicyFixtureTests(unittest.TestCase):
         environment = dict(os.environ)
         environment["CARGO_TARGET_DIR"] = str(Path(temporary.name) / "target")
         environment["CARGO_NET_OFFLINE"] = "true"
+        environment["CARGO_TERM_COLOR"] = "never"
         return subprocess.run(
             [
                 "cargo",
