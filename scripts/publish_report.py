@@ -58,8 +58,31 @@ def _required_git_output(root: Path, arguments: Sequence[str], runner: Runner) -
 
 
 def _committed_report(root: Path, relative: Path, runner: Runner) -> bytes | None:
-    result = runner(root, ["git", "show", f"HEAD:{relative.as_posix()}"])
-    return result.stdout if result.returncode == 0 else None
+    path = relative.as_posix()
+    lookup = runner(root, ["git", "ls-tree", "-z", "HEAD", "--", path])
+    if lookup.returncode != 0:
+        detail = lookup.stderr.decode("utf-8", errors="replace").strip()
+        raise WorkflowError(
+            f"git ls-tree failed with exit {lookup.returncode}: {detail}"
+        )
+    if not lookup.stdout:
+        return None
+    entries = lookup.stdout.split(b"\0")
+    if entries[-1] != b"" or len(entries) != 2:
+        raise WorkflowError("git ls-tree returned malformed or multiple report entries")
+    try:
+        metadata, recorded_path = entries[0].split(b"\t", 1)
+        mode, object_type, _object_id = metadata.split(b" ", 2)
+        decoded_path = recorded_path.decode("utf-8")
+    except (ValueError, UnicodeError) as error:
+        raise WorkflowError("git ls-tree returned an unparseable report entry") from error
+    if object_type != b"blob" or not mode.startswith(b"100") or decoded_path != path:
+        raise WorkflowError("git ls-tree report entry is not one regular blob")
+    result = runner(root, ["git", "show", f"HEAD:{path}"])
+    if result.returncode != 0:
+        detail = result.stderr.decode("utf-8", errors="replace").strip()
+        raise WorkflowError(f"git show failed with exit {result.returncode}: {detail}")
+    return result.stdout
 
 
 def _atomic_publish(path: Path, content: bytes, *, replace: Replacer) -> None:
@@ -107,6 +130,8 @@ def main(
         root = args.root.resolve() if args.root else repository_root(Path(__file__).parent)
         relative = Path(args.out_path)
         output = validate_managed_file(root, relative)
+        if relative.suffix.lower() != ".md":
+            raise WorkflowError("report destination must be a Markdown (.md) worktree file")
         rendered_body = sys.stdin.buffer.read() if body is None else body
         committed = _committed_report(root, relative, runner)
         match = HEADER.match(committed) if committed is not None else None

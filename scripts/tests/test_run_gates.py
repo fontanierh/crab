@@ -45,6 +45,58 @@ def required_specs() -> list[GateSpec]:
 
 
 class OrchestratorTests(unittest.TestCase):
+    def test_quality_status_rejects_boolean_float_and_nonfinite_type_tampering(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            base = init_repo(root)
+
+            def executor(_: Path, __: GateSpec, log: Path, ___: bool) -> tuple[int, float]:
+                write_log(log, "ok\n")
+                return 0, 0.01
+
+            self.assertEqual(
+                orchestrate_quality(
+                    root,
+                    mode="worktree",
+                    explicit_base=base,
+                    executor=executor,
+                    specs_override=required_specs(),
+                    versions_override={},
+                ),
+                0,
+            )
+            path = root / "quality/status.json"
+            original = json.loads(path.read_text(encoding="utf-8"))
+            mutations = (
+                lambda value: value.__setitem__("schema_version", True),
+                lambda value: value.__setitem__("schema_version", 3.0),
+                lambda value: value.__setitem__("dirty", 1),
+                lambda value: (
+                    value["start_fingerprint"].__setitem__("dirty", 1),
+                    value["end_fingerprint"].__setitem__("dirty", 1),
+                ),
+                lambda value: value["end_fingerprint"].__setitem__("entry_count", True),
+                lambda value: value["checks"][0].__setitem__("exit_code", False),
+                lambda value: value["checks"][0].__setitem__("exit_code", 0.0),
+                lambda value: value["checks"][0].__setitem__("duration_seconds", True),
+                lambda value: value["checks"][0].__setitem__("duration_seconds", float("nan")),
+                lambda value: value["checks"][0].__setitem__("duration_seconds", float("inf")),
+                lambda value: value["checks"][0].__setitem__("duration_seconds", -1),
+                lambda value: value.__setitem__("result", 1),
+            )
+            for mutate in mutations:
+                payload = copy.deepcopy(original)
+                mutate(payload)
+                path.write_text(json.dumps(payload), encoding="utf-8")
+                with contextlib.redirect_stderr(io.StringIO()):
+                    self.assertEqual(verify_status(root), 2)
+            failed = copy.deepcopy(original)
+            failed["result"] = "failed"
+            failed["checks"][0]["status"] = "failed"
+            failed["checks"][0]["exit_code"] = 1.0
+            path.write_text(json.dumps(failed), encoding="utf-8")
+            with contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(verify_status(root), 2)
     def test_pass_writes_atomic_attestation_with_rerun_and_log_fields(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

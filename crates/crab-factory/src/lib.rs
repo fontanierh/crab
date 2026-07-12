@@ -18,6 +18,7 @@ macro_rules! require_some {
 
 mod cli;
 mod config;
+mod controls;
 mod detached;
 mod gitops;
 mod launch;
@@ -41,6 +42,7 @@ static FACTORY_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 use std::fmt::{Display, Formatter};
 use std::fs::{self, OpenOptions};
 use std::io::{Read, Write};
+use std::os::unix::fs::MetadataExt;
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -185,6 +187,33 @@ fn atomic_write(path: &Path, bytes: &[u8]) -> FactoryResult<()> {
 fn read_bytes(path: &Path, label: &str) -> FactoryResult<Vec<u8>> {
     let action = format!("read {label} at");
     let mut file = io_result(std::fs::File::open(path), &action, path)?;
+    let mut bytes = Vec::new();
+    io_result(file.read_to_end(&mut bytes), &action, path)?;
+    Ok(bytes)
+}
+
+fn read_managed_bytes(path: &Path, label: &str, mode: u32) -> FactoryResult<Vec<u8>> {
+    use std::os::unix::fs::OpenOptionsExt as _;
+
+    let action = format!("read {label} at");
+    let mut file = io_result(
+        OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(path),
+        &action,
+        path,
+    )?;
+    let metadata = io_result(file.metadata(), "inspect managed file", path)?;
+    if !metadata.is_file()
+        || metadata.uid() != unsafe { libc::geteuid() }
+        || metadata.mode() & 0o777 != mode
+    {
+        return Err(FactoryError::new(format!(
+            "unsafe managed file: {}",
+            path.display()
+        )));
+    }
     let mut bytes = Vec::new();
     io_result(file.read_to_end(&mut bytes), &action, path)?;
     Ok(bytes)

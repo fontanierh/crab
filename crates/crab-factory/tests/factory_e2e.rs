@@ -145,6 +145,56 @@ fn last_allowed_findings_are_addressed_without_an_invented_round() {
     assert!(!fixture.run_dir().join("05-review-round-02").exists());
 }
 
+#[test]
+fn effort_and_cohort_overrides_cover_both_count_bounds() {
+    for (label, effort, plan_critics, codex_reviewers) in
+        [("lower-bound", "max", 1, 1), ("upper-bound", "high", 8, 8)]
+    {
+        let fixture = Fixture::new(label, "clean");
+        let mut command = fixture.command(0);
+        command.args([
+            "--effort",
+            effort,
+            "--plan-critics",
+            &plan_critics.to_string(),
+            "--codex-reviewers",
+            &codex_reviewers.to_string(),
+        ]);
+        assert_success(&command.output().unwrap());
+        let manifest = fixture.manifest();
+        assert_eq!(manifest["prepared_configuration"]["effort"], effort);
+        assert_eq!(manifest["effective_configuration"]["effort"], effort);
+        assert_eq!(
+            manifest["effective_configuration"]["plan_critics"],
+            plan_critics
+        );
+        assert_eq!(
+            manifest["effective_configuration"]["codex_reviewers"],
+            codex_reviewers
+        );
+        assert_eq!(
+            manifest["agents"]
+                .as_object()
+                .unwrap()
+                .keys()
+                .filter(|label| label.starts_with("02-critique-codex-"))
+                .count(),
+            plan_critics
+        );
+        assert_eq!(
+            manifest["agents"]
+                .as_object()
+                .unwrap()
+                .keys()
+                .filter(|label| label.starts_with("05-review-round-01-codex-"))
+                .count(),
+            codex_reviewers
+        );
+        assert_cohort_receipts(&fixture, &manifest);
+        assert_worker_arguments_and_environment(&fixture, &manifest);
+    }
+}
+
 fn assert_cohort_receipts(fixture: &Fixture, manifest: &serde_json::Value) {
     let codex_receipts = fixture.receipts("codex-");
     let claude_receipts = fixture.receipts("claude-");
@@ -230,18 +280,21 @@ fn assert_worker_arguments_and_environment(fixture: &Fixture, manifest: &serde_j
                 "network setting lost: {receipt}"
             );
         }
+        let effort = manifest["effective_configuration"]["effort"]
+            .as_str()
+            .unwrap();
         let expected = if provider == "codex" {
             assert_eq!(
                 agent["permission_mode"], "dangerously-bypass-approvals-and-sandbox",
                 "{label}"
             );
-            expected_codex_arguments(agent["output"].as_str().unwrap())
+            expected_codex_arguments(agent["output"].as_str().unwrap(), effort)
         } else {
             assert_eq!(
                 agent["permission_mode"], "dangerously-skip-permissions",
                 "{label}"
             );
-            expected_claude_arguments()
+            expected_claude_arguments(effort)
         };
         assert_eq!(agent["sandbox"], "disabled", "{label}");
         assert_eq!(agent["network_access"], true, "{label}");
@@ -277,48 +330,42 @@ fn assert_worker_arguments_and_environment(fixture: &Fixture, manifest: &serde_j
     }
 }
 
-fn expected_codex_arguments(output: &str) -> Vec<String> {
-    [
-        "exec",
-        "--model",
-        "gpt-5.6-sol",
-        "--config",
-        "model_reasoning_effort=\"high\"",
-        "--dangerously-bypass-approvals-and-sandbox",
-        "--disable",
-        "multi_agent",
-        "--ephemeral",
-        "--color",
-        "never",
-        "--output-last-message",
-        output,
-        "-",
+fn expected_codex_arguments(output: &str, effort: &str) -> Vec<String> {
+    vec![
+        "exec".to_string(),
+        "--model".to_string(),
+        "gpt-5.6-sol".to_string(),
+        "--config".to_string(),
+        format!("model_reasoning_effort=\"{effort}\""),
+        "--dangerously-bypass-approvals-and-sandbox".to_string(),
+        "--disable".to_string(),
+        "multi_agent".to_string(),
+        "--ephemeral".to_string(),
+        "--color".to_string(),
+        "never".to_string(),
+        "--output-last-message".to_string(),
+        output.to_string(),
+        "-".to_string(),
     ]
-    .into_iter()
-    .map(str::to_string)
-    .collect()
 }
 
-fn expected_claude_arguments() -> Vec<String> {
-    [
-        "--print",
-        "--model",
-        "claude-fable-5",
-        "--effort",
-        "high",
-        "--no-session-persistence",
-        "--disable-slash-commands",
-        "--dangerously-skip-permissions",
-        "--tools",
-        "default",
-        "--disallowedTools",
-        "Agent",
-        "--output-format",
-        "text",
+fn expected_claude_arguments(effort: &str) -> Vec<String> {
+    vec![
+        "--print".to_string(),
+        "--model".to_string(),
+        "claude-fable-5".to_string(),
+        "--effort".to_string(),
+        effort.to_string(),
+        "--no-session-persistence".to_string(),
+        "--disable-slash-commands".to_string(),
+        "--dangerously-skip-permissions".to_string(),
+        "--tools".to_string(),
+        "default".to_string(),
+        "--disallowedTools".to_string(),
+        "Agent".to_string(),
+        "--output-format".to_string(),
+        "text".to_string(),
     ]
-    .into_iter()
-    .map(str::to_string)
-    .collect()
 }
 
 fn claude_role(label: &str) -> &'static str {

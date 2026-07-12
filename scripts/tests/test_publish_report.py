@@ -6,6 +6,7 @@ import os
 import stat
 import tempfile
 import unittest
+import subprocess
 from pathlib import Path
 
 from scripts.publish_report import main
@@ -30,6 +31,47 @@ def commit_report(root: Path, body: bytes, *, dirty: bool = False) -> bytes:
 
 
 class PublishReportTests(unittest.TestCase):
+    def test_git_metadata_and_non_markdown_destinations_are_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            init_repo(root)
+            sentinel = root / ".git/config"
+            original = sentinel.read_bytes()
+            for output in (".git/config", ".GIT/config", "nested/.git/x.md", "report.txt"):
+                with self.subTest(output=output), contextlib.redirect_stderr(io.StringIO()):
+                    self.assertEqual(main(["--root", str(root), "--out-path", output], body=b"body\n"), 2)
+            self.assertEqual(sentinel.read_bytes(), original)
+
+    def test_committed_lookup_git_failures_preserve_existing_report(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            init_repo(root)
+            path = root / "CODE_QUALITY_REPORT.md"
+            path.write_bytes(b"sentinel\n")
+
+            def runner(_: Path, command: list[str]) -> subprocess.CompletedProcess[bytes]:
+                self.assertEqual(command[1], "ls-tree")
+                return subprocess.CompletedProcess(command, 129, b"", b"injected lookup failure")
+
+            with contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(main(["--root", str(root)], body=b"new\n", runner=runner), 2)
+            self.assertEqual(path.read_bytes(), b"sentinel\n")
+
+    def test_committed_blob_show_failure_preserves_existing_report(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            init_repo(root)
+            path = root / "CODE_QUALITY_REPORT.md"
+            path.write_bytes(b"sentinel\n")
+
+            def runner(_: Path, command: list[str]) -> subprocess.CompletedProcess[bytes]:
+                if command[1] == "ls-tree":
+                    return subprocess.CompletedProcess(command, 0, b"100644 blob deadbeef\tCODE_QUALITY_REPORT.md\0", b"")
+                return subprocess.CompletedProcess(command, 128, b"", b"injected show failure")
+
+            with contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(main(["--root", str(root)], body=b"new\n", runner=runner), 2)
+            self.assertEqual(path.read_bytes(), b"sentinel\n")
     def test_clean_checkout_with_changed_body_gets_dirty_provenance(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

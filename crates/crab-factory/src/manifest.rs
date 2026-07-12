@@ -6,14 +6,15 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 use crate::config::{
-    ToolPaths, ToolVersions, CLAUDE_MODEL, CODEX_MODEL, NESTED_AGENTS_ENABLED, REASONING_EFFORT,
-    WORKER_HOST_PERMISSIONS, WORKER_NETWORK_ACCESS, WORKER_SANDBOX,
+    Effort, ToolPaths, ToolVersions, CLAUDE_MODEL, CODEX_MODEL, DEFAULT_CODEX_REVIEWERS,
+    DEFAULT_EFFORT, DEFAULT_PLAN_CRITICS, NESTED_AGENTS_ENABLED, WORKER_HOST_PERMISSIONS,
+    WORKER_NETWORK_ACCESS, WORKER_SANDBOX,
 };
 use crate::rubric::{
     THERMO_SKILL_COMMIT, THERMO_SKILL_MANIFEST_PATH, THERMO_SKILL_SHA256, THERMO_SKILL_SOURCE,
 };
 use crate::{
-    atomic_write, read_bytes, result_context, utc_now_rfc3339, FactoryError, FactoryResult,
+    atomic_write, read_managed_bytes, result_context, utc_now_rfc3339, FactoryError, FactoryResult,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -38,6 +39,21 @@ pub(crate) struct LaunchRecord {
     pub(crate) launched_pid: Option<u32>,
     pub(crate) proc_name: String,
     pub(crate) launcher: Option<PathBuf>,
+    #[serde(default)]
+    pub(crate) effort: Option<Effort>,
+    #[serde(default)]
+    pub(crate) plan_critics: Option<u8>,
+    #[serde(default)]
+    pub(crate) codex_reviewers: Option<u8>,
+    #[serde(default)]
+    pub(crate) tool_paths: Option<ToolPaths>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub(crate) struct FactoryConfiguration {
+    pub(crate) effort: Effort,
+    pub(crate) plan_critics: u8,
+    pub(crate) codex_reviewers: u8,
 }
 
 impl LaunchRecord {
@@ -47,7 +63,7 @@ impl LaunchRecord {
 
     pub(crate) fn read(path: &Path) -> FactoryResult<Self> {
         result_context(
-            serde_json::from_slice(&read_bytes(path, "launch record")?),
+            serde_json::from_slice(&read_managed_bytes(path, "launch record", 0o600)?),
             &format!("invalid launch record at {}", path.display()),
         )
     }
@@ -85,6 +101,10 @@ pub(crate) struct Manifest {
     pub(crate) thermonuclear_addressed: Option<bool>,
     pub(crate) outcome: Option<String>,
     pub(crate) error: Option<String>,
+    #[serde(default)]
+    pub(crate) prepared_configuration: Option<FactoryConfiguration>,
+    #[serde(default)]
+    pub(crate) effective_configuration: Option<FactoryConfiguration>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -135,6 +155,8 @@ pub(crate) struct AgentRecord {
     pub(crate) output: PathBuf,
     pub(crate) log: PathBuf,
     pub(crate) returncode: Option<i32>,
+    #[serde(default)]
+    pub(crate) pid: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -163,7 +185,7 @@ impl Journal {
 
     pub(crate) fn load(path: PathBuf) -> FactoryResult<Self> {
         let data = result_context(
-            serde_json::from_slice(&read_bytes(&path, "run manifest")?),
+            serde_json::from_slice(&read_managed_bytes(&path, "run manifest", 0o600)?),
             &format!("invalid run manifest at {}", path.display()),
         )?;
         Ok(Self {
@@ -196,6 +218,32 @@ impl Journal {
         })
     }
 
+    pub(crate) fn project_controls(
+        &self,
+        configuration: FactoryConfiguration,
+        entries: Vec<Value>,
+    ) -> FactoryResult<()> {
+        self.mutate(|manifest, now| {
+            manifest.effective_configuration = Some(configuration.clone());
+            manifest.models.claude.effort = configuration.effort.as_str().to_string();
+            manifest.models.codex.reasoning_effort = configuration.effort.as_str().to_string();
+            for mut entry in entries {
+                if let Value::Object(object) = &mut entry {
+                    object.insert("at".to_string(), Value::String(now.clone()));
+                    let duplicate = manifest.events.iter().any(|existing| {
+                        existing.get("event") == entry.get("event")
+                            && existing.get("sequence") == entry.get("sequence")
+                            && existing.get("knob") == entry.get("knob")
+                    });
+                    if !duplicate {
+                        manifest.events.push(entry);
+                    }
+                }
+            }
+            manifest.updated_at = now;
+        })
+    }
+
     pub(crate) fn register_cohort(&self, cohort: CohortRecord) -> FactoryResult<()> {
         self.mutate(|manifest, now| {
             manifest.cohorts.push(cohort);
@@ -221,6 +269,15 @@ impl Journal {
                 agent.status = status.to_string();
                 agent.finished_at = Some(now.clone());
                 agent.returncode = returncode;
+            }
+            manifest.updated_at = now;
+        })
+    }
+
+    pub(crate) fn agent_pid(&self, label: &str, pid: u32) -> FactoryResult<()> {
+        self.mutate(|manifest, now| {
+            if let Some(agent) = manifest.agents.get_mut(label) {
+                agent.pid = Some(pid);
             }
             manifest.updated_at = now;
         })
@@ -303,6 +360,11 @@ impl Manifest {
         tool_versions: ToolVersions,
     ) -> FactoryResult<Self> {
         let now = utc_now_rfc3339()?;
+        let configuration = FactoryConfiguration {
+            effort: launch.effort.unwrap_or(DEFAULT_EFFORT),
+            plan_critics: launch.plan_critics.unwrap_or(DEFAULT_PLAN_CRITICS),
+            codex_reviewers: launch.codex_reviewers.unwrap_or(DEFAULT_CODEX_REVIEWERS),
+        };
         Ok(Self {
             schema_version: 1,
             run_id: launch.run_id.clone(),
@@ -323,11 +385,11 @@ impl Manifest {
             models: ModelSet {
                 claude: ClaudeModel {
                     model: CLAUDE_MODEL.to_string(),
-                    effort: REASONING_EFFORT.to_string(),
+                    effort: configuration.effort.as_str().to_string(),
                 },
                 codex: CodexModel {
                     model: CODEX_MODEL.to_string(),
-                    reasoning_effort: REASONING_EFFORT.to_string(),
+                    reasoning_effort: configuration.effort.as_str().to_string(),
                 },
             },
             worker_policy: WorkerPolicy {
@@ -353,6 +415,8 @@ impl Manifest {
             thermonuclear_addressed: None,
             outcome: None,
             error: None,
+            prepared_configuration: Some(configuration.clone()),
+            effective_configuration: Some(configuration),
         })
     }
 

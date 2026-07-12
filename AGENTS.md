@@ -229,6 +229,8 @@ Git's owner-execute bit. A valid pass has matching fingerprints and zero skipped
 `make quality-status` returns 1 only for a genuine, still-current failed gate result; invalid,
 malformed, or stale artifacts return 2. Run it to verify the artifact still attests the current
 tree; do not hand off a stale, invalid, failed, or skipped gate.
+Scalar types are exact: booleans and floats are never accepted where integer schema, count, or exit
+code fields are required, and durations must be finite and non-negative.
 
 ### Worktrees and optional shared builds
 

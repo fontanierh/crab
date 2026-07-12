@@ -6,7 +6,8 @@ use std::time::Duration;
 
 use crate::config::{
     canonicalize_intended, default_run_id, paths_overlap, proc_name_for, resolve_executable,
-    resolve_roots, sanitize_run_id, validate_counts, LaunchOptions, ToolPaths, ToolVersions,
+    resolve_roots, sanitize_run_id, validate_cohort_size, validate_counts, LaunchOptions,
+    ToolPaths, ToolVersions, DEFAULT_CODEX_REVIEWERS, DEFAULT_EFFORT, DEFAULT_PLAN_CRITICS,
 };
 use crate::gitops::GitRunner;
 use crate::manifest::{Journal, LaunchRecord, Manifest};
@@ -73,6 +74,15 @@ fn validate_without_writes(
 ) -> FactoryResult<ValidatedRun> {
     #[rustfmt::skip]
     let maximum_review_rounds = validate_counts(options.additional_review_rounds, options.agent_timeout_seconds)?;
+    let effort = options.effort.unwrap_or(DEFAULT_EFFORT);
+    let plan_critics = validate_cohort_size(
+        "--plan-critics",
+        options.plan_critics.unwrap_or(DEFAULT_PLAN_CRITICS),
+    )?;
+    let codex_reviewers = validate_cohort_size(
+        "--codex-reviewers",
+        options.codex_reviewers.unwrap_or(DEFAULT_CODEX_REVIEWERS),
+    )?;
     if options.base_ref.starts_with('-') {
         return Err(FactoryError::new("--base must not begin with '-'"));
     }
@@ -163,6 +173,10 @@ fn validate_without_writes(
         launched_pid: None,
         proc_name: proc_name_for(&run_id),
         launcher,
+        effort: Some(effort),
+        plan_critics: Some(plan_critics),
+        codex_reviewers: Some(codex_reviewers),
+        tool_paths: Some(tool_paths.clone()),
     };
     Ok(ValidatedRun {
         launch,
@@ -288,6 +302,11 @@ fn reserve_with_journal_creator(
         let _journal = create_journal(validated.run_dir.join("manifest.json"), manifest).map_err(|error| error.context("could not establish run manifest"))?;
         #[rustfmt::skip]
         RunLock::initialize(&validated.run_dir, &validated.launch.run_id, &validated.launch.request_sha256)?;
+        crate::controls::initialize(
+            &validated.run_dir,
+            &validated.launch.run_id,
+            &validated.launch.request_sha256,
+        )?;
         create_secure_dir(&validated.run_dir.join("prompts"))?;
         create_secure_dir(&validated.run_dir.join("logs"))?;
         write_new_file(&snapshot_path, &validated.request, 0o400)?;

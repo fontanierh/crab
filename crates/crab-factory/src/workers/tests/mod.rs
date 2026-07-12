@@ -35,6 +35,7 @@ fn shell_spec(script: &str, timeout: Duration, cancel: CancelFlags) -> CommandSp
         cancellation: cancel,
         inherit_environment: false,
         environment_overrides: std::collections::BTreeMap::new(),
+        spawn_observer: None,
     }
 }
 
@@ -201,6 +202,7 @@ fn deadline_overflow_and_pre_cancel_are_reported() {
             cancellation: no_cancel(),
             inherit_environment: true,
             environment_overrides: std::collections::BTreeMap::new(),
+            spawn_observer: None,
         },
         OutputPlan::Capture,
     )
@@ -362,7 +364,7 @@ mod agent_tests;
 
 #[test]
 fn worker_arguments_pin_models_effort_full_permissions_and_nested_agent_boundaries() {
-    let codex = codex_arguments(Path::new("/tmp/out"));
+    let codex = codex_arguments(Path::new("/tmp/out"), DEFAULT_EFFORT);
     assert_eq!(
         codex,
         [
@@ -385,8 +387,10 @@ fn worker_arguments_pin_models_effort_full_permissions_and_nested_agent_boundari
         .map(OsString::from)
         .collect::<Vec<_>>()
     );
+    assert!(codex_arguments(Path::new("/tmp/out"), Effort::Max)
+        .contains(&OsString::from("model_reasoning_effort=\"max\"")));
 
-    let claude_strings: Vec<String> = claude_arguments()
+    let claude_strings: Vec<String> = claude_arguments(DEFAULT_EFFORT)
         .iter()
         .map(|value| value.to_string_lossy().into_owned())
         .collect();
@@ -409,6 +413,9 @@ fn worker_arguments_pin_models_effort_full_permissions_and_nested_agent_boundari
             "text",
         ]
     );
+    assert!(claude_arguments(Effort::Max)
+        .windows(2)
+        .any(|pair| pair == [OsString::from("--effort"), OsString::from("max")]));
 }
 
 #[test]

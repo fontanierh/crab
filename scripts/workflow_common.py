@@ -89,6 +89,8 @@ def validate_local_directory(
     relative_path = Path(relative)
     if relative_path.is_absolute() or ".." in relative_path.parts:
         raise WorkflowError(f"managed directory must be relative to the repository: {relative}")
+    if any(part.lower() == ".git" for part in relative_path.parts):
+        raise WorkflowError(f"managed path must not intersect Git metadata: {relative}")
     candidate = root / relative_path
     if not path_is_within(candidate, root) or not path_is_within(
         candidate.resolve(strict=False), root
@@ -129,6 +131,8 @@ def validate_managed_file(
     relative_path = Path(relative)
     if relative_path.is_absolute() or relative_path.name in ("", ".", ".."):
         raise WorkflowError(f"managed file must be relative to the repository: {relative}")
+    if any(part.lower() == ".git" for part in relative_path.parts):
+        raise WorkflowError(f"managed path must not intersect Git metadata: {relative}")
     parent = validate_local_directory(
         root, relative_path.parent, create=create_parent
     )

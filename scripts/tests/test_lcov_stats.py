@@ -38,7 +38,7 @@ class LcovStatsTests(unittest.TestCase):
         self.assertTrue(item.locations_complete)
         self.assertFalse(item.totals_from_da)
 
-    def test_partial_positive_da_rows_do_not_override_lf_lh_truth(self) -> None:
+    def test_positive_da_rows_cannot_exceed_lh(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             init_repo(root)
@@ -47,20 +47,39 @@ class LcovStatsTests(unittest.TestCase):
                 lcov,
                 record(root, "DA:1,1\nDA:2,1\nDA:3,1\nDA:4,1\nLF:5\nLH:3\n"),
             )
-            item = parse_lcov(root, lcov).files[0]
-        self.assertEqual((item.lines_found, item.lines_hit, item.uncovered_lines), (5, 3, 2))
-        self.assertFalse(item.locations_complete)
+            with self.assertRaisesRegex(WorkflowError, "positive DA rows exceed LH"):
+                parse_lcov(root, lcov)
 
-    def test_positive_da_row_can_still_have_lf_lh_uncovered_gap(self) -> None:
+    def test_positive_da_row_cannot_contradict_zero_lh(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             init_repo(root)
             lcov = root / "coverage.info"
             write(lcov, record(root, "DA:1,1\nLF:1\nLH:0\n"))
-            item = parse_lcov(root, lcov).files[0]
-        self.assertEqual(item.uncovered_lines, 1)
-        self.assertEqual(item.zero_hit_lines, ())
-        self.assertFalse(item.locations_complete)
+            with self.assertRaisesRegex(WorkflowError, "DA rows disagree"):
+                parse_lcov(root, lcov)
+
+    def test_complete_da_universe_must_exactly_match_lf_lh(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            init_repo(root)
+            lcov = root / "coverage.info"
+            write(lcov, record(root, "DA:1,1\nDA:2,1\nLF:2\nLH:1\n"))
+            with self.assertRaisesRegex(WorkflowError, "DA rows disagree"):
+                parse_lcov(root, lcov)
+
+    def test_contradictory_duplicate_record_is_not_laundered(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            init_repo(root)
+            lcov = root / "coverage.info"
+            write(
+                lcov,
+                record(root, "DA:1,0\nLF:1\nLH:0\n")
+                + record(root, "DA:1,1\nLF:1\nLH:0\n"),
+            )
+            with self.assertRaisesRegex(WorkflowError, "DA rows disagree"):
+                parse_lcov(root, lcov)
 
     def test_duplicate_records_merge_hits_per_line_instead_of_summing_totals(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

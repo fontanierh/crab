@@ -20,6 +20,7 @@ if __package__ in (None, ""):
 from scripts.changed_scope import is_docs_path
 from scripts.workflow_common import (
     COVERAGE_EXCLUDED_BASENAME,
+    COVERAGE_IGNORE_FILENAME_REGEX,
     WorkflowError,
     attestation_preflight,
     atomic_write_json,
@@ -287,6 +288,10 @@ def parse_lcov(root: Path, lcov_path: Path) -> tuple[set[str], dict[str, dict[in
             except ValueError:
                 current = None
                 continue
+            if re.search(COVERAGE_IGNORE_FILENAME_REGEX, relative):
+                raise WorkflowError(
+                    f"LCOV contains policy-excluded source {relative}; regenerate coverage"
+                )
             current = relative if is_production_rust(relative) else None
             if current is not None:
                 represented.add(current)

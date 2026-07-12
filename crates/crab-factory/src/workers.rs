@@ -13,8 +13,8 @@ use std::time::{Duration, Instant};
 use serde_json::json;
 
 use crate::config::{
-    allowlisted_environment, ToolPaths, CLAUDE_MODEL, CLAUDE_PERMISSION_MODE, CODEX_MODEL,
-    CODEX_PERMISSION_MODE, REASONING_EFFORT, WORKER_NETWORK_ACCESS, WORKER_SANDBOX,
+    allowlisted_environment, Effort, ToolPaths, CLAUDE_MODEL, CLAUDE_PERMISSION_MODE, CODEX_MODEL,
+    CODEX_PERMISSION_MODE, DEFAULT_EFFORT, WORKER_NETWORK_ACCESS, WORKER_SANDBOX,
 };
 use crate::manifest::{AgentRecord, CohortRecord, Journal};
 use crate::{
@@ -115,7 +115,6 @@ impl SupervisorError {
     }
 }
 
-#[derive(Debug)]
 pub(crate) struct CommandSpec {
     pub(crate) program: PathBuf,
     pub(crate) args: Vec<OsString>,
@@ -125,6 +124,7 @@ pub(crate) struct CommandSpec {
     pub(crate) cancellation: CancelFlags,
     pub(crate) inherit_environment: bool,
     pub(crate) environment_overrides: BTreeMap<OsString, OsString>,
+    pub(crate) spawn_observer: Option<Arc<dyn Fn(u32) -> FactoryResult<()> + Send + Sync>>,
 }
 
 impl CommandSpec {
@@ -145,6 +145,7 @@ impl CommandSpec {
             cancellation,
             inherit_environment: false,
             environment_overrides: BTreeMap::new(),
+            spawn_observer: None,
         }
     }
 
@@ -223,6 +224,17 @@ pub(crate) fn supervise(
     #[rustfmt::skip]
     let mut child = try_mapped!(command.spawn(), error => SupervisorError::process_io("spawn", &spec.program, &error, None));
     let process_group = child.id() as i32;
+    if let Some(observer) = &spec.spawn_observer {
+        if let Err(error) = observer(child.id()) {
+            let _ = kill_process_group(process_group);
+            let _ = child.wait();
+            return Err(SupervisorError::new(
+                SupervisorErrorKind::Other,
+                format!("could not record spawned process: {error}"),
+                Some(process_group),
+            ));
+        }
+    }
 
     let writer = spec.input.map(|bytes| {
         let mut stdin = child.stdin.take().expect("piped stdin must be available");
@@ -554,17 +566,38 @@ pub(crate) struct AgentSpec {
     stdout_is_output: bool,
 }
 
+impl AgentSpec {
+    pub(crate) fn with_effort(mut self, effort: Effort) -> Self {
+        self.args = if self.provider == "codex" {
+            codex_arguments(&self.output, effort)
+        } else {
+            claude_arguments(effort)
+        };
+        self
+    }
+}
+
 pub(crate) fn codex_agent(
     tools: &ToolPaths,
     run_dir: &Path,
     label: &str,
     output: PathBuf,
 ) -> AgentSpec {
+    codex_agent_with_effort(tools, run_dir, label, output, DEFAULT_EFFORT)
+}
+
+pub(crate) fn codex_agent_with_effort(
+    tools: &ToolPaths,
+    run_dir: &Path,
+    label: &str,
+    output: PathBuf,
+    effort: Effort,
+) -> AgentSpec {
     AgentSpec {
         label: label.to_string(),
         provider: "codex".to_string(),
         program: tools.codex.clone(),
-        args: codex_arguments(&output),
+        args: codex_arguments(&output, effort),
         output,
         log: run_dir.join("logs").join(format!("{label}.log")),
         sandbox: WORKER_SANDBOX.to_string(),
@@ -580,11 +613,21 @@ pub(crate) fn claude_agent(
     label: &str,
     output: PathBuf,
 ) -> AgentSpec {
+    claude_agent_with_effort(tools, run_dir, label, output, DEFAULT_EFFORT)
+}
+
+pub(crate) fn claude_agent_with_effort(
+    tools: &ToolPaths,
+    run_dir: &Path,
+    label: &str,
+    output: PathBuf,
+    effort: Effort,
+) -> AgentSpec {
     AgentSpec {
         label: label.to_string(),
         provider: "claude-code".to_string(),
         program: tools.claude.clone(),
-        args: claude_arguments(),
+        args: claude_arguments(effort),
         output,
         log: run_dir.join("logs").join(format!("{label}.log")),
         sandbox: WORKER_SANDBOX.to_string(),
@@ -594,13 +637,13 @@ pub(crate) fn claude_agent(
     }
 }
 
-fn codex_arguments(output: &Path) -> Vec<OsString> {
+fn codex_arguments(output: &Path, effort: Effort) -> Vec<OsString> {
     [
         "exec".into(),
         "--model".into(),
         CODEX_MODEL.into(),
         "--config".into(),
-        format!("model_reasoning_effort=\"{REASONING_EFFORT}\"").into(),
+        format!("model_reasoning_effort=\"{}\"", effort.as_str()).into(),
         format!("--{CODEX_PERMISSION_MODE}").into(),
         "--disable".into(),
         "multi_agent".into(),
@@ -615,13 +658,13 @@ fn codex_arguments(output: &Path) -> Vec<OsString> {
     .collect()
 }
 
-fn claude_arguments() -> Vec<OsString> {
+fn claude_arguments(effort: Effort) -> Vec<OsString> {
     let mut arguments: Vec<OsString> = [
         "--print",
         "--model",
         CLAUDE_MODEL,
         "--effort",
-        REASONING_EFFORT,
+        effort.as_str(),
         "--no-session-persistence",
         "--disable-slash-commands",
         "--dangerously-skip-permissions",
@@ -785,6 +828,7 @@ fn run_agent(
         output: spec.output.clone(),
         log: spec.log.clone(),
         returncode: None,
+        pid: None,
     };
     #[rustfmt::skip]
     journal.agent_started(spec.label.clone(), record)?;
@@ -800,17 +844,20 @@ fn run_agent(
             stderr: log_file,
         }
     };
-    let process = supervise(
-        CommandSpec::isolated(
-            spec.program.clone(),
-            spec.args.clone(),
-            Some(cwd),
-            Some(prompt.bytes),
-            timeout,
-            cancellation,
-        ),
-        output_plan,
+    let observer_journal = Arc::clone(&journal);
+    let observer_label = spec.label.clone();
+    let mut command_spec = CommandSpec::isolated(
+        spec.program.clone(),
+        spec.args.clone(),
+        Some(cwd),
+        Some(prompt.bytes),
+        timeout,
+        cancellation,
     );
+    command_spec.spawn_observer = Some(Arc::new(move |pid| {
+        observer_journal.agent_pid(&observer_label, pid)
+    }));
+    let process = supervise(command_spec, output_plan);
     let (result, status, returncode) = match process {
         Ok(result) if result.returncode == 0 => {
             let content = read_bytes(&spec.output, &format!("output from {}", spec.label))

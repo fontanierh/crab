@@ -7,7 +7,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from scripts.quality_baseline import main
+from scripts.quality_baseline import collect_metrics, main
+from scripts.workflow_common import WorkflowError
 from scripts.tests.helpers import init_repo, write
 
 
@@ -17,6 +18,26 @@ def fresh_lcov(root: Path) -> str:
 
 
 class QualityBaselineTests(unittest.TestCase):
+    def test_policy_excluded_lcov_fails_without_publishing_latest(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            init_repo(root)
+            excluded = root / "crates/alpha/src/test_support.rs"
+
+            def runner(root_path: Path, command: object, log: Path, _: object) -> tuple[int, float]:
+                write(log, "ok\n")
+                if "coverage_gate.sh" in " ".join(command):
+                    write(
+                        root_path / "coverage/lcov.info",
+                        f"SF:{excluded}\nDA:1,1\nLF:1\nLH:1\nend_of_record\n",
+                    )
+                return 0, 1.0
+
+            with contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(main(["--root", str(root)], runner=runner), 2)
+            self.assertFalse((root / "quality/baselines/latest.json").exists())
+            with self.assertRaisesRegex(WorkflowError, "policy-excluded"):
+                collect_metrics(root, require_lcov=True)
     def test_symlinked_managed_directories_fail_before_runner_and_preserve_sentinel(self) -> None:
         for component, internal in (
             ("quality", False),

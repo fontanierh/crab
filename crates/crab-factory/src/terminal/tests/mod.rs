@@ -29,6 +29,10 @@ fn launch(root: &Path) -> LaunchRecord {
         launched_pid: None,
         proc_name: "code-factory-terminal-test".to_string(),
         launcher: None,
+        effort: None,
+        plan_critics: None,
+        codex_reviewers: None,
+        tool_paths: None,
     }
 }
 

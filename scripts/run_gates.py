@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import subprocess
 import sys
@@ -47,6 +48,81 @@ QUALITY_GATE_NAMES = (
     "coverage",
 )
 LOG_TAIL_LINES = 30
+CHECK_STATUSES = ("passed", "failed", "skipped")
+
+
+def _wrong_type(name: str) -> WorkflowError:
+    return WorkflowError(
+        f"status artifact field {name} has the wrong type; rerun make quality"
+    )
+
+
+def _exact_string(value: object, name: str, *, nonempty: bool = False) -> None:
+    if type(value) is not str or (nonempty and not value):
+        raise _wrong_type(name)
+
+
+def _optional_string(value: object, name: str) -> None:
+    if value is not None and type(value) is not str:
+        raise _wrong_type(name)
+
+
+def _validate_fingerprint_types(value: object, name: str) -> None:
+    if not isinstance(value, Mapping) or set(value) != {"sha256", "dirty", "entry_count"}:
+        raise _wrong_type(name)
+    _exact_string(value.get("sha256"), f"{name}.sha256", nonempty=True)
+    if type(value.get("dirty")) is not bool:
+        raise _wrong_type(f"{name}.dirty")
+    count = value.get("entry_count")
+    if type(count) is not int or count < 0:
+        raise _wrong_type(f"{name}.entry_count")
+
+
+def _validate_status_types(payload: Mapping[str, object]) -> None:
+    if type(payload.get("schema_version")) is not int:
+        raise _wrong_type("schema_version")
+    for name in ("result", "started_at", "ended_at", "git_sha", "branch", "diff_mode"):
+        _exact_string(payload.get(name), name, nonempty=True)
+    for name in ("resolved_base_sha", "setup_error"):
+        _optional_string(payload.get(name), name)
+    if type(payload.get("dirty")) is not bool:
+        raise _wrong_type("dirty")
+    versions = payload.get("tool_versions")
+    if not isinstance(versions, Mapping) or any(
+        type(key) is not str or type(value) is not str for key, value in versions.items()
+    ):
+        raise _wrong_type("tool_versions")
+    actions = payload.get("next_actions")
+    if type(actions) is not list or any(type(action) is not str for action in actions):
+        raise _wrong_type("next_actions")
+    _validate_fingerprint_types(payload.get("start_fingerprint"), "start_fingerprint")
+    _validate_fingerprint_types(payload.get("end_fingerprint"), "end_fingerprint")
+    checks = payload.get("checks")
+    if type(checks) is not list:
+        raise _wrong_type("checks")
+    for index, check in enumerate(checks):
+        prefix = f"checks[{index}]"
+        if not isinstance(check, Mapping):
+            raise _wrong_type(prefix)
+        for name in ("name", "rerun_command"):
+            _exact_string(check.get(name), f"{prefix}.{name}")
+        _exact_string(check.get("status"), f"{prefix}.status")
+        if check.get("status") not in CHECK_STATUSES:
+            raise _wrong_type(f"{prefix}.status")
+        for name in ("reason", "log_path"):
+            _optional_string(check.get(name), f"{prefix}.{name}")
+        duration = check.get("duration_seconds")
+        if (
+            type(duration) not in (int, float)
+            or not math.isfinite(duration)
+            or duration < 0
+        ):
+            raise _wrong_type(f"{prefix}.duration_seconds")
+        exit_code = check.get("exit_code")
+        if exit_code is not None and type(exit_code) is not int:
+            raise _wrong_type(f"{prefix}.exit_code")
+        if check.get("status") == "passed" and (type(exit_code) is not int or exit_code != 0):
+            raise _wrong_type(f"{prefix}.exit_code")
 
 
 @dataclass(frozen=True)
@@ -580,6 +656,11 @@ def verify_status(root: Path) -> int:
         return 2
     if not isinstance(payload, Mapping):
         print("quality-status: status artifact must be a JSON object", file=sys.stderr)
+        return 2
+    try:
+        _validate_status_types(payload)
+    except WorkflowError as error:
+        print(f"quality-status: {error}", file=sys.stderr)
         return 2
     if payload.get("schema_version") != STATUS_SCHEMA_VERSION:
         print(

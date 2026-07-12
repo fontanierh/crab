@@ -1,10 +1,14 @@
 use std::fs::{self, OpenOptions};
+use std::io::Read;
 use std::os::fd::AsRawFd;
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
-use crate::{io_result, read_bytes, result_context, write_new_file, FactoryError, FactoryResult};
+use crate::{
+    io_result, read_managed_bytes, result_context, write_new_file, FactoryError, FactoryResult,
+};
 
 const RUN_MARKER_SCHEMA_VERSION: u32 = 1;
 
@@ -45,7 +49,7 @@ impl RunLock {
     pub(crate) fn marker(run_dir: &Path) -> FactoryResult<RunMarker> {
         let path = run_dir.join(".lock");
         let marker: RunMarker = result_context(
-            serde_json::from_slice(&read_bytes(&path, "prepared-run marker")?),
+            serde_json::from_slice(&read_managed_bytes(&path, "prepared-run marker", 0o600)?),
             &format!("invalid prepared-run marker at {}", path.display()),
         )?;
         if marker.schema_version != RUN_MARKER_SCHEMA_VERSION
@@ -66,12 +70,31 @@ impl RunLock {
 
     pub(crate) fn acquire(run_dir: &Path) -> Result<Self, RunLockError> {
         let path = run_dir.join(".lock");
-        let file = io_result(
-            OpenOptions::new().read(true).open(&path),
+        let mut file = io_result(
+            OpenOptions::new()
+                .read(true)
+                .custom_flags(libc::O_NOFOLLOW)
+                .open(&path),
             "open run lock",
             &path,
         )
         .map_err(RunLockError::Other)?;
+        let metadata =
+            io_result(file.metadata(), "inspect run lock", &path).map_err(RunLockError::Other)?;
+        if !metadata.is_file()
+            || metadata.uid() != unsafe { libc::geteuid() }
+            || metadata.mode() & 0o777 != 0o600
+        {
+            return Err(RunLockError::Other(FactoryError::new(format!(
+                "unsafe run lock: {}",
+                path.display()
+            ))));
+        }
+        let mut marker_bytes = Vec::new();
+        io_result(file.read_to_end(&mut marker_bytes), "read run lock", &path)
+            .map_err(RunLockError::Other)?;
+        result_context::<RunMarker, _>(serde_json::from_slice(&marker_bytes), "invalid run lock")
+            .map_err(RunLockError::Other)?;
         let result = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
         if result != 0 {
             let error = std::io::Error::last_os_error();

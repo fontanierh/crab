@@ -13,12 +13,24 @@ from scripts.workflow_common import (
     coverage_target_environment,
     repository_namespace,
     tree_fingerprint,
+    validate_local_directory,
+    validate_managed_file,
     validate_shared_target_base,
 )
 from scripts.tests.helpers import init_repo, run_git, write
 
 
 class TreeFingerprintTests(unittest.TestCase):
+    def test_managed_paths_reject_git_metadata_case_insensitively(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            init_repo(root)
+            for relative in (".git/config", ".GIT/config", "nested/.git/report.md"):
+                with self.subTest(relative=relative):
+                    with self.assertRaisesRegex(WorkflowError, "Git metadata"):
+                        validate_managed_file(root, relative)
+                    with self.assertRaisesRegex(WorkflowError, "Git metadata"):
+                        validate_local_directory(root, relative)
     def test_digest_is_stable_and_tracks_content_mode_and_untracked_files(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

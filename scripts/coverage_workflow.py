@@ -33,12 +33,14 @@ REGION_THRESHOLD = "98.93"
 LINE_THRESHOLD = "99.4"
 AUTHORITATIVE_ARTIFACTS = (
     "lcov.info",
+    "lcov.info.rejected",
     "summary.json",
     "patch-coverage.json",
     "uncovered_locations.txt",
 )
 QUICK_ARTIFACTS = (
     "quick-lcov.info",
+    "quick-lcov.info.rejected",
     "quick-summary.json",
     "quick-patch-coverage.json",
 )
@@ -79,6 +81,32 @@ def _validate_lcov_policy(path: Path) -> None:
             "coverage export contains policy-excluded files "
             f"({preview}); rerun after fixing the ignore policy"
         )
+
+
+def _quarantine_rejected_lcov(path: Path) -> Path:
+    rejected = path.with_name(f"{path.name}.rejected")
+    try:
+        rejected.unlink(missing_ok=True)
+        path.replace(rejected)
+    except OSError as replace_error:
+        try:
+            path.unlink()
+        except OSError as unlink_error:
+            raise WorkflowError(
+                f"could not quarantine rejected LCOV {path}: {replace_error}; "
+                f"could not remove authoritative artifact: {unlink_error}"
+            ) from unlink_error
+    return rejected
+
+
+def _reject_lcov(label: str, path: Path, error: WorkflowError) -> int:
+    try:
+        rejected = _quarantine_rejected_lcov(path)
+    except WorkflowError as quarantine_error:
+        print(f"{label}: {error}; {quarantine_error}", file=sys.stderr)
+        return 2
+    print(f"{label}: {error}; quarantined at {rejected}", file=sys.stderr)
+    return 2
 
 
 def run_local_coverage(root: Path, arguments: Sequence[str]) -> int:
@@ -158,8 +186,7 @@ def run_report(root: Path) -> int:
         try:
             _validate_lcov_policy(output)
         except WorkflowError as error:
-            print(f"coverage-report: {error}", file=sys.stderr)
-            return 2
+            return _reject_lcov("coverage-report", output, error)
         print(f"coverage: fresh LCOV report: {output}")
     return result
 
@@ -205,8 +232,7 @@ def run_gate(root: Path, mode: str, explicit_base: str | None) -> int:
     try:
         _validate_lcov_policy(output)
     except WorkflowError as error:
-        print(f"coverage-gate: {error}", file=sys.stderr)
-        return 2
+        return _reject_lcov("coverage-gate", output, error)
     summary_path = outputs["summary.json"]
     summary_result = run_local_coverage(
         root,
@@ -259,6 +285,10 @@ def run_quick(root: Path, explicit_base: str | None) -> int:
         print(f"coverage-quick: {error}", file=sys.stderr)
         return 2
     rust_changes = [path for path in scope.changed_files if path.endswith(".rs")]
+    if scope.base_sha is None or (scope.fallback_reason and not scope.changed_files):
+        reason = scope.fallback_reason or "merge base is unavailable"
+        print(f"coverage-quick: cannot determine changed scope: {reason}", file=sys.stderr)
+        return 2
     if not rust_changes:
         print("coverage-quick: skipped: no Rust changes")
         return 0
@@ -295,8 +325,7 @@ def run_quick(root: Path, explicit_base: str | None) -> int:
     try:
         _validate_lcov_policy(lcov_path)
     except WorkflowError as error:
-        print(f"coverage-quick: {error}", file=sys.stderr)
-        return 2
+        return _reject_lcov("coverage-quick", lcov_path, error)
     summary_result = run_local_coverage(
         root,
         [
@@ -382,7 +411,12 @@ def run_diagnostics(root: Path) -> int:
                 f"Totals: {stats.uncovered_lines} uncovered of {stats.lines_found} line(s) "
                 f"across {stats.uncovered_files} file(s) with gaps.\n"
             )
-    except (OSError, WorkflowError) as error:
+    except WorkflowError as error:
+        if lcov_path.exists():
+            return _reject_lcov("coverage-diagnostics", lcov_path, error)
+        print(f"coverage-diagnostics: could not parse fresh LCOV: {error}", file=sys.stderr)
+        return 2
+    except OSError as error:
         print(f"coverage-diagnostics: could not parse fresh LCOV: {error}", file=sys.stderr)
         return 2
     print(f"coverage-diagnostics: fresh LCOV: {lcov_path}")

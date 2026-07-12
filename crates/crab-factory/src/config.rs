@@ -12,7 +12,10 @@ use crate::{io_result, result_context, sha256_hex, FactoryError, FactoryResult};
 
 pub(crate) const CLAUDE_MODEL: &str = "claude-fable-5";
 pub(crate) const CODEX_MODEL: &str = "gpt-5.6-sol";
-pub(crate) const REASONING_EFFORT: &str = "high";
+pub(crate) const DEFAULT_PLAN_CRITICS: u8 = 2;
+pub(crate) const DEFAULT_CODEX_REVIEWERS: u8 = 2;
+pub(crate) const MIN_COHORT_SIZE: u8 = 1;
+pub(crate) const MAX_COHORT_SIZE: u8 = 8;
 pub(crate) const CODEX_PERMISSION_MODE: &str = "dangerously-bypass-approvals-and-sandbox";
 pub(crate) const CLAUDE_PERMISSION_MODE: &str = "dangerously-skip-permissions";
 pub(crate) const WORKER_HOST_PERMISSIONS: &str = "unrestricted";
@@ -23,6 +26,41 @@ pub(crate) const DEFAULT_TIMEOUT_SECONDS: u64 = 14_400;
 pub(crate) const MIN_TIMEOUT_SECONDS: u64 = 60;
 pub(crate) const MAX_TIMEOUT_SECONDS: u64 = 86_400;
 pub(crate) const MAX_ADDITIONAL_ROUNDS: u32 = 100;
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum Effort {
+    High,
+    Max,
+}
+
+impl Effort {
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::High => "high",
+            Self::Max => "max",
+        }
+    }
+
+    pub(crate) fn parse(value: &str) -> FactoryResult<Self> {
+        match value {
+            "high" => Ok(Self::High),
+            "max" => Ok(Self::Max),
+            _ => Err(FactoryError::new("--effort must be high or max")),
+        }
+    }
+}
+
+pub(crate) const DEFAULT_EFFORT: Effort = Effort::High;
+
+pub(crate) fn validate_cohort_size(flag: &str, value: u8) -> FactoryResult<u8> {
+    if !(MIN_COHORT_SIZE..=MAX_COHORT_SIZE).contains(&value) {
+        return Err(FactoryError::new(format!(
+            "{flag} must be between {MIN_COHORT_SIZE} and {MAX_COHORT_SIZE}"
+        )));
+    }
+    Ok(value)
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct LaunchOptions {
@@ -36,6 +74,9 @@ pub(crate) struct LaunchOptions {
     pub(crate) agent_timeout_seconds: u64,
     pub(crate) allow_dirty_source: bool,
     pub(crate) launcher: Option<PathBuf>,
+    pub(crate) effort: Option<Effort>,
+    pub(crate) plan_critics: Option<u8>,
+    pub(crate) codex_reviewers: Option<u8>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

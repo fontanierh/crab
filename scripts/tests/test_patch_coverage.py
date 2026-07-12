@@ -32,6 +32,33 @@ def lcov_record(root: Path, path: str, values: list[tuple[int, int]]) -> str:
 
 
 class PatchCoverageAccountingTests(unittest.TestCase):
+    def test_policy_excluded_lcov_source_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            init_repo(root)
+            report = root / "excluded.info"
+            write(
+                report,
+                lcov_record(root, "crates/alpha/src/test_support.rs", [(1, 1)]),
+            )
+            with self.assertRaisesRegex(WorkflowError, "policy-excluded"):
+                parse_lcov(root, report)
+            with contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(
+                    main(
+                        [
+                            "--root",
+                            str(root),
+                            "--mode",
+                            "worktree",
+                            "--base-sha",
+                            run_git(root, "rev-parse", "HEAD"),
+                            "--lcov",
+                            str(report),
+                        ]
+                    ),
+                    2,
+                )
     def test_diff_parser_maps_plus_prefixed_content_without_shifting(self) -> None:
         diff = """diff --git a/file b/file
 index 111..222 100644

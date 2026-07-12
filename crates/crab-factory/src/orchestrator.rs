@@ -15,8 +15,8 @@ use crate::rubric;
 use crate::run_lock::{RunLock, RunLockError, RunMarker};
 use crate::terminal::{finalize_established_path, finalize_failure, write_success_status};
 use crate::{
-    create_secure_dir, io_result, read_bytes, required_utf8, sha256_hex, FactoryError,
-    FactoryResult,
+    create_secure_dir, io_result, read_bytes, read_managed_bytes, required_utf8, sha256_hex,
+    FactoryError, FactoryResult,
 };
 
 pub(crate) fn execute_run(
@@ -135,7 +135,7 @@ fn execute_locked(
 ) -> FactoryResult<()> {
     let launch = LaunchRecord::read(&run_dir.join("launch.json"))?;
     let snapshot = journal.snapshot()?;
-    validate_prepared_metadata(&launch, &snapshot, marker)?;
+    validate_prepared_metadata(run_dir, &launch, &snapshot, marker)?;
     if snapshot.status != "initializing" {
         return Err(FactoryError::new(format!(
             "run cannot execute from manifest status {}",
@@ -188,6 +188,10 @@ fn execute_locked(
     )?;
     #[rustfmt::skip]
     assert_identity(&git, &snapshot.worktree, &snapshot.base_sha, &snapshot.branch, "worktree creation")?;
+    let configuration = require_some!(
+        snapshot.effective_configuration.as_ref(),
+        FactoryError::new("run predates live-control support")
+    );
     let mut pipeline = Pipeline::new(
         run_dir.to_path_buf(),
         request,
@@ -197,22 +201,65 @@ fn execute_locked(
         snapshot.tool_paths,
         Duration::from_secs(snapshot.agent_timeout_seconds),
         snapshot.maximum_review_rounds,
+        configuration.effort,
+        configuration.plan_critics,
+        configuration.codex_reviewers,
         Arc::clone(journal),
         git,
         cancellation,
         stdout,
+        crate::controls::ControlPlane::new(run_dir.to_path_buf(), Arc::clone(journal)),
     );
     let outcome = pipeline.execute()?;
     drop(pipeline);
     finish_successful_run(journal, run_dir, stdout, &outcome)
 }
 
-fn validate_prepared_metadata(
+pub(crate) fn validate_prepared_metadata(
+    run_dir: &Path,
     launch: &LaunchRecord,
     manifest: &crate::manifest::Manifest,
     marker: &RunMarker,
 ) -> FactoryResult<()> {
-    let consistent = launch.run_id == marker.run_id
+    let prepared = require_some!(
+        manifest.prepared_configuration.as_ref(),
+        FactoryError::new("run predates live-control support")
+    );
+    let launch_configuration = (
+        require_some!(
+            launch.effort,
+            FactoryError::new("run predates live-control support")
+        ),
+        require_some!(
+            launch.plan_critics,
+            FactoryError::new("run predates live-control support")
+        ),
+        require_some!(
+            launch.codex_reviewers,
+            FactoryError::new("run predates live-control support")
+        ),
+    );
+    let maximum_review_rounds = launch.additional_review_rounds.checked_add(1);
+    let request_path = run_dir.join("00-request.md");
+    let request_bytes = read_managed_bytes(&request_path, "managed request snapshot", 0o400)?;
+    let actual_request_sha256 = sha256_hex(&request_bytes);
+    if actual_request_sha256 != marker.request_sha256 {
+        return Err(FactoryError::new(format!(
+            "managed request snapshot hash mismatch: expected {}, found {actual_request_sha256}",
+            marker.request_sha256
+        )));
+    }
+    let effective = require_some!(
+        manifest.effective_configuration.as_ref(),
+        FactoryError::new("run predates live-control support")
+    );
+    let launch_tools = require_some!(
+        launch.tool_paths.as_ref(),
+        FactoryError::new("run predates live-control support")
+    );
+    let consistent = manifest.schema_version == 1
+        && launch.run_id == marker.run_id
+        && run_dir.file_name().and_then(|name| name.to_str()) == Some(marker.run_id.as_str())
         && manifest.run_id == marker.run_id
         && launch.request_sha256 == marker.request_sha256
         && manifest.request_sha256 == marker.request_sha256
@@ -223,14 +270,51 @@ fn validate_prepared_metadata(
         && launch.branch == manifest.branch
         && launch.worktree == manifest.worktree
         && launch.additional_review_rounds == manifest.additional_review_rounds
-        && launch.agent_timeout_seconds == manifest.agent_timeout_seconds;
-    if consistent {
-        Ok(())
-    } else {
-        Err(FactoryError::new(
+        && launch.agent_timeout_seconds == manifest.agent_timeout_seconds
+        && manifest.request == request_path
+        && manifest.worker_policy.host_permissions == crate::config::WORKER_HOST_PERMISSIONS
+        && manifest.worker_policy.sandbox == crate::config::WORKER_SANDBOX
+        && manifest.worker_policy.network_access == crate::config::WORKER_NETWORK_ACCESS
+        && manifest.worker_policy.nested_agents_enabled == crate::config::NESTED_AGENTS_ENABLED
+        && manifest.thermonuclear_skill.path == crate::rubric::THERMO_SKILL_MANIFEST_PATH
+        && manifest.thermonuclear_skill.sha256 == crate::rubric::THERMO_SKILL_SHA256
+        && manifest.thermonuclear_skill.source == crate::rubric::THERMO_SKILL_SOURCE
+        && manifest.thermonuclear_skill.source_commit == crate::rubric::THERMO_SKILL_COMMIT
+        && launch_tools == &manifest.tool_paths;
+    if !consistent
+        || launch_configuration
+            != (
+                prepared.effort,
+                prepared.plan_critics,
+                prepared.codex_reviewers,
+            )
+        || maximum_review_rounds != Some(manifest.maximum_review_rounds)
+        || manifest.models.claude.model != crate::config::CLAUDE_MODEL
+        || manifest.models.codex.model != crate::config::CODEX_MODEL
+        || manifest.models.claude.effort != manifest.models.codex.reasoning_effort
+        || manifest.models.claude.effort != effective.effort.as_str()
+        || ![
+            &manifest.tool_paths.git,
+            &manifest.tool_paths.claude,
+            &manifest.tool_paths.codex,
+            &manifest.tool_paths.make,
+        ]
+        .into_iter()
+        .all(|path| path.is_absolute())
+    {
+        return Err(FactoryError::new(
             "prepared run metadata is inconsistent across marker, launch record, and manifest",
-        ))
+        ));
     }
+    crate::config::validate_cohort_size("--plan-critics", prepared.plan_critics)
+        .map_err(|_| FactoryError::new("prepared run configuration is out of bounds"))?;
+    crate::config::validate_cohort_size("--codex-reviewers", prepared.codex_reviewers)
+        .map_err(|_| FactoryError::new("prepared run configuration is out of bounds"))?;
+    crate::config::validate_cohort_size("--plan-critics", effective.plan_critics)
+        .map_err(|_| FactoryError::new("effective run configuration is out of bounds"))?;
+    crate::config::validate_cohort_size("--codex-reviewers", effective.codex_reviewers)
+        .map_err(|_| FactoryError::new("effective run configuration is out of bounds"))?;
+    Ok(())
 }
 
 fn finish_successful_run(
@@ -240,8 +324,10 @@ fn finish_successful_run(
     outcome: &str,
 ) -> FactoryResult<()> {
     write_progress(stdout, &format!("Factory complete with outcome {outcome}"))?;
-    write_success_status(journal, run_dir, outcome)?;
-    journal.complete(outcome)
+    crate::controls::terminalize(run_dir, journal, || {
+        write_success_status(journal, run_dir, outcome)?;
+        journal.complete(outcome)
+    })
 }
 
 type SignalInstaller = fn(Arc<AtomicBool>) -> Result<(), String>;

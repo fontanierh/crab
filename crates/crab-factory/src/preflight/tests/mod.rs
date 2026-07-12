@@ -18,6 +18,9 @@ fn options(fixture: &Fixture) -> LaunchOptions {
         agent_timeout_seconds: 60,
         allow_dirty_source: false,
         launcher: None,
+        effort: None,
+        plan_critics: None,
+        codex_reviewers: None,
     }
 }
 

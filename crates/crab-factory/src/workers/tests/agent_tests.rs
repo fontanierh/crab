@@ -21,6 +21,9 @@ fn single_agents_report_timeout_cancellation_spawn_and_prompt_integrity_errors()
             agent_timeout_seconds: 60,
             allow_dirty_source: false,
             launcher: None,
+            effort: None,
+            plan_critics: None,
+            codex_reviewers: None,
         },
         RequestedMode::Run,
     )

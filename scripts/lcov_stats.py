@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 from collections import defaultdict
 from dataclasses import dataclass
@@ -14,7 +15,11 @@ sys.dont_write_bytecode = True
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from scripts.workflow_common import WorkflowError, repository_root
+from scripts.workflow_common import (
+    COVERAGE_IGNORE_FILENAME_REGEX,
+    WorkflowError,
+    repository_root,
+)
 
 
 @dataclass(frozen=True)
@@ -82,11 +87,16 @@ def _normalize_source(root: Path, raw: str) -> str:
     candidate = source if source.is_absolute() else root / source
     resolved = candidate.resolve(strict=False)
     try:
-        return resolved.relative_to(root).as_posix()
+        relative = resolved.relative_to(root).as_posix()
     except ValueError as error:
         raise WorkflowError(
             f"LCOV source is outside the repository: {raw}; regenerate coverage"
         ) from error
+    if re.search(COVERAGE_IGNORE_FILENAME_REGEX, relative):
+        raise WorkflowError(
+            f"LCOV contains policy-excluded source {relative}; regenerate coverage"
+        )
+    return relative
 
 
 def _finish_record(record: _Record) -> None:
@@ -106,6 +116,18 @@ def _finish_record(record: _Record) -> None:
             f"LCOV {record.source} has more distinct DA rows than LF; regenerate coverage"
         )
     zero_rows = sum(hits == 0 for hits in record.hits.values())
+    positive_rows = len(record.hits) - zero_rows
+    if len(record.hits) == record.lines_found and (
+        positive_rows != record.lines_hit
+        or zero_rows != record.lines_found - record.lines_hit
+    ):
+        raise WorkflowError(
+            f"LCOV DA rows disagree with LF/LH for {record.source}; regenerate coverage"
+        )
+    if positive_rows > record.lines_hit:
+        raise WorkflowError(
+            f"LCOV positive DA rows exceed LH for {record.source}; regenerate coverage"
+        )
     if zero_rows > record.lines_found - record.lines_hit:
         raise WorkflowError(
             f"LCOV DA rows disagree with LF/LH for {record.source}; regenerate coverage"
@@ -214,6 +236,8 @@ def parse_lcov(root: Path, path: Path) -> LcovStats:
                     "cannot be merged; regenerate coverage"
                 )
         merged: dict[int, int] = defaultdict(int)
+        # Merge line hits only after every record's totals proved self-consistent.
+        # A duplicate record must never launder contradictory LF/LH evidence.
         for record in source_records:
             for line, hits in record.hits.items():
                 merged[line] += hits

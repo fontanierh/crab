@@ -67,8 +67,9 @@ offline fixtures proving all three outcomes.
 ## Coverage workflows
 
 `make coverage-quick` creates fresh coverage for changed packages, enforces worktree patch
-coverage, and reports aggregate totals without blocking on them. With no changed Rust files it exits
-successfully with an explicit skip. `make coverage-gate` always creates fresh full-workspace LCOV
+coverage, and reports aggregate totals without blocking on them. With a healthy diff and no changed
+Rust files it exits successfully with an explicit skip; an unresolvable or failed diff exits 2.
+`make coverage-gate` always creates fresh full-workspace LCOV
 and is authoritative:
 
 | Measure | Floor |
@@ -80,15 +81,17 @@ and is authoritative:
 
 The patch allowance is `floor(0.05 × changed executable lines)`, so fewer than 20 executable lines
 still require 100%. Duplicate LCOV source/line records merge by summing hits for each source line;
-aggregate evidence uses `LF`/`LH` and fails closed when incomplete duplicate records make the line
-universe ambiguous. A changed production file with
+aggregate evidence uses `LF`/`LH`, bounds positive and zero-hit `DA` rows by those totals, requires
+exact agreement for a complete `DA` universe, and fails closed when incomplete duplicate records
+make the line universe ambiguous. A changed production file with
 added non-comment code but no LCOV source record fails closed. Human diagnostics compact locations
 into ranges; `coverage/patch-coverage.json` always contains every uncovered changed line.
 
 Coverage includes Rust under `crates/*/src/`, excluding crate `tests/` trees and
 `src/test_support.rs`. Every aggregate export uses the shared
 `(^|/)test_support\.rs$` ignore policy and is checked after generation so an excluded source in LCOV
-is a setup error rather than misleading evidence. The three diff modes are deliberate:
+is a setup error rather than misleading evidence. Rejected exports are moved from the authoritative
+name to `*.rejected`, and LCOV consumers independently reject excluded sources. The three diff modes are deliberate:
 
 - `worktree` (local default) compares merge base to the working tree and matches what coverage built.
 - `staged` applies the hidden-index/filemode attestation preflight, then rejects every unstaged or
@@ -150,8 +153,9 @@ implementation in `crates/crab-app/src/daemon.rs` are guarded by
 binary configuration (including integration-test entrypoints). Coverage then re-executes the suite
 with instrumentation.
 
-Before running, the orchestrator lexically validates `quality`, `quality/logs`, and every planned
-log leaf before deleting stale status, executing a gate, or writing a file. Schema 3 hashes HEAD
+Before running, the orchestrator lexically validates `quality` and `quality/logs` before deleting
+the stale status artifact. It then validates every planned log leaf before the first gate executes
+or any log is written. Schema 3 hashes HEAD
 plus the sorted path/content hashes of every tracked modification and every non-ignored untracked
 file at start and end. Executability follows Git's owner-execute bit. It rejects per-file split
 content, cross-file partial staging, intent-to-add entries, staged deletions restored on disk,
