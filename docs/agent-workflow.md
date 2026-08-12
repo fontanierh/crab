@@ -47,7 +47,7 @@ Docs-only classification requires both a documentation suffix (`.md`, `.mdx`, `.
 and an approved location: `docs/`, `crab/docs/`, `notes/`, or `design/`; or one of the explicitly
 approved repository documents (`README.md`, `AGENTS.md`, `CLAUDE.md`, `CONTRIBUTING.md`,
 `PHILOSOPHY.md`, `CODE_QUALITY_REPORT.md`, `crab/DESIGN.md`, `crab/WORKSTREAMS.md`,
-`quality/WORKFLOW_IMPLEMENTATION_REPORT.md`, `.github/pull_request_template.md`). Files under
+`.github/pull_request_template.md`). Files under
 `crates/`, `scripts/`, `crab/config/`, and unknown/root paths are never inferred to be docs merely
 from their suffix. Binary assets under a docs directory are also code-scope inputs.
 

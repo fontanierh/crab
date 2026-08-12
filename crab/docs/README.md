@@ -21,7 +21,6 @@ Use `crab/DESIGN.md` as the canonical v1 spec, and use this folder for detailed 
 13. `crab/docs/13-deployment-acceptance-evidence.md`
 14. `crab/docs/14-overall-chat-flow-2026-02-12.md`
 15. `crab/docs/15-self-trigger.md`
-16. `crab/docs/16-code-factory.md`
 
 ## Doc Conventions
 
@@ -43,7 +42,6 @@ These docs focus on:
 - persistent state model and deployment hardening gaps
 - Discord provisioning and token operations
 - target-machine runtime operations and service lifecycle
-- repository developer tooling and isolated code-factory workflow
 
 ## Quality Workflow Notes
 

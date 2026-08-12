@@ -53,11 +53,6 @@
         {"name": "crab-store", "path": "$ROOT/crates/crab-store"},
         {"name": "crab-telemetry", "path": "$ROOT/crates/crab-telemetry"}
       ]
-    },
-    {
-      "name": "crab-factory",
-      "manifest_path": "$ROOT/crates/crab-factory/Cargo.toml",
-      "dependencies": []
     }
   ],
   "workspace_members": [],

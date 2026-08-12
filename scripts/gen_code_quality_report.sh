@@ -281,9 +281,6 @@ Canonical agent loop:
 
 The authoritative gate writes a fingerprinted \`quality/status.json\` and rejects required skips.
 
-Implementation measurements and threshold evidence are tracked in
-\`quality/WORKFLOW_IMPLEMENTATION_REPORT.md\`.
-
 ## Size (SLOC)
 
 $sloc_table_md
