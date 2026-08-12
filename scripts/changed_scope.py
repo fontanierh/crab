@@ -32,7 +32,6 @@ DOC_FILES = {
     "CODE_QUALITY_REPORT.md",
     "crab/DESIGN.md",
     "crab/WORKSTREAMS.md",
-    "quality/WORKFLOW_IMPLEMENTATION_REPORT.md",
     ".github/pull_request_template.md",
 }
 DOC_SUFFIXES = {".md", ".mdx", ".rst", ".txt"}

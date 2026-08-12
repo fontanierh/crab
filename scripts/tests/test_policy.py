@@ -236,10 +236,8 @@ class RepositoryPolicyTests(unittest.TestCase):
             ".github/pull_request_template.md",
             "docs/agent-workflow.md",
             "crab/DESIGN.md",
-            "crab/docs/16-code-factory.md",
             "scripts/gen_code_quality_report.sh",
             "CODE_QUALITY_REPORT.md",
-            "quality/WORKFLOW_IMPLEMENTATION_REPORT.md",
         )
         for relative in paths:
             text = (ROOT / relative).read_text(encoding="utf-8")

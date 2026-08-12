@@ -44,7 +44,6 @@ class ChangedScopeUnitTests(unittest.TestCase):
             "CODE_QUALITY_REPORT.md",
             "crab/DESIGN.md",
             "crab/WORKSTREAMS.md",
-            "quality/WORKFLOW_IMPLEMENTATION_REPORT.md",
             ".github/pull_request_template.md",
         ]
         negatives = [
@@ -87,7 +86,6 @@ class ChangedScopeUnitTests(unittest.TestCase):
             ],
         )
         self.assertNotIn("crab-telemetry", selected)
-        self.assertNotIn("crab-factory", selected)
 
     def test_unknown_code_path_falls_back_to_all_packages(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -95,7 +93,7 @@ class ChangedScopeUnitTests(unittest.TestCase):
             selected, fallback = select_packages_from_metadata(
                 root, ["tools/custom.rs"], fixture_metadata(root)
             )
-        self.assertEqual(len(selected), 9)
+        self.assertEqual(len(selected), 8)
         self.assertIn("unmapped code path", fallback or "")
 
     def test_full_trigger_is_classified_before_metadata(self) -> None:

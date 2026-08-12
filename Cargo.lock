@@ -240,18 +240,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "crab-factory"
-version = "0.1.0"
-dependencies = [
- "libc",
- "serde",
- "serde_json",
- "sha2",
- "signal-hook",
- "time",
-]
-
-[[package]]
 name = "crab-scheduler"
 version = "0.1.0"
 dependencies = [
