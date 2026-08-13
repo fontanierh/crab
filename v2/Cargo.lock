@@ -30,8 +30,9 @@ dependencies = [
 
 [[package]]
 name = "boxology"
-version = "0.0.0"
-source = "git+https://github.com/fontanierh/boxology?rev=e700b8358e3c5b42677406240fda8c3025d3d04f#e700b8358e3c5b42677406240fda8c3025d3d04f"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bbefc4d204521bfc556f8e043c8a2d00f080876a6b0c2517caa865800dd7d412"
 dependencies = [
  "boxology-contract",
  "boxology-macros",
@@ -39,8 +40,9 @@ dependencies = [
 
 [[package]]
 name = "boxology-contract"
-version = "0.0.0"
-source = "git+https://github.com/fontanierh/boxology?rev=e700b8358e3c5b42677406240fda8c3025d3d04f#e700b8358e3c5b42677406240fda8c3025d3d04f"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2adebd23e4e26767de7ecfe54e3b6c0b77865f7f3b22712e4a40224f7fe48c7b"
 dependencies = [
  "tokio-util",
  "unicode-ident",
@@ -49,8 +51,9 @@ dependencies = [
 
 [[package]]
 name = "boxology-contract-syntax"
-version = "0.0.0"
-source = "git+https://github.com/fontanierh/boxology?rev=e700b8358e3c5b42677406240fda8c3025d3d04f#e700b8358e3c5b42677406240fda8c3025d3d04f"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a76199bcb45955444f40b3088180322fd7015e6a871e160abf242e00b0f08ae1"
 dependencies = [
  "boxology-contract",
  "proc-macro2",
@@ -60,8 +63,9 @@ dependencies = [
 
 [[package]]
 name = "boxology-macros"
-version = "0.0.0"
-source = "git+https://github.com/fontanierh/boxology?rev=e700b8358e3c5b42677406240fda8c3025d3d04f#e700b8358e3c5b42677406240fda8c3025d3d04f"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d327e97e6007e87cc833284f23a42692dc635167cf49c0d81b711040e7808991"
 dependencies = [
  "boxology-contract-syntax",
  "proc-macro2",
@@ -71,8 +75,9 @@ dependencies = [
 
 [[package]]
 name = "boxology-manifest"
-version = "0.0.0"
-source = "git+https://github.com/fontanierh/boxology?rev=e700b8358e3c5b42677406240fda8c3025d3d04f#e700b8358e3c5b42677406240fda8c3025d3d04f"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b8d7b9f1f3157d9c40dc4f490550ec86932d4d70301c85d97553c632e45619c2"
 dependencies = [
  "boxology-contract",
  "toml_edit",
@@ -80,8 +85,9 @@ dependencies = [
 
 [[package]]
 name = "boxology-runtime"
-version = "0.0.0"
-source = "git+https://github.com/fontanierh/boxology?rev=e700b8358e3c5b42677406240fda8c3025d3d04f#e700b8358e3c5b42677406240fda8c3025d3d04f"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1561a4890cf9431dde25046c3e972ff2cd6f106b1cdfcd36b51d8a285694871d"
 dependencies = [
  "boxology-contract",
  "tokio",

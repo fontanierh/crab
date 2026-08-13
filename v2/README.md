@@ -60,8 +60,9 @@ cargo clippy --workspace --all-targets --all-features -- -D warnings
 boxology check --base origin/main
 ```
 
-Boxology now supports nested Git workspaces and portable initializer dependencies. Its executable
-quality stages pass. Two checker gaps remain: generated Rust is not `rustfmt`-stable
+Crab v2 uses Boxology's published exact `0.1.0` registry crates and tools; no local checkout or Git
+dependency is required because this workspace does not use `boxology-http`. Its executable quality
+stages pass. Two checker gaps remain: generated Rust is not `rustfmt`-stable
 ([#677](https://github.com/fontanierh/boxology/issues/677)), and a wholly new nested managed tree is
 not yet classified/owned against a base that lacks it
 ([#685](https://github.com/fontanierh/boxology/issues/685)). New-box bootstrapping is tracked in

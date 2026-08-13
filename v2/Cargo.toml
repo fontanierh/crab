@@ -18,9 +18,9 @@ members = [
 edition = "2024"
 
 [workspace.dependencies]
-# Boxology 0.1.0 is not fully published. This is the initializer-supported
-# portable dependency form from the post-V0 release baseline.
-boxology = { version = "=0.0.0", git = "https://github.com/fontanierh/boxology", rev = "e700b8358e3c5b42677406240fda8c3025d3d04f" }
-boxology-contract = { version = "=0.0.0", git = "https://github.com/fontanierh/boxology", rev = "e700b8358e3c5b42677406240fda8c3025d3d04f" }
-boxology-manifest = { version = "=0.0.0", git = "https://github.com/fontanierh/boxology", rev = "e700b8358e3c5b42677406240fda8c3025d3d04f" }
-boxology-runtime = { version = "=0.0.0", git = "https://github.com/fontanierh/boxology", rev = "e700b8358e3c5b42677406240fda8c3025d3d04f" }
+# This hand-managed non-HTTP workspace uses the published 0.1.0 closure. Initializer-generated
+# HTTP examples still require coherent Git pins because `boxology-http` is not published yet.
+boxology = "=0.1.0"
+boxology-contract = "=0.1.0"
+boxology-manifest = "=0.1.0"
+boxology-runtime = "=0.1.0"
