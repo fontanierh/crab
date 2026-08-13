@@ -1,0 +1,30 @@
+[workspace]
+resolver = "3"
+members = [
+    "agent-host/generated/contract",
+    "agent-host/implementation",
+    "bridge-host/generated/contract",
+    "bridge-host/implementation",
+    "native-channel/generated/contract",
+    "native-channel/implementation",
+    "runtime/composition",
+    "trigger-inbox/generated/contract",
+    "trigger-inbox/implementation",
+]
+
+[workspace.package]
+edition = "2024"
+
+[workspace.dependencies]
+boxology = "=0.0.0"
+boxology-contract = "=0.0.0"
+boxology-manifest = "=0.0.0"
+boxology-runtime = "=0.0.0"
+
+[patch.crates-io]
+# Boxology is not published yet. Pin every crate to one public revision so this
+# draft is reproducible without depending on a path on Jim's laptop.
+boxology = { git = "https://github.com/fontanierh/boxology.git", rev = "4379f5f3c5d02ebf3a81cf83d783f3eab20589c0" }
+boxology-contract = { git = "https://github.com/fontanierh/boxology.git", rev = "4379f5f3c5d02ebf3a81cf83d783f3eab20589c0" }
+boxology-manifest = { git = "https://github.com/fontanierh/boxology.git", rev = "4379f5f3c5d02ebf3a81cf83d783f3eab20589c0" }
+boxology-runtime = { git = "https://github.com/fontanierh/boxology.git", rev = "4379f5f3c5d02ebf3a81cf83d783f3eab20589c0" }

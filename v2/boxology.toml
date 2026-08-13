@@ -1,0 +1,10 @@
+schema = 1
+id = "crab-v2"
+kind = "platform"
+owned = ["Cargo.toml", "README.md", "rust-toolchain.toml", "boxology.toml", "boxology-generator.toml", ".gitignore"]
+
+[[derived]]
+id = "lockfile"
+generator = "cargo"
+inputs = ["**/Cargo.toml"]
+outputs = ["Cargo.lock"]

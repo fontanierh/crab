@@ -1,0 +1,26 @@
+schema = 1
+id = "native-channel"
+kind = "box"
+owned = ["boxology.toml", "implementation/**"]
+
+[quality]
+commands = [
+    "cargo check -p native-channel-contract --all-features",
+    "cargo test -p native-channel-implementation",
+]
+
+[[crates]]
+cargo_package = "native-channel-implementation"
+path = "implementation"
+role = "box-implementation"
+
+[[crates]]
+cargo_package = "native-channel-contract"
+path = "generated/contract"
+role = "box-contract"
+
+[[derived]]
+id = "contract"
+generator = "boxology-contract"
+inputs = ["boxology.toml", "implementation/src/**"]
+outputs = ["generated/contract/**", "generated/adapter/**", "generated/schema.json"]

@@ -1,0 +1,11 @@
+[package]
+name = "bridge-host-implementation"
+version = "0.0.0"
+edition.workspace = true
+publish = false
+
+[dependencies]
+boxology = { workspace = true }
+boxology-contract = { workspace = true }
+boxology-runtime = { workspace = true }
+boxology_generated_contract = { package = "bridge-host-contract", version = "=0.0.0", path = "../generated/contract" }

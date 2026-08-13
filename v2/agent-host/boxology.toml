@@ -1,0 +1,26 @@
+schema = 1
+id = "agent-host"
+kind = "box"
+owned = ["boxology.toml", "implementation/**"]
+
+[quality]
+commands = [
+    "cargo check -p agent-host-contract --all-features",
+    "cargo test -p agent-host-implementation",
+]
+
+[[crates]]
+cargo_package = "agent-host-implementation"
+path = "implementation"
+role = "box-implementation"
+
+[[crates]]
+cargo_package = "agent-host-contract"
+path = "generated/contract"
+role = "box-contract"
+
+[[derived]]
+id = "contract"
+generator = "boxology-contract"
+inputs = ["boxology.toml", "implementation/src/**"]
+outputs = ["generated/contract/**", "generated/adapter/**", "generated/schema.json"]

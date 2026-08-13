@@ -1,0 +1,1159 @@
+{
+  "box_id": "bridge-host",
+  "capabilities": [
+    {
+      "deprecation": null,
+      "docs": [
+        " Register a package-defined bridge under generic Crab supervision."
+      ],
+      "error": "BridgeHostError",
+      "id": "bridge-host.register_bridge",
+      "idempotency": "none",
+      "input": {
+        "name": "request",
+        "type": "BridgeSpec"
+      },
+      "max_exposure": "code_only",
+      "name": "register_bridge",
+      "output": {
+        "type": "BridgeRecord"
+      },
+      "shape": "unary"
+    },
+    {
+      "deprecation": null,
+      "docs": [
+        " Converge observed lifecycle toward desired lifecycle using bounded recovery."
+      ],
+      "error": "BridgeHostError",
+      "id": "bridge-host.reconcile_bridge",
+      "idempotency": "none",
+      "input": {
+        "name": "request",
+        "type": "ReconcileBridgeRequest"
+      },
+      "max_exposure": "code_only",
+      "name": "reconcile_bridge",
+      "output": {
+        "type": "BridgeStatus"
+      },
+      "shape": "unary"
+    },
+    {
+      "deprecation": null,
+      "docs": [],
+      "error": "BridgeHostError",
+      "id": "bridge-host.report_health",
+      "idempotency": "none",
+      "input": {
+        "name": "request",
+        "type": "HealthObservation"
+      },
+      "max_exposure": "code_only",
+      "name": "report_health",
+      "output": {
+        "type": "BridgeStatus"
+      },
+      "shape": "unary"
+    },
+    {
+      "deprecation": null,
+      "docs": [
+        " Begin QR, phone-code, OAuth or other package-supported authentication."
+      ],
+      "error": "BridgeHostError",
+      "id": "bridge-host.begin_authentication",
+      "idempotency": "none",
+      "input": {
+        "name": "request",
+        "type": "BeginAuthenticationRequest"
+      },
+      "max_exposure": "code_only",
+      "name": "begin_authentication",
+      "output": {
+        "type": "AuthenticationChallenge"
+      },
+      "shape": "unary"
+    },
+    {
+      "deprecation": null,
+      "docs": [],
+      "error": "BridgeHostError",
+      "id": "bridge-host.submit_authentication",
+      "idempotency": "none",
+      "input": {
+        "name": "request",
+        "type": "SubmitAuthenticationRequest"
+      },
+      "max_exposure": "code_only",
+      "name": "submit_authentication",
+      "output": {
+        "type": "CredentialStatus"
+      },
+      "shape": "unary"
+    },
+    {
+      "deprecation": null,
+      "docs": [
+        " Actively prove credentials still work; process liveness alone cannot return `Valid`."
+      ],
+      "error": "BridgeHostError",
+      "id": "bridge-host.validate_credentials",
+      "idempotency": "none",
+      "input": {
+        "name": "request",
+        "type": "BridgeReference"
+      },
+      "max_exposure": "code_only",
+      "name": "validate_credentials",
+      "output": {
+        "type": "CredentialStatus"
+      },
+      "shape": "unary"
+    },
+    {
+      "deprecation": null,
+      "docs": [
+        " Explicitly invalidate credentials so reset/re-pair is auditable rather than ad hoc deletion."
+      ],
+      "error": "BridgeHostError",
+      "id": "bridge-host.invalidate_credentials",
+      "idempotency": "none",
+      "input": {
+        "name": "request",
+        "type": "BridgeReference"
+      },
+      "max_exposure": "code_only",
+      "name": "invalidate_credentials",
+      "output": {
+        "type": "BridgeReceipt"
+      },
+      "shape": "unary"
+    },
+    {
+      "deprecation": null,
+      "docs": [],
+      "error": "BridgeHostError",
+      "id": "bridge-host.accept_inbound",
+      "idempotency": "none",
+      "input": {
+        "name": "request",
+        "type": "BridgeInbound"
+      },
+      "max_exposure": "code_only",
+      "name": "accept_inbound",
+      "output": {
+        "type": "TriggerIntent"
+      },
+      "shape": "unary"
+    },
+    {
+      "deprecation": null,
+      "docs": [],
+      "error": "BridgeHostError",
+      "id": "bridge-host.deliver_message",
+      "idempotency": "none",
+      "input": {
+        "name": "request",
+        "type": "BridgeOutbound"
+      },
+      "max_exposure": "code_only",
+      "name": "deliver_message",
+      "output": {
+        "type": "DeliveryReceipt"
+      },
+      "shape": "unary"
+    },
+    {
+      "deprecation": null,
+      "docs": [],
+      "error": "BridgeHostError",
+      "id": "bridge-host.delivery_status",
+      "idempotency": "none",
+      "input": {
+        "name": "request",
+        "type": "DeliveryReference"
+      },
+      "max_exposure": "code_only",
+      "name": "delivery_status",
+      "output": {
+        "type": "DeliveryReceipt"
+      },
+      "shape": "unary"
+    },
+    {
+      "deprecation": null,
+      "docs": [],
+      "error": "BridgeHostError",
+      "id": "bridge-host.bridge_status",
+      "idempotency": "none",
+      "input": {
+        "name": "request",
+        "type": "BridgeReference"
+      },
+      "max_exposure": "code_only",
+      "name": "bridge_status",
+      "output": {
+        "type": "BridgeStatus"
+      },
+      "shape": "unary"
+    },
+    {
+      "deprecation": null,
+      "docs": [],
+      "error": "BridgeHostError",
+      "id": "bridge-host.stop_bridge",
+      "idempotency": "none",
+      "input": {
+        "name": "request",
+        "type": "BridgeReference"
+      },
+      "max_exposure": "code_only",
+      "name": "stop_bridge",
+      "output": {
+        "type": "BridgeReceipt"
+      },
+      "shape": "unary"
+    }
+  ],
+  "provenance": {
+    "generator": "boxology-generator",
+    "generator_version": "0.0.0",
+    "semantic_digest": "sha256:5ebe928a568aa4610dc5db24e1630f8319d14eab17d8ad3e5757e09b967f4392"
+  },
+  "revision": "sha256:2d3e56668e97d49011cd6a65e2b63f97b1379a0fd23b78f93a3bae61a9bb82af",
+  "schema_format": 1,
+  "types": [
+    {
+      "deprecation": null,
+      "docs": [],
+      "kind": "enum",
+      "name": "BridgeLifecycle",
+      "variants": [
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "Registered"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "Starting"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "AwaitingAuthentication"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "Healthy"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "Degraded"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "BackingOff"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "Stopped"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "Failed"
+        }
+      ]
+    },
+    {
+      "deprecation": null,
+      "docs": [
+        " Authentication transports that a generic bridge host can present to an operator."
+      ],
+      "kind": "enum",
+      "name": "AuthenticationMethod",
+      "variants": [
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "QrCode"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "PhoneCode"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "OAuth"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "Browser"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "Terminal"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "Manual"
+        }
+      ]
+    },
+    {
+      "deprecation": null,
+      "docs": [],
+      "kind": "enum",
+      "name": "CredentialLifecycle",
+      "variants": [
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "Missing"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "Challenged"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "Validating"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "Valid"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "Expiring"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "Rejected"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "Revoked"
+        }
+      ]
+    },
+    {
+      "deprecation": null,
+      "docs": [],
+      "kind": "enum",
+      "name": "DeliveryLifecycle",
+      "variants": [
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "Queued"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "Sending"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "Delivered"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "Retrying"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "Rejected"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "Failed"
+        }
+      ]
+    },
+    {
+      "deprecation": null,
+      "docs": [
+        " Installation metadata for a bridge package. The agent may add new packages at runtime."
+      ],
+      "fields": [
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "bridge_id",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [
+            " Stable package identifier, for example a future first-party `whatsapp` package."
+          ],
+          "name": "package_id",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "display_name",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [
+            " Executable/entrypoint metadata without embedded credential values."
+          ],
+          "name": "launch_json",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [
+            " Service-specific configuration. Secret fields must be credential-provider handles."
+          ],
+          "name": "configuration_json",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "authentication_methods",
+          "type": "Vec<AuthenticationMethod>"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "desired_running",
+          "type": "bool"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "health_interval_ms",
+          "type": "u64"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "credential_validation_interval_ms",
+          "type": "u64"
+        },
+        {
+          "deprecation": null,
+          "docs": [
+            " Bounded restart policy prevents a broken bridge from becoming an infinite crash loop."
+          ],
+          "name": "restart_limit",
+          "type": "u64"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "restart_window_ms",
+          "type": "u64"
+        }
+      ],
+      "kind": "struct",
+      "name": "BridgeSpec"
+    },
+    {
+      "deprecation": null,
+      "docs": [],
+      "fields": [
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "bridge_id",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "package_id",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "lifecycle",
+          "type": "BridgeLifecycle"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "generation",
+          "type": "u64"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "registered_at_ms",
+          "type": "u64"
+        }
+      ],
+      "kind": "struct",
+      "name": "BridgeRecord"
+    },
+    {
+      "deprecation": null,
+      "docs": [],
+      "fields": [
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "bridge_id",
+          "type": "String"
+        }
+      ],
+      "kind": "struct",
+      "name": "BridgeReference"
+    },
+    {
+      "deprecation": null,
+      "docs": [],
+      "fields": [
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "bridge_id",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "expected_generation",
+          "type": "u64"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "desired_running",
+          "type": "bool"
+        }
+      ],
+      "kind": "struct",
+      "name": "ReconcileBridgeRequest"
+    },
+    {
+      "deprecation": null,
+      "docs": [
+        " Truthful observed health from the bridge process, not merely supervisor process liveness."
+      ],
+      "fields": [
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "bridge_id",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "observed_at_ms",
+          "type": "u64"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "process_alive",
+          "type": "bool"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "service_connected",
+          "type": "bool"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "can_receive",
+          "type": "bool"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "can_send",
+          "type": "bool"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "credential_lifecycle",
+          "type": "CredentialLifecycle"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "detail_json",
+          "type": "String"
+        }
+      ],
+      "kind": "struct",
+      "name": "HealthObservation"
+    },
+    {
+      "deprecation": null,
+      "docs": [],
+      "fields": [
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "bridge_id",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "lifecycle",
+          "type": "BridgeLifecycle"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "generation",
+          "type": "u64"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "consecutive_failures",
+          "type": "u64"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "restart_count_in_window",
+          "type": "u64"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "next_restart_at_ms",
+          "type": "Option<u64>"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "last_health",
+          "type": "Option<HealthObservation>"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "last_error",
+          "type": "Option<String>"
+        }
+      ],
+      "kind": "struct",
+      "name": "BridgeStatus"
+    },
+    {
+      "deprecation": null,
+      "docs": [],
+      "fields": [
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "bridge_id",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "preferred_method",
+          "type": "Option<AuthenticationMethod>"
+        },
+        {
+          "deprecation": null,
+          "docs": [
+            " Operator locale/device hints; never raw credentials."
+          ],
+          "name": "context_json",
+          "type": "String"
+        }
+      ],
+      "kind": "struct",
+      "name": "BeginAuthenticationRequest"
+    },
+    {
+      "deprecation": null,
+      "docs": [
+        " A challenge can contain renderable QR, URL or prompt data, but never stored credentials."
+      ],
+      "fields": [
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "bridge_id",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "challenge_id",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "method",
+          "type": "AuthenticationMethod"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "expires_at_ms",
+          "type": "Option<u64>"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "presentation_json",
+          "type": "String"
+        }
+      ],
+      "kind": "struct",
+      "name": "AuthenticationChallenge"
+    },
+    {
+      "deprecation": null,
+      "docs": [],
+      "fields": [
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "bridge_id",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "challenge_id",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [
+            " Ephemeral response passed directly to the package's authentication handler."
+          ],
+          "name": "response_json",
+          "type": "String"
+        }
+      ],
+      "kind": "struct",
+      "name": "SubmitAuthenticationRequest"
+    },
+    {
+      "deprecation": null,
+      "docs": [
+        " The bridge host stores only a reference to credential material owned by a credential store."
+      ],
+      "fields": [
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "bridge_id",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "lifecycle",
+          "type": "CredentialLifecycle"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "credential_handle",
+          "type": "Option<String>"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "validated_at_ms",
+          "type": "Option<u64>"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "expires_at_ms",
+          "type": "Option<u64>"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "account_hint",
+          "type": "Option<String>"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "detail_json",
+          "type": "String"
+        }
+      ],
+      "kind": "struct",
+      "name": "CredentialStatus"
+    },
+    {
+      "deprecation": null,
+      "docs": [],
+      "fields": [
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "media_type",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "name",
+          "type": "Option<String>"
+        },
+        {
+          "deprecation": null,
+          "docs": [
+            " Reference to durable content; large or private bytes do not cross this contract."
+          ],
+          "name": "content_handle",
+          "type": "String"
+        }
+      ],
+      "kind": "struct",
+      "name": "BridgeAttachment"
+    },
+    {
+      "deprecation": null,
+      "docs": [
+        " One external event normalized just enough to create a durable Crab trigger."
+      ],
+      "fields": [
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "bridge_id",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "external_event_id",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "received_at_ms",
+          "type": "u64"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "target_channel_id",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "sender_json",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "message_json",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "attachments",
+          "type": "Vec<BridgeAttachment>"
+        }
+      ],
+      "kind": "struct",
+      "name": "BridgeInbound"
+    },
+    {
+      "deprecation": null,
+      "docs": [
+        " Output of bridge ingestion; `trigger-inbox` owns the durable enqueue/claim protocol."
+      ],
+      "fields": [
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "source_id",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "deduplication_key",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "target_channel_id",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "message_json",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "attachment_handles",
+          "type": "Vec<String>"
+        }
+      ],
+      "kind": "struct",
+      "name": "TriggerIntent"
+    },
+    {
+      "deprecation": null,
+      "docs": [
+        " A selected message for an external system, not a copied ACP event."
+      ],
+      "fields": [
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "bridge_id",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "message_id",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "destination_json",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "message_json",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "attachments",
+          "type": "Vec<BridgeAttachment>"
+        },
+        {
+          "deprecation": null,
+          "docs": [
+            " Stable across retries so the bridge package can provide idempotent delivery."
+          ],
+          "name": "idempotency_key",
+          "type": "String"
+        }
+      ],
+      "kind": "struct",
+      "name": "BridgeOutbound"
+    },
+    {
+      "deprecation": null,
+      "docs": [],
+      "fields": [
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "bridge_id",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "message_id",
+          "type": "String"
+        }
+      ],
+      "kind": "struct",
+      "name": "DeliveryReference"
+    },
+    {
+      "deprecation": null,
+      "docs": [],
+      "fields": [
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "bridge_id",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "message_id",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "lifecycle",
+          "type": "DeliveryLifecycle"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "external_delivery_id",
+          "type": "Option<String>"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "attempt",
+          "type": "u64"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "updated_at_ms",
+          "type": "u64"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "detail_json",
+          "type": "String"
+        }
+      ],
+      "kind": "struct",
+      "name": "DeliveryReceipt"
+    },
+    {
+      "deprecation": null,
+      "docs": [],
+      "fields": [
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "accepted",
+          "type": "bool"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "recorded_at_ms",
+          "type": "u64"
+        }
+      ],
+      "kind": "struct",
+      "name": "BridgeReceipt"
+    },
+    {
+      "deprecation": null,
+      "docs": [],
+      "kind": "error",
+      "name": "BridgeHostError",
+      "variants": [
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "DraftOnly",
+          "payload": "unit"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "InvalidSpec",
+          "payload": "unit"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "UnknownBridge",
+          "payload": "unit"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "GenerationConflict",
+          "payload": "unit"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "RestartBudgetExhausted",
+          "payload": "unit"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "AuthenticationUnavailable",
+          "payload": "unit"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "ChallengeExpired",
+          "payload": "unit"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "CredentialRejected",
+          "payload": "unit"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "BridgeUnhealthy",
+          "payload": "unit"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "DuplicateMessageConflict",
+          "payload": "unit"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "DeliveryFailed",
+          "payload": "unit"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "PackageProtocolFailed",
+          "payload": "unit"
+        }
+      ]
+    }
+  ]
+}

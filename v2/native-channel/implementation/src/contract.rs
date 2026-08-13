@@ -1,0 +1,155 @@
+// A channel is a native client view over one ACP session. It is deliberately not the reusable
+// external-integration abstraction: that is `bridge-host`.
+boxology::contract! {
+    pub enum ChannelLifecycle {
+        Binding,
+        Attached,
+        Replaying,
+        Detached,
+        Failed,
+    }
+
+    /// Creates the invariant `channel_id -> session_id` for the lifetime of this binding.
+    pub struct BindChannelRequest {
+        pub channel_id: String,
+        pub adapter_id: String,
+        pub session_id: String,
+        /// Adapter-specific destination metadata, retained losslessly as JSON.
+        pub native_channel_json: String,
+    }
+
+    pub struct ChannelBinding {
+        pub binding_id: String,
+        pub channel_id: String,
+        pub adapter_id: String,
+        pub session_id: String,
+        pub lifecycle: ChannelLifecycle,
+        /// Last ACP sequence durably published to the adapter.
+        pub published_sequence: u64,
+    }
+
+    /// A user turn from the native interface, destined for exactly the bound ACP session.
+    pub struct ChannelTurn {
+        pub binding_id: String,
+        pub client_turn_id: String,
+        pub received_at_ms: u64,
+        /// Exact ACP-compatible prompt JSON, including attachments and other rich content.
+        pub native_prompt_json: String,
+    }
+
+    pub struct AcceptedTurn {
+        pub binding_id: String,
+        pub session_id: String,
+        pub client_turn_id: String,
+        pub accepted_at_ms: u64,
+    }
+
+    /// The hint is useful for rendering; no event may be dropped because its hint is unknown.
+    pub enum NativeEventKind {
+        Message,
+        Thought,
+        Plan,
+        ToolCall,
+        ToolResult,
+        Terminal,
+        FileDiff,
+        PermissionRequest,
+        Usage,
+        SessionState,
+        RunFinished,
+        Other,
+    }
+
+    /// Channels receive the complete ordered ACP stream rather than assistant-text projections.
+    pub struct NativeChannelEvent {
+        pub binding_id: String,
+        pub session_id: String,
+        pub run_id: Option<String>,
+        pub sequence: u64,
+        pub observed_at_ms: u64,
+        pub kind: NativeEventKind,
+        /// Exact native ACP JSON-RPC message, including intermediate and tool events.
+        pub native_event_json: String,
+    }
+
+    pub struct PublishReceipt {
+        pub binding_id: String,
+        pub sequence: u64,
+        /// Stable adapter receipt used to make crash retries idempotent.
+        pub delivery_id: String,
+        pub published_at_ms: u64,
+    }
+
+    pub struct ReplayRequest {
+        pub binding_id: String,
+        pub after_sequence: u64,
+        pub limit: u64,
+    }
+
+    pub struct PublishedEventPage {
+        pub events: Vec<NativeChannelEvent>,
+        pub next_sequence: u64,
+        pub caught_up: bool,
+    }
+
+    /// A fresh session is an explicit user/operator operation, not Crab-owned compaction.
+    pub struct ReplaceSessionRequest {
+        pub binding_id: String,
+        pub expected_session_id: String,
+        pub fresh_session_id: String,
+        pub reason: String,
+    }
+
+    pub struct BindingReference {
+        pub binding_id: String,
+    }
+
+    pub struct ChannelStatus {
+        pub binding: ChannelBinding,
+        pub last_error: Option<String>,
+        pub updated_at_ms: u64,
+    }
+
+    pub struct ChannelReceipt {
+        pub accepted: bool,
+        pub recorded_at_ms: u64,
+    }
+
+    #[error]
+    pub enum NativeChannelError {
+        DraftOnly,
+        AlreadyBound,
+        UnknownBinding,
+        SessionMismatch,
+        SequenceGap,
+        DuplicateTurnConflict,
+        InvalidNativePayload,
+        AdapterUnavailable,
+    }
+
+    /// Bind one native interface to one already-open ACP session.
+    #[capability]
+    pub async fn bind_channel(request: BindChannelRequest) -> Result<ChannelBinding, NativeChannelError>;
+
+    /// Route a native user turn without translating it into bridge semantics.
+    #[capability]
+    pub async fn accept_turn(request: ChannelTurn) -> Result<AcceptedTurn, NativeChannelError>;
+
+    /// Publish every ACP event in order; assistant text is not a privileged special case.
+    #[capability]
+    pub async fn publish_native_event(request: NativeChannelEvent) -> Result<PublishReceipt, NativeChannelError>;
+
+    /// Replay the durable native view after an adapter disconnect or client reconnect.
+    #[capability]
+    pub async fn replay_native_events(request: ReplayRequest) -> Result<PublishedEventPage, NativeChannelError>;
+
+    /// Atomically bind a fresh ACP session after explicit close/reopen by the caller.
+    #[capability]
+    pub async fn replace_session(request: ReplaceSessionRequest) -> Result<ChannelBinding, NativeChannelError>;
+
+    #[capability]
+    pub async fn channel_status(request: BindingReference) -> Result<ChannelStatus, NativeChannelError>;
+
+    #[capability]
+    pub async fn unbind_channel(request: BindingReference) -> Result<ChannelReceipt, NativeChannelError>;
+}
