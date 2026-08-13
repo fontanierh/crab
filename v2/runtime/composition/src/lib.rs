@@ -1,7 +1,7 @@
 //! Thin assembly proof for the Crab v2 contract draft.
 //!
 //! This crate deliberately contains no routing, auth or agent policy. Those decisions belong to
-//! the four boxes. The composition only proves that generated adapters form one coherent graph.
+//! the five boxes. The composition only proves that generated adapters form one coherent graph.
 
 #![deny(missing_docs)]
 #![forbid(unsafe_code)]
@@ -9,12 +9,13 @@
 use std::sync::Arc;
 
 use agent_host_implementation::{AgentHostDraft, generated as agent_host};
-use boxology_contract::{ExposureLevel, ImplementationDescriptor};
+use boxology_contract::ExposureLevel;
 use boxology_runtime::{
     AssemblyErrors, Composition, CompositionBuilder, test_support::StubTransport,
 };
 use bridge_host_implementation::{BridgeHostDraft, generated as bridge_host};
 use native_channel_implementation::{NativeChannelDraft, generated as native_channel};
+use sub_agent_host_implementation::{SubAgentHostDraft, generated as sub_agent_host};
 use trigger_inbox_implementation::{TriggerInboxDraft, generated as trigger_inbox};
 
 /// A started draft graph and its in-process binding.
@@ -30,64 +31,26 @@ pub fn start_draft() -> Result<DraftRuntime, AssemblyErrors> {
     let in_process = Arc::new(StubTransport::new());
     let mut builder = CompositionBuilder::new();
 
-    add_agent_host(&mut builder, &in_process);
-    add_native_channel(&mut builder, &in_process);
-    add_bridge_host(&mut builder, &in_process);
-    add_trigger_inbox(&mut builder, &in_process);
+    let agent_host = agent_host::register(&mut builder, AgentHostDraft);
+    builder.expose_all(&agent_host, in_process.clone(), ExposureLevel::CodeOnly);
+
+    let native_channel = native_channel::register(&mut builder, NativeChannelDraft);
+    builder.expose_all(&native_channel, in_process.clone(), ExposureLevel::CodeOnly);
+
+    let bridge_host = bridge_host::register(&mut builder, BridgeHostDraft);
+    builder.expose_all(&bridge_host, in_process.clone(), ExposureLevel::CodeOnly);
+
+    let sub_agent_host = sub_agent_host::register(&mut builder, SubAgentHostDraft);
+    builder.expose_all(&sub_agent_host, in_process.clone(), ExposureLevel::CodeOnly);
+
+    let trigger_inbox = trigger_inbox::register(&mut builder, TriggerInboxDraft);
+    builder.expose_all(&trigger_inbox, in_process.clone(), ExposureLevel::CodeOnly);
 
     let composition = builder.start()?;
     Ok(DraftRuntime {
         composition,
         in_process,
     })
-}
-
-fn expose_all(
-    builder: &mut CompositionBuilder,
-    transport: &Arc<StubTransport>,
-    descriptor: &ImplementationDescriptor,
-) {
-    let box_id = descriptor.contract().box_id().clone();
-    for capability in descriptor.contract().capabilities() {
-        builder.expose(
-            box_id.clone(),
-            capability.id().clone(),
-            transport.clone(),
-            ExposureLevel::CodeOnly,
-        );
-    }
-}
-
-fn add_agent_host(builder: &mut CompositionBuilder, transport: &Arc<StubTransport>) {
-    let descriptor = agent_host::implementation_descriptor();
-    expose_all(builder, transport, &descriptor);
-    builder.add_box(descriptor, |imports| {
-        agent_host::factory(AgentHostDraft, imports)
-    });
-}
-
-fn add_native_channel(builder: &mut CompositionBuilder, transport: &Arc<StubTransport>) {
-    let descriptor = native_channel::implementation_descriptor();
-    expose_all(builder, transport, &descriptor);
-    builder.add_box(descriptor, |imports| {
-        native_channel::factory(NativeChannelDraft, imports)
-    });
-}
-
-fn add_bridge_host(builder: &mut CompositionBuilder, transport: &Arc<StubTransport>) {
-    let descriptor = bridge_host::implementation_descriptor();
-    expose_all(builder, transport, &descriptor);
-    builder.add_box(descriptor, |imports| {
-        bridge_host::factory(BridgeHostDraft, imports)
-    });
-}
-
-fn add_trigger_inbox(builder: &mut CompositionBuilder, transport: &Arc<StubTransport>) {
-    let descriptor = trigger_inbox::implementation_descriptor();
-    expose_all(builder, transport, &descriptor);
-    builder.add_box(descriptor, |imports| {
-        trigger_inbox::factory(TriggerInboxDraft, imports)
-    });
 }
 
 #[cfg(test)]
@@ -101,7 +64,7 @@ mod tests {
     const MANIFEST: &str = include_str!("../../boxology.toml");
 
     #[test]
-    fn manifest_and_runtime_expose_the_same_four_box_graph() {
+    fn manifest_and_runtime_expose_the_same_five_box_graph() {
         let manifest = Manifest::parse(
             RelativePath::new("boxology.toml").expect("manifest path is valid"),
             MANIFEST.as_bytes(),
@@ -130,6 +93,7 @@ mod tests {
                 "agent-host",
                 "bridge-host",
                 "native-channel",
+                "sub-agent-host",
                 "trigger-inbox"
             ]
         );
@@ -140,7 +104,7 @@ mod tests {
                 .expect("composition exists")
                 .boxes()
                 .len(),
-            4
+            5
         );
     }
 }

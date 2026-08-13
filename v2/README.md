@@ -3,22 +3,14 @@
 Crab v2 is a small, ACP-native host. These contracts describe its boundaries before any runtime
 implementation is selected.
 
-```mermaid
-flowchart LR
-    UI["Channel adapter"] --> C["native-channel"]
-    C --> A["agent-host / ACP"]
-    B["bridge-host"] --> T["trigger-inbox"]
-    T --> C
-    A -->|"complete native ACP events"| C
-    A -->|"selected messages only"| B
-    B <--> X["WhatsApp, email, webhooks, ..."]
-```
+![Crab v2 architecture](docs/crab-v2-architecture.png)
 
 ```text
 v2/
 ├── agent-host/       ACP lifecycle, native event stream, mandatory host authority
 ├── native-channel/   one channel ↔ one ACP session, with the full native view
 ├── bridge-host/      supervised external integrations, auth and selected delivery
+├── sub-agent-host/   supervised ACP subprocesses with bidirectional live interaction
 ├── trigger-inbox/    durable at-least-once ingress used by bridges, cron and self-work
 └── runtime/          thin composition; no domain policy
 ```
@@ -30,15 +22,34 @@ v2/
 | Session model | Exactly one live ACP session | May address many channels/sessions |
 | Ingress | User turns | Durable Crab triggers |
 
+## Input modes
+
+| Mode | Active work |
+|---|---|
+| Queue | Wait for idle; preserve FIFO |
+| Steer | Contribute immediately when negotiated; never silently interrupt |
+| Interrupt and steer | Cooperative ACP cancel, then drain accepted input immediately |
+
+Bridges select one mode when registered. Native channels select queue/steer per input and expose
+interrupt as a separate explicit action.
+
 ## Deliberate constraints
 
-- ACP owns context management and compaction. Crab can open a fresh session; it cannot compact one.
+- ACP owns compaction. Crab preserves draft compaction lifecycle events when available but has no
+  `compact` operation because ACP does not define one.
+- ACP v2 draft makes `session/prompt` non-blocking and allows new input during active work. ACP v1
+  can queue portably; true steering requires an advertised agent extension.
+- Crab owns sub-agents as separately supervised ACP subprocesses. They support both fresh and
+  inherited parent context, report whether inheritance used native ACP fork or a portable visible
+  snapshot, and exchange durable non-blocking messages in both directions.
 - Agents run only after a fail-closed preflight proves permission bypass, no sandbox, unrestricted
   filesystem/network access and working passwordless `sudo`.
 - Bridges are packages the agent may add. Crab owns supervision, auth state, health and delivery
   semantics—not service-specific behavior. WhatsApp is the first intended first-party package.
 - Tests target useful contract and composition behavior. There is no percentage coverage gate.
 - Implementations in this draft return an explicit `DraftOnly` error; they do not fake a runtime.
+- For a native UI, start by testing an off-the-shelf ACP client; build on reusable ACP components
+  only if that cannot attach cleanly. See [the UI landscape](docs/acp-native-ui.md).
 
 ## Validate
 
@@ -46,11 +57,12 @@ v2/
 cargo build --workspace
 cargo test --workspace
 cargo clippy --workspace --all-targets --all-features -- -D warnings
-GIT_CEILING_DIRECTORIES="$(git rev-parse --show-toplevel)" boxology check
+boxology check --base origin/main
 ```
 
-The Git ceiling is a temporary workaround for
-[Boxology #671](https://github.com/fontanierh/boxology/issues/671). Boxology currently also reports
-formatted generated Rust as stale due to
-[#677](https://github.com/fontanierh/boxology/issues/677); all other check stages pass. The checked-in
-artifacts favor `rustfmt` until the generator is fixed.
+Boxology now supports nested Git workspaces and portable initializer dependencies. Its executable
+quality stages pass. Two checker gaps remain: generated Rust is not `rustfmt`-stable
+([#677](https://github.com/fontanierh/boxology/issues/677)), and a wholly new nested managed tree is
+not yet classified/owned against a base that lacks it
+([#685](https://github.com/fontanierh/boxology/issues/685)). New-box bootstrapping is tracked in
+[#686](https://github.com/fontanierh/boxology/issues/686).

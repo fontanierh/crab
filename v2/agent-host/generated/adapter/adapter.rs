@@ -26,6 +26,19 @@ where
         _imports: imports,
     }
 }
+pub fn register<T>(
+    composition: &mut ::boxology_runtime::CompositionBuilder,
+    service: T,
+) -> ::boxology_runtime::RegisteredBox
+where
+    T: ::boxology_generated_contract::AgentHostDispatch + Send + Sync + 'static,
+{
+    composition
+        .register(
+            implementation_descriptor(),
+            move |imports| { factory(service, imports) },
+        )
+}
 impl<T> ::boxology_contract::ErasedTarget for AgentHostAdapter<T>
 where
     T: ::boxology_generated_contract::AgentHostDispatch + Send + Sync + 'static,
@@ -213,6 +226,23 @@ where
                         ::boxology_contract::FieldDescriptor::new(
                             "client_turn_id",
                             ::boxology_contract::TypeDescriptor::string(),
+                            None,
+                        ),
+                        ::boxology_contract::FieldDescriptor::new(
+                            "mode",
+                            ::boxology_contract::TypeDescriptor::enumeration([
+                                    ::boxology_contract::VariantDescriptor::new(
+                                        "Queue",
+                                        ::boxology_contract::VariantPayload::Unit,
+                                        None,
+                                    ),
+                                    ::boxology_contract::VariantDescriptor::new(
+                                        "Steer",
+                                        ::boxology_contract::VariantPayload::Unit,
+                                        None,
+                                    ),
+                                ])
+                                .expect("generated enum descriptor is valid"),
                             None,
                         ),
                         ::boxology_contract::FieldDescriptor::new(

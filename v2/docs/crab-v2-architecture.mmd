@@ -1,42 +1,42 @@
-%%{init: {"theme": "base", "themeVariables": {"fontFamily": "ui-sans-serif, system-ui, sans-serif", "primaryTextColor": "#172033", "lineColor": "#64748b", "clusterBkg": "#f8fafc", "clusterBorder": "#cbd5e1"}, "flowchart": {"curve": "basis", "nodeSpacing": 38, "rankSpacing": 64}}}%%
+%%{init: {"theme": "base", "themeVariables": {"fontFamily": "ui-sans-serif, system-ui, sans-serif", "primaryTextColor": "#172033", "lineColor": "#64748b", "clusterBkg": "#f8fafc", "clusterBorder": "#cbd5e1", "edgeLabelBackground": "#ffffff"}, "flowchart": {"curve": "basis", "nodeSpacing": 42, "rankSpacing": 58}}}%%
 flowchart TB
-    subgraph SURFACES["External surfaces"]
-        direction LR
-        UI["Native channel adapter"]
-        EXTERNAL["WhatsApp · email · webhooks"]
-    end
+    UI["Native ACP UI<br/>plug in or build"]
+    EXTERNAL["WhatsApp · email · webhooks"]
 
-    subgraph CRAB["Crab v2"]
-        direction LR
-        CHANNEL["native-channel"]
-        AGENT["agent-host<br/>ACP"]
-        BRIDGE["bridge-host"]
-        TRIGGER["trigger-inbox"]
-    end
+    BRIDGE["bridge-host"]
+    TRIGGER["trigger-inbox"]
+    CHANNEL["native-channel"]
+    AGENT["agent-host<br/>ACP"]
+    SUBAGENT["sub-agent-host"]
 
+    CHILDREN["ACP harness<br/>subprocesses"]
     AUTH["Mandatory authority<br/>no sandbox · yolo permissions<br/>unrestricted FS + network · verified sudo"]
 
-    UI -->|"user turns"| CHANNEL
-    CHANNEL -->|"prompts"| AGENT
-    AGENT -->|"complete native ACP stream<br/>tools + intermediate output"| CHANNEL
+    UI <-->|"complete native view"| CHANNEL
+    CHANNEL -->|"queue · steer<br/>explicit interrupt"| AGENT
+    AGENT -->|"messages · tools · state<br/>compaction when reported"| CHANNEL
 
-    EXTERNAL <--> BRIDGE
-    BRIDGE -->|"durable ingress"| TRIGGER
+    AGENT <-->|"non-blocking messages"| SUBAGENT
+    SUBAGENT <-->|"fresh or inherited context<br/>one process per child"| CHILDREN
+
+    EXTERNAL <-->|"selected messages"| BRIDGE
+    BRIDGE -->|"queue · steer · interrupt<br/>fixed at registration"| TRIGGER
     TRIGGER -->|"claimed turns"| CHANNEL
-    AGENT -->|"selected outbound messages"| BRIDGE
-
     AUTH -. "fail-closed preflight" .-> AGENT
+    AUTH -. "same authority" .-> SUBAGENT
 
     classDef agent fill:#ede9fe,stroke:#7c3aed,stroke-width:2px,color:#2e1065;
     classDef channel fill:#dbeafe,stroke:#2563eb,stroke-width:2px,color:#172554;
     classDef bridge fill:#dcfce7,stroke:#16a34a,stroke-width:2px,color:#14532d;
     classDef trigger fill:#ffedd5,stroke:#ea580c,stroke-width:2px,color:#7c2d12;
+    classDef subagent fill:#fce7f3,stroke:#db2777,stroke-width:2px,color:#831843;
     classDef external fill:#f8fafc,stroke:#64748b,stroke-width:1.5px,color:#172033;
     classDef authority fill:#fee2e2,stroke:#dc2626,stroke-width:2px,color:#7f1d1d;
 
     class AGENT agent;
+    class SUBAGENT subagent;
     class CHANNEL channel;
     class BRIDGE bridge;
     class TRIGGER trigger;
-    class UI,EXTERNAL external;
+    class UI,EXTERNAL,CHILDREN external;
     class AUTH authority;

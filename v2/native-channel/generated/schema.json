@@ -42,6 +42,25 @@
     {
       "deprecation": null,
       "docs": [
+        " Cancel current thinking/tool execution cooperatively and immediately drain accepted input."
+      ],
+      "error": "NativeChannelError",
+      "id": "native-channel.interrupt_and_drain",
+      "idempotency": "none",
+      "input": {
+        "name": "request",
+        "type": "InterruptRequest"
+      },
+      "max_exposure": "code_only",
+      "name": "interrupt_and_drain",
+      "output": {
+        "type": "InterruptReceipt"
+      },
+      "shape": "unary"
+    },
+    {
+      "deprecation": null,
+      "docs": [
         " Publish every ACP event in order; assistant text is not a privileged special case."
       ],
       "error": "NativeChannelError",
@@ -134,9 +153,9 @@
   "provenance": {
     "generator": "boxology-generator",
     "generator_version": "0.0.0",
-    "semantic_digest": "sha256:ddf741dfbe2521a3040f862e553a065aacc0eae96a8657cf73e64e98a3ebd95b"
+    "semantic_digest": "sha256:eb2e2cfabec5707c9128f05a579ee73abc7134dec35a6c98a2458e6d40009d57"
   },
-  "revision": "sha256:b0943b7b9dc0503030bc1d01e47110f0181d96456ed8999dd572f7fd3ef83426",
+  "revision": "sha256:ca71989d914aa685c738c180d5f35b9a467fa186ac0c6e73a2273c9c3731df22",
   "schema_format": 1,
   "types": [
     {
@@ -169,6 +188,27 @@
           "deprecation": null,
           "docs": [],
           "name": "Failed"
+        }
+      ]
+    },
+    {
+      "deprecation": null,
+      "docs": [
+        " Native channels select delivery per turn. Interrupt is a separate explicit action so a",
+        " normal message can never accidentally cancel thinking or a tool call."
+      ],
+      "kind": "enum",
+      "name": "ChannelInputMode",
+      "variants": [
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "Queue"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "Steer"
         }
       ]
     },
@@ -280,6 +320,12 @@
         },
         {
           "deprecation": null,
+          "docs": [],
+          "name": "mode",
+          "type": "ChannelInputMode"
+        },
+        {
+          "deprecation": null,
           "docs": [
             " Exact ACP-compatible prompt JSON, including attachments and other rich content."
           ],
@@ -317,6 +363,12 @@
           "docs": [],
           "name": "accepted_at_ms",
           "type": "u64"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "mode",
+          "type": "ChannelInputMode"
         }
       ],
       "kind": "struct",
@@ -374,6 +426,11 @@
           "deprecation": null,
           "docs": [],
           "name": "Usage"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "Compaction"
         },
         {
           "deprecation": null,
@@ -582,6 +639,73 @@
     },
     {
       "deprecation": null,
+      "docs": [
+        " Explicit cooperative interruption. The router cancels current ACP work, retains every",
+        " already accepted queue/steer input, then drains those inputs immediately in stable order."
+      ],
+      "fields": [
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "binding_id",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "expected_session_id",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "requested_at_ms",
+          "type": "u64"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "reason",
+          "type": "String"
+        }
+      ],
+      "kind": "struct",
+      "name": "InterruptRequest"
+    },
+    {
+      "deprecation": null,
+      "docs": [],
+      "fields": [
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "binding_id",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "session_id",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "cancel_requested_at_ms",
+          "type": "u64"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "pending_input_count",
+          "type": "u64"
+        }
+      ],
+      "kind": "struct",
+      "name": "InterruptReceipt"
+    },
+    {
+      "deprecation": null,
       "docs": [],
       "fields": [
         {
@@ -666,6 +790,18 @@
           "deprecation": null,
           "docs": [],
           "name": "DuplicateTurnConflict",
+          "payload": "unit"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "SteeringUnavailable",
+          "payload": "unit"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "NothingToInterrupt",
           "payload": "unit"
         },
         {

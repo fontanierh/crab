@@ -219,9 +219,9 @@
   "provenance": {
     "generator": "boxology-generator",
     "generator_version": "0.0.0",
-    "semantic_digest": "sha256:5ebe928a568aa4610dc5db24e1630f8319d14eab17d8ad3e5757e09b967f4392"
+    "semantic_digest": "sha256:32e0cfd1d156fb762cead627fb4b974ba7eacdb735a3d3a9903362d55b48c7e2"
   },
-  "revision": "sha256:2d3e56668e97d49011cd6a65e2b63f97b1379a0fd23b78f93a3bae61a9bb82af",
+  "revision": "sha256:cc3bd806c52516b21d75b089ea17b9886ce47326763d678b1170b4dc0ae49dee",
   "schema_format": 1,
   "types": [
     {
@@ -396,6 +396,38 @@
     {
       "deprecation": null,
       "docs": [
+        " Fixed when a bridge is registered so an external surface cannot silently change how much",
+        " it disrupts the agent. Changing this policy requires a new bridge generation."
+      ],
+      "kind": "enum",
+      "name": "BridgeIngressMode",
+      "variants": [
+        {
+          "deprecation": null,
+          "docs": [
+            " Preserve FIFO order and wait until the target session is idle."
+          ],
+          "name": "Queue"
+        },
+        {
+          "deprecation": null,
+          "docs": [
+            " Contribute to active work when negotiated ACP support exists; never silently interrupt."
+          ],
+          "name": "Steer"
+        },
+        {
+          "deprecation": null,
+          "docs": [
+            " Cooperatively cancel active work, then process pending ingress immediately."
+          ],
+          "name": "InterruptAndSteer"
+        }
+      ]
+    },
+    {
+      "deprecation": null,
+      "docs": [
         " Installation metadata for a bridge package. The agent may add new packages at runtime."
       ],
       "fields": [
@@ -440,6 +472,12 @@
           "docs": [],
           "name": "authentication_methods",
           "type": "Vec<AuthenticationMethod>"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "ingress_mode",
+          "type": "BridgeIngressMode"
         },
         {
           "deprecation": null,
@@ -498,6 +536,12 @@
           "docs": [],
           "name": "lifecycle",
           "type": "BridgeLifecycle"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "ingress_mode",
+          "type": "BridgeIngressMode"
         },
         {
           "deprecation": null,
@@ -920,6 +964,14 @@
           "docs": [],
           "name": "target_channel_id",
           "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [
+            " Copied from the registered bridge generation, never selected by an inbound event."
+          ],
+          "name": "ingress_mode",
+          "type": "BridgeIngressMode"
         },
         {
           "deprecation": null,

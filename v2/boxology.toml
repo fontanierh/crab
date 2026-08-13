@@ -1,7 +1,7 @@
 schema = 1
 id = "crab-v2"
 kind = "platform"
-owned = ["Cargo.toml", "README.md", "rust-toolchain.toml", "boxology.toml", "boxology-generator.toml", ".gitignore"]
+owned = ["Cargo.toml", "README.md", "docs/**", "rust-toolchain.toml", "boxology.toml", "boxology-generator.toml", ".gitignore"]
 
 [[derived]]
 id = "lockfile"

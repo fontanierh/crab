@@ -111,12 +111,17 @@ static __BOXOLOGY_CONTRACT_DESCRIPTOR: ::std::sync::LazyLock<
                 "mode",
                 ::boxology_contract::TypeDescriptor::enumeration([
                     ::boxology_contract::VariantDescriptor::new(
-                        "NewTurn",
+                        "Queue",
                         ::boxology_contract::VariantPayload::Unit,
                         None,
                     ),
                     ::boxology_contract::VariantDescriptor::new(
                         "Steer",
+                        ::boxology_contract::VariantPayload::Unit,
+                        None,
+                    ),
+                    ::boxology_contract::VariantDescriptor::new(
+                        "InterruptAndSteer",
                         ::boxology_contract::VariantPayload::Unit,
                         None,
                     ),
@@ -318,12 +323,17 @@ static __BOXOLOGY_CONTRACT_DESCRIPTOR: ::std::sync::LazyLock<
                                     "mode",
                                     ::boxology_contract::TypeDescriptor::enumeration([
                                         ::boxology_contract::VariantDescriptor::new(
-                                            "NewTurn",
+                                            "Queue",
                                             ::boxology_contract::VariantPayload::Unit,
                                             None,
                                         ),
                                         ::boxology_contract::VariantDescriptor::new(
                                             "Steer",
+                                            ::boxology_contract::VariantPayload::Unit,
+                                            None,
+                                        ),
+                                        ::boxology_contract::VariantDescriptor::new(
+                                            "InterruptAndSteer",
                                             ::boxology_contract::VariantPayload::Unit,
                                             None,
                                         ),
@@ -538,12 +548,17 @@ static __BOXOLOGY_CONTRACT_DESCRIPTOR: ::std::sync::LazyLock<
                         "mode",
                         ::boxology_contract::TypeDescriptor::enumeration([
                             ::boxology_contract::VariantDescriptor::new(
-                                "NewTurn",
+                                "Queue",
                                 ::boxology_contract::VariantPayload::Unit,
                                 None,
                             ),
                             ::boxology_contract::VariantDescriptor::new(
                                 "Steer",
+                                ::boxology_contract::VariantPayload::Unit,
+                                None,
+                            ),
+                            ::boxology_contract::VariantDescriptor::new(
+                                "InterruptAndSteer",
                                 ::boxology_contract::VariantPayload::Unit,
                                 None,
                             ),
@@ -852,12 +867,17 @@ static __BOXOLOGY_CONTRACT_DESCRIPTOR: ::std::sync::LazyLock<
                 "mode",
                 ::boxology_contract::TypeDescriptor::enumeration([
                     ::boxology_contract::VariantDescriptor::new(
-                        "NewTurn",
+                        "Queue",
                         ::boxology_contract::VariantPayload::Unit,
                         None,
                     ),
                     ::boxology_contract::VariantDescriptor::new(
                         "Steer",
+                        ::boxology_contract::VariantPayload::Unit,
+                        None,
+                    ),
+                    ::boxology_contract::VariantDescriptor::new(
+                        "InterruptAndSteer",
                         ::boxology_contract::VariantPayload::Unit,
                         None,
                     ),
@@ -963,7 +983,7 @@ static __BOXOLOGY_CONTRACT_DESCRIPTOR: ::std::sync::LazyLock<
             capability_4,
         ],
         ::boxology_contract::ContractRevision::new(
-            "sha256:3afb61665dfaf1d9612852e6d9ced415353d4e652c968b6844db2b02a7e1429b",
+            "sha256:cf4e1ccf9c1e2bc983df92b107852ac2e34f4818795056514f99a1eecee2a0b2",
         )
         .expect("generated contract revision is non-empty"),
     )
@@ -1160,12 +1180,17 @@ impl TriggerInboxHandle {
                                 "mode",
                                 TypeDescriptor::enumeration([
                                     ::boxology_contract::VariantDescriptor::new(
-                                        "NewTurn",
+                                        "Queue",
                                         ::boxology_contract::VariantPayload::Unit,
                                         None,
                                     ),
                                     ::boxology_contract::VariantDescriptor::new(
                                         "Steer",
+                                        ::boxology_contract::VariantPayload::Unit,
+                                        None,
+                                    ),
+                                    ::boxology_contract::VariantDescriptor::new(
+                                        "InterruptAndSteer",
                                         ::boxology_contract::VariantPayload::Unit,
                                         None,
                                     ),
@@ -1365,12 +1390,17 @@ impl TriggerInboxHandle {
                         "mode",
                         TypeDescriptor::enumeration([
                             ::boxology_contract::VariantDescriptor::new(
-                                "NewTurn",
+                                "Queue",
                                 ::boxology_contract::VariantPayload::Unit,
                                 None,
                             ),
                             ::boxology_contract::VariantDescriptor::new(
                                 "Steer",
+                                ::boxology_contract::VariantPayload::Unit,
+                                None,
+                            ),
+                            ::boxology_contract::VariantDescriptor::new(
+                                "InterruptAndSteer",
                                 ::boxology_contract::VariantPayload::Unit,
                                 None,
                             ),
@@ -1603,12 +1633,17 @@ impl TriggerInboxHandle {
                 "mode",
                 TypeDescriptor::enumeration([
                     ::boxology_contract::VariantDescriptor::new(
-                        "NewTurn",
+                        "Queue",
                         ::boxology_contract::VariantPayload::Unit,
                         None,
                     ),
                     ::boxology_contract::VariantDescriptor::new(
                         "Steer",
+                        ::boxology_contract::VariantPayload::Unit,
+                        None,
+                    ),
+                    ::boxology_contract::VariantDescriptor::new(
+                        "InterruptAndSteer",
                         ::boxology_contract::VariantPayload::Unit,
                         None,
                     ),
@@ -1694,6 +1729,11 @@ impl TriggerInboxHandle {
         <TriggerRecord as ContractType>::decode(&output)
             .map_err(|error| conversion_detail("output_decode", error))
             .map_err(CallError::InvalidResponse)
+    }
+}
+impl ::boxology_contract::BoxHandle for TriggerInboxHandle {
+    fn from_erased(target: Arc<dyn ErasedCallTarget>) -> Self {
+        Self::from_erased(target)
     }
 }
 static TRIGGER_INBOX_ENQUEUE: LazyLock<CapabilityId> = LazyLock::new(|| {
@@ -1865,10 +1905,12 @@ impl ::boxology_contract::ContractType for TriggerSource {
 }
 #[derive(Debug, Clone, PartialEq)]
 pub enum TriggerMode {
-    /// Queue an ordinary turn behind earlier work in the same target lane.
-    NewTurn,
-    /// Add context at the next safe agent boundary without interrupting a tool call.
+    /// Wait for idle and preserve lane FIFO order.
+    Queue,
+    /// Contribute to active work when the target negotiated support; never interrupt.
     Steer,
+    /// Cooperatively cancel current work, then drain accepted lane input immediately.
+    InterruptAndSteer,
     Unknown {
         tag: ::std::string::String,
         payload: ::boxology_contract::OpaquePayload,
@@ -1880,8 +1922,12 @@ impl ::boxology_contract::ContractType for TriggerMode {
     ) -> ::core::result::Result<::boxology_contract::ContractValue, ::boxology_contract::EncodeError>
     {
         let (tag, payload) = match self {
-            Self::NewTurn => ("NewTurn".into(), ::boxology_contract::SlotValue::Null),
+            Self::Queue => ("Queue".into(), ::boxology_contract::SlotValue::Null),
             Self::Steer => ("Steer".into(), ::boxology_contract::SlotValue::Null),
+            Self::InterruptAndSteer => (
+                "InterruptAndSteer".into(),
+                ::boxology_contract::SlotValue::Null,
+            ),
             Self::Unknown { tag, payload } => (
                 tag.clone(),
                 ::boxology_contract::SlotValue::Value(::boxology_contract::ContractValue::opaque(
@@ -1900,15 +1946,20 @@ impl ::boxology_contract::ContractType for TriggerMode {
             ));
         };
         match tag {
-            "NewTurn" if matches!(payload, ::boxology_contract::SlotValue::Null) => {
-                Ok(Self::NewTurn)
-            }
-            "NewTurn" => Err(::boxology_contract::DecodeError::new(
+            "Queue" if matches!(payload, ::boxology_contract::SlotValue::Null) => Ok(Self::Queue),
+            "Queue" => Err(::boxology_contract::DecodeError::new(
                 ::boxology_contract::DecodeErrorKind::UnexpectedPayload,
             )
             .under(::boxology_contract::PathSegment::Variant(tag.into()))),
             "Steer" if matches!(payload, ::boxology_contract::SlotValue::Null) => Ok(Self::Steer),
             "Steer" => Err(::boxology_contract::DecodeError::new(
+                ::boxology_contract::DecodeErrorKind::UnexpectedPayload,
+            )
+            .under(::boxology_contract::PathSegment::Variant(tag.into()))),
+            "InterruptAndSteer" if matches!(payload, ::boxology_contract::SlotValue::Null) => {
+                Ok(Self::InterruptAndSteer)
+            }
+            "InterruptAndSteer" => Err(::boxology_contract::DecodeError::new(
                 ::boxology_contract::DecodeErrorKind::UnexpectedPayload,
             )
             .under(::boxology_contract::PathSegment::Variant(tag.into()))),
@@ -3643,12 +3694,17 @@ pub mod test_support {
                             "mode",
                             TypeDescriptor::enumeration([
                                 ::boxology_contract::VariantDescriptor::new(
-                                    "NewTurn",
+                                    "Queue",
                                     ::boxology_contract::VariantPayload::Unit,
                                     None,
                                 ),
                                 ::boxology_contract::VariantDescriptor::new(
                                     "Steer",
+                                    ::boxology_contract::VariantPayload::Unit,
+                                    None,
+                                ),
+                                ::boxology_contract::VariantDescriptor::new(
+                                    "InterruptAndSteer",
                                     ::boxology_contract::VariantPayload::Unit,
                                     None,
                                 ),
@@ -3949,8 +4005,8 @@ pub mod test_support {
 }
 #[doc(hidden)]
 pub const __BOXOLOGY_SEMANTIC_DIGEST: [u8; 32] = [
-    247, 93, 175, 110, 233, 140, 141, 107, 1, 82, 8, 7, 181, 29, 63, 219, 95, 51, 40, 98, 24, 204,
-    201, 54, 251, 253, 78, 120, 140, 244, 9, 197,
+    179, 79, 52, 76, 178, 209, 100, 86, 252, 177, 124, 124, 146, 240, 203, 129, 99, 200, 242, 253,
+    13, 24, 129, 160, 217, 200, 55, 96, 3, 17, 86, 110,
 ];
 #[doc(hidden)]
 #[macro_export]

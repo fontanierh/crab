@@ -31,7 +31,7 @@ dependencies = [
 [[package]]
 name = "boxology"
 version = "0.0.0"
-source = "git+https://github.com/fontanierh/boxology.git?rev=4379f5f3c5d02ebf3a81cf83d783f3eab20589c0#4379f5f3c5d02ebf3a81cf83d783f3eab20589c0"
+source = "git+https://github.com/fontanierh/boxology?rev=e700b8358e3c5b42677406240fda8c3025d3d04f#e700b8358e3c5b42677406240fda8c3025d3d04f"
 dependencies = [
  "boxology-contract",
  "boxology-macros",
@@ -40,7 +40,7 @@ dependencies = [
 [[package]]
 name = "boxology-contract"
 version = "0.0.0"
-source = "git+https://github.com/fontanierh/boxology.git?rev=4379f5f3c5d02ebf3a81cf83d783f3eab20589c0#4379f5f3c5d02ebf3a81cf83d783f3eab20589c0"
+source = "git+https://github.com/fontanierh/boxology?rev=e700b8358e3c5b42677406240fda8c3025d3d04f#e700b8358e3c5b42677406240fda8c3025d3d04f"
 dependencies = [
  "tokio-util",
  "unicode-ident",
@@ -50,7 +50,7 @@ dependencies = [
 [[package]]
 name = "boxology-contract-syntax"
 version = "0.0.0"
-source = "git+https://github.com/fontanierh/boxology.git?rev=4379f5f3c5d02ebf3a81cf83d783f3eab20589c0#4379f5f3c5d02ebf3a81cf83d783f3eab20589c0"
+source = "git+https://github.com/fontanierh/boxology?rev=e700b8358e3c5b42677406240fda8c3025d3d04f#e700b8358e3c5b42677406240fda8c3025d3d04f"
 dependencies = [
  "boxology-contract",
  "proc-macro2",
@@ -61,7 +61,7 @@ dependencies = [
 [[package]]
 name = "boxology-macros"
 version = "0.0.0"
-source = "git+https://github.com/fontanierh/boxology.git?rev=4379f5f3c5d02ebf3a81cf83d783f3eab20589c0#4379f5f3c5d02ebf3a81cf83d783f3eab20589c0"
+source = "git+https://github.com/fontanierh/boxology?rev=e700b8358e3c5b42677406240fda8c3025d3d04f#e700b8358e3c5b42677406240fda8c3025d3d04f"
 dependencies = [
  "boxology-contract-syntax",
  "proc-macro2",
@@ -72,7 +72,7 @@ dependencies = [
 [[package]]
 name = "boxology-manifest"
 version = "0.0.0"
-source = "git+https://github.com/fontanierh/boxology.git?rev=4379f5f3c5d02ebf3a81cf83d783f3eab20589c0#4379f5f3c5d02ebf3a81cf83d783f3eab20589c0"
+source = "git+https://github.com/fontanierh/boxology?rev=e700b8358e3c5b42677406240fda8c3025d3d04f#e700b8358e3c5b42677406240fda8c3025d3d04f"
 dependencies = [
  "boxology-contract",
  "toml_edit",
@@ -81,7 +81,7 @@ dependencies = [
 [[package]]
 name = "boxology-runtime"
 version = "0.0.0"
-source = "git+https://github.com/fontanierh/boxology.git?rev=4379f5f3c5d02ebf3a81cf83d783f3eab20589c0#4379f5f3c5d02ebf3a81cf83d783f3eab20589c0"
+source = "git+https://github.com/fontanierh/boxology?rev=e700b8358e3c5b42677406240fda8c3025d3d04f#e700b8358e3c5b42677406240fda8c3025d3d04f"
 dependencies = [
  "boxology-contract",
  "tokio",
@@ -136,6 +136,7 @@ dependencies = [
  "boxology-runtime",
  "bridge-host-implementation",
  "native-channel-implementation",
+ "sub-agent-host-implementation",
  "trigger-inbox-implementation",
 ]
 
@@ -322,6 +323,23 @@ name = "slab"
 version = "0.4.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0c790de23124f9ab44544d7ac05d60440adc586479ce501c1d6d7da3cd8c9cf5"
+
+[[package]]
+name = "sub-agent-host-contract"
+version = "0.0.0"
+dependencies = [
+ "boxology-contract",
+]
+
+[[package]]
+name = "sub-agent-host-implementation"
+version = "0.0.0"
+dependencies = [
+ "boxology",
+ "boxology-contract",
+ "boxology-runtime",
+ "sub-agent-host-contract",
+]
 
 [[package]]
 name = "syn"

@@ -141,6 +141,28 @@ static __BOXOLOGY_CONTRACT_DESCRIPTOR: ::std::sync::LazyLock<
                 None,
             ),
             ::boxology_contract::FieldDescriptor::new(
+                "ingress_mode",
+                ::boxology_contract::TypeDescriptor::enumeration([
+                    ::boxology_contract::VariantDescriptor::new(
+                        "Queue",
+                        ::boxology_contract::VariantPayload::Unit,
+                        None,
+                    ),
+                    ::boxology_contract::VariantDescriptor::new(
+                        "Steer",
+                        ::boxology_contract::VariantPayload::Unit,
+                        None,
+                    ),
+                    ::boxology_contract::VariantDescriptor::new(
+                        "InterruptAndSteer",
+                        ::boxology_contract::VariantPayload::Unit,
+                        None,
+                    ),
+                ])
+                .expect("generated enum descriptor is valid"),
+                None,
+            ),
+            ::boxology_contract::FieldDescriptor::new(
                 "desired_running",
                 ::boxology_contract::TypeDescriptor::bool(),
                 None,
@@ -218,6 +240,28 @@ static __BOXOLOGY_CONTRACT_DESCRIPTOR: ::std::sync::LazyLock<
                     ),
                     ::boxology_contract::VariantDescriptor::new(
                         "Failed",
+                        ::boxology_contract::VariantPayload::Unit,
+                        None,
+                    ),
+                ])
+                .expect("generated enum descriptor is valid"),
+                None,
+            ),
+            ::boxology_contract::FieldDescriptor::new(
+                "ingress_mode",
+                ::boxology_contract::TypeDescriptor::enumeration([
+                    ::boxology_contract::VariantDescriptor::new(
+                        "Queue",
+                        ::boxology_contract::VariantPayload::Unit,
+                        None,
+                    ),
+                    ::boxology_contract::VariantDescriptor::new(
+                        "Steer",
+                        ::boxology_contract::VariantPayload::Unit,
+                        None,
+                    ),
+                    ::boxology_contract::VariantDescriptor::new(
+                        "InterruptAndSteer",
                         ::boxology_contract::VariantPayload::Unit,
                         None,
                     ),
@@ -1180,6 +1224,28 @@ static __BOXOLOGY_CONTRACT_DESCRIPTOR: ::std::sync::LazyLock<
                 None,
             ),
             ::boxology_contract::FieldDescriptor::new(
+                "ingress_mode",
+                ::boxology_contract::TypeDescriptor::enumeration([
+                    ::boxology_contract::VariantDescriptor::new(
+                        "Queue",
+                        ::boxology_contract::VariantPayload::Unit,
+                        None,
+                    ),
+                    ::boxology_contract::VariantDescriptor::new(
+                        "Steer",
+                        ::boxology_contract::VariantPayload::Unit,
+                        None,
+                    ),
+                    ::boxology_contract::VariantDescriptor::new(
+                        "InterruptAndSteer",
+                        ::boxology_contract::VariantPayload::Unit,
+                        None,
+                    ),
+                ])
+                .expect("generated enum descriptor is valid"),
+                None,
+            ),
+            ::boxology_contract::FieldDescriptor::new(
                 "message_json",
                 ::boxology_contract::TypeDescriptor::string(),
                 None,
@@ -1682,7 +1748,7 @@ static __BOXOLOGY_CONTRACT_DESCRIPTOR: ::std::sync::LazyLock<
             capability_11,
         ],
         ::boxology_contract::ContractRevision::new(
-            "sha256:2d3e56668e97d49011cd6a65e2b63f97b1379a0fd23b78f93a3bae61a9bb82af",
+            "sha256:cc3bd806c52516b21d75b089ea17b9886ce47326763d678b1170b4dc0ae49dee",
         )
         .expect("generated contract revision is non-empty"),
     )
@@ -1827,6 +1893,28 @@ impl BridgeHostHandle {
                     ),
                     ::boxology_contract::VariantDescriptor::new(
                         "Failed",
+                        ::boxology_contract::VariantPayload::Unit,
+                        None,
+                    ),
+                ])
+                .expect("generated enum descriptor is valid"),
+                None,
+            ),
+            ::boxology_contract::FieldDescriptor::new(
+                "ingress_mode",
+                TypeDescriptor::enumeration([
+                    ::boxology_contract::VariantDescriptor::new(
+                        "Queue",
+                        ::boxology_contract::VariantPayload::Unit,
+                        None,
+                    ),
+                    ::boxology_contract::VariantDescriptor::new(
+                        "Steer",
+                        ::boxology_contract::VariantPayload::Unit,
+                        None,
+                    ),
+                    ::boxology_contract::VariantDescriptor::new(
+                        "InterruptAndSteer",
                         ::boxology_contract::VariantPayload::Unit,
                         None,
                     ),
@@ -2540,6 +2628,28 @@ impl BridgeHostHandle {
                 None,
             ),
             ::boxology_contract::FieldDescriptor::new(
+                "ingress_mode",
+                TypeDescriptor::enumeration([
+                    ::boxology_contract::VariantDescriptor::new(
+                        "Queue",
+                        ::boxology_contract::VariantPayload::Unit,
+                        None,
+                    ),
+                    ::boxology_contract::VariantDescriptor::new(
+                        "Steer",
+                        ::boxology_contract::VariantPayload::Unit,
+                        None,
+                    ),
+                    ::boxology_contract::VariantDescriptor::new(
+                        "InterruptAndSteer",
+                        ::boxology_contract::VariantPayload::Unit,
+                        None,
+                    ),
+                ])
+                .expect("generated enum descriptor is valid"),
+                None,
+            ),
+            ::boxology_contract::FieldDescriptor::new(
                 "message_json",
                 TypeDescriptor::string(),
                 None,
@@ -2922,6 +3032,11 @@ impl BridgeHostHandle {
         <BridgeReceipt as ContractType>::decode(&output)
             .map_err(|error| conversion_detail("output_decode", error))
             .map_err(CallError::InvalidResponse)
+    }
+}
+impl ::boxology_contract::BoxHandle for BridgeHostHandle {
+    fn from_erased(target: Arc<dyn ErasedCallTarget>) -> Self {
+        Self::from_erased(target)
     }
 }
 static BRIDGE_HOST_REGISTER_BRIDGE: LazyLock<CapabilityId> = LazyLock::new(|| {
@@ -3497,6 +3612,87 @@ impl ::boxology_contract::ContractType for DeliveryLifecycle {
         }
     }
 }
+/// Fixed when a bridge is registered so an external surface cannot silently change how much
+/// it disrupts the agent. Changing this policy requires a new bridge generation.
+#[derive(Debug, Clone, PartialEq)]
+pub enum BridgeIngressMode {
+    /// Preserve FIFO order and wait until the target session is idle.
+    Queue,
+    /// Contribute to active work when negotiated ACP support exists; never silently interrupt.
+    Steer,
+    /// Cooperatively cancel active work, then process pending ingress immediately.
+    InterruptAndSteer,
+    Unknown {
+        tag: ::std::string::String,
+        payload: ::boxology_contract::OpaquePayload,
+    },
+}
+impl ::boxology_contract::ContractType for BridgeIngressMode {
+    fn encode_value(
+        &self,
+    ) -> ::core::result::Result<::boxology_contract::ContractValue, ::boxology_contract::EncodeError>
+    {
+        let (tag, payload) = match self {
+            Self::Queue => ("Queue".into(), ::boxology_contract::SlotValue::Null),
+            Self::Steer => ("Steer".into(), ::boxology_contract::SlotValue::Null),
+            Self::InterruptAndSteer => (
+                "InterruptAndSteer".into(),
+                ::boxology_contract::SlotValue::Null,
+            ),
+            Self::Unknown { tag, payload } => (
+                tag.clone(),
+                ::boxology_contract::SlotValue::Value(::boxology_contract::ContractValue::opaque(
+                    payload.forward(),
+                )),
+            ),
+        };
+        Ok(::boxology_contract::ContractValue::enum_value(tag, payload))
+    }
+    fn decode_value(
+        value: &::boxology_contract::ContractValue,
+    ) -> ::core::result::Result<Self, ::boxology_contract::DecodeError> {
+        let ::boxology_contract::ValueRef::Enum { tag, payload } = value.view() else {
+            return Err(::boxology_contract::DecodeError::new(
+                ::boxology_contract::DecodeErrorKind::KindMismatch,
+            ));
+        };
+        match tag {
+            "Queue" if matches!(payload, ::boxology_contract::SlotValue::Null) => Ok(Self::Queue),
+            "Queue" => Err(::boxology_contract::DecodeError::new(
+                ::boxology_contract::DecodeErrorKind::UnexpectedPayload,
+            )
+            .under(::boxology_contract::PathSegment::Variant(tag.into()))),
+            "Steer" if matches!(payload, ::boxology_contract::SlotValue::Null) => Ok(Self::Steer),
+            "Steer" => Err(::boxology_contract::DecodeError::new(
+                ::boxology_contract::DecodeErrorKind::UnexpectedPayload,
+            )
+            .under(::boxology_contract::PathSegment::Variant(tag.into()))),
+            "InterruptAndSteer" if matches!(payload, ::boxology_contract::SlotValue::Null) => {
+                Ok(Self::InterruptAndSteer)
+            }
+            "InterruptAndSteer" => Err(::boxology_contract::DecodeError::new(
+                ::boxology_contract::DecodeErrorKind::UnexpectedPayload,
+            )
+            .under(::boxology_contract::PathSegment::Variant(tag.into()))),
+            _ => match payload {
+                ::boxology_contract::SlotValue::Value(value) => match value.view() {
+                    ::boxology_contract::ValueRef::Opaque(payload) => Ok(Self::Unknown {
+                        tag: tag.into(),
+                        payload: payload.forward(),
+                    }),
+                    _ => Err(::boxology_contract::DecodeError::new(
+                        ::boxology_contract::DecodeErrorKind::UnknownVariant(tag.into()),
+                    )
+                    .under(::boxology_contract::PathSegment::Variant(tag.into()))),
+                },
+                _ => Err(::boxology_contract::DecodeError::new(
+                    ::boxology_contract::DecodeErrorKind::UnknownVariant(tag.into()),
+                )
+                .under(::boxology_contract::PathSegment::Variant(tag.into()))),
+            },
+        }
+    }
+}
 /// Installation metadata for a bridge package. The agent may add new packages at runtime.
 #[derive(Debug, Clone, PartialEq)]
 pub struct BridgeSpec {
@@ -3509,6 +3705,7 @@ pub struct BridgeSpec {
     /// Service-specific configuration. Secret fields must be credential-provider handles.
     pub configuration_json: ::std::string::String,
     pub authentication_methods: ::std::vec::Vec<AuthenticationMethod>,
+    pub ingress_mode: BridgeIngressMode,
     pub desired_running: bool,
     pub health_interval_ms: u64,
     pub credential_validation_interval_ms: u64,
@@ -3573,6 +3770,15 @@ impl ::boxology_contract::ContractType for BridgeSpec {
             ))
         })? {
             fields.push(("authentication_methods".into(), value));
+        }
+        if let Some(value) = ::boxology_contract::ContractType::encode_field(&self.ingress_mode)
+            .map_err(|error| {
+                error.under(::boxology_contract::PathSegment::Field(
+                    "ingress_mode".into(),
+                ))
+            })?
+        {
+            fields.push(("ingress_mode".into(), value));
         }
         if let Some(value) = ::boxology_contract::ContractType::encode_field(&self.desired_running)
             .map_err(|error| {
@@ -3641,6 +3847,7 @@ impl ::boxology_contract::ContractType for BridgeSpec {
                 | "launch_json"
                 | "configuration_json"
                 | "authentication_methods"
+                | "ingress_mode"
                 | "desired_running"
                 | "health_interval_ms"
                 | "credential_validation_interval_ms"
@@ -3717,6 +3924,17 @@ impl ::boxology_contract::ContractType for BridgeSpec {
                             ),
                         )
                 })?,
+            ingress_mode: <BridgeIngressMode as ::boxology_contract::ContractType>::decode_field(
+                    fields.get("ingress_mode"),
+                )
+                .map_err(|error| {
+                    error
+                        .under(
+                            ::boxology_contract::PathSegment::Field(
+                                "ingress_mode".into(),
+                            ),
+                        )
+                })?,
             desired_running: <bool as ::boxology_contract::ContractType>::decode_field(
                     fields.get("desired_running"),
                 )
@@ -3780,6 +3998,7 @@ pub struct BridgeRecord {
     pub bridge_id: ::std::string::String,
     pub package_id: ::std::string::String,
     pub lifecycle: BridgeLifecycle,
+    pub ingress_mode: BridgeIngressMode,
     pub generation: u64,
     pub registered_at_ms: u64,
 }
@@ -3810,6 +4029,15 @@ impl ::boxology_contract::ContractType for BridgeRecord {
         {
             fields.push(("lifecycle".into(), value));
         }
+        if let Some(value) = ::boxology_contract::ContractType::encode_field(&self.ingress_mode)
+            .map_err(|error| {
+                error.under(::boxology_contract::PathSegment::Field(
+                    "ingress_mode".into(),
+                ))
+            })?
+        {
+            fields.push(("ingress_mode".into(), value));
+        }
         if let Some(value) = ::boxology_contract::ContractType::encode_field(&self.generation)
             .map_err(|error| {
                 error.under(::boxology_contract::PathSegment::Field("generation".into()))
@@ -3839,7 +4067,8 @@ impl ::boxology_contract::ContractType for BridgeRecord {
         };
         for (field, _) in fields.entries() {
             match field {
-                "bridge_id" | "package_id" | "lifecycle" | "generation" | "registered_at_ms" => {}
+                "bridge_id" | "package_id" | "lifecycle" | "ingress_mode" | "generation"
+                | "registered_at_ms" => {}
                 _ => {
                     return Err(::boxology_contract::DecodeError::new(
                         ::boxology_contract::DecodeErrorKind::UnknownField(field.into()),
@@ -3866,6 +4095,14 @@ impl ::boxology_contract::ContractType for BridgeRecord {
             )
             .map_err(|error| {
                 error.under(::boxology_contract::PathSegment::Field("lifecycle".into()))
+            })?,
+            ingress_mode: <BridgeIngressMode as ::boxology_contract::ContractType>::decode_field(
+                fields.get("ingress_mode"),
+            )
+            .map_err(|error| {
+                error.under(::boxology_contract::PathSegment::Field(
+                    "ingress_mode".into(),
+                ))
             })?,
             generation: <u64 as ::boxology_contract::ContractType>::decode_field(
                 fields.get("generation"),
@@ -5163,6 +5400,8 @@ pub struct TriggerIntent {
     pub source_id: ::std::string::String,
     pub deduplication_key: ::std::string::String,
     pub target_channel_id: ::std::string::String,
+    /// Copied from the registered bridge generation, never selected by an inbound event.
+    pub ingress_mode: BridgeIngressMode,
     pub message_json: ::std::string::String,
     pub attachment_handles: ::std::vec::Vec<::std::string::String>,
 }
@@ -5199,6 +5438,15 @@ impl ::boxology_contract::ContractType for TriggerIntent {
         })? {
             fields.push(("target_channel_id".into(), value));
         }
+        if let Some(value) = ::boxology_contract::ContractType::encode_field(&self.ingress_mode)
+            .map_err(|error| {
+                error.under(::boxology_contract::PathSegment::Field(
+                    "ingress_mode".into(),
+                ))
+            })?
+        {
+            fields.push(("ingress_mode".into(), value));
+        }
         if let Some(value) = ::boxology_contract::ContractType::encode_field(&self.message_json)
             .map_err(|error| {
                 error.under(::boxology_contract::PathSegment::Field(
@@ -5231,8 +5479,8 @@ impl ::boxology_contract::ContractType for TriggerIntent {
         };
         for (field, _) in fields.entries() {
             match field {
-                "source_id" | "deduplication_key" | "target_channel_id" | "message_json"
-                | "attachment_handles" => {}
+                "source_id" | "deduplication_key" | "target_channel_id" | "ingress_mode"
+                | "message_json" | "attachment_handles" => {}
                 _ => {
                     return Err(::boxology_contract::DecodeError::new(
                         ::boxology_contract::DecodeErrorKind::UnknownField(field.into()),
@@ -5270,6 +5518,17 @@ impl ::boxology_contract::ContractType for TriggerIntent {
                         .under(
                             ::boxology_contract::PathSegment::Field(
                                 "target_channel_id".into(),
+                            ),
+                        )
+                })?,
+            ingress_mode: <BridgeIngressMode as ::boxology_contract::ContractType>::decode_field(
+                    fields.get("ingress_mode"),
+                )
+                .map_err(|error| {
+                    error
+                        .under(
+                            ::boxology_contract::PathSegment::Field(
+                                "ingress_mode".into(),
                             ),
                         )
                 })?,
@@ -6281,6 +6540,28 @@ pub mod test_support {
                             None,
                         ),
                         ::boxology_contract::FieldDescriptor::new(
+                            "ingress_mode",
+                            TypeDescriptor::enumeration([
+                                ::boxology_contract::VariantDescriptor::new(
+                                    "Queue",
+                                    ::boxology_contract::VariantPayload::Unit,
+                                    None,
+                                ),
+                                ::boxology_contract::VariantDescriptor::new(
+                                    "Steer",
+                                    ::boxology_contract::VariantPayload::Unit,
+                                    None,
+                                ),
+                                ::boxology_contract::VariantDescriptor::new(
+                                    "InterruptAndSteer",
+                                    ::boxology_contract::VariantPayload::Unit,
+                                    None,
+                                ),
+                            ])
+                            .expect("generated enum descriptor is valid"),
+                            None,
+                        ),
+                        ::boxology_contract::FieldDescriptor::new(
                             "desired_running",
                             TypeDescriptor::bool(),
                             None,
@@ -6971,8 +7252,8 @@ pub mod test_support {
 }
 #[doc(hidden)]
 pub const __BOXOLOGY_SEMANTIC_DIGEST: [u8; 32] = [
-    94, 190, 146, 138, 86, 138, 164, 97, 13, 197, 219, 36, 225, 99, 15, 131, 25, 209, 78, 171, 23,
-    216, 173, 62, 87, 87, 224, 155, 150, 127, 67, 146,
+    50, 224, 207, 209, 209, 86, 251, 118, 44, 234, 214, 39, 251, 75, 151, 75, 167, 234, 205, 183,
+    53, 163, 211, 169, 144, 51, 98, 213, 91, 72, 199, 226,
 ];
 #[doc(hidden)]
 #[macro_export]

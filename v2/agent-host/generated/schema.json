@@ -61,7 +61,8 @@
     {
       "deprecation": null,
       "docs": [
-        " Send a prompt to the existing ACP session. Context management stays inside the agent."
+        " Submit input without waiting for work to finish. `Queue` is portable. `Steer` uses the ACP",
+        " v2 prompt lifecycle or a negotiated extension and fails rather than silently becoming queue."
       ],
       "error": "AgentHostError",
       "id": "agent-host.prompt",
@@ -152,7 +153,8 @@
     {
       "deprecation": null,
       "docs": [
-        " Close the native session. Opening a fresh one is explicit; there is no compaction API."
+        " Close the native session. There is intentionally no `compact` capability: ACP's current",
+        " compaction proposal reports agent-owned compaction; it does not transfer control to Crab."
       ],
       "error": "AgentHostError",
       "id": "agent-host.close_session",
@@ -172,9 +174,9 @@
   "provenance": {
     "generator": "boxology-generator",
     "generator_version": "0.0.0",
-    "semantic_digest": "sha256:dc319337eaa21cc1d390f7afd9f716884f4079b85b7319fef6528d4e6f0f0909"
+    "semantic_digest": "sha256:e1b6d77032ec3570d639efdbcfb35a99bd10698cf0349d117d2828c868177e0c"
   },
-  "revision": "sha256:62dd0766314f62cc03173528cbc7a3f98bef8f9c1724f3cdc0be0dacc9205a5a",
+  "revision": "sha256:3908bb9783b1e97b28d45b80475216536f3d95b3e8572cc745fb7eb597bfed6c",
   "schema_format": 1,
   "types": [
     {
@@ -474,6 +476,83 @@
     {
       "deprecation": null,
       "docs": [
+        " ACP v1 is stable. ACP v2 is deliberately usable behind negotiation because its prompt",
+        " lifecycle is the portable basis for non-blocking steering, but it remains a draft today."
+      ],
+      "kind": "enum",
+      "name": "AcpProtocolProfile",
+      "variants": [
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "V1Stable"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "V2Draft"
+        }
+      ]
+    },
+    {
+      "deprecation": null,
+      "docs": [
+        " What an input submitted while the session is already working can actually do."
+      ],
+      "kind": "enum",
+      "name": "SteeringSupport",
+      "variants": [
+        {
+          "deprecation": null,
+          "docs": [
+            " ACP v1 has no portable mid-work prompt contract. Crab accepts immediately and queues",
+            " the input for the next turn boundary instead of claiming it steered the active model."
+          ],
+          "name": "TurnBoundaryQueue"
+        },
+        {
+          "deprecation": null,
+          "docs": [
+            " ACP v2 acknowledges `session/prompt` immediately and lets it contribute to active work."
+          ],
+          "name": "AcpV2ConcurrentPrompt"
+        },
+        {
+          "deprecation": null,
+          "docs": [
+            " An agent-specific ACP extension provides equivalent semantics on another profile."
+          ],
+          "name": "AgentExtension"
+        }
+      ]
+    },
+    {
+      "deprecation": null,
+      "docs": [
+        " Compaction remains agent-owned. This only describes what the client can observe."
+      ],
+      "kind": "enum",
+      "name": "CompactionReporting",
+      "variants": [
+        {
+          "deprecation": null,
+          "docs": [
+            " Usage may change, but the agent exposes no portable compaction lifecycle event."
+          ],
+          "name": "OpaqueAgentManaged"
+        },
+        {
+          "deprecation": null,
+          "docs": [
+            " The draft ACP compaction updates and optional displayable summary are preserved."
+          ],
+          "name": "DraftLifecycleUpdates"
+        }
+      ]
+    },
+    {
+      "deprecation": null,
+      "docs": [
         " ACP version and optional features negotiated during `initialize`."
       ],
       "fields": [
@@ -482,6 +561,24 @@
           "docs": [],
           "name": "protocol_version",
           "type": "u64"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "protocol_profile",
+          "type": "AcpProtocolProfile"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "steering",
+          "type": "SteeringSupport"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "compaction_reporting",
+          "type": "CompactionReporting"
         },
         {
           "deprecation": null,
@@ -574,6 +671,28 @@
     {
       "deprecation": null,
       "docs": [],
+      "kind": "enum",
+      "name": "AgentInputMode",
+      "variants": [
+        {
+          "deprecation": null,
+          "docs": [
+            " Accept durably and send only when the session is idle."
+          ],
+          "name": "Queue"
+        },
+        {
+          "deprecation": null,
+          "docs": [
+            " Contribute to active work. Fail if ACP v2 or an equivalent extension was not negotiated."
+          ],
+          "name": "Steer"
+        }
+      ]
+    },
+    {
+      "deprecation": null,
+      "docs": [],
       "fields": [
         {
           "deprecation": null,
@@ -591,6 +710,12 @@
         },
         {
           "deprecation": null,
+          "docs": [],
+          "name": "mode",
+          "type": "AgentInputMode"
+        },
+        {
+          "deprecation": null,
           "docs": [
             " Exact ACP prompt payload encoded as JSON. Crab must not narrow multimodal ACP content."
           ],
@@ -600,6 +725,31 @@
       ],
       "kind": "struct",
       "name": "PromptRequest"
+    },
+    {
+      "deprecation": null,
+      "docs": [
+        " Submission is always non-blocking; this says when the agent can consume it."
+      ],
+      "kind": "enum",
+      "name": "PromptDisposition",
+      "variants": [
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "StartedForegroundWork"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "ContributedToActiveWork"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "QueuedForTurnBoundary"
+        }
+      ]
     },
     {
       "deprecation": null,
@@ -622,6 +772,12 @@
           "docs": [],
           "name": "accepted_at_ms",
           "type": "u64"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "disposition",
+          "type": "PromptDisposition"
         }
       ],
       "kind": "struct",
@@ -679,6 +835,13 @@
           "deprecation": null,
           "docs": [],
           "name": "Usage"
+        },
+        {
+          "deprecation": null,
+          "docs": [
+            " Draft ACP `compaction_update` and `compaction_summary_chunk`, when advertised."
+          ],
+          "name": "Compaction"
         },
         {
           "deprecation": null,
@@ -993,13 +1156,19 @@
         {
           "deprecation": null,
           "docs": [],
+          "name": "UnsupportedProtocolProfile",
+          "payload": "unit"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
           "name": "UnknownSession",
           "payload": "unit"
         },
         {
           "deprecation": null,
           "docs": [],
-          "name": "SessionBusy",
+          "name": "SteeringUnavailable",
           "payload": "unit"
         },
         {

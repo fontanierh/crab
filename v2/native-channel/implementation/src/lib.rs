@@ -24,6 +24,15 @@ impl NativeChannelDraft {
         Err(NativeChannelError::DraftOnly)
     }
 
+    pub async fn interrupt_and_drain(
+        &self,
+        context: boxology::CallContext,
+        request: InterruptRequest,
+    ) -> Result<InterruptReceipt, NativeChannelError> {
+        let _ = (context, request);
+        Err(NativeChannelError::DraftOnly)
+    }
+
     pub async fn publish_native_event(
         &self,
         context: boxology::CallContext,
@@ -76,7 +85,7 @@ pub mod generated {
 
 #[cfg(test)]
 mod tests {
-    use super::generated;
+    use super::{ChannelInputMode, generated};
 
     #[test]
     fn contract_keeps_native_publication_separate_from_bridge_delivery() {
@@ -92,6 +101,7 @@ mod tests {
             [
                 "bind_channel",
                 "accept_turn",
+                "interrupt_and_drain",
                 "publish_native_event",
                 "replay_native_events",
                 "replace_session",
@@ -100,5 +110,6 @@ mod tests {
             ]
         );
         assert!(names.iter().all(|name| !name.contains("bridge")));
+        assert_ne!(ChannelInputMode::Queue, ChannelInputMode::Steer);
     }
 }

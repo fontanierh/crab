@@ -96,9 +96,9 @@
   "provenance": {
     "generator": "boxology-generator",
     "generator_version": "0.0.0",
-    "semantic_digest": "sha256:f75daf6ee98c8d6b01520807b51d3fdb5f33286218ccc936fbfd4e788cf409c5"
+    "semantic_digest": "sha256:b34f344cb2d16456fcb17c7c92f0cb8163c8f2fd0d1881a0d9c837600311566e"
   },
-  "revision": "sha256:3afb61665dfaf1d9612852e6d9ced415353d4e652c968b6844db2b02a7e1429b",
+  "revision": "sha256:cf4e1ccf9c1e2bc983df92b107852ac2e34f4818795056514f99a1eecee2a0b2",
   "schema_format": 1,
   "types": [
     {
@@ -138,16 +138,23 @@
         {
           "deprecation": null,
           "docs": [
-            " Queue an ordinary turn behind earlier work in the same target lane."
+            " Wait for idle and preserve lane FIFO order."
           ],
-          "name": "NewTurn"
+          "name": "Queue"
         },
         {
           "deprecation": null,
           "docs": [
-            " Add context at the next safe agent boundary without interrupting a tool call."
+            " Contribute to active work when the target negotiated support; never interrupt."
           ],
           "name": "Steer"
+        },
+        {
+          "deprecation": null,
+          "docs": [
+            " Cooperatively cancel current work, then drain accepted lane input immediately."
+          ],
+          "name": "InterruptAndSteer"
         }
       ]
     },

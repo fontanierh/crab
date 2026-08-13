@@ -41,6 +41,17 @@ boxology::contract! {
         Failed,
     }
 
+    /// Fixed when a bridge is registered so an external surface cannot silently change how much
+    /// it disrupts the agent. Changing this policy requires a new bridge generation.
+    pub enum BridgeIngressMode {
+        /// Preserve FIFO order and wait until the target session is idle.
+        Queue,
+        /// Contribute to active work when negotiated ACP support exists; never silently interrupt.
+        Steer,
+        /// Cooperatively cancel active work, then process pending ingress immediately.
+        InterruptAndSteer,
+    }
+
     /// Installation metadata for a bridge package. The agent may add new packages at runtime.
     pub struct BridgeSpec {
         pub bridge_id: String,
@@ -52,6 +63,7 @@ boxology::contract! {
         /// Service-specific configuration. Secret fields must be credential-provider handles.
         pub configuration_json: String,
         pub authentication_methods: Vec<AuthenticationMethod>,
+        pub ingress_mode: BridgeIngressMode,
         pub desired_running: bool,
         pub health_interval_ms: u64,
         pub credential_validation_interval_ms: u64,
@@ -64,6 +76,7 @@ boxology::contract! {
         pub bridge_id: String,
         pub package_id: String,
         pub lifecycle: BridgeLifecycle,
+        pub ingress_mode: BridgeIngressMode,
         pub generation: u64,
         pub registered_at_ms: u64,
     }
@@ -158,6 +171,8 @@ boxology::contract! {
         pub source_id: String,
         pub deduplication_key: String,
         pub target_channel_id: String,
+        /// Copied from the registered bridge generation, never selected by an inbound event.
+        pub ingress_mode: BridgeIngressMode,
         pub message_json: String,
         pub attachment_handles: Vec<String>,
     }

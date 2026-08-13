@@ -26,6 +26,19 @@ where
         _imports: imports,
     }
 }
+pub fn register<T>(
+    composition: &mut ::boxology_runtime::CompositionBuilder,
+    service: T,
+) -> ::boxology_runtime::RegisteredBox
+where
+    T: ::boxology_generated_contract::BridgeHostDispatch + Send + Sync + 'static,
+{
+    composition
+        .register(
+            implementation_descriptor(),
+            move |imports| { factory(service, imports) },
+        )
+}
 impl<T> ::boxology_contract::ErasedTarget for BridgeHostAdapter<T>
 where
     T: ::boxology_generated_contract::BridgeHostDispatch + Send + Sync + 'static,
@@ -113,6 +126,28 @@ where
                                         .expect("generated enum descriptor is valid"),
                                 )
                                 .expect("generated list descriptor is valid"),
+                            None,
+                        ),
+                        ::boxology_contract::FieldDescriptor::new(
+                            "ingress_mode",
+                            ::boxology_contract::TypeDescriptor::enumeration([
+                                    ::boxology_contract::VariantDescriptor::new(
+                                        "Queue",
+                                        ::boxology_contract::VariantPayload::Unit,
+                                        None,
+                                    ),
+                                    ::boxology_contract::VariantDescriptor::new(
+                                        "Steer",
+                                        ::boxology_contract::VariantPayload::Unit,
+                                        None,
+                                    ),
+                                    ::boxology_contract::VariantDescriptor::new(
+                                        "InterruptAndSteer",
+                                        ::boxology_contract::VariantPayload::Unit,
+                                        None,
+                                    ),
+                                ])
+                                .expect("generated enum descriptor is valid"),
                             None,
                         ),
                         ::boxology_contract::FieldDescriptor::new(

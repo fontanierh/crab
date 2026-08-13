@@ -9,6 +9,13 @@ boxology::contract! {
         Failed,
     }
 
+    /// Native channels select delivery per turn. Interrupt is a separate explicit action so a
+    /// normal message can never accidentally cancel thinking or a tool call.
+    pub enum ChannelInputMode {
+        Queue,
+        Steer,
+    }
+
     /// Creates the invariant `channel_id -> session_id` for the lifetime of this binding.
     pub struct BindChannelRequest {
         pub channel_id: String,
@@ -33,6 +40,7 @@ boxology::contract! {
         pub binding_id: String,
         pub client_turn_id: String,
         pub received_at_ms: u64,
+        pub mode: ChannelInputMode,
         /// Exact ACP-compatible prompt JSON, including attachments and other rich content.
         pub native_prompt_json: String,
     }
@@ -42,6 +50,7 @@ boxology::contract! {
         pub session_id: String,
         pub client_turn_id: String,
         pub accepted_at_ms: u64,
+        pub mode: ChannelInputMode,
     }
 
     /// The hint is useful for rendering; no event may be dropped because its hint is unknown.
@@ -55,6 +64,7 @@ boxology::contract! {
         FileDiff,
         PermissionRequest,
         Usage,
+        Compaction,
         SessionState,
         RunFinished,
         Other,
@@ -104,6 +114,22 @@ boxology::contract! {
         pub binding_id: String,
     }
 
+    /// Explicit cooperative interruption. The router cancels current ACP work, retains every
+    /// already accepted queue/steer input, then drains those inputs immediately in stable order.
+    pub struct InterruptRequest {
+        pub binding_id: String,
+        pub expected_session_id: String,
+        pub requested_at_ms: u64,
+        pub reason: String,
+    }
+
+    pub struct InterruptReceipt {
+        pub binding_id: String,
+        pub session_id: String,
+        pub cancel_requested_at_ms: u64,
+        pub pending_input_count: u64,
+    }
+
     pub struct ChannelStatus {
         pub binding: ChannelBinding,
         pub last_error: Option<String>,
@@ -123,6 +149,8 @@ boxology::contract! {
         SessionMismatch,
         SequenceGap,
         DuplicateTurnConflict,
+        SteeringUnavailable,
+        NothingToInterrupt,
         InvalidNativePayload,
         AdapterUnavailable,
     }
@@ -134,6 +162,10 @@ boxology::contract! {
     /// Route a native user turn without translating it into bridge semantics.
     #[capability]
     pub async fn accept_turn(request: ChannelTurn) -> Result<AcceptedTurn, NativeChannelError>;
+
+    /// Cancel current thinking/tool execution cooperatively and immediately drain accepted input.
+    #[capability]
+    pub async fn interrupt_and_drain(request: InterruptRequest) -> Result<InterruptReceipt, NativeChannelError>;
 
     /// Publish every ACP event in order; assistant text is not a privileged special case.
     #[capability]

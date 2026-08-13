@@ -121,7 +121,7 @@ pub mod generated {
 
 #[cfg(test)]
 mod tests {
-    use super::generated;
+    use super::{BridgeIngressMode, generated};
 
     #[test]
     fn contract_covers_supervision_auth_ingress_and_selected_delivery() {
@@ -145,5 +145,10 @@ mod tests {
             );
         }
         assert!(names.iter().all(|name| !name.contains("native_event")));
+        assert_ne!(BridgeIngressMode::Queue, BridgeIngressMode::Steer);
+        assert_ne!(
+            BridgeIngressMode::Steer,
+            BridgeIngressMode::InterruptAndSteer
+        );
     }
 }

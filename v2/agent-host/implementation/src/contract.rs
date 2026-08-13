@@ -80,9 +80,38 @@ boxology::contract! {
         pub authority: AuthorityAttestation,
     }
 
+    /// ACP v1 is stable. ACP v2 is deliberately usable behind negotiation because its prompt
+    /// lifecycle is the portable basis for non-blocking steering, but it remains a draft today.
+    pub enum AcpProtocolProfile {
+        V1Stable,
+        V2Draft,
+    }
+
+    /// What an input submitted while the session is already working can actually do.
+    pub enum SteeringSupport {
+        /// ACP v1 has no portable mid-work prompt contract. Crab accepts immediately and queues
+        /// the input for the next turn boundary instead of claiming it steered the active model.
+        TurnBoundaryQueue,
+        /// ACP v2 acknowledges `session/prompt` immediately and lets it contribute to active work.
+        AcpV2ConcurrentPrompt,
+        /// An agent-specific ACP extension provides equivalent semantics on another profile.
+        AgentExtension,
+    }
+
+    /// Compaction remains agent-owned. This only describes what the client can observe.
+    pub enum CompactionReporting {
+        /// Usage may change, but the agent exposes no portable compaction lifecycle event.
+        OpaqueAgentManaged,
+        /// The draft ACP compaction updates and optional displayable summary are preserved.
+        DraftLifecycleUpdates,
+    }
+
     /// ACP version and optional features negotiated during `initialize`.
     pub struct AcpNegotiation {
         pub protocol_version: u64,
+        pub protocol_profile: AcpProtocolProfile,
+        pub steering: SteeringSupport,
+        pub compaction_reporting: CompactionReporting,
         /// Preserve capability evolution without forcing Crab to mirror every ACP revision.
         pub agent_capabilities_json: String,
     }
@@ -105,18 +134,34 @@ boxology::contract! {
         pub authority: AuthorityAttestation,
     }
 
+    pub enum AgentInputMode {
+        /// Accept durably and send only when the session is idle.
+        Queue,
+        /// Contribute to active work. Fail if ACP v2 or an equivalent extension was not negotiated.
+        Steer,
+    }
+
     pub struct PromptRequest {
         pub session_id: String,
         /// Stable caller key used to deduplicate a retried turn.
         pub client_turn_id: String,
+        pub mode: AgentInputMode,
         /// Exact ACP prompt payload encoded as JSON. Crab must not narrow multimodal ACP content.
         pub native_prompt_json: String,
+    }
+
+    /// Submission is always non-blocking; this says when the agent can consume it.
+    pub enum PromptDisposition {
+        StartedForegroundWork,
+        ContributedToActiveWork,
+        QueuedForTurnBoundary,
     }
 
     pub struct PromptAccepted {
         pub session_id: String,
         pub run_id: String,
         pub accepted_at_ms: u64,
+        pub disposition: PromptDisposition,
     }
 
     /// A hint for indexing and UI filtering. `native_event_json` is always authoritative.
@@ -130,6 +175,8 @@ boxology::contract! {
         FileDiff,
         PermissionRequest,
         Usage,
+        /// Draft ACP `compaction_update` and `compaction_summary_chunk`, when advertised.
+        Compaction,
         SessionState,
         RunFinished,
         Other,
@@ -205,8 +252,9 @@ boxology::contract! {
         PreflightFailed,
         AuthorityUnavailable,
         ProtocolNegotiationFailed,
+        UnsupportedProtocolProfile,
         UnknownSession,
-        SessionBusy,
+        SteeringUnavailable,
         InvalidCursor,
         InvalidNativePayload,
         TransportFailed,
@@ -224,7 +272,8 @@ boxology::contract! {
     #[capability]
     pub async fn open_session(request: OpenSessionRequest) -> Result<AgentSession, AgentHostError>;
 
-    /// Send a prompt to the existing ACP session. Context management stays inside the agent.
+    /// Submit input without waiting for work to finish. `Queue` is portable. `Steer` uses the ACP
+    /// v2 prompt lifecycle or a negotiated extension and fails rather than silently becoming queue.
     #[capability]
     pub async fn prompt(request: PromptRequest) -> Result<PromptAccepted, AgentHostError>;
 
@@ -242,7 +291,8 @@ boxology::contract! {
     #[capability]
     pub async fn cancel_run(request: RunReference) -> Result<OperationReceipt, AgentHostError>;
 
-    /// Close the native session. Opening a fresh one is explicit; there is no compaction API.
+    /// Close the native session. There is intentionally no `compact` capability: ACP's current
+    /// compaction proposal reports agent-owned compaction; it does not transfer control to Crab.
     #[capability]
     pub async fn close_session(request: SessionReference) -> Result<OperationReceipt, AgentHostError>;
 }

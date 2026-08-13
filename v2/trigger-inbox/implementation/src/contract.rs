@@ -9,10 +9,12 @@ boxology::contract! {
     }
 
     pub enum TriggerMode {
-        /// Queue an ordinary turn behind earlier work in the same target lane.
-        NewTurn,
-        /// Add context at the next safe agent boundary without interrupting a tool call.
+        /// Wait for idle and preserve lane FIFO order.
+        Queue,
+        /// Contribute to active work when the target negotiated support; never interrupt.
         Steer,
+        /// Cooperatively cancel current work, then drain accepted lane input immediately.
+        InterruptAndSteer,
     }
 
     pub enum TriggerState {
