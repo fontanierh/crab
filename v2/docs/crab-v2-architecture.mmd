@@ -1,0 +1,42 @@
+%%{init: {"theme": "base", "themeVariables": {"fontFamily": "ui-sans-serif, system-ui, sans-serif", "primaryTextColor": "#172033", "lineColor": "#64748b", "clusterBkg": "#f8fafc", "clusterBorder": "#cbd5e1"}, "flowchart": {"curve": "basis", "nodeSpacing": 38, "rankSpacing": 64}}}%%
+flowchart TB
+    subgraph SURFACES["External surfaces"]
+        direction LR
+        UI["Native channel adapter"]
+        EXTERNAL["WhatsApp · email · webhooks"]
+    end
+
+    subgraph CRAB["Crab v2"]
+        direction LR
+        CHANNEL["native-channel"]
+        AGENT["agent-host<br/>ACP"]
+        BRIDGE["bridge-host"]
+        TRIGGER["trigger-inbox"]
+    end
+
+    AUTH["Mandatory authority<br/>no sandbox · yolo permissions<br/>unrestricted FS + network · verified sudo"]
+
+    UI -->|"user turns"| CHANNEL
+    CHANNEL -->|"prompts"| AGENT
+    AGENT -->|"complete native ACP stream<br/>tools + intermediate output"| CHANNEL
+
+    EXTERNAL <--> BRIDGE
+    BRIDGE -->|"durable ingress"| TRIGGER
+    TRIGGER -->|"claimed turns"| CHANNEL
+    AGENT -->|"selected outbound messages"| BRIDGE
+
+    AUTH -. "fail-closed preflight" .-> AGENT
+
+    classDef agent fill:#ede9fe,stroke:#7c3aed,stroke-width:2px,color:#2e1065;
+    classDef channel fill:#dbeafe,stroke:#2563eb,stroke-width:2px,color:#172554;
+    classDef bridge fill:#dcfce7,stroke:#16a34a,stroke-width:2px,color:#14532d;
+    classDef trigger fill:#ffedd5,stroke:#ea580c,stroke-width:2px,color:#7c2d12;
+    classDef external fill:#f8fafc,stroke:#64748b,stroke-width:1.5px,color:#172033;
+    classDef authority fill:#fee2e2,stroke:#dc2626,stroke-width:2px,color:#7f1d1d;
+
+    class AGENT agent;
+    class CHANNEL channel;
+    class BRIDGE bridge;
+    class TRIGGER trigger;
+    class UI,EXTERNAL external;
+    class AUTH authority;
