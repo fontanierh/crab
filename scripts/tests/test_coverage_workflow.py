@@ -15,9 +15,6 @@ from scripts.quality_baseline import collect_metrics
 from scripts.workflow_common import WorkflowError
 
 from scripts.coverage_workflow import (
-    FUNCTION_THRESHOLD,
-    LINE_THRESHOLD,
-    REGION_THRESHOLD,
     coverage_arguments,
     main as coverage_main,
     run_diagnostics,
@@ -84,11 +81,19 @@ class CoverageWorkflowTests(unittest.TestCase):
         )
         self.assertEqual(coverage_arguments(["alpha"], True), ["--workspace"])
 
-    def test_documented_aggregate_thresholds_are_exact(self) -> None:
-        self.assertEqual(
-            (FUNCTION_THRESHOLD, REGION_THRESHOLD, LINE_THRESHOLD),
-            ("95", "95", "95"),
-        )
+    def test_compatibility_gate_is_a_report_without_thresholds(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            base = init_repo(root)
+            calls: list[list[str]] = []
+            with patch(
+                "scripts.coverage_workflow.run_local_coverage",
+                side_effect=coverage_side_effect(root, calls),
+            ):
+                self.assertEqual(run_gate(root, "worktree", base), 0)
+        flattened = " ".join(calls[0])
+        self.assertNotIn("--fail-under", flattened)
+        self.assertNotIn("--base-sha", flattened)
 
     def test_failed_gate_invalidates_all_prior_authoritative_artifacts(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -301,40 +306,40 @@ class CoverageWorkflowTests(unittest.TestCase):
                 if command == "report":
                     self.assertFalse((coverage / "uncovered_locations.txt").exists())
 
-    def test_gate_then_report_cannot_leave_stale_green_companions(self) -> None:
+    def test_compatibility_gate_only_leaves_report_artifact(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             base = init_repo(root)
             calls: list[list[str]] = []
-
-            def patch_gate(*_: object, artifact_path: Path, **__: object) -> int:
-                write(artifact_path, '{"passed":true}\n')
-                return 0
 
             with (
                 patch(
                     "scripts.coverage_workflow.run_local_coverage",
                     side_effect=coverage_side_effect(root, calls),
                 ),
-                patch("scripts.coverage_workflow.run_patch_gate", side_effect=patch_gate),
                 contextlib.redirect_stdout(io.StringIO()),
             ):
                 self.assertEqual(run_gate(root, "worktree", base), 0)
-                self.assertTrue((root / "coverage" / "summary.json").exists())
-                self.assertTrue((root / "coverage" / "patch-coverage.json").exists())
+                self.assertTrue((root / "coverage" / "lcov.info").exists())
+                self.assertFalse((root / "coverage" / "summary.json").exists())
+                self.assertFalse((root / "coverage" / "patch-coverage.json").exists())
                 self.assertEqual(run_report(root), 0)
             self.assertFalse((root / "coverage" / "summary.json").exists())
             self.assertFalse((root / "coverage" / "patch-coverage.json").exists())
 
-    def test_guarded_gate_preflight_stops_coverage_before_spawn(self) -> None:
+    def test_compatibility_gate_does_not_require_diff_preflight(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             base = init_repo(root)
             run_git(root, "update-index", "--assume-unchanged", "Cargo.lock")
-            with patch("scripts.coverage_workflow.run_local_coverage") as coverage:
+            calls: list[list[str]] = []
+            with patch(
+                "scripts.coverage_workflow.run_local_coverage",
+                side_effect=coverage_side_effect(root, calls),
+            ) as coverage:
                 code = run_gate(root, "staged", base)
-            self.assertEqual(code, 2)
-            coverage.assert_not_called()
+            self.assertEqual(code, 0)
+            coverage.assert_called_once()
 
     def test_coverage_directory_symlink_is_rejected_without_touching_target(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

@@ -47,7 +47,7 @@ These docs focus on:
 
 - Read-only environment preflight: `make doctor`.
 - Changed-scope edit loop: `make check`.
-- Canonical strict handoff: `make quality` (no required gate may skip).
-- Coverage failure diagnostics: `make coverage-diagnostics` (writes actionable uncovered
+- Canonical handoff: `make quality` (format, Clippy, and tests).
+- Optional coverage diagnostics: `make coverage-diagnostics` (writes actionable uncovered
   line details to `coverage/uncovered_locations.txt`).
 - Baseline capture/trend inputs: `make quality-baseline` and `make quality-report`.

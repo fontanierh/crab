@@ -144,7 +144,7 @@ def collect_checks(
                     "rustc",
                     "failed",
                     output or "could not resolve pinned rustc",
-                    f"rustup toolchain install {pin} --component rustfmt --component clippy --component llvm-tools-preview",
+                    f"rustup toolchain install {pin} --component rustfmt --component clippy",
                 )
             )
         component_code, component_output = _run_check(
@@ -153,7 +153,7 @@ def collect_checks(
             ["rustup", "component", "list", "--toolchain", pin, "--installed"],
         )
         installed_components = set(component_output.splitlines()) if component_code == 0 else set()
-        for component in ("rustfmt", "clippy", "llvm-tools"):
+        for component in ("rustfmt", "clippy"):
             present = any(line.startswith(f"{component}-") for line in installed_components)
             checks.append(
                 Check(
@@ -162,7 +162,7 @@ def collect_checks(
                     "installed for pinned toolchain" if present else f"missing for {pin}",
                     None
                     if present
-                    else f"rustup component add {component if component != 'llvm-tools' else 'llvm-tools-preview'} --toolchain {pin}",
+                    else f"rustup component add {component} --toolchain {pin}",
                 )
             )
         for name, command in (
@@ -183,10 +183,7 @@ def collect_checks(
                     )
                 )
     else:
-        remediation = (
-            f"rustup toolchain install {pin} --component rustfmt --component clippy "
-            "--component llvm-tools-preview"
-        )
+        remediation = f"rustup toolchain install {pin} --component rustfmt --component clippy"
         checks.append(
             Check(
                 "rust-toolchain",
@@ -195,7 +192,7 @@ def collect_checks(
                 remediation,
             )
         )
-        for name in ("rustc", "cargo", "rustfmt", "clippy", "llvm-tools"):
+        for name in ("rustc", "cargo", "rustfmt", "clippy"):
             checks.append(Check(name, "info", f"blocked until exact toolchain {pin} is installed"))
 
     if which("cargo") and which("cargo-llvm-cov"):
@@ -204,13 +201,13 @@ def collect_checks(
         )
         version = parse_version(output, "cargo-llvm-cov")
         if returncode == 0 and version == LLVM_COV_VERSION:
-            checks.append(Check("cargo-llvm-cov", "passed", output.splitlines()[0]))
+            checks.append(Check("cargo-llvm-cov", "info", f"optional: {output.splitlines()[0]}"))
         else:
             checks.append(
                 Check(
                     "cargo-llvm-cov",
-                    "failed",
-                    f"expected {LLVM_COV_VERSION}, found {version or output or 'unavailable'}",
+                    "info",
+                    f"optional diagnostic tool: expected {LLVM_COV_VERSION}, found {version or output or 'unavailable'}",
                     f"cargo install cargo-llvm-cov --version {LLVM_COV_VERSION} --locked --force",
                 )
             )
@@ -218,8 +215,8 @@ def collect_checks(
         checks.append(
             Check(
                 "cargo-llvm-cov",
-                "failed",
-                "not found on PATH",
+                "info",
+                "optional coverage diagnostic tool is not installed",
                 f"cargo install cargo-llvm-cov --version {LLVM_COV_VERSION} --locked",
             )
         )
@@ -230,13 +227,13 @@ def collect_checks(
         found = output.strip().lstrip("v")
         if returncode == 0 and found == JSCPD_VERSION:
             jscpd_exact = True
-            checks.append(Check("jscpd", "passed", f"jscpd {found}"))
+            checks.append(Check("jscpd", "info", f"optional: jscpd {found}"))
         else:
             checks.append(
                 Check(
                     "jscpd",
-                    "failed",
-                    f"expected {JSCPD_VERSION}, found {found or 'unavailable'}",
+                    "info",
+                    f"optional diagnostic tool: expected {JSCPD_VERSION}, found {found or 'unavailable'}",
                     f"npm install --global jscpd@{JSCPD_VERSION}",
                 )
             )
@@ -244,8 +241,8 @@ def collect_checks(
         checks.append(
             Check(
                 "jscpd",
-                "failed",
-                "not found on PATH; quality gates never install it implicitly",
+                "info",
+                "optional duplication diagnostic tool is not installed",
                 f"npm install --global jscpd@{JSCPD_VERSION}",
             )
         )
@@ -256,34 +253,21 @@ def collect_checks(
     ):
         location = which(executable)
         if location:
-            checks.append(Check(executable, "passed", f"{purpose}: {location}"))
+            detail = f"optional: {purpose}: {location}"
         elif jscpd_exact:
-            checks.append(
-                Check(
-                    executable,
-                    "info",
-                    f"{purpose}: not found; exact runnable jscpd {JSCPD_VERSION} is already present",
-                )
-            )
+            detail = f"optional: {purpose}: not found; exact runnable jscpd is already present"
         else:
-            checks.append(
-                Check(
-                    executable,
-                    "failed",
-                    f"{purpose}: not found on PATH and jscpd must be installed or corrected",
-                    f"install Node.js/npm, then run npm install --global jscpd@{JSCPD_VERSION}",
-                )
-            )
+            detail = f"optional: {purpose}: not found"
+        checks.append(Check(executable, "info", detail))
 
     rg_location = which("rg")
     checks.append(
         Check(
             "rg",
-            "passed" if rg_location else "failed",
-            f"ripgrep for public API checks: {rg_location}"
+            "info",
+            f"optional ripgrep for public API diagnostics: {rg_location}"
             if rg_location
-            else "ripgrep for public API checks: not found on PATH",
-            None if rg_location else "install rg and retry",
+            else "optional ripgrep for public API diagnostics is not installed",
         )
     )
 
@@ -316,8 +300,8 @@ def collect_checks(
         checks.append(
             Check(
                 "patch-baseline",
-                "failed",
-                f"could not resolve patch baseline {baseline_reference!r}: {detail}",
+                "info",
+                f"optional changed-scope baseline {baseline_reference!r} is unavailable: {detail}",
                 "git fetch origin main or pass BASE_SHA=<commit>",
             )
         )

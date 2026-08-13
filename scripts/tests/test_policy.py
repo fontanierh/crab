@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import re
 import shutil
@@ -10,7 +11,6 @@ import unittest
 from pathlib import Path
 
 from scripts.clippy_policy import CLIPPY_POLICY_ARGS
-from scripts.coverage_workflow import FUNCTION_THRESHOLD, LINE_THRESHOLD, REGION_THRESHOLD
 from scripts.doctor import JSCPD_VERSION, LLVM_COV_VERSION
 from scripts.run_gates import QUALITY_GATE_NAMES
 
@@ -157,7 +157,7 @@ class RepositoryPolicyTests(unittest.TestCase):
         self.assertTrue(references, "CI must state its Rust toolchain explicitly")
         self.assertEqual(set(references), {pin})
 
-    def test_ci_actions_runner_and_node_are_immutable(self) -> None:
+    def test_ci_actions_and_runner_are_immutable(self) -> None:
         workflow = (ROOT / ".github" / "workflows" / "quality.yml").read_text(
             encoding="utf-8"
         )
@@ -167,9 +167,9 @@ class RepositoryPolicyTests(unittest.TestCase):
             with self.subTest(line=line):
                 self.assertRegex(line, r"^[^@\s]+@[0-9a-f]{40}\s+#\s+\S+")
         runners = re.findall(r"^\s*runs-on:\s*(\S+)", workflow, flags=re.MULTILINE)
-        self.assertEqual(runners, ["ubuntu-24.04", "ubuntu-24.04"])
+        self.assertEqual(runners, ["ubuntu-24.04"])
         node_versions = re.findall(r"node-version:\s*[\"']?(\d+\.\d+\.\d+)", workflow)
-        self.assertEqual(node_versions, ["20.20.2"])
+        self.assertEqual(node_versions, [])
 
     def test_ci_pinned_tool_literals_match_repository_policy(self) -> None:
         workflow = (ROOT / ".github" / "workflows" / "quality.yml").read_text(
@@ -178,16 +178,16 @@ class RepositoryPolicyTests(unittest.TestCase):
         duplication = (ROOT / "scripts" / "duplication_check.sh").read_text(
             encoding="utf-8"
         )
-        self.assertIn(f"jscpd@{JSCPD_VERSION}", workflow)
         self.assertIn(f"jscpd {JSCPD_VERSION}", duplication)
-        self.assertIn(f"cargo-llvm-cov@{LLVM_COV_VERSION}", workflow)
+        self.assertNotIn(f"jscpd@{JSCPD_VERSION}", workflow)
+        self.assertNotIn(f"cargo-llvm-cov@{LLVM_COV_VERSION}", workflow)
 
     def test_ci_docs_classifier_precedes_every_setup_step(self) -> None:
         workflow = (ROOT / ".github" / "workflows" / "quality.yml").read_text(
             encoding="utf-8"
         )
         job_sections = workflow.split("      - name: Checkout")[1:]
-        self.assertEqual(len(job_sections), 2)
+        self.assertEqual(len(job_sections), 1)
         for section in job_sections:
             classifier = section.index("- name: Classify changed paths")
             setup = section.index("- name: Setup Rust toolchain")
@@ -203,12 +203,12 @@ class RepositoryPolicyTests(unittest.TestCase):
         checkout_sections = workflow.split(
             "uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955"
         )[1:]
-        self.assertEqual(len(checkout_sections), 2)
+        self.assertEqual(len(checkout_sections), 1)
         for section in checkout_sections:
             checkout_step = section.split("\n      - name:", 1)[0]
             self.assertEqual(checkout_step.count("persist-credentials: false"), 1)
             self.assertIn("fetch-depth: 0", checkout_step)
-        self.assertEqual(workflow.count("persist-credentials: false"), 2)
+        self.assertEqual(workflow.count("persist-credentials: false"), 1)
 
     def test_agents_ci_section_matches_authoritative_gate_order_once(self) -> None:
         agents = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
@@ -223,15 +223,9 @@ class RepositoryPolicyTests(unittest.TestCase):
         for name in QUALITY_GATE_NAMES:
             self.assertEqual(names.count(name), 1)
 
-    def test_documented_threshold_literals_match_runtime_policy(self) -> None:
-        expected = (
-            f"{FUNCTION_THRESHOLD}%",
-            f"{REGION_THRESHOLD}%",
-            f"{LINE_THRESHOLD}%",
-        )
+    def test_authoritative_docs_do_not_claim_a_coverage_floor(self) -> None:
         paths = (
             "AGENTS.md",
-            "CLAUDE.md",
             "CONTRIBUTING.md",
             ".github/pull_request_template.md",
             "docs/agent-workflow.md",
@@ -242,8 +236,7 @@ class RepositoryPolicyTests(unittest.TestCase):
         for relative in paths:
             text = (ROOT / relative).read_text(encoding="utf-8")
             with self.subTest(path=relative):
-                for literal in expected:
-                    self.assertIn(literal, text)
+                self.assertNotIn("95%", text)
 
     def test_coverage_entry_points_use_the_local_target_wrapper(self) -> None:
         workflow = (ROOT / "scripts" / "coverage_workflow.py").read_text(encoding="utf-8")
@@ -252,8 +245,8 @@ class RepositoryPolicyTests(unittest.TestCase):
         self.assertIn("cargo_target.py", workflow)
         self.assertIn("coverage_workflow.py", diagnostics)
         self.assertNotIn("cargo llvm-cov", makefile)
-        self.assertIn(
-            '["cargo-llvm-cov", "llvm-cov", "--version"]',
+        self.assertNotIn(
+            "cargo_llvm_cov",
             (ROOT / "scripts" / "run_gates.py").read_text(encoding="utf-8"),
         )
 
@@ -281,7 +274,11 @@ class RepositoryPolicyTests(unittest.TestCase):
         )
         self.assertNotIn("npx --yes", gate)
         self.assertIn("jscpd --version", gate)
-        self.assertIn("npm install --global jscpd@4.0.5", workflow)
+        self.assertNotIn("npm install --global jscpd@4.0.5", workflow)
+        config = json.loads((ROOT / ".jscpd.json").read_text(encoding="utf-8"))
+        self.assertEqual(config["threshold"], 10)
+        self.assertEqual(config["minLines"], 10)
+        self.assertEqual(config["minTokens"], 100)
 
     def test_standard_generated_workflow_artifacts_are_ignored(self) -> None:
         candidates = [

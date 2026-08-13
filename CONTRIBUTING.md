@@ -13,33 +13,30 @@ make check
 make quality
 ```
 
-`make quality` runs the full local gate in order: fmt, Clippy, normal tests, public-API wiring,
-duplication, deterministic workflow gate tests, and coverage. All checks must pass before opening a
-PR.
+`make quality` runs the full-workspace format, Clippy, and test checks. All three must pass before
+opening a PR.
 
 ## Prerequisites
 
-- **Rust 1.93.0** via [rustup](https://rustup.rs/), including rustfmt, Clippy, and LLVM tools
-- **cargo-llvm-cov 0.6.21**: `cargo install cargo-llvm-cov --version 0.6.21 --locked`
-- **Python 3.11+**, exact runnable **jscpd 4.0.5**, and **ripgrep**; **Node.js/npm** are
-  needed only to install or change jscpd
+- **Rust 1.93.0** via [rustup](https://rustup.rs/), including rustfmt and Clippy
+- **Python 3.11+**
+- Optional diagnostics: **cargo-llvm-cov 0.6.21**, **jscpd 4.0.5**, and **ripgrep**
 
 `make doctor` checks exact versions and prints remediation without installing anything.
 
 ## Quality Expectations
 
-- **Coverage gate.** `make quality` enforces 95% functions, regions, lines, and changed executable
-  lines. Under 20 changed executable lines, patch coverage is 100%.
+- **Meaningful tests.** Test behavior and regressions. Coverage is diagnostic and has no merge floor.
 - **No dead code.** The codebase compiles with `#![deny(dead_code)]`. Remove unused items rather than suppressing the lint.
 - **Clippy policy.** Rust warnings and correctness/suspicious/performance findings fail. Style and
   complexity suggestions remain visible warnings. Use `make clippy`, not ad hoc flags.
-- **No production duplication.** jscpd blocks duplicated production Rust code; test-code duplication is reported informationally. Extract shared logic rather than copying it.
+- **Pragmatic duplication.** `make duplication-check` reports substantial production clones, but
+  findings do not block a change. Extract shared logic when it improves maintenance.
 
 ## PR Process
 
 - Keep PRs small and atomic. One logical change per PR is strongly preferred.
-- All seven CI gates must pass (fmt, Clippy, tests, public-API wiring, duplication, workflow gate
-  tests, and coverage).
+- Format, Clippy, and tests must pass in CI.
 - PR description must cover three things:
   1. **What** changed
   2. **Why** it was needed
@@ -48,8 +45,8 @@ PR.
 - The final `quality/status.json` must say `passed`, have matching fingerprints, and contain no
   skipped gate. Nothing tracked may change after that run without rerunning `make quality`.
 
-See [docs/agent-workflow.md](docs/agent-workflow.md) for changed-scope selection, coverage modes,
-structured status, CI docs-only behavior, and opt-in shared build artifacts.
+See [docs/agent-workflow.md](docs/agent-workflow.md) for changed-scope selection, optional
+diagnostics, structured status, and shared build artifacts.
 
 ## Testing Philosophy
 

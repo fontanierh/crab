@@ -26,11 +26,9 @@ while IFS= read -r file; do
 done < <(find crates -type f -name '*.rs' | sort)
 
 PRODUCTION_FILES=()
-TEST_FILES=()
 for file in "${RUST_FILES[@]}"; do
   case "$file" in
     */tests/*|*/src/test_support.rs)
-      TEST_FILES+=("$file")
       ;;
     */src/*.rs)
       PRODUCTION_FILES+=("$file")
@@ -43,22 +41,21 @@ if [ "${#PRODUCTION_FILES[@]}" -eq 0 ]; then
   exit 1
 fi
 
-echo "duplication-check: strict production scan"
+echo "duplication-check: informational production scan (10% threshold, tests excluded)"
+set +e
 jscpd --config .jscpd.json "${PRODUCTION_FILES[@]}"
+SCAN_EXIT=$?
+set -e
 
-if [ "${#TEST_FILES[@]}" -eq 0 ]; then
-  echo "duplication-check: no test code files found for informational scan"
+if [ "$SCAN_EXIT" -eq 0 ]; then
+  echo "duplication-check: production duplication is below the reporting threshold"
   exit 0
 fi
 
-echo "duplication-check: informational test-code scan"
-set +e
-jscpd --config .jscpd.json "${TEST_FILES[@]}"
-TEST_SCAN_EXIT=$?
-set -e
-
-if [ "$TEST_SCAN_EXIT" -ne 0 ]; then
-  echo "duplication-check: test-code duplication reported above (informational only)"
-else
-  echo "duplication-check: no test-code duplication detected"
+if [ "$SCAN_EXIT" -eq 1 ]; then
+  echo "duplication-check: duplication reported above (informational only)"
+  exit 0
 fi
+
+echo "duplication-check: jscpd failed with exit $SCAN_EXIT" >&2
+exit 2

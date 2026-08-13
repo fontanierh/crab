@@ -61,10 +61,9 @@ Major subsystems:
 Quality engineering workflow:
 
 - Deterministic preflight is `make doctor`; the changed-scope developer lane is `make check`.
-- Strict handoff remains `make quality` with 95% function, region, line, and changed-executable-line
-  coverage.
+- Handoff is `make quality`, which blocks on full-workspace format, Clippy, and tests.
 - The strict gate emits an atomic exact-tree attestation at `quality/status.json`.
-- Coverage regression triage is standardized via `make coverage-diagnostics`.
+- Coverage and duplication are optional diagnostics without merge thresholds.
 
 ## 4) Session and Lane Model
 

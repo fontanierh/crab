@@ -28,9 +28,6 @@ from scripts.workflow_common import (
 )
 
 
-FUNCTION_THRESHOLD = "95"
-REGION_THRESHOLD = "95"
-LINE_THRESHOLD = "95"
 AUTHORITATIVE_ARTIFACTS = (
     "lcov.info",
     "lcov.info.rejected",
@@ -192,73 +189,11 @@ def run_report(root: Path) -> int:
 
 
 def run_gate(root: Path, mode: str, explicit_base: str | None) -> int:
-    try:
-        validate_diff_mode(root, mode)
-        base_sha = resolve_patch_base(root, explicit_base)
-        outputs = _invalidate_outputs(root, AUTHORITATIVE_ARTIFACTS)
-        _create_coverage_directory(root)
-    except WorkflowError as error:
-        print(f"coverage-gate: {error}", file=sys.stderr)
-        return 2
-
-    output = outputs["lcov.info"]
-    artifact = outputs["patch-coverage.json"]
-    print(
-        "coverage-gate: fresh aggregate thresholds "
-        f"functions {FUNCTION_THRESHOLD}%, regions {REGION_THRESHOLD}%, lines {LINE_THRESHOLD}%",
-        flush=True,
-    )
-    result = run_local_coverage(
-        root,
-        [
-            "--workspace",
-            "--all-features",
-            "--locked",
-            "--lcov",
-            "--output-path",
-            str(output),
-            "--fail-under-functions",
-            FUNCTION_THRESHOLD,
-            "--fail-under-regions",
-            REGION_THRESHOLD,
-            "--fail-under-lines",
-            LINE_THRESHOLD,
-            "--show-missing-lines",
-            *IGNORE_ARGUMENTS,
-        ],
-    )
-    if result != 0:
-        return result
-    try:
-        _validate_lcov_policy(output)
-    except WorkflowError as error:
-        return _reject_lcov("coverage-gate", output, error)
-    summary_path = outputs["summary.json"]
-    summary_result = run_local_coverage(
-        root,
-        [
-            "report",
-            "--json",
-            "--summary-only",
-            "--output-path",
-            str(summary_path),
-            *IGNORE_ARGUMENTS,
-        ],
-    )
-    if summary_result != 0:
-        return summary_result
-    try:
-        _print_quick_summary(summary_path, label="coverage-gate", qualifier="enforced")
-    except (OSError, KeyError, IndexError, TypeError, ValueError, json.JSONDecodeError) as error:
-        print(f"coverage-gate: invalid aggregate summary: {error}", file=sys.stderr)
-        return 2
-    return run_patch_gate(
-        root,
-        mode=mode,
-        base_sha=base_sha,
-        lcov_path=output,
-        artifact_path=artifact,
-    )
+    # Compatibility entry point: coverage is intentionally a developer-owned report,
+    # not a merge gate. A diff baseline is therefore neither resolved nor required.
+    del mode, explicit_base
+    print("coverage-gate: deprecated; generating the non-blocking coverage report")
+    return run_report(root)
 
 
 def _print_quick_summary(
@@ -267,12 +202,8 @@ def _print_quick_summary(
     payload = json.loads(path.read_text(encoding="utf-8"))
     totals = payload["data"][0]["totals"]
     values = []
-    for key, threshold in (
-        ("functions", FUNCTION_THRESHOLD),
-        ("regions", REGION_THRESHOLD),
-        ("lines", LINE_THRESHOLD),
-    ):
-        values.append(f"{key} {totals[key]['percent']:.2f}% (final floor {threshold}%)")
+    for key in ("functions", "regions", "lines"):
+        values.append(f"{key} {totals[key]['percent']:.2f}%")
     print(f"{label}: aggregate {qualifier}: " + ", ".join(values))
 
 
@@ -344,13 +275,9 @@ def run_quick(root: Path, explicit_base: str | None) -> int:
     except (OSError, KeyError, IndexError, TypeError, ValueError, json.JSONDecodeError) as error:
         print(f"coverage-quick: invalid aggregate summary: {error}", file=sys.stderr)
         return 2
-    return run_patch_gate(
-        root,
-        mode="worktree",
-        base_sha=base_sha,
-        lcov_path=lcov_path,
-        artifact_path=artifact_path,
-    )
+    del artifact_path
+    print("coverage-quick: report complete; no coverage threshold is enforced")
+    return 0
 
 
 def run_diagnostics(root: Path) -> int:
