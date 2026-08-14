@@ -60,10 +60,7 @@ cargo clippy --workspace --all-targets --all-features -- -D warnings
 boxology check --base origin/main
 ```
 
-Crab v2 uses Boxology's published exact `0.1.0` registry crates and tools; no local checkout or Git
-dependency is required because this workspace does not use `boxology-http`. Its executable quality
-stages pass. Two checker gaps remain: generated Rust is not `rustfmt`-stable
-([#677](https://github.com/fontanierh/boxology/issues/677)), and a wholly new nested managed tree is
-not yet classified/owned against a base that lacks it
-([#685](https://github.com/fontanierh/boxology/issues/685)). New-box bootstrapping is tracked in
-[#686](https://github.com/fontanierh/boxology/issues/686).
+Crab v2 uses Boxology's published exact `0.1.1` registry crates and tools; no local checkout or Git
+dependency is required because this workspace does not use `boxology-http`. This release fixes the
+generated-format stability, new nested-root classification and generated-contract bootstrap gaps
+found while preparing this draft.

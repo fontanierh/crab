@@ -18,9 +18,9 @@ members = [
 edition = "2024"
 
 [workspace.dependencies]
-# This hand-managed non-HTTP workspace uses the published 0.1.0 closure. Initializer-generated
+# This hand-managed non-HTTP workspace uses the published 0.1.1 closure. Initializer-generated
 # HTTP examples still require coherent Git pins because `boxology-http` is not published yet.
-boxology = "=0.1.0"
-boxology-contract = "=0.1.0"
-boxology-manifest = "=0.1.0"
-boxology-runtime = "=0.1.0"
+boxology = "=0.1.1"
+boxology-contract = "=0.1.1"
+boxology-manifest = "=0.1.1"
+boxology-runtime = "=0.1.1"
