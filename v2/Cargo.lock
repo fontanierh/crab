@@ -407,10 +407,12 @@ version = "0.0.0"
 dependencies = [
  "agent-host-contract",
  "agent-host-implementation",
+ "boxology",
  "boxology-contract",
  "boxology-manifest",
  "boxology-runtime",
  "bridge-host-implementation",
+ "native-channel-contract",
  "native-channel-implementation",
  "sub-agent-host-implementation",
  "tempfile",
@@ -995,10 +997,16 @@ dependencies = [
 name = "native-channel-implementation"
 version = "0.0.0"
 dependencies = [
+ "agent-host-contract",
  "boxology",
  "boxology-contract",
  "boxology-runtime",
  "native-channel-contract",
+ "rusqlite",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "uuid",
 ]
 
 [[package]]

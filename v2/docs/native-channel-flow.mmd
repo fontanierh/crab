@@ -1,0 +1,27 @@
+%%{init: {"theme": "base", "themeVariables": {"fontFamily": "ui-sans-serif, system-ui, sans-serif", "primaryTextColor": "#172033", "lineColor": "#64748b", "edgeLabelBackground": "#ffffff"}, "flowchart": {"curve": "basis", "nodeSpacing": 42, "rankSpacing": 58}}}%%
+flowchart LR
+    UI["Native agent UI<br/>full session view"]
+    CHANNEL["Native channel<br/>binding · cursor · input policy"]
+    DB[("Channel SQLite<br/>turns · publication receipts")]
+    IMPORT{"Boxology import<br/>agent-host contract"}
+    AGENT["ACP agent host<br/>durable raw event journal"]
+
+    UI -->|"queue · steer"| CHANNEL
+    UI -->|"explicit interrupt"| CHANNEL
+    CHANNEL <-->|"binding + dedupe"| DB
+    CHANNEL --> IMPORT
+    IMPORT -->|"prompt · cancel"| AGENT
+    AGENT -->|"ordered ACP events"| IMPORT
+    IMPORT --> CHANNEL
+    CHANNEL -->|"replay every event"| UI
+    UI -->|"ordered publication ack"| CHANNEL
+
+    classDef ui fill:#f3e8ff,stroke:#9333ea,stroke-width:2px,color:#581c87;
+    classDef runtime fill:#dbeafe,stroke:#2563eb,stroke-width:2px,color:#172554;
+    classDef durable fill:#dcfce7,stroke:#16a34a,stroke-width:2px,color:#14532d;
+    classDef boundary fill:#fef3c7,stroke:#d97706,stroke-width:2px,color:#78350f;
+
+    class UI ui;
+    class CHANNEL,AGENT runtime;
+    class DB durable;
+    class IMPORT boundary;
