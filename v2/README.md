@@ -81,9 +81,10 @@ interrupt as a separate explicit action.
   bindings/routes, exposes an owner-only authenticated local Boxology endpoint, and continuously
   drains every configured trigger lane. See the [startup contract](docs/runtime-startup.md) and
   [local transport contract](docs/channel-ipc.md).
-- The first native UI target is the Crab fork of T3 Code. A small ACP stdio proxy will attach each
-  T3 thread to the single Crab-owned runtime without transferring session ownership. See the
-  [decision and attach seam](docs/acp-native-ui.md).
+- The first native UI target is the Crab fork of T3 Code. The `crab-v2-acp-channel` ACP stdio
+  facade attaches each T3 thread to the single Crab-owned runtime without transferring session
+  ownership. See the [decision and attach seam](docs/acp-native-ui.md) and
+  [rendered facade flow](docs/acp-channel-facade-flow.png).
 
 ## Validate
 

@@ -5,6 +5,7 @@ edition.workspace = true
 publish = false
 
 [dependencies]
+agent-client-protocol = { workspace = true }
 agent-host-contract = { version = "=0.0.0", path = "../../agent-host/generated/contract" }
 agent-host-implementation = { version = "=0.0.0", path = "../../agent-host/implementation" }
 boxology-contract = { workspace = true }

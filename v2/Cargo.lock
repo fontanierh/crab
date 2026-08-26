@@ -445,6 +445,7 @@ dependencies = [
 name = "crab-v2-runtime"
 version = "0.0.0"
 dependencies = [
+ "agent-client-protocol",
  "agent-host-contract",
  "agent-host-implementation",
  "async-trait",

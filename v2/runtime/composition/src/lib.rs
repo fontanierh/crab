@@ -11,10 +11,12 @@ extern crate agent_host_contract as boxology_generated_contract;
 
 use std::{path::Path, sync::Arc};
 
+mod acp_channel;
 mod channel_ipc;
 mod config;
 mod configured;
 
+pub use acp_channel::{AcpChannelError, AcpChannelOptions, run_acp_channel_stdio};
 pub use channel_ipc::{
     ChannelIpcClient, ChannelIpcClientError, ChannelIpcPaths, ChannelIpcStartupError,
 };

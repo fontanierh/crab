@@ -581,7 +581,7 @@ impl std::error::Error for RuntimeStartError {}
 #[cfg(test)]
 mod tests {
     use std::{
-        collections::HashSet,
+        collections::{HashMap, HashSet},
         os::unix::fs::PermissionsExt as _,
         path::PathBuf,
         sync::{
@@ -591,14 +591,26 @@ mod tests {
         time::Duration,
     };
 
+    use agent_client_protocol::{
+        Client, UntypedMessage,
+        schema::{
+            ProtocolVersion,
+            v1::{
+                AuthenticateRequest, CancelNotification, ContentBlock, InitializeRequest,
+                LoadSessionRequest, NewSessionRequest, PromptRequest as AcpPromptRequest,
+                StopReason, TextContent,
+            },
+        },
+    };
     use agent_host_implementation::{
-        AcpNegotiation, AcpProtocolProfile, AgentCatalog, AgentHostError, AgentLifecycle,
-        AgentSession, AuthorityAttestation, CompactionReporting, DiscoverAgentsRequest, EventPage,
-        FilesystemAuthority, NetworkAuthority, OpenSessionRequest, OperationReceipt,
-        PermissionAuthority, PermissionRequest, PermissionResolution, PreflightReport,
-        PreflightRequest, PromptAccepted, PromptDisposition, PromptRequest, ReadEventsRequest,
-        RootAuthority, RunReference, SandboxAuthority, SessionReference, SessionStatus,
-        SteeringSupport, generated as agent_host,
+        AcpEvent, AcpEventDirection, AcpEventKind, AcpNegotiation, AcpProtocolProfile,
+        AgentCatalog, AgentHostError, AgentLifecycle, AgentSession, AuthorityAttestation,
+        CompactionReporting, DiscoverAgentsRequest, EventPage, FilesystemAuthority,
+        NetworkAuthority, OpenSessionRequest, OperationReceipt, PermissionAuthority,
+        PermissionRequest, PermissionResolution, PreflightReport, PreflightRequest, PromptAccepted,
+        PromptDisposition, PromptRequest, ReadEventsRequest, RootAuthority, RunReference,
+        SandboxAuthority, SessionReference, SessionStatus, SteeringSupport,
+        generated as agent_host,
     };
     use boxology_contract::{CallContext, CallError};
     use boxology_runtime::{Composition, CompositionBuilder};
@@ -627,9 +639,10 @@ mod tests {
         initialize_topology_with_handles, session_metadata, spawn_lane_worker, suspend_bridges,
     };
     use crate::{
-        AgentConfig, BridgeConfig, BridgeIngressConfig, ChannelConfig, ChannelIpcClient,
-        ChannelIpcClientError, ChannelIpcPaths, ChannelIpcStartupError, CommandConfig, LaneConfig,
-        ProtocolConfig, RuntimeConfig, channel_ipc::ChannelIpcServer,
+        AcpChannelOptions, AgentConfig, BridgeConfig, BridgeIngressConfig, ChannelConfig,
+        ChannelIpcClient, ChannelIpcClientError, ChannelIpcPaths, ChannelIpcStartupError,
+        CommandConfig, LaneConfig, ProtocolConfig, RuntimeConfig, acp_channel::AcpChannelFacade,
+        channel_ipc::ChannelIpcServer,
     };
 
     #[derive(Default)]
@@ -637,6 +650,8 @@ mod tests {
         next_session: u64,
         live_sessions: HashSet<String>,
         prompts: Vec<PromptRequest>,
+        events: Vec<AcpEvent>,
+        active_runs: HashMap<String, String>,
     }
 
     struct FakeAgentHost {
@@ -795,9 +810,56 @@ mod tests {
                 return Err(AgentHostError::UnknownSession);
             }
             state.prompts.push(request.clone());
+            let run_id = format!("run-{}", state.prompts.len());
+            let sequence = state
+                .events
+                .iter()
+                .filter(|event| event.session_id == request.session_id)
+                .count() as u64
+                + 1;
+            state.events.push(AcpEvent {
+                session_id: request.session_id.clone(),
+                run_id: Some(run_id.clone()),
+                sequence,
+                observed_at_ms: sequence,
+                kind: AcpEventKind::Message,
+                direction: AcpEventDirection::AgentToClient,
+                native_event_json: json!({
+                    "jsonrpc": "2.0",
+                    "method": "session/update",
+                    "params": {
+                        "sessionId": format!("native-{}", request.session_id),
+                        "update": {
+                            "sessionUpdate": "agent_message_chunk",
+                            "content": {"type": "text", "text": "fixture reply"}
+                        }
+                    }
+                })
+                .to_string(),
+            });
+            if request.native_prompt_json.contains("hold") {
+                state
+                    .active_runs
+                    .insert(request.session_id.clone(), run_id.clone());
+            } else {
+                state.events.push(AcpEvent {
+                    session_id: request.session_id.clone(),
+                    run_id: Some(run_id.clone()),
+                    sequence: sequence + 1,
+                    observed_at_ms: sequence + 1,
+                    kind: AcpEventKind::RunFinished,
+                    direction: AcpEventDirection::AgentToClient,
+                    native_event_json: json!({
+                        "jsonrpc": "2.0",
+                        "id": format!("native-{run_id}"),
+                        "result": {"stopReason": "end_turn"}
+                    })
+                    .to_string(),
+                });
+            }
             Ok(PromptAccepted {
                 session_id: request.session_id,
-                run_id: format!("run-{}", state.prompts.len()),
+                run_id,
                 accepted_at_ms: 1,
                 disposition: PromptDisposition::StartedForegroundWork,
             })
@@ -809,19 +871,32 @@ mod tests {
             request: ReadEventsRequest,
         ) -> Result<EventPage, AgentHostError> {
             let _ = context;
-            if !self
-                .state
-                .lock()
-                .expect("fake state lock")
-                .live_sessions
-                .contains(&request.session_id)
-            {
+            let state = self.state.lock().expect("fake state lock");
+            if !state.live_sessions.contains(&request.session_id) {
                 return Err(AgentHostError::UnknownSession);
             }
+            let last_sequence = state
+                .events
+                .iter()
+                .filter(|event| event.session_id == request.session_id)
+                .count() as u64;
+            let events = state
+                .events
+                .iter()
+                .filter(|event| {
+                    event.session_id == request.session_id
+                        && event.sequence > request.after_sequence
+                })
+                .take(request.limit as usize)
+                .cloned()
+                .collect::<Vec<_>>();
+            let next_sequence = events
+                .last()
+                .map_or(request.after_sequence, |event| event.sequence);
             Ok(EventPage {
-                events: Vec::new(),
-                next_sequence: request.after_sequence,
-                caught_up: true,
+                events,
+                next_sequence,
+                caught_up: next_sequence == last_sequence,
             })
         }
 
@@ -844,11 +919,20 @@ mod tests {
             if !state.live_sessions.contains(&request.session_id) {
                 return Err(AgentHostError::UnknownSession);
             }
+            let active_run_id = state.active_runs.get(&request.session_id).cloned();
             Ok(SessionStatus {
-                session_id: request.session_id,
-                lifecycle: AgentLifecycle::Ready,
-                last_sequence: 0,
-                active_run_id: None,
+                session_id: request.session_id.clone(),
+                lifecycle: if active_run_id.is_some() {
+                    AgentLifecycle::Busy
+                } else {
+                    AgentLifecycle::Ready
+                },
+                last_sequence: state
+                    .events
+                    .iter()
+                    .filter(|event| event.session_id == request.session_id)
+                    .count() as u64,
+                active_run_id,
             })
         }
 
@@ -857,8 +941,36 @@ mod tests {
             context: CallContext,
             request: RunReference,
         ) -> Result<OperationReceipt, AgentHostError> {
-            let _ = (context, request);
-            Err(AgentHostError::UnknownRun)
+            let _ = context;
+            let mut state = self.state.lock().expect("fake state lock");
+            if state.active_runs.get(&request.session_id) != Some(&request.run_id) {
+                return Err(AgentHostError::UnknownRun);
+            }
+            state.active_runs.remove(&request.session_id);
+            let sequence = state
+                .events
+                .iter()
+                .filter(|event| event.session_id == request.session_id)
+                .count() as u64
+                + 1;
+            state.events.push(AcpEvent {
+                session_id: request.session_id,
+                run_id: Some(request.run_id.clone()),
+                sequence,
+                observed_at_ms: sequence,
+                kind: AcpEventKind::RunFinished,
+                direction: AcpEventDirection::AgentToClient,
+                native_event_json: json!({
+                    "jsonrpc": "2.0",
+                    "id": format!("native-{}", request.run_id),
+                    "result": {"stopReason": "cancelled"}
+                })
+                .to_string(),
+            });
+            Ok(OperationReceipt {
+                accepted: true,
+                recorded_at_ms: sequence,
+            })
         }
 
         async fn close_session(
@@ -876,6 +988,11 @@ mod tests {
             {
                 return Err(AgentHostError::UnknownSession);
             }
+            self.state
+                .lock()
+                .expect("fake state lock")
+                .active_runs
+                .remove(&request.session_id);
             Ok(OperationReceipt {
                 accepted: true,
                 recorded_at_ms: 1,
@@ -1232,6 +1349,151 @@ mod tests {
             .await
             .expect("restarted IPC shuts down");
         assert!(close_sessions(&graph.agent_host, &sessions).await);
+    }
+
+    #[tokio::test]
+    async fn acp_facade_streams_cancels_and_reloads_through_real_local_ipc() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let state = Arc::new(Mutex::new(FakeState::default()));
+        let graph = graph(directory.path(), state.clone());
+        let paths = ChannelIpcPaths::for_state_directory(directory.path()).expect("paths resolve");
+        let mut server = ChannelIpcServer::start(
+            paths,
+            graph.channel_gateway.clone(),
+            graph.native_channel.clone(),
+        )
+        .await
+        .expect("IPC starts");
+        let options = AcpChannelOptions::new(directory.path(), "fake");
+        let first_updates = Arc::new(Mutex::new(Vec::new()));
+        let received_updates = first_updates.clone();
+        let first_session = Arc::new(Mutex::new(None::<String>));
+        let recorded_session = first_session.clone();
+        let first_agent = AcpChannelFacade::new(
+            ChannelIpcClient::from_state_directory(directory.path()).expect("client opens"),
+            options.clone(),
+        )
+        .agent();
+        let first_client = Client.builder().on_receive_notification(
+            async move |notification: UntypedMessage, _connection| {
+                received_updates
+                    .lock()
+                    .expect("updates lock")
+                    .push(notification.params);
+                Ok(())
+            },
+            agent_client_protocol::on_receive_notification!(),
+        );
+        let first_working_directory = directory.path().to_path_buf();
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            first_client.connect_with(first_agent, async move |connection| {
+                let initialized = connection
+                    .send_request(InitializeRequest::new(ProtocolVersion::V1))
+                    .block_task()
+                    .await?;
+                assert!(initialized.agent_capabilities.load_session);
+                assert_eq!(initialized.auth_methods.len(), 1);
+                connection
+                    .send_request(AuthenticateRequest::new("crab-local"))
+                    .block_task()
+                    .await?;
+                let created = connection
+                    .send_request(NewSessionRequest::new(first_working_directory))
+                    .block_task()
+                    .await?;
+                let session_id = created.session_id.to_string();
+                *recorded_session.lock().expect("session lock") = Some(session_id.clone());
+                let completed = connection
+                    .send_request(AcpPromptRequest::new(
+                        session_id.clone(),
+                        vec![ContentBlock::Text(TextContent::new("hello"))],
+                    ))
+                    .block_task()
+                    .await?;
+                assert_eq!(completed.stop_reason, StopReason::EndTurn);
+
+                let held = connection.send_request(AcpPromptRequest::new(
+                    session_id.clone(),
+                    vec![ContentBlock::Text(TextContent::new("hold"))],
+                ));
+                connection.send_notification(CancelNotification::new(session_id))?;
+                let cancelled = held.block_task().await?;
+                assert_eq!(cancelled.stop_reason, StopReason::Cancelled);
+                Ok(())
+            }),
+        )
+        .await
+        .expect("first ACP connection completes")
+        .expect("first ACP connection succeeds");
+
+        let facade_session_id = first_session
+            .lock()
+            .expect("session lock")
+            .clone()
+            .expect("session was created");
+        assert!(
+            first_updates
+                .lock()
+                .expect("updates lock")
+                .iter()
+                .all(
+                    |params| params.get("sessionId").and_then(serde_json::Value::as_str)
+                        == Some(facade_session_id.as_str())
+                )
+        );
+        let sessions_after_disconnect = state.lock().expect("fake state lock").next_session;
+        assert_eq!(sessions_after_disconnect, 1);
+        assert_eq!(
+            state.lock().expect("fake state lock").live_sessions.len(),
+            1
+        );
+
+        let second_agent = AcpChannelFacade::new(
+            ChannelIpcClient::from_state_directory(directory.path()).expect("client reopens"),
+            options,
+        )
+        .agent();
+        let second_working_directory = directory.path().to_path_buf();
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            Client
+                .builder()
+                .connect_with(second_agent, async move |connection| {
+                    connection
+                        .send_request(InitializeRequest::new(ProtocolVersion::V1))
+                        .block_task()
+                        .await?;
+                    connection
+                        .send_request(AuthenticateRequest::new("crab-local"))
+                        .block_task()
+                        .await?;
+                    connection
+                        .send_request(LoadSessionRequest::new(
+                            facade_session_id.clone(),
+                            second_working_directory,
+                        ))
+                        .block_task()
+                        .await?;
+                    let completed = connection
+                        .send_request(AcpPromptRequest::new(
+                            facade_session_id,
+                            vec![ContentBlock::Text(TextContent::new("after reload"))],
+                        ))
+                        .block_task()
+                        .await?;
+                    assert_eq!(completed.stop_reason, StopReason::EndTurn);
+                    Ok(())
+                }),
+        )
+        .await
+        .expect("second ACP connection completes")
+        .expect("second ACP connection succeeds");
+        assert_eq!(state.lock().expect("fake state lock").next_session, 1);
+
+        let attached_sessions = server.attached_session_ids();
+        server.shutdown().await.expect("IPC shuts down");
+        assert!(close_sessions(&graph.agent_host, &attached_sessions).await);
     }
 
     #[tokio::test]
