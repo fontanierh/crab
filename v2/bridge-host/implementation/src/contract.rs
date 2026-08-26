@@ -75,8 +75,10 @@ boxology::contract! {
     pub struct BridgeRecord {
         pub bridge_id: String,
         pub package_id: String,
+        pub display_name: String,
         pub lifecycle: BridgeLifecycle,
         pub ingress_mode: BridgeIngressMode,
+        pub desired_running: bool,
         pub generation: u64,
         pub registered_at_ms: u64,
     }
@@ -89,6 +91,12 @@ boxology::contract! {
         pub bridge_id: String,
         pub expected_generation: u64,
         pub desired_running: bool,
+    }
+
+    /// Replace package/configuration/policy with compare-and-swap generation control.
+    pub struct ReplaceBridgeRequest {
+        pub expected_generation: u64,
+        pub spec: BridgeSpec,
     }
 
     /// Truthful observed health from the bridge process, not merely supervisor process liveness.
@@ -175,6 +183,10 @@ boxology::contract! {
         pub ingress_mode: BridgeIngressMode,
         pub message_json: String,
         pub attachment_handles: Vec<String>,
+        /// Durable trigger-inbox identity proving enqueue completed before acknowledgement.
+        pub trigger_id: String,
+        pub deduplicated: bool,
+        pub recorded_at_ms: u64,
     }
 
     /// A selected message for an external system, not a copied ACP event.
@@ -213,6 +225,7 @@ boxology::contract! {
         DraftOnly,
         InvalidSpec,
         UnknownBridge,
+        DuplicateBridgeConflict,
         GenerationConflict,
         RestartBudgetExhausted,
         AuthenticationUnavailable,
@@ -220,13 +233,19 @@ boxology::contract! {
         CredentialRejected,
         BridgeUnhealthy,
         DuplicateMessageConflict,
+        UnknownDelivery,
         DeliveryFailed,
         PackageProtocolFailed,
+        StorageUnavailable,
     }
 
     /// Register a package-defined bridge under generic Crab supervision.
     #[capability]
     pub async fn register_bridge(request: BridgeSpec) -> Result<BridgeRecord, BridgeHostError>;
+
+    /// Install a new immutable generation; ingress mode changes only through this operation.
+    #[capability]
+    pub async fn replace_bridge(request: ReplaceBridgeRequest) -> Result<BridgeRecord, BridgeHostError>;
 
     /// Converge observed lifecycle toward desired lifecycle using bounded recovery.
     #[capability]

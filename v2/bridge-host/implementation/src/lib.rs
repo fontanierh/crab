@@ -1,118 +1,1030 @@
 mod contract;
-pub use contract::*;
+mod credentials;
+mod package;
+mod store;
 
-/// Fail-closed placeholder for bridge supervision, authentication and delivery.
-pub struct BridgeHostDraft;
+pub use contract::*;
+pub use credentials::{
+    CredentialStore, CredentialStoreError, FileCredentialStore, InMemoryCredentialStore,
+};
+pub use package::{
+    BridgeInboundSink, BridgePackage, BridgePackageError, BridgePackageFactory, PackageChallenge,
+    PackageCredential, PackageCredentialValidation, PackageDelivery, PackageHealth,
+    ProcessBridgePackageFactory,
+};
+
+use std::{
+    collections::HashMap,
+    path::Path,
+    sync::{Arc, Mutex as StdMutex},
+    time::{SystemTime, UNIX_EPOCH},
+};
+
+use boxology_contract::{CallContext, Caller, CancelToken, ErasedCallError, TraceContext};
+use boxology_import_trigger_inbox::{
+    EnqueueTrigger, TriggerAttachment, TriggerMode, TriggerSource,
+};
+use generated::TriggerInboxImport;
+use serde_json::{Map, Value, json};
+use store::BridgeStore;
+use tokio::{
+    sync::{Mutex, RwLock},
+    task::JoinHandle,
+};
+
+type Clock = Arc<dyn Fn() -> Result<u64, BridgeHostError> + Send + Sync>;
+
+/// Opened durable state waiting for composition-owned imports and package services.
+pub struct BridgeHostState {
+    store: BridgeStore,
+}
+
+impl BridgeHostState {
+    /// Open file-backed bridge state before assembling the Boxology graph.
+    pub fn open(path: impl AsRef<Path>) -> Result<Self, BridgeHostError> {
+        Ok(Self {
+            store: BridgeStore::open(path)?,
+        })
+    }
+
+    /// Open ephemeral bridge state before assembling the Boxology graph.
+    pub fn open_in_memory() -> Result<Self, BridgeHostError> {
+        Ok(Self {
+            store: BridgeStore::open_in_memory()?,
+        })
+    }
+
+    /// Inject the composition-selected trigger inbox and runtime service boundaries.
+    #[must_use]
+    pub fn connect(
+        self,
+        trigger_inbox: TriggerInboxImport,
+        packages: Arc<dyn BridgePackageFactory>,
+        credentials: Arc<dyn CredentialStore>,
+    ) -> BridgeHost {
+        let host = BridgeHost {
+            trigger_inbox: Arc::new(trigger_inbox),
+            packages,
+            credentials,
+            store: Arc::new(self.store),
+            connections: Arc::new(RwLock::new(HashMap::new())),
+            supervisors: Arc::new(StdMutex::new(HashMap::new())),
+            operations: Arc::new(Mutex::new(())),
+            clock: Arc::new(system_time_ms),
+        };
+        if tokio::runtime::Handle::try_current().is_ok()
+            && let Ok(bridge_ids) = host.store.desired_bridge_ids()
+        {
+            for bridge_id in bridge_ids {
+                host.ensure_supervisor(&bridge_id);
+            }
+        }
+        host
+    }
+}
+
+/// Durable bridge supervisor, credential broker and selected-message router.
+pub struct BridgeHost {
+    trigger_inbox: Arc<TriggerInboxImport>,
+    packages: Arc<dyn BridgePackageFactory>,
+    credentials: Arc<dyn CredentialStore>,
+    store: Arc<BridgeStore>,
+    connections: Arc<RwLock<HashMap<String, Arc<dyn BridgePackage>>>>,
+    supervisors: Arc<StdMutex<HashMap<String, JoinHandle<()>>>>,
+    operations: Arc<Mutex<()>>,
+    clock: Clock,
+}
+
+impl BridgeHost {
+    fn supervisor_context(&self) -> SupervisorContext {
+        SupervisorContext {
+            trigger_inbox: self.trigger_inbox.clone(),
+            packages: self.packages.clone(),
+            credentials: self.credentials.clone(),
+            store: self.store.clone(),
+            connections: self.connections.clone(),
+            operations: self.operations.clone(),
+            clock: self.clock.clone(),
+        }
+    }
+
+    fn inbound_sink(&self, bridge_id: &str) -> Arc<dyn BridgeInboundSink> {
+        Arc::new(BridgeIngressRouter {
+            bridge_id: bridge_id.to_owned(),
+            trigger_inbox: self.trigger_inbox.clone(),
+            store: self.store.clone(),
+            operations: self.operations.clone(),
+            clock: self.clock.clone(),
+        })
+    }
+
+    fn ensure_supervisor(&self, bridge_id: &str) {
+        let Ok(mut supervisors) = self.supervisors.lock() else {
+            return;
+        };
+        if supervisors
+            .get(bridge_id)
+            .is_some_and(|handle| !handle.is_finished())
+        {
+            return;
+        }
+        if let Some(finished) = supervisors.remove(bridge_id) {
+            finished.abort();
+        }
+        let bridge_id = bridge_id.to_owned();
+        let context = self.supervisor_context();
+        let task_id = bridge_id.clone();
+        let handle = tokio::spawn(async move {
+            context.run(task_id).await;
+        });
+        supervisors.insert(bridge_id, handle);
+    }
+
+    fn stop_supervisor(&self, bridge_id: &str) {
+        if let Ok(mut supervisors) = self.supervisors.lock()
+            && let Some(handle) = supervisors.remove(bridge_id)
+        {
+            handle.abort();
+        }
+    }
+
+    async fn connection(&self, bridge_id: &str) -> Result<Arc<dyn BridgePackage>, BridgeHostError> {
+        self.connections
+            .read()
+            .await
+            .get(bridge_id)
+            .cloned()
+            .ok_or(BridgeHostError::BridgeUnhealthy)
+    }
+
+    async fn credential_secret(&self, bridge_id: &str) -> Result<Option<String>, BridgeHostError> {
+        let status = self.store.credential(bridge_id)?;
+        let Some(handle) = status.credential_handle else {
+            return Ok(None);
+        };
+        self.credentials
+            .get(&handle)
+            .await
+            .map(Some)
+            .map_err(map_credential_error)
+    }
+
+    async fn ensure_running(&self, bridge_id: &str) -> Result<BridgeStatus, BridgeHostError> {
+        let spec = self.store.spec(bridge_id)?;
+        if !spec.desired_running {
+            return self.stop_connection(bridge_id).await;
+        }
+        if self.connections.read().await.contains_key(bridge_id) {
+            return self.probe_health(bridge_id).await;
+        }
+        let now_ms = (self.clock)()?;
+        let status = self.store.status(bridge_id, now_ms)?;
+        if status.next_restart_at_ms.is_some_and(|next| next > now_ms) {
+            return Ok(status);
+        }
+        if let Err(error) = self.store.record_start_attempt(&spec, now_ms) {
+            self.store.set_lifecycle(
+                bridge_id,
+                &BridgeLifecycle::Failed,
+                Some("restart budget exhausted"),
+                None,
+            )?;
+            return Err(error);
+        }
+        self.store
+            .set_lifecycle(bridge_id, &BridgeLifecycle::Starting, None, None)?;
+        let package = match self
+            .packages
+            .launch(&spec, self.inbound_sink(bridge_id))
+            .await
+        {
+            Ok(package) => package,
+            Err(_) => {
+                self.schedule_backoff(bridge_id, &spec)?;
+                return Err(BridgeHostError::PackageProtocolFailed);
+            }
+        };
+        self.connections
+            .write()
+            .await
+            .insert(bridge_id.to_owned(), package);
+        self.probe_health(bridge_id).await
+    }
+
+    fn schedule_backoff(&self, bridge_id: &str, spec: &BridgeSpec) -> Result<(), BridgeHostError> {
+        let status = self.store.status(bridge_id, (self.clock)()?)?;
+        let exponent = status.consecutive_failures.min(20) as u32;
+        let multiplier = 1_u64.checked_shl(exponent).unwrap_or(u64::MAX);
+        let delay = spec
+            .health_interval_ms
+            .saturating_mul(multiplier)
+            .min(spec.restart_window_ms);
+        let next = (self.clock)()?.saturating_add(delay);
+        self.store.set_backoff(bridge_id, next)
+    }
+
+    async fn probe_health(&self, bridge_id: &str) -> Result<BridgeStatus, BridgeHostError> {
+        let package = self.connection(bridge_id).await?;
+        let credential = self.credential_secret(bridge_id).await?;
+        let now_ms = (self.clock)()?;
+        let health = match package.health(credential.as_deref()).await {
+            Ok(health) => health,
+            Err(_) => {
+                self.connections.write().await.remove(bridge_id);
+                let spec = self.store.spec(bridge_id)?;
+                self.schedule_backoff(bridge_id, &spec)?;
+                return Err(BridgeHostError::BridgeUnhealthy);
+            }
+        };
+        let no_auth = self
+            .store
+            .spec(bridge_id)?
+            .authentication_methods
+            .is_empty();
+        let credential_lifecycle = if no_auth || health.credential_valid {
+            CredentialLifecycle::Valid
+        } else if credential.is_none() {
+            CredentialLifecycle::Missing
+        } else {
+            CredentialLifecycle::Rejected
+        };
+        let observation = HealthObservation {
+            bridge_id: bridge_id.to_owned(),
+            observed_at_ms: now_ms,
+            process_alive: health.process_alive,
+            service_connected: health.service_connected,
+            can_receive: health.can_receive,
+            can_send: health.can_send,
+            credential_lifecycle: credential_lifecycle.clone(),
+            detail_json: health.detail_json,
+        };
+        let mut status = self.store.report_health(&observation)?;
+        if !observation.process_alive {
+            self.connections.write().await.remove(bridge_id);
+            let spec = self.store.spec(bridge_id)?;
+            self.schedule_backoff(bridge_id, &spec)?;
+            return Err(BridgeHostError::BridgeUnhealthy);
+        }
+        if matches!(credential_lifecycle, CredentialLifecycle::Missing) && !no_auth {
+            self.store.set_lifecycle(
+                bridge_id,
+                &BridgeLifecycle::AwaitingAuthentication,
+                None,
+                None,
+            )?;
+            status = self.store.status(bridge_id, now_ms)?;
+        }
+        Ok(status)
+    }
+
+    async fn stop_connection(&self, bridge_id: &str) -> Result<BridgeStatus, BridgeHostError> {
+        if let Some(package) = self.connections.write().await.remove(bridge_id) {
+            let _ = package.stop().await;
+        }
+        self.store
+            .set_lifecycle(bridge_id, &BridgeLifecycle::Stopped, None, None)?;
+        self.store.status(bridge_id, (self.clock)()?)
+    }
+}
+
+struct SupervisorContext {
+    trigger_inbox: Arc<TriggerInboxImport>,
+    packages: Arc<dyn BridgePackageFactory>,
+    credentials: Arc<dyn CredentialStore>,
+    store: Arc<BridgeStore>,
+    connections: Arc<RwLock<HashMap<String, Arc<dyn BridgePackage>>>>,
+    operations: Arc<Mutex<()>>,
+    clock: Clock,
+}
+
+impl SupervisorContext {
+    async fn run(self, bridge_id: String) {
+        loop {
+            let interval_ms = match self.store.spec(&bridge_id) {
+                Ok(spec) if spec.desired_running => spec.health_interval_ms,
+                _ => break,
+            };
+            self.tick(&bridge_id).await;
+            tokio::time::sleep(std::time::Duration::from_millis(interval_ms)).await;
+        }
+    }
+
+    async fn tick(&self, bridge_id: &str) {
+        let _operation = self.operations.lock().await;
+        let Ok(spec) = self.store.spec(bridge_id) else {
+            return;
+        };
+        if !spec.desired_running {
+            return;
+        }
+        let Ok(now_ms) = (self.clock)() else {
+            return;
+        };
+        let connection = self.connections.read().await.get(bridge_id).cloned();
+        let package = if let Some(connection) = connection {
+            connection
+        } else {
+            let Ok(status) = self.store.status(bridge_id, now_ms) else {
+                return;
+            };
+            if status.next_restart_at_ms.is_some_and(|next| next > now_ms) {
+                return;
+            }
+            if self.store.record_start_attempt(&spec, now_ms).is_err() {
+                let _ = self.store.set_lifecycle(
+                    bridge_id,
+                    &BridgeLifecycle::Failed,
+                    Some("restart budget exhausted"),
+                    None,
+                );
+                return;
+            }
+            let _ = self
+                .store
+                .set_lifecycle(bridge_id, &BridgeLifecycle::Starting, None, None);
+            let inbound: Arc<dyn BridgeInboundSink> = Arc::new(BridgeIngressRouter {
+                bridge_id: bridge_id.to_owned(),
+                trigger_inbox: self.trigger_inbox.clone(),
+                store: self.store.clone(),
+                operations: self.operations.clone(),
+                clock: self.clock.clone(),
+            });
+            let Ok(package) = self.packages.launch(&spec, inbound).await else {
+                self.backoff(bridge_id, &spec, now_ms);
+                return;
+            };
+            self.connections
+                .write()
+                .await
+                .insert(bridge_id.to_owned(), package.clone());
+            package
+        };
+
+        let credential_status = match self.store.credential(bridge_id) {
+            Ok(status) => status,
+            Err(_) => return,
+        };
+        let credential = match credential_status.credential_handle.as_deref() {
+            Some(handle) => match self.credentials.get(handle).await {
+                Ok(credential) => Some(credential),
+                Err(CredentialStoreError::UnknownHandle) => {
+                    let _ = self.store.clear_credential_reference(
+                        bridge_id,
+                        &CredentialLifecycle::Missing,
+                        now_ms,
+                    );
+                    None
+                }
+                Err(CredentialStoreError::InvalidCredential) => {
+                    let _ = self.store.clear_credential_reference(
+                        bridge_id,
+                        &CredentialLifecycle::Rejected,
+                        now_ms,
+                    );
+                    None
+                }
+                Err(CredentialStoreError::Unavailable) => {
+                    let _ = self.store.set_lifecycle(
+                        bridge_id,
+                        &BridgeLifecycle::Degraded,
+                        Some("credential provider unavailable"),
+                        None,
+                    );
+                    return;
+                }
+            },
+            None => None,
+        };
+        let health = match package.health(credential.as_deref()).await {
+            Ok(health) => health,
+            Err(_) => {
+                self.connections.write().await.remove(bridge_id);
+                self.backoff(bridge_id, &spec, now_ms);
+                return;
+            }
+        };
+        let no_auth = spec.authentication_methods.is_empty();
+        let credential_lifecycle = if no_auth || health.credential_valid {
+            CredentialLifecycle::Valid
+        } else if credential.is_some() {
+            CredentialLifecycle::Rejected
+        } else {
+            CredentialLifecycle::Missing
+        };
+        let process_alive = health.process_alive;
+        let _ = self.store.report_health(&HealthObservation {
+            bridge_id: bridge_id.to_owned(),
+            observed_at_ms: now_ms,
+            process_alive: health.process_alive,
+            service_connected: health.service_connected,
+            can_receive: health.can_receive,
+            can_send: health.can_send,
+            credential_lifecycle: credential_lifecycle.clone(),
+            detail_json: health.detail_json,
+        });
+        if !process_alive {
+            self.connections.write().await.remove(bridge_id);
+            self.backoff(bridge_id, &spec, now_ms);
+            return;
+        }
+        if matches!(credential_lifecycle, CredentialLifecycle::Missing) && !no_auth {
+            let _ = self.store.set_lifecycle(
+                bridge_id,
+                &BridgeLifecycle::AwaitingAuthentication,
+                None,
+                None,
+            );
+        }
+
+        if let (Some(secret), Some(_)) = (
+            credential.as_deref(),
+            credential_status.credential_handle.as_ref(),
+        ) && now_ms.saturating_sub(credential_status.validated_at_ms.unwrap_or(0))
+            >= spec.credential_validation_interval_ms
+            && let Ok(validation) = package.validate_credentials(secret).await
+        {
+            let lifecycle = if validation.valid {
+                CredentialLifecycle::Valid
+            } else {
+                CredentialLifecycle::Rejected
+            };
+            let _ = self.store.update_validation(
+                bridge_id,
+                &lifecycle,
+                now_ms,
+                validation.expires_at_ms,
+                validation.account_hint.as_deref(),
+                &validation.detail_json,
+            );
+        }
+    }
+
+    fn backoff(&self, bridge_id: &str, spec: &BridgeSpec, now_ms: u64) {
+        let failures = self
+            .store
+            .status(bridge_id, now_ms)
+            .map_or(0, |status| status.consecutive_failures);
+        let multiplier = 1_u64
+            .checked_shl(failures.min(20) as u32)
+            .unwrap_or(u64::MAX);
+        let delay = spec
+            .health_interval_ms
+            .saturating_mul(multiplier)
+            .min(spec.restart_window_ms);
+        let _ = self
+            .store
+            .set_backoff(bridge_id, now_ms.saturating_add(delay));
+    }
+}
+
+struct BridgeIngressRouter {
+    bridge_id: String,
+    trigger_inbox: Arc<TriggerInboxImport>,
+    store: Arc<BridgeStore>,
+    operations: Arc<Mutex<()>>,
+    clock: Clock,
+}
+
+#[async_trait::async_trait]
+impl BridgeInboundSink for BridgeIngressRouter {
+    async fn accept(&self, request: BridgeInbound) -> Result<TriggerIntent, BridgeHostError> {
+        if request.bridge_id != self.bridge_id {
+            return Err(BridgeHostError::InvalidSpec);
+        }
+        route_inbound(
+            &self.trigger_inbox,
+            &self.store,
+            &self.operations,
+            &self.clock,
+            CallContext::new(
+                Caller::System("bridge-package"),
+                None,
+                CancelToken::new(),
+                TraceContext::empty(),
+                None,
+            ),
+            request,
+        )
+        .await
+    }
+}
+
+impl Drop for BridgeHost {
+    fn drop(&mut self) {
+        if let Ok(mut supervisors) = self.supervisors.lock() {
+            for (_, handle) in supervisors.drain() {
+                handle.abort();
+            }
+        }
+    }
+}
 
 #[boxology::implementation]
-impl BridgeHostDraft {
+impl BridgeHost {
     pub async fn register_bridge(
         &self,
-        context: boxology::CallContext,
+        context: CallContext,
         request: BridgeSpec,
     ) -> Result<BridgeRecord, BridgeHostError> {
-        let _ = (context, request);
-        Err(BridgeHostError::DraftOnly)
+        let _ = context;
+        let _operation = self.operations.lock().await;
+        validate_spec(&request)?;
+        let (record, _) = self.store.register(&request, (self.clock)()?)?;
+        if record.desired_running {
+            self.ensure_supervisor(&record.bridge_id);
+            self.ensure_running(&record.bridge_id).await?;
+        }
+        self.store.record(&record.bridge_id)
+    }
+
+    pub async fn replace_bridge(
+        &self,
+        context: CallContext,
+        request: ReplaceBridgeRequest,
+    ) -> Result<BridgeRecord, BridgeHostError> {
+        let _ = context;
+        let _operation = self.operations.lock().await;
+        validate_spec(&request.spec)?;
+        let existing = self.store.record(&request.spec.bridge_id)?;
+        if existing.generation != request.expected_generation {
+            return Err(BridgeHostError::GenerationConflict);
+        }
+        self.stop_supervisor(&request.spec.bridge_id);
+        if let Some(package) = self
+            .connections
+            .write()
+            .await
+            .remove(&request.spec.bridge_id)
+        {
+            let _ = package.stop().await;
+        }
+        let record =
+            self.store
+                .replace(&request.spec, request.expected_generation, (self.clock)()?)?;
+        if record.desired_running {
+            self.ensure_supervisor(&record.bridge_id);
+            self.ensure_running(&record.bridge_id).await?;
+        }
+        self.store.record(&record.bridge_id)
     }
 
     pub async fn reconcile_bridge(
         &self,
-        context: boxology::CallContext,
+        context: CallContext,
         request: ReconcileBridgeRequest,
     ) -> Result<BridgeStatus, BridgeHostError> {
-        let _ = (context, request);
-        Err(BridgeHostError::DraftOnly)
+        let _ = context;
+        let _operation = self.operations.lock().await;
+        let record = self.store.set_desired(
+            &request.bridge_id,
+            request.expected_generation,
+            request.desired_running,
+            (self.clock)()?,
+        )?;
+        if record.desired_running {
+            self.ensure_supervisor(&record.bridge_id);
+            self.ensure_running(&record.bridge_id).await
+        } else {
+            self.stop_supervisor(&record.bridge_id);
+            self.stop_connection(&record.bridge_id).await
+        }
     }
 
     pub async fn report_health(
         &self,
-        context: boxology::CallContext,
+        context: CallContext,
         request: HealthObservation,
     ) -> Result<BridgeStatus, BridgeHostError> {
-        let _ = (context, request);
-        Err(BridgeHostError::DraftOnly)
+        let _ = context;
+        let _operation = self.operations.lock().await;
+        self.store.report_health(&request)
     }
 
     pub async fn begin_authentication(
         &self,
-        context: boxology::CallContext,
+        context: CallContext,
         request: BeginAuthenticationRequest,
     ) -> Result<AuthenticationChallenge, BridgeHostError> {
-        let _ = (context, request);
-        Err(BridgeHostError::DraftOnly)
+        let _ = context;
+        let _operation = self.operations.lock().await;
+        validate_json_object(&request.context_json)?;
+        let spec = self.store.spec(&request.bridge_id)?;
+        if let Some(method) = &request.preferred_method
+            && !spec.authentication_methods.contains(method)
+        {
+            return Err(BridgeHostError::AuthenticationUnavailable);
+        }
+        if spec.authentication_methods.is_empty() {
+            return Err(BridgeHostError::AuthenticationUnavailable);
+        }
+        let package = self.connection(&request.bridge_id).await?;
+        let challenge = package
+            .begin_authentication(request.preferred_method.as_ref(), &request.context_json)
+            .await
+            .map_err(map_package_error)?;
+        if !spec.authentication_methods.contains(&challenge.method) {
+            return Err(BridgeHostError::PackageProtocolFailed);
+        }
+        self.store
+            .create_challenge(&request.bridge_id, &challenge, (self.clock)()?)
     }
 
     pub async fn submit_authentication(
         &self,
-        context: boxology::CallContext,
+        context: CallContext,
         request: SubmitAuthenticationRequest,
     ) -> Result<CredentialStatus, BridgeHostError> {
-        let _ = (context, request);
-        Err(BridgeHostError::DraftOnly)
+        let _ = context;
+        let _operation = self.operations.lock().await;
+        validate_json(&request.response_json)?;
+        let now_ms = (self.clock)()?;
+        self.store
+            .verify_challenge(&request.bridge_id, &request.challenge_id, now_ms)?;
+        let package = self.connection(&request.bridge_id).await?;
+        let credential = package
+            .submit_authentication(&request.challenge_id, &request.response_json)
+            .await
+            .map_err(map_package_error)?;
+        let validation = package
+            .validate_credentials(&credential.secret_json)
+            .await
+            .map_err(map_package_error)?;
+        if !validation.valid {
+            return Err(BridgeHostError::CredentialRejected);
+        }
+        let previous_handle = self.store.credential(&request.bridge_id)?.credential_handle;
+        let handle = self
+            .credentials
+            .put(&request.bridge_id, &credential.secret_json)
+            .await
+            .map_err(map_credential_error)?;
+        let stored = self.store.set_credential(
+            &request.bridge_id,
+            &request.challenge_id,
+            &handle,
+            now_ms,
+            validation.expires_at_ms.or(credential.expires_at_ms),
+            validation
+                .account_hint
+                .as_deref()
+                .or(credential.account_hint.as_deref()),
+            &validation.detail_json,
+        );
+        let stored = match stored {
+            Ok(stored) => stored,
+            Err(error) => {
+                let _ = self.credentials.invalidate(&handle).await;
+                return Err(error);
+            }
+        };
+        if let Some(previous_handle) = previous_handle
+            && previous_handle != handle
+        {
+            let _ = self.credentials.invalidate(&previous_handle).await;
+        }
+        Ok(stored)
     }
 
     pub async fn validate_credentials(
         &self,
-        context: boxology::CallContext,
+        context: CallContext,
         request: BridgeReference,
     ) -> Result<CredentialStatus, BridgeHostError> {
-        let _ = (context, request);
-        Err(BridgeHostError::DraftOnly)
+        let _ = context;
+        let _operation = self.operations.lock().await;
+        let status = self.store.credential(&request.bridge_id)?;
+        let handle = status
+            .credential_handle
+            .ok_or(BridgeHostError::CredentialRejected)?;
+        let secret = self
+            .credentials
+            .get(&handle)
+            .await
+            .map_err(map_credential_error)?;
+        let validation = self
+            .connection(&request.bridge_id)
+            .await?
+            .validate_credentials(&secret)
+            .await
+            .map_err(map_package_error)?;
+        self.store.update_validation(
+            &request.bridge_id,
+            if validation.valid {
+                &CredentialLifecycle::Valid
+            } else {
+                &CredentialLifecycle::Rejected
+            },
+            (self.clock)()?,
+            validation.expires_at_ms,
+            validation.account_hint.as_deref(),
+            &validation.detail_json,
+        )
     }
 
     pub async fn invalidate_credentials(
         &self,
-        context: boxology::CallContext,
+        context: CallContext,
         request: BridgeReference,
     ) -> Result<BridgeReceipt, BridgeHostError> {
-        let _ = (context, request);
-        Err(BridgeHostError::DraftOnly)
+        let _ = context;
+        let _operation = self.operations.lock().await;
+        let status = self.store.credential(&request.bridge_id)?;
+        if let Some(handle) = status.credential_handle {
+            if let Ok(secret) = self.credentials.get(&handle).await
+                && let Ok(package) = self.connection(&request.bridge_id).await
+            {
+                let _ = package.invalidate_credentials(&secret).await;
+            }
+            self.credentials
+                .invalidate(&handle)
+                .await
+                .map_err(map_credential_error)?;
+        }
+        self.store
+            .revoke_credential(&request.bridge_id, (self.clock)()?)
     }
 
     pub async fn accept_inbound(
         &self,
-        context: boxology::CallContext,
+        context: CallContext,
         request: BridgeInbound,
     ) -> Result<TriggerIntent, BridgeHostError> {
-        let _ = (context, request);
-        Err(BridgeHostError::DraftOnly)
+        route_inbound(
+            &self.trigger_inbox,
+            &self.store,
+            &self.operations,
+            &self.clock,
+            context,
+            request,
+        )
+        .await
     }
 
     pub async fn deliver_message(
         &self,
-        context: boxology::CallContext,
+        context: CallContext,
         request: BridgeOutbound,
     ) -> Result<DeliveryReceipt, BridgeHostError> {
-        let _ = (context, request);
-        Err(BridgeHostError::DraftOnly)
+        let _ = context;
+        let _operation = self.operations.lock().await;
+        validate_outbound(&request)?;
+        let status = self.store.status(&request.bridge_id, (self.clock)()?)?;
+        if !matches!(status.lifecycle, BridgeLifecycle::Healthy)
+            || !status
+                .last_health
+                .as_ref()
+                .is_some_and(|health| health.can_send && health.service_connected)
+        {
+            return Err(BridgeHostError::BridgeUnhealthy);
+        }
+        let (receipt, should_send) = self.store.begin_delivery(&request, (self.clock)()?)?;
+        if !should_send {
+            return Ok(receipt);
+        }
+        let credential = self.credential_secret(&request.bridge_id).await?;
+        let delivered = self
+            .connection(&request.bridge_id)
+            .await?
+            .deliver(&request, credential.as_deref())
+            .await;
+        match delivered {
+            Ok(delivered) => self.store.complete_delivery(
+                &request.bridge_id,
+                &request.message_id,
+                &delivered.external_delivery_id,
+                &delivered.detail_json,
+                (self.clock)()?,
+            ),
+            Err(_) => {
+                self.store.fail_delivery(
+                    &request.bridge_id,
+                    &request.message_id,
+                    (self.clock)()?,
+                )?;
+                Err(BridgeHostError::DeliveryFailed)
+            }
+        }
     }
 
     pub async fn delivery_status(
         &self,
-        context: boxology::CallContext,
+        context: CallContext,
         request: DeliveryReference,
     ) -> Result<DeliveryReceipt, BridgeHostError> {
-        let _ = (context, request);
-        Err(BridgeHostError::DraftOnly)
+        let _ = context;
+        self.store.delivery(&request.bridge_id, &request.message_id)
     }
 
     pub async fn bridge_status(
         &self,
-        context: boxology::CallContext,
+        context: CallContext,
         request: BridgeReference,
     ) -> Result<BridgeStatus, BridgeHostError> {
-        let _ = (context, request);
-        Err(BridgeHostError::DraftOnly)
+        let _ = context;
+        self.store.status(&request.bridge_id, (self.clock)()?)
     }
 
     pub async fn stop_bridge(
         &self,
-        context: boxology::CallContext,
+        context: CallContext,
         request: BridgeReference,
     ) -> Result<BridgeReceipt, BridgeHostError> {
-        let _ = (context, request);
-        Err(BridgeHostError::DraftOnly)
+        let _ = context;
+        let _operation = self.operations.lock().await;
+        self.stop_supervisor(&request.bridge_id);
+        if let Some(package) = self.connections.write().await.remove(&request.bridge_id) {
+            let _ = package.stop().await;
+        }
+        self.store.stop(&request.bridge_id, (self.clock)()?)
     }
+}
+
+async fn route_inbound(
+    trigger_inbox: &TriggerInboxImport,
+    store: &BridgeStore,
+    operations: &Mutex<()>,
+    clock: &Clock,
+    context: CallContext,
+    request: BridgeInbound,
+) -> Result<TriggerIntent, BridgeHostError> {
+    let _operation = operations.lock().await;
+    validate_inbound(&request)?;
+    let spec = store.spec(&request.bridge_id)?;
+    let status = store.status(&request.bridge_id, clock()?)?;
+    if !spec.desired_running
+        || !matches!(status.lifecycle, BridgeLifecycle::Healthy)
+        || !status
+            .last_health
+            .as_ref()
+            .is_some_and(|health| health.can_receive && health.service_connected)
+    {
+        return Err(BridgeHostError::BridgeUnhealthy);
+    }
+    let message_json = normalized_inbound_message(&request)?;
+    let attachment_handles = request
+        .attachments
+        .iter()
+        .map(|attachment| attachment.content_handle.clone())
+        .collect::<Vec<_>>();
+    let receipt = trigger_inbox
+        .enqueue(
+            context,
+            EnqueueTrigger {
+                source: TriggerSource::Bridge,
+                source_id: request.bridge_id.clone(),
+                deduplication_key: request.external_event_id.clone(),
+                target_channel_id: request.target_channel_id.clone(),
+                lane: request.target_channel_id.clone(),
+                mode: map_trigger_mode(&spec.ingress_mode)?,
+                not_before_ms: request.received_at_ms,
+                message_json: message_json.clone(),
+                attachments: request
+                    .attachments
+                    .iter()
+                    .map(|attachment| TriggerAttachment {
+                        media_type: attachment.media_type.clone(),
+                        name: attachment.name.clone(),
+                        content_handle: attachment.content_handle.clone(),
+                    })
+                    .collect(),
+            },
+        )
+        .await
+        .map_err(map_trigger_error)?;
+    store.record_inbound(
+        &request,
+        &TriggerIntent {
+            source_id: request.bridge_id.clone(),
+            deduplication_key: request.external_event_id.clone(),
+            target_channel_id: request.target_channel_id.clone(),
+            ingress_mode: spec.ingress_mode,
+            message_json,
+            attachment_handles,
+            trigger_id: receipt.trigger_id,
+            deduplicated: receipt.deduplicated,
+            recorded_at_ms: receipt.recorded_at_ms,
+        },
+    )
+}
+
+fn validate_spec(spec: &BridgeSpec) -> Result<(), BridgeHostError> {
+    if spec.bridge_id.trim().is_empty()
+        || spec.package_id.trim().is_empty()
+        || spec.display_name.trim().is_empty()
+        || spec.health_interval_ms == 0
+        || spec.credential_validation_interval_ms == 0
+        || spec.restart_limit == 0
+        || spec.restart_window_ms == 0
+    {
+        return Err(BridgeHostError::InvalidSpec);
+    }
+    validate_json_object(&spec.launch_json)?;
+    validate_json_object(&spec.configuration_json)?;
+    let mut methods = spec.authentication_methods.clone();
+    methods.sort_by_key(|method| format!("{method:?}"));
+    methods.dedup();
+    if methods.len() != spec.authentication_methods.len()
+        || matches!(spec.ingress_mode, BridgeIngressMode::Unknown { .. })
+    {
+        return Err(BridgeHostError::InvalidSpec);
+    }
+    Ok(())
+}
+
+fn validate_inbound(request: &BridgeInbound) -> Result<(), BridgeHostError> {
+    if request.bridge_id.trim().is_empty()
+        || request.external_event_id.trim().is_empty()
+        || request.target_channel_id.trim().is_empty()
+    {
+        return Err(BridgeHostError::InvalidSpec);
+    }
+    validate_json_object(&request.sender_json)?;
+    validate_json(&request.message_json)?;
+    validate_attachments(&request.attachments)
+}
+
+fn validate_outbound(request: &BridgeOutbound) -> Result<(), BridgeHostError> {
+    if request.bridge_id.trim().is_empty()
+        || request.message_id.trim().is_empty()
+        || request.idempotency_key.trim().is_empty()
+    {
+        return Err(BridgeHostError::InvalidSpec);
+    }
+    validate_json_object(&request.destination_json)?;
+    validate_json(&request.message_json)?;
+    validate_attachments(&request.attachments)
+}
+
+fn validate_attachments(attachments: &[BridgeAttachment]) -> Result<(), BridgeHostError> {
+    if attachments.iter().any(|attachment| {
+        attachment.media_type.trim().is_empty() || attachment.content_handle.trim().is_empty()
+    }) {
+        return Err(BridgeHostError::InvalidSpec);
+    }
+    Ok(())
+}
+
+fn validate_json(value: &str) -> Result<Value, BridgeHostError> {
+    serde_json::from_str(value).map_err(|_| BridgeHostError::InvalidSpec)
+}
+
+fn validate_json_object(value: &str) -> Result<Map<String, Value>, BridgeHostError> {
+    serde_json::from_str(value).map_err(|_| BridgeHostError::InvalidSpec)
+}
+
+fn normalized_inbound_message(request: &BridgeInbound) -> Result<String, BridgeHostError> {
+    serde_json::to_string(&json!({
+        "bridgeId": request.bridge_id,
+        "externalEventId": request.external_event_id,
+        "receivedAtMs": request.received_at_ms,
+        "sender": validate_json(&request.sender_json)?,
+        "message": validate_json(&request.message_json)?,
+    }))
+    .map_err(|_| BridgeHostError::InvalidSpec)
+}
+
+fn map_trigger_mode(mode: &BridgeIngressMode) -> Result<TriggerMode, BridgeHostError> {
+    match mode {
+        BridgeIngressMode::Queue => Ok(TriggerMode::Queue),
+        BridgeIngressMode::Steer => Ok(TriggerMode::Steer),
+        BridgeIngressMode::InterruptAndSteer => Ok(TriggerMode::InterruptAndSteer),
+        BridgeIngressMode::Unknown { .. } => Err(BridgeHostError::InvalidSpec),
+    }
+}
+
+fn map_package_error(error: BridgePackageError) -> BridgeHostError {
+    match error {
+        BridgePackageError::InvalidLaunch => BridgeHostError::InvalidSpec,
+        BridgePackageError::LaunchFailed
+        | BridgePackageError::ProtocolFailed
+        | BridgePackageError::Timeout
+        | BridgePackageError::Stopped => BridgeHostError::PackageProtocolFailed,
+    }
+}
+
+fn map_credential_error(error: CredentialStoreError) -> BridgeHostError {
+    match error {
+        CredentialStoreError::UnknownHandle | CredentialStoreError::InvalidCredential => {
+            BridgeHostError::CredentialRejected
+        }
+        CredentialStoreError::Unavailable => BridgeHostError::StorageUnavailable,
+    }
+}
+
+fn map_trigger_error(error: ErasedCallError) -> BridgeHostError {
+    match error {
+        ErasedCallError::Domain { error_tag, .. } if error_tag == "DuplicateKeyConflict" => {
+            BridgeHostError::DuplicateMessageConflict
+        }
+        _ => BridgeHostError::PackageProtocolFailed,
+    }
+}
+
+fn system_time_ms() -> Result<u64, BridgeHostError> {
+    let duration = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|_| BridgeHostError::StorageUnavailable)?;
+    u64::try_from(duration.as_millis()).map_err(|_| BridgeHostError::StorageUnavailable)
 }
 
 pub mod generated {
@@ -121,11 +1033,14 @@ pub mod generated {
 
 #[cfg(test)]
 mod tests {
+    use boxology_contract::{BoxId, CapabilityId};
+
     use super::{BridgeIngressMode, generated};
 
     #[test]
     fn contract_covers_supervision_auth_ingress_and_selected_delivery() {
-        let names = generated::implementation_descriptor()
+        let descriptor = generated::implementation_descriptor();
+        let names = descriptor
             .contract()
             .capabilities()
             .iter()
@@ -149,6 +1064,19 @@ mod tests {
         assert_ne!(
             BridgeIngressMode::Steer,
             BridgeIngressMode::InterruptAndSteer
+        );
+        assert_eq!(descriptor.imports().len(), 1);
+        assert_eq!(
+            descriptor.imports()[0].slot_id(),
+            &BoxId::new("trigger-inbox").unwrap()
+        );
+        assert!(
+            descriptor.imports()[0]
+                .capabilities()
+                .contains(&CapabilityId::new(
+                    BoxId::new("trigger-inbox").unwrap(),
+                    boxology_contract::CapabilityName::new("enqueue").unwrap()
+                ))
         );
     }
 }

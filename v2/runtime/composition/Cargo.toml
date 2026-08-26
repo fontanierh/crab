@@ -9,6 +9,7 @@ agent-host-contract = { version = "=0.0.0", path = "../../agent-host/generated/c
 agent-host-implementation = { version = "=0.0.0", path = "../../agent-host/implementation" }
 boxology-contract = { workspace = true }
 boxology-runtime = { workspace = true, features = ["test-support"] }
+bridge-host-contract = { version = "=0.0.0", path = "../../bridge-host/generated/contract" }
 bridge-host-implementation = { version = "=0.0.0", path = "../../bridge-host/implementation" }
 native-channel-contract = { version = "=0.0.0", path = "../../native-channel/generated/contract" }
 native-channel-implementation = { version = "=0.0.0", path = "../../native-channel/implementation" }
@@ -17,6 +18,7 @@ trigger-inbox-implementation = { version = "=0.0.0", path = "../../trigger-inbox
 trigger-inbox-contract = { version = "=0.0.0", path = "../../trigger-inbox/generated/contract" }
 
 [dev-dependencies]
+async-trait = { workspace = true }
 boxology = { workspace = true }
 boxology-manifest = { workspace = true }
 tempfile = { workspace = true }
