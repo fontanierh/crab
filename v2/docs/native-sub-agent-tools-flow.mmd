@@ -1,0 +1,22 @@
+%%{init: {"theme": "base", "themeVariables": {"fontFamily": "ui-sans-serif, system-ui, sans-serif", "primaryTextColor": "#172033", "lineColor": "#64748b", "edgeLabelBackground": "#ffffff"}, "flowchart": {"curve": "basis", "nodeSpacing": 44, "rankSpacing": 58}}}%%
+flowchart TB
+    CONFIG["runtime config<br/>stdio MCP declaration"]
+    ACP["parent or child<br/>ACP session"]
+    MCP["crab-v2-sub-agent-mcp<br/>6 strict tools"]
+    AUTH["owner-only local IPC<br/>0600 token + socket"]
+    BOX["generated Boxology dispatch<br/>agent-host parent cursor<br/>sub-agent-host control + journal"]
+    CHILD["separate ACP process<br/>fresh or inherited context"]
+
+    CONFIG --> ACP -->|"MCP stdio"| MCP --> AUTH
+    AUTH -->|"authenticated calls"| BOX
+    BOX -->|"spawn + input"| CHILD
+    CHILD -->|"events + receipts"| BOX
+
+    classDef config fill:#f8fafc,stroke:#64748b,stroke-width:1.5px,color:#172033;
+    classDef agent fill:#ede9fe,stroke:#7c3aed,stroke-width:2px,color:#2e1065;
+    classDef boundary fill:#fef3c7,stroke:#d97706,stroke-width:2px,color:#78350f;
+    classDef durable fill:#dcfce7,stroke:#16a34a,stroke-width:2px,color:#14532d;
+    class CONFIG config;
+    class ACP,CHILD agent;
+    class MCP,AUTH boundary;
+    class BOX durable;

@@ -9,7 +9,7 @@ pub fn implementation_descriptor() -> ::boxology_contract::ImplementationDescrip
                         ::boxology_contract::BoxId::new("agent-host")
                             .expect("generated import package id is valid"),
                         ::boxology_contract::ContractRevision::new(
-                                "sha256:3c8c419cb08579a976cd3eb26083da2b8a114c2a7d6beece21a3cec37679c366",
+                                "sha256:95e518c5ca4645fef7105b27adfce20c8a3c834d22021b5933d08c52470ab2fd",
                             )
                             .expect("generated import revision is valid"),
                         [
@@ -167,6 +167,14 @@ impl AgentHostImport {
                                     ),
                                     ::boxology_contract::FieldDescriptor::new(
                                         "environment_names",
+                                        ::boxology_contract::TypeDescriptor::list(
+                                                ::boxology_contract::TypeDescriptor::string(),
+                                            )
+                                            .expect("generated imported list descriptor is valid"),
+                                        None,
+                                    ),
+                                    ::boxology_contract::FieldDescriptor::new(
+                                        "mcp_server_names",
                                         ::boxology_contract::TypeDescriptor::list(
                                                 ::boxology_contract::TypeDescriptor::string(),
                                             )

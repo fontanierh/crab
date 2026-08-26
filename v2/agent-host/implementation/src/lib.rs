@@ -5,12 +5,16 @@ mod contract;
 mod store;
 
 pub use authority::{AuthorityVerifier, SystemAuthorityVerifier};
-pub use config::{AgentProtocol, AuthorityProbeConfig, ConfiguredAgent};
+pub use config::{
+    AgentProtocol, AuthorityProbeConfig, CRAB_AGENT_ID_ENV, CRAB_PARENT_SESSION_ID_ENV,
+    CRAB_SESSION_ID_ENV, CRAB_STATE_DIRECTORY_ENV, CRAB_SUB_AGENT_ID_ENV,
+    CRAB_WORKING_DIRECTORY_ENV, ConfiguredAgent, ConfiguredMcpServer,
+};
 pub use contract::*;
 
 use std::{
     collections::{BTreeMap, HashMap},
-    path::Path,
+    path::{Path, PathBuf},
     sync::Arc,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
@@ -32,6 +36,7 @@ pub struct AgentHost {
     store: Arc<AgentStore>,
     authority: SharedAuthorityVerifier,
     sessions: Arc<RwLock<HashMap<String, SessionHandle>>>,
+    state_directory: Option<PathBuf>,
     clock: Clock,
 }
 
@@ -41,10 +46,12 @@ impl AgentHost {
         path: impl AsRef<Path>,
         agents: Vec<ConfiguredAgent>,
     ) -> Result<Self, AgentHostError> {
+        let state_directory = store_state_directory(path.as_ref())?;
         Self::with_store(
             AgentStore::open(path)?,
             agents,
             Arc::new(SystemAuthorityVerifier),
+            Some(state_directory),
         )
     }
 
@@ -54,6 +61,7 @@ impl AgentHost {
             AgentStore::open_in_memory()?,
             agents,
             Arc::new(SystemAuthorityVerifier),
+            None,
         )
     }
 
@@ -66,7 +74,13 @@ impl AgentHost {
         agents: Vec<ConfiguredAgent>,
         authority: Arc<dyn AuthorityVerifier>,
     ) -> Result<Self, AgentHostError> {
-        Self::with_store(AgentStore::open(path)?, agents, authority)
+        let state_directory = store_state_directory(path.as_ref())?;
+        Self::with_store(
+            AgentStore::open(path)?,
+            agents,
+            authority,
+            Some(state_directory),
+        )
     }
 
     /// Open an in-memory host with an injected external authority boundary.
@@ -74,17 +88,21 @@ impl AgentHost {
         agents: Vec<ConfiguredAgent>,
         authority: Arc<dyn AuthorityVerifier>,
     ) -> Result<Self, AgentHostError> {
-        Self::with_store(AgentStore::open_in_memory()?, agents, authority)
+        Self::with_store(AgentStore::open_in_memory()?, agents, authority, None)
     }
 
     fn with_store(
         store: AgentStore,
         agents: Vec<ConfiguredAgent>,
         authority: SharedAuthorityVerifier,
+        state_directory: Option<PathBuf>,
     ) -> Result<Self, AgentHostError> {
         let mut configured = BTreeMap::new();
         for agent in agents {
             agent.validate()?;
+            if !agent.session_mcp_servers.is_empty() && state_directory.is_none() {
+                return Err(AgentHostError::InvalidConfiguration);
+            }
             let agent_id = agent.agent_id.clone();
             if configured.insert(agent_id, Arc::new(agent)).is_some() {
                 return Err(AgentHostError::InvalidConfiguration);
@@ -95,6 +113,7 @@ impl AgentHost {
             store: Arc::new(store),
             authority,
             sessions: Arc::new(RwLock::new(HashMap::new())),
+            state_directory,
             clock: Arc::new(system_time_ms),
         })
     }
@@ -212,6 +231,7 @@ impl AgentHost {
             &preflight.authority,
             now_ms,
         )?;
+        let state_directory = self.state_directory.clone();
         let (handle, opened) = spawn_session(
             agent,
             self.store.clone(),
@@ -220,6 +240,7 @@ impl AgentHost {
             preflight.working_directory.into(),
             request.bootstrap_prompt,
             metadata,
+            state_directory,
         );
         let opened = tokio::time::timeout(CONTROL_TIMEOUT, opened).await;
         let session = match opened {
@@ -348,6 +369,11 @@ fn system_time_ms() -> Result<u64, AgentHostError> {
         .duration_since(UNIX_EPOCH)
         .map_err(|_| AgentHostError::StorageUnavailable)?;
     u64::try_from(duration.as_millis()).map_err(|_| AgentHostError::StorageUnavailable)
+}
+
+fn store_state_directory(path: &Path) -> Result<PathBuf, AgentHostError> {
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    std::fs::canonicalize(parent).map_err(|_| AgentHostError::StorageUnavailable)
 }
 
 pub mod generated {

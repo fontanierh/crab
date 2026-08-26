@@ -24,6 +24,11 @@ Schema `1` is strict JSON. It declares ACP commands, native channels and trigger
 paths resolve beside the config file. Secrets are referenced only by environment-variable name;
 unknown fields, missing variables, broken references and zero-valued worker bounds fail startup.
 
+Each agent may declare `sessionMcpServers`. Their commands resolve like other runtime commands and
+are attached to every ACP session. The shipped presets register Crab's
+[`crab-v2-sub-agent-mcp`](native-sub-agent-tools.md) so native sub-agent tools work without
+agent-specific plugins.
+
 Start from [`runtime.example.json`](../runtime/runtime.example.json):
 
 Replace the example executable paths and agent-specific authority flags; they are placeholders,

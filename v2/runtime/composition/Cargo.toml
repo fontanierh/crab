@@ -6,6 +6,7 @@ publish = false
 
 [dependencies]
 agent-client-protocol = { workspace = true }
+agent-client-protocol-rmcp = { workspace = true }
 agent-host-contract = { version = "=0.0.0", path = "../../agent-host/generated/contract" }
 agent-host-implementation = { version = "=0.0.0", path = "../../agent-host/implementation" }
 boxology-contract = { workspace = true }
@@ -18,6 +19,7 @@ native-channel-contract = { version = "=0.0.0", path = "../../native-channel/gen
 native-channel-implementation = { version = "=0.0.0", path = "../../native-channel/implementation" }
 serde = { workspace = true }
 serde_json = { workspace = true }
+schemars = { workspace = true }
 sub-agent-host-contract = { version = "=0.0.0", path = "../../sub-agent-host/generated/contract" }
 sub-agent-host-implementation = { version = "=0.0.0", path = "../../sub-agent-host/implementation" }
 turn-router-contract = { version = "=0.0.0", path = "../../turn-router/generated/contract" }

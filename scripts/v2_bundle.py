@@ -26,6 +26,7 @@ RUNTIME_BINARIES = (
     "crab-v2-acp-channel",
     "crab-v2-bridge",
     "crab-v2-sub-agent",
+    "crab-v2-sub-agent-mcp",
     "crab-v2-trigger",
     "crab-v2-claude-authority-probe",
 )
@@ -426,6 +427,7 @@ def smoke_test(root: Path) -> None:
     paths = (
         config["agents"][0]["executable"],
         config["agents"][0]["authorityProbe"]["executable"],
+        *(server["executable"] for server in config["agents"][0]["sessionMcpServers"]),
         config["bridges"][0]["executable"],
         config["bridges"][0]["workingDirectory"],
     )

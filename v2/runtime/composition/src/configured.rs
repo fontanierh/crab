@@ -93,6 +93,7 @@ impl ConfiguredRuntime {
         };
         let channel_ipc = match ChannelIpcServer::start(
             paths,
+            runtime.agent_host().clone(),
             runtime.channel_gateway().clone(),
             runtime.native_channel().clone(),
             runtime.bridge_host().clone(),
@@ -1155,6 +1156,7 @@ mod tests {
                 arguments: Vec::new(),
                 environment_from: Vec::new(),
                 session_options: std::collections::BTreeMap::new(),
+                session_mcp_servers: Vec::new(),
                 protocol: ProtocolConfig::V2,
                 authority_probe: CommandConfig {
                     executable: "unused".into(),
@@ -1296,6 +1298,7 @@ mod tests {
         let paths = ChannelIpcPaths::for_state_directory(directory.path()).expect("paths resolve");
         let mut server = ChannelIpcServer::start(
             paths.clone(),
+            graph.agent_host.clone(),
             graph.channel_gateway.clone(),
             graph.native_channel.clone(),
             graph.bridge_host.clone(),
@@ -1307,6 +1310,7 @@ mod tests {
         assert!(matches!(
             ChannelIpcServer::start(
                 paths.clone(),
+                graph.agent_host.clone(),
                 graph.channel_gateway.clone(),
                 graph.native_channel.clone(),
                 graph.bridge_host.clone(),
@@ -1385,6 +1389,7 @@ mod tests {
         assert!(paths.token().exists());
         let mut restarted = ChannelIpcServer::start(
             paths.clone(),
+            graph.agent_host.clone(),
             graph.channel_gateway.clone(),
             graph.native_channel.clone(),
             graph.bridge_host.clone(),
@@ -1425,6 +1430,7 @@ mod tests {
         let paths = ChannelIpcPaths::for_state_directory(directory.path()).expect("paths resolve");
         let mut server = ChannelIpcServer::start(
             paths,
+            graph.agent_host.clone(),
             graph.channel_gateway.clone(),
             graph.native_channel.clone(),
             graph.bridge_host.clone(),
@@ -1547,6 +1553,7 @@ mod tests {
         let paths = ChannelIpcPaths::for_state_directory(directory.path()).expect("paths resolve");
         let mut server = ChannelIpcServer::start(
             paths,
+            graph.agent_host.clone(),
             graph.channel_gateway.clone(),
             graph.native_channel.clone(),
             graph.bridge_host.clone(),
@@ -1722,6 +1729,7 @@ mod tests {
         let paths = ChannelIpcPaths::for_state_directory(directory.path()).expect("paths resolve");
         let mut server = ChannelIpcServer::start(
             paths,
+            graph.agent_host.clone(),
             graph.channel_gateway.clone(),
             graph.native_channel.clone(),
             graph.bridge_host.clone(),
@@ -1942,6 +1950,7 @@ mod tests {
         let paths = ChannelIpcPaths::for_state_directory(directory.path()).expect("paths resolve");
         let mut server = ChannelIpcServer::start(
             paths,
+            graph.agent_host.clone(),
             graph.channel_gateway.clone(),
             graph.native_channel.clone(),
             graph.bridge_host.clone(),

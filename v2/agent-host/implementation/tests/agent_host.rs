@@ -2,7 +2,9 @@ use std::{path::Path, sync::Arc, time::Duration};
 
 use agent_host_implementation::{
     AcpEventDirection, AcpEventKind, AgentHost, AgentHostError, AgentInputMode, AgentLifecycle,
-    AgentProtocol, AuthorityAttestation, AuthorityProbeConfig, AuthorityVerifier, ConfiguredAgent,
+    AgentProtocol, AuthorityAttestation, AuthorityProbeConfig, AuthorityVerifier,
+    CRAB_AGENT_ID_ENV, CRAB_PARENT_SESSION_ID_ENV, CRAB_SESSION_ID_ENV, CRAB_STATE_DIRECTORY_ENV,
+    CRAB_SUB_AGENT_ID_ENV, CRAB_WORKING_DIRECTORY_ENV, ConfiguredAgent, ConfiguredMcpServer,
     DiscoverAgentsRequest, FilesystemAuthority, NetworkAuthority, OpenSessionRequest,
     PermissionAuthority, PermissionRequest, PreflightRequest, PromptDisposition, PromptRequest,
     ReadEventsRequest, RootAuthority, RunReference, SandboxAuthority, SessionReference, generated,
@@ -63,6 +65,15 @@ fn configured_agent(protocol: AgentProtocol) -> ConfiguredAgent {
     .arguments([protocol_argument])
     .environment([("FIXTURE_SECRET", "not-exposed")])
     .session_options([("mode", "bypassPermissions"), ("model", "opus")])
+}
+
+fn configured_agent_with_mcp(protocol: AgentProtocol) -> ConfiguredAgent {
+    configured_agent(protocol).session_mcp_servers([ConfiguredMcpServer::new(
+        "crab-sub-agents",
+        env!("CARGO_BIN_EXE_acp_fixture"),
+    )
+    .arguments(["mcp"])
+    .environment([("MCP_MARKER", "visible")])])
 }
 
 fn prompt(session_id: &str, turn: &str, mode: AgentInputMode, text: &str) -> PromptRequest {
@@ -148,6 +159,124 @@ async fn required_session_options_fail_closed_for_both_acp_profiles() {
             );
         }
     }
+}
+
+#[tokio::test]
+async fn every_acp_session_receives_the_configured_stdio_mcp_and_crab_context() {
+    for protocol in [AgentProtocol::V1, AgentProtocol::V2] {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let agent = configured_agent_with_mcp(protocol);
+        let expected_agent_id = agent.agent_id.clone();
+        let host = AgentHost::open_with_authority_verifier(
+            directory.path().join("agent-host.sqlite"),
+            vec![agent],
+            Arc::new(FixtureAuthority),
+        )
+        .expect("host opens");
+        let catalog = host
+            .discover_agents(context(), DiscoverAgentsRequest {})
+            .await
+            .expect("catalog is available");
+        assert_eq!(catalog.agents[0].mcp_server_names, ["crab-sub-agents"]);
+
+        let session = host
+            .open_session(
+                context(),
+                OpenSessionRequest {
+                    agent_id: expected_agent_id.clone(),
+                    working_directory: directory.path().to_string_lossy().into_owned(),
+                    bootstrap_prompt: None,
+                    metadata_json: serde_json::json!({
+                        "crabSubAgent": {
+                            "subAgentId": "sub_fixture",
+                            "parentSessionId": "session_parent",
+                            "contextMode": "fresh"
+                        }
+                    })
+                    .to_string(),
+                },
+            )
+            .await
+            .expect("MCP-enabled session opens");
+        let canonical_directory =
+            std::fs::canonicalize(directory.path()).expect("temporary directory canonicalizes");
+        let events = host
+            .read_events(
+                context(),
+                ReadEventsRequest {
+                    session_id: session.session_id.clone(),
+                    after_sequence: 0,
+                    limit: 100,
+                },
+            )
+            .await
+            .expect("session setup events are readable");
+        let request = events
+            .events
+            .iter()
+            .filter(|event| event.direction == AcpEventDirection::ClientToAgent)
+            .filter_map(|event| serde_json::from_str::<Value>(&event.native_event_json).ok())
+            .find(|event| event["method"] == "session/new")
+            .expect("session/new is preserved");
+        let server = &request["params"]["mcpServers"][0];
+        assert_eq!(server["name"], "crab-sub-agents");
+        assert_eq!(server["command"], env!("CARGO_BIN_EXE_acp_fixture"));
+        assert_eq!(server["args"], serde_json::json!(["mcp"]));
+        let environment = server["env"]
+            .as_array()
+            .expect("stdio MCP environment")
+            .iter()
+            .map(|entry| {
+                (
+                    entry["name"].as_str().expect("environment name"),
+                    entry["value"].as_str().expect("environment value"),
+                )
+            })
+            .collect::<std::collections::BTreeMap<_, _>>();
+        assert_eq!(environment["MCP_MARKER"], "visible");
+        assert_eq!(
+            environment[CRAB_STATE_DIRECTORY_ENV],
+            canonical_directory.to_string_lossy()
+        );
+        assert_eq!(environment[CRAB_SESSION_ID_ENV], session.session_id);
+        assert_eq!(environment[CRAB_AGENT_ID_ENV], expected_agent_id);
+        assert_eq!(
+            environment[CRAB_WORKING_DIRECTORY_ENV],
+            canonical_directory.to_string_lossy()
+        );
+        assert_eq!(environment[CRAB_SUB_AGENT_ID_ENV], "sub_fixture");
+        assert_eq!(environment[CRAB_PARENT_SESSION_ID_ENV], "session_parent");
+        host.shutdown().await;
+    }
+}
+
+#[tokio::test]
+async fn v2_fails_closed_when_the_agent_does_not_advertise_stdio_mcp() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let mut agent = configured_agent_with_mcp(AgentProtocol::V2);
+    agent
+        .environment
+        .insert("ACP_FIXTURE_HIDE_STDIO_MCP".into(), "1".into());
+    let host = AgentHost::open_with_authority_verifier(
+        directory.path().join("agent-host.sqlite"),
+        vec![agent],
+        Arc::new(FixtureAuthority),
+    )
+    .expect("host opens");
+
+    assert_eq!(
+        host.open_session(
+            context(),
+            OpenSessionRequest {
+                agent_id: "fixture-v2".into(),
+                working_directory: directory.path().to_string_lossy().into_owned(),
+                bootstrap_prompt: None,
+                metadata_json: "{}".into(),
+            },
+        )
+        .await,
+        Err(AgentHostError::ProtocolNegotiationFailed)
+    );
 }
 
 async fn wait_for_lifecycle(host: &AgentHost, session_id: &str, expected: AgentLifecycle) {

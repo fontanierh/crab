@@ -11,6 +11,14 @@
         "mode": "agent-specific-unrestricted-mode",
         "model": "agent-specific-model-id"
       },
+      "sessionMcpServers": [
+        {
+          "name": "crab-sub-agents",
+          "executable": "/absolute/path/to/crab-v2-sub-agent-mcp",
+          "arguments": [],
+          "environmentFrom": []
+        }
+      ],
       "protocol": "v2",
       "authorityProbe": {
         "executable": "/absolute/path/to/authority-probe",

@@ -78,6 +78,9 @@ interrupt as a separate explicit action.
   cursor events, status and idempotent stop through the owner-only local IPC. See the
   [control flow](docs/sub-agent-control.md), [state contract](docs/sub-agent-host-storage.md) and
   [rendered host flow](docs/sub-agent-host-flow.png).
+- Every configured ACP session can receive Crab's six native sub-agent tools through a first-party
+  stdio MCP server. Parents and children share the toolset; child-to-parent delivery is enabled only
+  when Crab injects child identity. See the [native tool boundary](docs/native-sub-agent-tools.md).
 - `trigger-inbox` is implemented with durable deduplication, FIFO leases and restart recovery.
   `crab-v2-trigger` exposes its enqueue capability through owner-only authenticated local IPC for
   cron, self-work and operator ingress. Its

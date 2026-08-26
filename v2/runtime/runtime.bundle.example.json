@@ -11,6 +11,14 @@
         "mode": "bypassPermissions",
         "model": "opus[1m]"
       },
+      "sessionMcpServers": [
+        {
+          "name": "crab-sub-agents",
+          "executable": "../bin/crab-v2-sub-agent-mcp",
+          "arguments": [],
+          "environmentFrom": []
+        }
+      ],
       "protocol": "v1",
       "authorityProbe": {
         "executable": "../bin/crab-v2-claude-authority-probe",

@@ -4,7 +4,9 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use agent_host_implementation::{AgentProtocol, AuthorityProbeConfig, ConfiguredAgent};
+use agent_host_implementation::{
+    AgentProtocol, AuthorityProbeConfig, ConfiguredAgent, ConfiguredMcpServer,
+};
 use bridge_host_contract::{AuthenticationMethod, BridgeIngressMode, BridgeSpec};
 use serde::Deserialize;
 use serde_json::{Map, Value};
@@ -47,6 +49,9 @@ pub struct AgentConfig {
     /// Required ACP session configuration values verified before the session becomes ready.
     #[serde(default)]
     pub session_options: BTreeMap<String, String>,
+    /// Crab-owned stdio MCP servers attached to every session for this agent.
+    #[serde(default)]
+    pub session_mcp_servers: Vec<McpServerConfig>,
     /// ACP wire profile required from the command.
     pub protocol: ProtocolConfig,
     /// Agent-specific command that proves yolo/no-sandbox authority.
@@ -73,6 +78,22 @@ pub struct CommandConfig {
     #[serde(default)]
     pub arguments: Vec<String>,
     /// Ambient environment variable names copied to the command.
+    #[serde(default)]
+    pub environment_from: Vec<String>,
+}
+
+/// One stdio MCP server attached by Crab during ACP session setup.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct McpServerConfig {
+    /// Human-readable MCP server name.
+    pub name: String,
+    /// Absolute path or path relative to the runtime configuration file.
+    pub executable: PathBuf,
+    /// Exact executable arguments.
+    #[serde(default)]
+    pub arguments: Vec<String>,
+    /// Ambient environment values copied explicitly by name.
     #[serde(default)]
     pub environment_from: Vec<String>,
 }
@@ -256,6 +277,15 @@ impl RuntimeConfig {
                 let environment = environment_values(&agent.environment_from)?;
                 let probe_environment =
                     environment_values(&agent.authority_probe.environment_from)?;
+                let mcp_servers = agent
+                    .session_mcp_servers
+                    .iter()
+                    .map(|server| {
+                        Ok(ConfiguredMcpServer::new(&server.name, &server.executable)
+                            .arguments(server.arguments.clone())
+                            .environment(environment_values(&server.environment_from)?))
+                    })
+                    .collect::<Result<Vec<_>, RuntimeConfigError>>()?;
                 Ok(ConfiguredAgent::new(
                     &agent.agent_id,
                     &agent.display_name,
@@ -270,7 +300,8 @@ impl RuntimeConfig {
                 )
                 .arguments(agent.arguments.clone())
                 .environment(environment)
-                .session_options(agent.session_options.clone()))
+                .session_options(agent.session_options.clone())
+                .session_mcp_servers(mcp_servers))
             })
             .collect()
     }
@@ -294,6 +325,9 @@ impl RuntimeConfig {
         for agent in &mut self.agents {
             resolve_command_path(base, &mut agent.executable);
             resolve_command_path(base, &mut agent.authority_probe.executable);
+            for server in &mut agent.session_mcp_servers {
+                resolve_command_path(base, &mut server.executable);
+            }
         }
         for channel in &mut self.channels {
             resolve_path(base, &mut channel.working_directory);
@@ -323,6 +357,18 @@ impl RuntimeConfig {
                 || !agent_ids.insert(agent.agent_id.as_str())
                 || !valid_environment_names(&agent.environment_from)
                 || !valid_environment_names(&agent.authority_probe.environment_from)
+                || agent.session_mcp_servers.iter().any(|server| {
+                    server.name.trim().is_empty()
+                        || !server.executable.is_absolute()
+                        || !valid_environment_names(&server.environment_from)
+                })
+                || agent
+                    .session_mcp_servers
+                    .iter()
+                    .map(|server| server.name.as_str())
+                    .collect::<HashSet<_>>()
+                    .len()
+                    != agent.session_mcp_servers.len()
                 || agent
                     .session_options
                     .iter()
@@ -505,6 +551,10 @@ mod tests {
                 "agentId": "fixture", "displayName": "Fixture", "executable": "bin/acp",
                 "arguments": ["--acp"], "environmentFrom": [],
                 "sessionOptions": {"mode":"bypassPermissions","model":"opus"},
+                "sessionMcpServers": [{
+                  "name":"crab-sub-agents", "executable":"bin/sub-agent-mcp",
+                  "arguments":[], "environmentFrom":[]
+                }],
                 "protocol": "v2",
                 "authorityProbe": { "executable": "bin/probe", "arguments": [], "environmentFrom": [] }
               }],
@@ -544,6 +594,14 @@ mod tests {
                 .map(String::as_str),
             Some("bypassPermissions")
         );
+        assert_eq!(config.agents[0].session_mcp_servers.len(), 1);
+        assert_eq!(
+            config.agents[0].session_mcp_servers[0].executable,
+            directory.path().join("bin/sub-agent-mcp")
+        );
+        let configured = config.configured_agents().expect("agents resolve");
+        assert_eq!(configured[0].session_mcp_servers.len(), 1);
+        assert_eq!(configured[0].session_mcp_servers[0].name, "crab-sub-agents");
         assert_eq!(
             config.channels[0].working_directory,
             directory.path().join("workspace")
@@ -598,6 +656,13 @@ mod tests {
             std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
                 .join("../../target/release/crab-v2-claude-authority-probe")
         );
+        assert_eq!(agent.session_mcp_servers.len(), 1);
+        assert_eq!(agent.session_mcp_servers[0].name, "crab-sub-agents");
+        assert_eq!(
+            agent.session_mcp_servers[0].executable,
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../target/release/crab-v2-sub-agent-mcp")
+        );
     }
 
     #[test]
@@ -630,6 +695,11 @@ mod tests {
                 "--adapter-relative-to-probe",
                 "../agents/claude/node_modules/.bin/claude-agent-acp"
             ]
+        );
+        assert_eq!(agent.session_mcp_servers.len(), 1);
+        assert_eq!(
+            agent.session_mcp_servers[0].executable,
+            runtime.join("../bin/crab-v2-sub-agent-mcp")
         );
         let bridge = &config.bridges[0];
         assert_eq!(
