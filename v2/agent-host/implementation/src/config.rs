@@ -84,6 +84,8 @@ pub struct ConfiguredAgent {
     pub arguments: Vec<String>,
     /// Environment values inherited by the ACP subprocess.
     pub environment: BTreeMap<String, String>,
+    /// Required ACP session configuration values negotiated before readiness.
+    pub session_options: BTreeMap<String, String>,
     /// Protocol profile required from the subprocess.
     pub protocol: AgentProtocol,
     /// Agent-specific no-sandbox and permission-bypass probe.
@@ -106,6 +108,7 @@ impl ConfiguredAgent {
             executable: executable.into(),
             arguments: Vec::new(),
             environment: BTreeMap::new(),
+            session_options: BTreeMap::new(),
             protocol,
             authority_probe,
         }
@@ -137,12 +140,31 @@ impl ConfiguredAgent {
         self
     }
 
+    /// Require ACP session configuration values before accepting the agent.
+    #[must_use]
+    pub fn session_options<I, K, V>(mut self, options: I) -> Self
+    where
+        I: IntoIterator<Item = (K, V)>,
+        K: Into<String>,
+        V: Into<String>,
+    {
+        self.session_options = options
+            .into_iter()
+            .map(|(name, value)| (name.into(), value.into()))
+            .collect();
+        self
+    }
+
     pub(crate) fn validate(&self) -> Result<(), AgentHostError> {
         if self.agent_id.trim().is_empty()
             || self.display_name.trim().is_empty()
             || self.executable.as_os_str().is_empty()
             || self.authority_probe.executable.as_os_str().is_empty()
             || self.environment.keys().any(|name| name.trim().is_empty())
+            || self
+                .session_options
+                .iter()
+                .any(|(name, value)| name.trim().is_empty() || value.trim().is_empty())
         {
             return Err(AgentHostError::InvalidConfiguration);
         }

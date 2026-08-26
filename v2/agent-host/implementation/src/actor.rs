@@ -1,4 +1,8 @@
-use std::{collections::VecDeque, path::PathBuf, sync::Arc};
+use std::{
+    collections::{BTreeMap, VecDeque},
+    path::PathBuf,
+    sync::Arc,
+};
 
 use agent_client_protocol::{
     AcpAgent, Agent, ConnectionTo, LineDirection, Responder,
@@ -174,6 +178,7 @@ async fn run_v1_session(
                 &session_id,
                 working_directory,
                 metadata,
+                &agent.session_options,
             )
             .await;
             let session = match initialized {
@@ -264,6 +269,7 @@ async fn run_v2_session(
                 &session_id,
                 working_directory,
                 metadata,
+                &agent.session_options,
             )
             .await;
             let session = match initialized {
@@ -320,6 +326,7 @@ async fn initialize_v1(
     session_id: &str,
     working_directory: PathBuf,
     metadata: Map<String, Value>,
+    session_options: &BTreeMap<String, String>,
 ) -> Result<AgentSession, AgentHostError> {
     let response = connection
         .send_request(v1::InitializeRequest::new(ProtocolVersion::V1).client_info(
@@ -336,6 +343,7 @@ async fn initialize_v1(
         .block_task()
         .await
         .map_err(|_| AgentHostError::TransportFailed)?;
+    apply_v1_session_options(connection, &new_session.session_id, session_options).await?;
     let capabilities = serde_json::to_string(&response.agent_capabilities)
         .map_err(|_| AgentHostError::ProtocolNegotiationFailed)?;
     let now_ms = clock()?;
@@ -360,6 +368,7 @@ async fn initialize_v2(
     session_id: &str,
     working_directory: PathBuf,
     metadata: Map<String, Value>,
+    session_options: &BTreeMap<String, String>,
 ) -> Result<AgentSession, AgentHostError> {
     let response = connection
         .send_request(v2::InitializeRequest::new(
@@ -377,6 +386,7 @@ async fn initialize_v2(
         .block_task()
         .await
         .map_err(|_| AgentHostError::TransportFailed)?;
+    apply_v2_session_options(connection, &new_session.session_id, session_options).await?;
     let capabilities = serde_json::to_string(&response.capabilities)
         .map_err(|_| AgentHostError::ProtocolNegotiationFailed)?;
     let now_ms = clock()?;
@@ -392,6 +402,66 @@ async fn initialize_v2(
         },
         now_ms,
     )
+}
+
+async fn apply_v1_session_options(
+    connection: &ConnectionTo<Agent>,
+    native_session_id: &v1::SessionId,
+    required: &BTreeMap<String, String>,
+) -> Result<(), AgentHostError> {
+    for (config_id, value) in required {
+        let response = connection
+            .send_request(v1::SetSessionConfigOptionRequest::new(
+                native_session_id.clone(),
+                config_id.clone(),
+                v1::SessionConfigOptionValue::value_id(value.clone()),
+            ))
+            .block_task()
+            .await
+            .map_err(|_| AgentHostError::ProtocolNegotiationFailed)?;
+        let verified = response.config_options.iter().any(|option| {
+            option.id.to_string() == *config_id
+                && matches!(
+                    &option.kind,
+                    v1::SessionConfigKind::Select(select)
+                        if select.current_value.to_string() == *value
+                )
+        });
+        if !verified {
+            return Err(AgentHostError::ProtocolNegotiationFailed);
+        }
+    }
+    Ok(())
+}
+
+async fn apply_v2_session_options(
+    connection: &ConnectionTo<Agent>,
+    native_session_id: &v2::SessionId,
+    required: &BTreeMap<String, String>,
+) -> Result<(), AgentHostError> {
+    for (config_id, value) in required {
+        let response = connection
+            .send_request(v2::SetSessionConfigOptionRequest::new(
+                native_session_id.clone(),
+                config_id.clone(),
+                v2::SessionConfigOptionValue::id(value.clone()),
+            ))
+            .block_task()
+            .await
+            .map_err(|_| AgentHostError::ProtocolNegotiationFailed)?;
+        let verified = response.config_options.iter().any(|option| {
+            option.config_id.to_string() == *config_id
+                && matches!(
+                    &option.kind,
+                    v2::SessionConfigKind::Select(select)
+                        if select.current_value.to_string() == *value
+                )
+        });
+        if !verified {
+            return Err(AgentHostError::ProtocolNegotiationFailed);
+        }
+    }
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]

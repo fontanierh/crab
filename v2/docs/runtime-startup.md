@@ -29,6 +29,27 @@ Start from [`runtime.example.json`](../runtime/runtime.example.json):
 Replace the example executable paths and agent-specific authority flags; they are placeholders,
 not a portable ACP command line.
 
+Each `sessionOptions` entry is a required ACP policy, not a UI default. After `session/new`, Crab
+sets every value through `session/set_config_option` and checks the returned effective state before
+marking the session ready. An unsupported option, a rewritten value or an omitted result fails the
+session closed.
+
+![ACP session policy negotiation](acp-session-policy-flow.png)
+
+### Claude Opus preset
+
+[`runtime.claude-opus.example.json`](../runtime/runtime.claude-opus.example.json) is the first real
+agent preset. It pins the official Claude ACP adapter to `0.70.0`, selects
+`mode=bypassPermissions`, and selects the exact effective picker ID `model=opus[1m]`. The official
+adapter currently canonicalizes the shorthand `opus` to that account-offered Opus 5 picker; the
+exact value makes a future rewrite fail closed. The package pin and resolved model are separate
+things.
+
+The example deliberately uses `/usr/bin/false` for `authorityProbe`, so copying it cannot weaken
+the mandatory host preflight. Replace that command with the deployment's audited probe and replace
+the working directory. Claude authentication remains owned by the native Claude login; no token is
+stored in this JSON.
+
 ```sh
 cargo run -p crab-v2-runtime --bin crab-v2 -- \
   --config runtime/runtime.json \

@@ -1106,6 +1106,7 @@ mod tests {
                 executable: "unused".into(),
                 arguments: Vec::new(),
                 environment_from: Vec::new(),
+                session_options: std::collections::BTreeMap::new(),
                 protocol: ProtocolConfig::V2,
                 authority_probe: CommandConfig {
                     executable: "unused".into(),

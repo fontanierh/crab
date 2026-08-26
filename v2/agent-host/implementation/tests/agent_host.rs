@@ -62,6 +62,7 @@ fn configured_agent(protocol: AgentProtocol) -> ConfiguredAgent {
     )
     .arguments([protocol_argument])
     .environment([("FIXTURE_SECRET", "not-exposed")])
+    .session_options([("mode", "bypassPermissions"), ("model", "opus")])
 }
 
 fn prompt(session_id: &str, turn: &str, mode: AgentInputMode, text: &str) -> PromptRequest {
@@ -96,6 +97,57 @@ async fn open_fixture(
     )
     .await
     .expect("real ACP subprocess opens")
+}
+
+#[tokio::test]
+async fn required_session_options_fail_closed_for_both_acp_profiles() {
+    for protocol in [AgentProtocol::V1, AgentProtocol::V2] {
+        for failure in ["rewrite", "missing", "unsupported"] {
+            let directory = tempfile::tempdir().expect("temporary directory");
+            let mut agent = configured_agent(protocol);
+            match failure {
+                "rewrite" => {
+                    agent
+                        .environment
+                        .insert("ACP_FIXTURE_REWRITE_OPTION".into(), "mode".into());
+                }
+                "missing" => {
+                    agent
+                        .environment
+                        .insert("ACP_FIXTURE_DROP_OPTION".into(), "mode".into());
+                }
+                "unsupported" => {
+                    agent.session_options = [("unknown".into(), "value".into())].into();
+                }
+                _ => unreachable!(),
+            }
+            let host = AgentHost::open_with_authority_verifier(
+                directory.path().join("agent-host.sqlite"),
+                vec![agent],
+                Arc::new(FixtureAuthority),
+            )
+            .expect("host opens");
+
+            assert_eq!(
+                host.open_session(
+                    context(),
+                    OpenSessionRequest {
+                        agent_id: match protocol {
+                            AgentProtocol::V1 => "fixture-v1",
+                            AgentProtocol::V2 => "fixture-v2",
+                        }
+                        .into(),
+                        working_directory: directory.path().to_string_lossy().into_owned(),
+                        bootstrap_prompt: None,
+                        metadata_json: "{}".into(),
+                    },
+                )
+                .await,
+                Err(AgentHostError::ProtocolNegotiationFailed),
+                "{protocol:?} accepted {failure} session policy"
+            );
+        }
+    }
 }
 
 async fn wait_for_lifecycle(host: &AgentHost, session_id: &str, expected: AgentLifecycle) {

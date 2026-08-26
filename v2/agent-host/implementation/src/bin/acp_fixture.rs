@@ -1,4 +1,7 @@
-use std::io::{self, BufRead, Write};
+use std::{
+    collections::BTreeMap,
+    io::{self, BufRead, Write},
+};
 
 use serde_json::{Value, json};
 
@@ -14,6 +17,7 @@ struct FixtureAgent {
     active_v1_request: Option<Value>,
     active_v2: bool,
     permission_pending: bool,
+    session_options: BTreeMap<String, String>,
 }
 
 impl FixtureAgent {
@@ -24,6 +28,10 @@ impl FixtureAgent {
             active_v1_request: None,
             active_v2: false,
             permission_pending: false,
+            session_options: BTreeMap::from([
+                ("mode".into(), "default".into()),
+                ("model".into(), "default".into()),
+            ]),
         }
     }
 
@@ -32,6 +40,7 @@ impl FixtureAgent {
         match method {
             Some("initialize") => self.initialize(&message)?,
             Some("session/new") => self.new_session(&message)?,
+            Some("session/set_config_option") => self.set_config_option(&message)?,
             Some("session/prompt") => self.prompt(&message)?,
             Some("session/cancel") => self.cancel()?,
             Some("session/close") => {
@@ -68,8 +77,64 @@ impl FixtureAgent {
         self.respond(request, result)
     }
 
-    fn new_session(&self, request: &Value) -> io::Result<()> {
-        self.respond(request, json!({ "sessionId": self.session_id }))
+    fn new_session(&mut self, request: &Value) -> io::Result<()> {
+        self.respond(
+            request,
+            json!({
+                "sessionId": self.session_id,
+                "configOptions": self.config_options()
+            }),
+        )
+    }
+
+    fn set_config_option(&mut self, request: &Value) -> io::Result<()> {
+        let config_id = request
+            .pointer("/params/configId")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let requested = request
+            .pointer("/params/value")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        if !self.session_options.contains_key(config_id) || requested.is_empty() {
+            return self.respond_error(request, -32602, "unsupported session option");
+        }
+        let effective = if std::env::var("ACP_FIXTURE_REWRITE_OPTION").as_deref() == Ok(config_id) {
+            "rewritten"
+        } else {
+            requested
+        };
+        self.session_options
+            .insert(config_id.to_owned(), effective.to_owned());
+        self.respond(request, json!({ "configOptions": self.config_options() }))
+    }
+
+    fn config_options(&self) -> Vec<Value> {
+        self.session_options
+            .iter()
+            .filter(|(config_id, _)| {
+                std::env::var("ACP_FIXTURE_DROP_OPTION").as_deref() != Ok(config_id.as_str())
+            })
+            .map(|(config_id, current_value)| {
+                let id_field = match self.protocol {
+                    Protocol::V1 => "id",
+                    Protocol::V2 => "configId",
+                };
+                let mut option = json!({
+                    "name": config_id,
+                    "type": "select",
+                    "currentValue": current_value,
+                    "options": [
+                        { "value": "default", "name": "Default" },
+                        { "value": "bypassPermissions", "name": "Bypass permissions" },
+                        { "value": "opus", "name": "Opus" },
+                        { "value": "rewritten", "name": "Rewritten" }
+                    ]
+                });
+                option[id_field] = json!(config_id);
+                option
+            })
+            .collect()
     }
 
     fn prompt(&mut self, request: &Value) -> io::Result<()> {
@@ -205,6 +270,14 @@ impl FixtureAgent {
             "jsonrpc": "2.0",
             "id": request.get("id").cloned().unwrap_or(Value::Null),
             "result": result
+        }))
+    }
+
+    fn respond_error(&self, request: &Value, code: i64, message: &str) -> io::Result<()> {
+        emit(json!({
+            "jsonrpc": "2.0",
+            "id": request.get("id").cloned().unwrap_or(Value::Null),
+            "error": { "code": code, "message": message }
         }))
     }
 }

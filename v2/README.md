@@ -46,7 +46,9 @@ interrupt as a separate explicit action.
   Parent and child exchange durable non-blocking queue, steer or interrupt messages in both
   directions.
 - Agents run only after a fail-closed preflight proves permission bypass, no sandbox, unrestricted
-  filesystem/network access and working passwordless `sudo`.
+  filesystem/network access and working passwordless `sudo`. Required ACP session options are then
+  applied and verified before readiness; the pinned Claude preset requires
+  `bypassPermissions` and the Opus picker.
 - Bridges are packages the agent may add. Crab owns supervision, auth state, health and delivery
   semantics—not service-specific behavior. WhatsApp is the first intended first-party package.
 - Tests target useful contract and composition behavior. There is no percentage coverage gate.

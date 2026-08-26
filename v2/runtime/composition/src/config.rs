@@ -44,6 +44,9 @@ pub struct AgentConfig {
     /// Ambient environment variable names copied into explicit process configuration.
     #[serde(default)]
     pub environment_from: Vec<String>,
+    /// Required ACP session configuration values verified before the session becomes ready.
+    #[serde(default)]
+    pub session_options: BTreeMap<String, String>,
     /// ACP wire profile required from the command.
     pub protocol: ProtocolConfig,
     /// Agent-specific command that proves yolo/no-sandbox authority.
@@ -266,7 +269,8 @@ impl RuntimeConfig {
                         .environment(probe_environment),
                 )
                 .arguments(agent.arguments.clone())
-                .environment(environment))
+                .environment(environment)
+                .session_options(agent.session_options.clone()))
             })
             .collect()
     }
@@ -319,6 +323,10 @@ impl RuntimeConfig {
                 || !agent_ids.insert(agent.agent_id.as_str())
                 || !valid_environment_names(&agent.environment_from)
                 || !valid_environment_names(&agent.authority_probe.environment_from)
+                || agent
+                    .session_options
+                    .iter()
+                    .any(|(name, value)| name.trim().is_empty() || value.trim().is_empty())
             {
                 return Err(RuntimeConfigError::InvalidTopology);
             }
@@ -478,7 +486,9 @@ mod tests {
               "schema": 1,
               "agents": [{
                 "agentId": "fixture", "displayName": "Fixture", "executable": "bin/acp",
-                "arguments": ["--acp"], "environmentFrom": [], "protocol": "v2",
+                "arguments": ["--acp"], "environmentFrom": [],
+                "sessionOptions": {"mode":"bypassPermissions","model":"opus"},
+                "protocol": "v2",
                 "authorityProbe": { "executable": "bin/probe", "arguments": [], "environmentFrom": [] }
               }],
               "channels": [{
@@ -511,6 +521,13 @@ mod tests {
             directory.path().join("bin/acp")
         );
         assert_eq!(
+            config.agents[0]
+                .session_options
+                .get("mode")
+                .map(String::as_str),
+            Some("bypassPermissions")
+        );
+        assert_eq!(
             config.channels[0].working_directory,
             directory.path().join("workspace")
         );
@@ -538,5 +555,30 @@ mod tests {
             RuntimeConfig::load(&unknown),
             Err(RuntimeConfigError::Decode(_))
         ));
+    }
+
+    #[test]
+    fn claude_opus_preset_pins_adapter_and_required_session_policy() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../runtime.claude-opus.example.json");
+        let config = RuntimeConfig::load(path).expect("committed Claude preset loads");
+        let agent = &config.agents[0];
+        assert_eq!(
+            agent.arguments,
+            ["--yes", "@agentclientprotocol/claude-agent-acp@0.70.0"]
+        );
+        assert_eq!(agent.protocol, super::ProtocolConfig::V1);
+        assert_eq!(
+            agent.session_options.get("mode").map(String::as_str),
+            Some("bypassPermissions")
+        );
+        assert_eq!(
+            agent.session_options.get("model").map(String::as_str),
+            Some("opus[1m]")
+        );
+        assert_eq!(
+            agent.authority_probe.executable,
+            std::path::Path::new("/usr/bin/false")
+        );
     }
 }
