@@ -1,0 +1,835 @@
+//! Owner-only local transport for native-channel Boxology capabilities.
+
+use std::{
+    collections::HashSet,
+    fmt,
+    fs::{self, OpenOptions},
+    future::Future,
+    io::{self, Read as _, Write as _},
+    os::unix::fs::{FileTypeExt as _, OpenOptionsExt as _, PermissionsExt as _},
+    path::{Path, PathBuf},
+    sync::{Arc, Mutex},
+};
+
+use boxology_contract::{
+    CallContext, CallError, Caller, CancelToken, CapabilityDescriptor, ContractDescriptor,
+    ContractError, ContractType, DecodeRole, TraceContext,
+    json::{self, Limits},
+};
+use channel_gateway_contract::{AttachChannelRequest, ChannelAttachment, ChannelGatewayHandle};
+use native_channel_contract::{
+    AcceptedTurn, BindingReference, ChannelStatus, ChannelTurn, InterruptReceipt, InterruptRequest,
+    NativeChannelHandle, PublishedEventPage, ReplayRequest,
+};
+use serde::{Deserialize, Serialize};
+use serde_json::value::RawValue;
+use tokio::{
+    io::{AsyncBufReadExt as _, AsyncReadExt as _, AsyncWriteExt as _, BufReader},
+    net::{UnixListener, UnixStream},
+    sync::watch,
+    task::{JoinHandle, JoinSet},
+};
+use uuid::Uuid;
+
+const PROTOCOL_VERSION: u16 = 1;
+const MAX_REQUEST_BYTES: usize = 2 * 1024 * 1024;
+const MAX_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
+const MAX_JSON_DEPTH: usize = 128;
+const SOCKET_FILE: &str = "channel-ipc.sock";
+const TOKEN_FILE: &str = "channel-ipc.token";
+
+const ATTACH: &str = "channel-gateway.attach_channel";
+const ACCEPT_TURN: &str = "native-channel.accept_turn";
+const INTERRUPT: &str = "native-channel.interrupt_and_drain";
+const STATUS: &str = "native-channel.channel_status";
+const REPLAY: &str = "native-channel.replay_native_events";
+
+/// Stable filesystem endpoints for Crab's local native-channel transport.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChannelIpcPaths {
+    socket: PathBuf,
+    token: PathBuf,
+}
+
+impl ChannelIpcPaths {
+    /// Resolve the socket and token beneath an existing state directory.
+    pub fn for_state_directory(directory: impl AsRef<Path>) -> io::Result<Self> {
+        let directory = fs::canonicalize(directory)?;
+        Ok(Self {
+            socket: directory.join(SOCKET_FILE),
+            token: directory.join(TOKEN_FILE),
+        })
+    }
+
+    /// Return the owner-only Unix socket path.
+    #[must_use]
+    pub fn socket(&self) -> &Path {
+        &self.socket
+    }
+
+    /// Return the owner-only authentication-token path.
+    #[must_use]
+    pub fn token(&self) -> &Path {
+        &self.token
+    }
+}
+
+/// Failure to create the owner-only IPC endpoint.
+#[derive(Debug)]
+pub enum ChannelIpcStartupError {
+    /// A filesystem or socket operation failed.
+    Io(io::Error),
+    /// Another Crab runtime is already listening at the configured path.
+    AlreadyRunning,
+    /// An existing path at the socket location is not a Unix socket.
+    UnsafeSocketPath,
+    /// The persisted token is malformed or not owner-only.
+    UnsafeTokenFile,
+}
+
+impl fmt::Display for ChannelIpcStartupError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Io(error) => write!(formatter, "local channel IPC failed: {error}"),
+            Self::AlreadyRunning => formatter.write_str("local channel IPC is already running"),
+            Self::UnsafeSocketPath => {
+                formatter.write_str("local channel IPC path is not a Unix socket")
+            }
+            Self::UnsafeTokenFile => {
+                formatter.write_str("local channel IPC token is malformed or not owner-only")
+            }
+        }
+    }
+}
+
+impl std::error::Error for ChannelIpcStartupError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Io(error) => Some(error),
+            _ => None,
+        }
+    }
+}
+
+impl From<io::Error> for ChannelIpcStartupError {
+    fn from(error: io::Error) -> Self {
+        Self::Io(error)
+    }
+}
+
+/// A stable remote or transport failure returned to native UI adapters.
+#[derive(Debug)]
+pub enum ChannelIpcClientError {
+    /// A filesystem or socket operation failed.
+    Io(io::Error),
+    /// The peer did not speak the exact supported protocol.
+    Protocol(&'static str),
+    /// Crab rejected the authenticated capability call.
+    Remote {
+        /// Stable failure category.
+        kind: String,
+        /// Stable domain or transport code.
+        code: String,
+    },
+}
+
+impl fmt::Display for ChannelIpcClientError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Io(error) => write!(formatter, "local channel IPC failed: {error}"),
+            Self::Protocol(stage) => {
+                write!(formatter, "local channel IPC protocol violation: {stage}")
+            }
+            Self::Remote { kind, code } => write!(formatter, "local channel IPC {kind}: {code}"),
+        }
+    }
+}
+
+impl std::error::Error for ChannelIpcClientError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Io(error) => Some(error),
+            _ => None,
+        }
+    }
+}
+
+impl From<io::Error> for ChannelIpcClientError {
+    fn from(error: io::Error) -> Self {
+        Self::Io(error)
+    }
+}
+
+/// A lightweight client for Crab's authenticated local Boxology transport.
+#[derive(Clone)]
+pub struct ChannelIpcClient {
+    paths: ChannelIpcPaths,
+    authentication: String,
+}
+
+impl ChannelIpcClient {
+    /// Load the owner-only token for an existing Crab state directory.
+    pub fn from_state_directory(
+        directory: impl AsRef<Path>,
+    ) -> Result<Self, ChannelIpcClientError> {
+        let paths = ChannelIpcPaths::for_state_directory(directory)?;
+        let authentication = load_token(&paths.token).map_err(|error| match error {
+            ChannelIpcStartupError::Io(error) => ChannelIpcClientError::Io(error),
+            _ => ChannelIpcClientError::Protocol("token"),
+        })?;
+        Ok(Self {
+            paths,
+            authentication,
+        })
+    }
+
+    /// Idempotently create, reuse or recover one native-channel attachment.
+    pub async fn attach_channel(
+        &self,
+        request: AttachChannelRequest,
+    ) -> Result<ChannelAttachment, ChannelIpcClientError> {
+        self.invoke(
+            ATTACH,
+            channel_gateway_contract::contract_descriptor(),
+            request,
+        )
+        .await
+    }
+
+    /// Submit one explicit queue or steer turn.
+    pub async fn accept_turn(
+        &self,
+        request: ChannelTurn,
+    ) -> Result<AcceptedTurn, ChannelIpcClientError> {
+        self.invoke(
+            ACCEPT_TURN,
+            native_channel_contract::contract_descriptor(),
+            request,
+        )
+        .await
+    }
+
+    /// Explicitly cancel active work and drain already accepted input.
+    pub async fn interrupt_and_drain(
+        &self,
+        request: InterruptRequest,
+    ) -> Result<InterruptReceipt, ChannelIpcClientError> {
+        self.invoke(
+            INTERRUPT,
+            native_channel_contract::contract_descriptor(),
+            request,
+        )
+        .await
+    }
+
+    /// Read one binding's current session and replay position.
+    pub async fn channel_status(
+        &self,
+        request: BindingReference,
+    ) -> Result<ChannelStatus, ChannelIpcClientError> {
+        self.invoke(
+            STATUS,
+            native_channel_contract::contract_descriptor(),
+            request,
+        )
+        .await
+    }
+
+    /// Replay the complete ordered native ACP view after a sequence.
+    pub async fn replay_native_events(
+        &self,
+        request: ReplayRequest,
+    ) -> Result<PublishedEventPage, ChannelIpcClientError> {
+        self.invoke(
+            REPLAY,
+            native_channel_contract::contract_descriptor(),
+            request,
+        )
+        .await
+    }
+
+    async fn invoke<I, O>(
+        &self,
+        capability_name: &str,
+        contract: &ContractDescriptor,
+        input: I,
+    ) -> Result<O, ChannelIpcClientError>
+    where
+        I: ContractType,
+        O: ContractType,
+    {
+        let capability = capability(contract, capability_name)
+            .ok_or(ChannelIpcClientError::Protocol("descriptor"))?;
+        let encoded = input
+            .encode()
+            .map_err(|_| ChannelIpcClientError::Protocol("input contract encode"))
+            .and_then(|slot| {
+                json::encode(&slot, capability.input())
+                    .map_err(|_| ChannelIpcClientError::Protocol("input JSON encode"))
+            })?;
+        let input = RawValue::from_string(
+            String::from_utf8(encoded)
+                .map_err(|_| ChannelIpcClientError::Protocol("input UTF-8"))?,
+        )
+        .map_err(|_| ChannelIpcClientError::Protocol("input raw JSON"))?;
+        let request_id = Uuid::new_v4().simple().to_string();
+        let request = WireRequest {
+            protocol_version: PROTOCOL_VERSION,
+            request_id: request_id.clone(),
+            authentication: self.authentication.clone(),
+            capability: capability_name.to_owned(),
+            input,
+        };
+        let request = serde_json::to_vec(&request)
+            .map_err(|_| ChannelIpcClientError::Protocol("request encode"))?;
+        if request.len() > MAX_REQUEST_BYTES {
+            return Err(ChannelIpcClientError::Protocol("request too large"));
+        }
+        let mut stream = UnixStream::connect(&self.paths.socket).await?;
+        stream.write_all(&request).await?;
+        stream.write_all(b"\n").await?;
+        stream.flush().await?;
+        let response = read_frame(&mut BufReader::new(stream), MAX_RESPONSE_BYTES).await?;
+        let response: WireResponse = serde_json::from_slice(&response)
+            .map_err(|_| ChannelIpcClientError::Protocol("response decode"))?;
+        if response.protocol_version != PROTOCOL_VERSION || response.request_id != request_id {
+            return Err(ChannelIpcClientError::Protocol("response identity"));
+        }
+        match response
+            .into_outcome()
+            .ok_or(ChannelIpcClientError::Protocol("response outcome"))?
+        {
+            WireOutcome::Ok { output } => {
+                let slot = json::decode(
+                    output.get().as_bytes(),
+                    capability.output(),
+                    DecodeRole::ConsumerOutput,
+                    Limits::new(MAX_RESPONSE_BYTES, MAX_JSON_DEPTH),
+                )
+                .map_err(|_| ChannelIpcClientError::Protocol("output JSON decode"))?;
+                O::decode(&slot)
+                    .map_err(|_| ChannelIpcClientError::Protocol("output contract decode"))
+            }
+            WireOutcome::Error { error } => Err(ChannelIpcClientError::Remote {
+                kind: error.kind,
+                code: error.code,
+            }),
+        }
+    }
+}
+
+pub(crate) struct ChannelIpcServer {
+    socket_path: PathBuf,
+    attached_sessions: Arc<Mutex<HashSet<String>>>,
+    shutdown: watch::Sender<bool>,
+    failed: watch::Receiver<bool>,
+    task: Option<JoinHandle<io::Result<()>>>,
+}
+
+impl ChannelIpcServer {
+    pub(crate) async fn start(
+        paths: ChannelIpcPaths,
+        channel_gateway: ChannelGatewayHandle,
+        native_channel: NativeChannelHandle,
+    ) -> Result<Self, ChannelIpcStartupError> {
+        let authentication = load_or_create_token(&paths.token)?;
+        prepare_socket(&paths.socket).await?;
+        let listener = UnixListener::bind(&paths.socket)?;
+        fs::set_permissions(&paths.socket, fs::Permissions::from_mode(0o600))?;
+        let (shutdown, receiver) = watch::channel(false);
+        let (failed_sender, failed) = watch::channel(false);
+        let attached_sessions = Arc::new(Mutex::new(HashSet::new()));
+        let socket_path = paths.socket.clone();
+        let server_socket = socket_path.clone();
+        let server_sessions = attached_sessions.clone();
+        let task = tokio::spawn(async move {
+            let result = serve(
+                listener,
+                receiver,
+                authentication,
+                channel_gateway,
+                native_channel,
+                server_sessions,
+            )
+            .await;
+            if result.is_err() {
+                failed_sender.send_replace(true);
+            }
+            let _ = fs::remove_file(server_socket);
+            result
+        });
+        Ok(Self {
+            socket_path,
+            attached_sessions,
+            shutdown,
+            failed,
+            task: Some(task),
+        })
+    }
+
+    pub(crate) async fn wait_for_failure(&mut self) {
+        while !*self.failed.borrow() && self.failed.changed().await.is_ok() {}
+    }
+
+    pub(crate) async fn shutdown(&mut self) -> io::Result<()> {
+        self.shutdown.send_replace(true);
+        let Some(task) = self.task.take() else {
+            return Ok(());
+        };
+        task.await
+            .map_err(|error| io::Error::other(error.to_string()))?
+    }
+
+    pub(crate) fn attached_session_ids(&self) -> Vec<String> {
+        self.attached_sessions
+            .lock()
+            .map(|sessions| sessions.iter().cloned().collect())
+            .unwrap_or_default()
+    }
+}
+
+impl Drop for ChannelIpcServer {
+    fn drop(&mut self) {
+        self.shutdown.send_replace(true);
+        if self.task.is_some() {
+            let _ = fs::remove_file(&self.socket_path);
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct WireRequest {
+    protocol_version: u16,
+    request_id: String,
+    authentication: String,
+    capability: String,
+    input: Box<RawValue>,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct WireResponse {
+    protocol_version: u16,
+    request_id: String,
+    status: WireStatus,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    output: Option<Box<RawValue>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<WireError>,
+}
+
+impl WireResponse {
+    fn new(request_id: String, outcome: WireOutcome) -> Self {
+        let (status, output, error) = match outcome {
+            WireOutcome::Ok { output } => (WireStatus::Ok, Some(output), None),
+            WireOutcome::Error { error } => (WireStatus::Error, None, Some(error)),
+        };
+        Self {
+            protocol_version: PROTOCOL_VERSION,
+            request_id,
+            status,
+            output,
+            error,
+        }
+    }
+
+    fn into_outcome(self) -> Option<WireOutcome> {
+        match (self.status, self.output, self.error) {
+            (WireStatus::Ok, Some(output), None) => Some(WireOutcome::Ok { output }),
+            (WireStatus::Error, None, Some(error)) => Some(WireOutcome::Error { error }),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+enum WireStatus {
+    Ok,
+    Error,
+}
+
+enum WireOutcome {
+    Ok { output: Box<RawValue> },
+    Error { error: WireError },
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct WireError {
+    kind: String,
+    code: String,
+}
+
+async fn serve(
+    listener: UnixListener,
+    mut shutdown: watch::Receiver<bool>,
+    authentication: String,
+    channel_gateway: ChannelGatewayHandle,
+    native_channel: NativeChannelHandle,
+    attached_sessions: Arc<Mutex<HashSet<String>>>,
+) -> io::Result<()> {
+    let mut connections = JoinSet::new();
+    loop {
+        tokio::select! {
+            changed = shutdown.changed() => {
+                if changed.is_err() || *shutdown.borrow() {
+                    break;
+                }
+            }
+            accepted = listener.accept() => {
+                let (stream, _) = accepted?;
+                connections.spawn(handle_connection(
+                    stream,
+                    authentication.clone(),
+                    channel_gateway.clone(),
+                    native_channel.clone(),
+                    attached_sessions.clone(),
+                ));
+            }
+            _ = connections.join_next(), if !connections.is_empty() => {}
+        }
+    }
+    connections.abort_all();
+    while connections.join_next().await.is_some() {}
+    Ok(())
+}
+
+async fn handle_connection(
+    stream: UnixStream,
+    authentication: String,
+    channel_gateway: ChannelGatewayHandle,
+    native_channel: NativeChannelHandle,
+    attached_sessions: Arc<Mutex<HashSet<String>>>,
+) {
+    let (reader, mut writer) = stream.into_split();
+    let Ok(frame) = read_frame(&mut BufReader::new(reader), MAX_REQUEST_BYTES).await else {
+        return;
+    };
+    let Ok(request) = serde_json::from_slice::<WireRequest>(&frame) else {
+        return;
+    };
+    let request_id = request.request_id.clone();
+    let outcome = if request.protocol_version != PROTOCOL_VERSION
+        || request.request_id.is_empty()
+        || request.request_id.len() > 128
+    {
+        wire_failure("protocol", "InvalidEnvelope")
+    } else if !constant_time_equal(request.authentication.as_bytes(), authentication.as_bytes()) {
+        wire_failure("authentication", "Unauthorized")
+    } else {
+        dispatch(request, channel_gateway, native_channel, attached_sessions).await
+    };
+    let response = WireResponse::new(request_id, outcome);
+    let Ok(mut bytes) = serde_json::to_vec(&response) else {
+        return;
+    };
+    if bytes.len() > MAX_RESPONSE_BYTES {
+        let fallback = WireResponse::new(
+            response.request_id,
+            wire_failure("protocol", "ResponseTooLarge"),
+        );
+        let Ok(fallback) = serde_json::to_vec(&fallback) else {
+            return;
+        };
+        bytes = fallback;
+    }
+    bytes.push(b'\n');
+    let _ = writer.write_all(&bytes).await;
+    let _ = writer.flush().await;
+}
+
+async fn dispatch(
+    request: WireRequest,
+    channel_gateway: ChannelGatewayHandle,
+    native_channel: NativeChannelHandle,
+    attached_sessions: Arc<Mutex<HashSet<String>>>,
+) -> WireOutcome {
+    match request.capability.as_str() {
+        ATTACH => {
+            let Some(capability) =
+                capability(channel_gateway_contract::contract_descriptor(), ATTACH)
+            else {
+                return wire_failure("internal", "MissingDescriptor");
+            };
+            let input = match decode_input::<AttachChannelRequest>(&request.input, capability) {
+                Ok(input) => input,
+                Err(error) => return error,
+            };
+            match channel_gateway.attach_channel(call_context(), input).await {
+                Ok(output) => {
+                    if let Ok(mut sessions) = attached_sessions.lock() {
+                        sessions.insert(output.session_id.clone());
+                    }
+                    encode_output(output, capability)
+                }
+                Err(error) => wire_call_error(error),
+            }
+        }
+        ACCEPT_TURN => {
+            invoke_native::<ChannelTurn, AcceptedTurn, _, _>(&request.input, ACCEPT_TURN, |input| {
+                native_channel.accept_turn(call_context(), input)
+            })
+            .await
+        }
+        INTERRUPT => {
+            invoke_native::<InterruptRequest, InterruptReceipt, _, _>(
+                &request.input,
+                INTERRUPT,
+                |input| native_channel.interrupt_and_drain(call_context(), input),
+            )
+            .await
+        }
+        STATUS => {
+            invoke_native::<BindingReference, ChannelStatus, _, _>(
+                &request.input,
+                STATUS,
+                |input| native_channel.channel_status(call_context(), input),
+            )
+            .await
+        }
+        REPLAY => {
+            invoke_native::<ReplayRequest, PublishedEventPage, _, _>(
+                &request.input,
+                REPLAY,
+                |input| native_channel.replay_native_events(call_context(), input),
+            )
+            .await
+        }
+        _ => wire_failure("protocol", "UnknownCapability"),
+    }
+}
+
+async fn invoke_native<I, O, F, Fut>(input: &RawValue, name: &str, invoke: F) -> WireOutcome
+where
+    I: ContractType,
+    O: ContractType,
+    F: FnOnce(I) -> Fut,
+    Fut: Future<Output = Result<O, CallError<native_channel_contract::NativeChannelError>>>,
+{
+    let Some(capability) = capability(native_channel_contract::contract_descriptor(), name) else {
+        return wire_failure("internal", "MissingDescriptor");
+    };
+    let input = match decode_input::<I>(input, capability) {
+        Ok(input) => input,
+        Err(error) => return error,
+    };
+    match invoke(input).await {
+        Ok(output) => encode_output(output, capability),
+        Err(error) => wire_call_error(error),
+    }
+}
+
+fn decode_input<T: ContractType>(
+    input: &RawValue,
+    capability: &CapabilityDescriptor,
+) -> Result<T, WireOutcome> {
+    let slot = json::decode(
+        input.get().as_bytes(),
+        capability.input(),
+        DecodeRole::ProviderInput,
+        Limits::new(MAX_REQUEST_BYTES, MAX_JSON_DEPTH),
+    )
+    .map_err(|_| wire_failure("contract", "InvalidInput"))?;
+    T::decode(&slot).map_err(|_| wire_failure("contract", "InvalidInput"))
+}
+
+fn encode_output<T: ContractType>(output: T, capability: &CapabilityDescriptor) -> WireOutcome {
+    let encoded = output
+        .encode()
+        .map_err(|_| ())
+        .and_then(|slot| json::encode(&slot, capability.output()).map_err(|_| ()))
+        .and_then(|bytes| String::from_utf8(bytes).map_err(|_| ()))
+        .and_then(|text| RawValue::from_string(text).map_err(|_| ()));
+    match encoded {
+        Ok(output) => WireOutcome::Ok { output },
+        Err(()) => wire_failure("internal", "InvalidProviderOutput"),
+    }
+}
+
+fn wire_call_error<E: ContractError>(error: CallError<E>) -> WireOutcome {
+    match error {
+        CallError::Domain(error) => wire_failure("domain", error.error_tag()),
+        CallError::Deadline => wire_failure("transport", "Deadline"),
+        CallError::Cancelled => wire_failure("transport", "Cancelled"),
+        CallError::Unavailable(detail) => wire_failure("transport", detail.code()),
+        CallError::ContractViolation(detail) => wire_failure("contract", detail.code()),
+        CallError::InvalidResponse(detail) => wire_failure("internal", detail.code()),
+        CallError::Internal(detail) => wire_failure("internal", detail.code()),
+        _ => wire_failure("internal", "UnknownFailure"),
+    }
+}
+
+fn wire_failure(kind: &str, code: &str) -> WireOutcome {
+    WireOutcome::Error {
+        error: WireError {
+            kind: kind.to_owned(),
+            code: code.to_owned(),
+        },
+    }
+}
+
+fn capability<'a>(
+    contract: &'a ContractDescriptor,
+    qualified_name: &str,
+) -> Option<&'a CapabilityDescriptor> {
+    let (_, name) = qualified_name.split_once('.')?;
+    contract
+        .capabilities()
+        .iter()
+        .find(|capability| capability.name().as_str() == name)
+}
+
+fn call_context() -> CallContext {
+    CallContext::new(
+        Caller::System("crab-v2-channel-ipc"),
+        None,
+        CancelToken::new(),
+        TraceContext::empty(),
+        None,
+    )
+}
+
+async fn read_frame(
+    reader: &mut (impl tokio::io::AsyncBufRead + Unpin),
+    limit: usize,
+) -> io::Result<Vec<u8>> {
+    let mut bytes = Vec::new();
+    let mut bounded = reader.take((limit + 2) as u64);
+    let count = bounded.read_until(b'\n', &mut bytes).await?;
+    if count == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::UnexpectedEof,
+            "IPC stream closed before a frame",
+        ));
+    }
+    if bytes.len() > limit + 1 || bytes.last() != Some(&b'\n') {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "IPC frame is unterminated or exceeds limit",
+        ));
+    }
+    bytes.pop();
+    if bytes.last() == Some(&b'\r') {
+        bytes.pop();
+    }
+    Ok(bytes)
+}
+
+async fn prepare_socket(path: &Path) -> Result<(), ChannelIpcStartupError> {
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error.into()),
+    };
+    if !metadata.file_type().is_socket() {
+        return Err(ChannelIpcStartupError::UnsafeSocketPath);
+    }
+    match UnixStream::connect(path).await {
+        Ok(_) => Err(ChannelIpcStartupError::AlreadyRunning),
+        Err(error)
+            if matches!(
+                error.kind(),
+                io::ErrorKind::ConnectionRefused | io::ErrorKind::NotFound
+            ) =>
+        {
+            fs::remove_file(path)?;
+            Ok(())
+        }
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn load_or_create_token(path: &Path) -> Result<String, ChannelIpcStartupError> {
+    let token = generate_token()?;
+    match OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(path)
+    {
+        Ok(mut file) => {
+            if let Err(error) = file
+                .write_all(token.as_bytes())
+                .and_then(|()| file.sync_all())
+            {
+                drop(file);
+                let _ = fs::remove_file(path);
+                return Err(error.into());
+            }
+            Ok(token)
+        }
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => load_token(path),
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn generate_token() -> Result<String, ChannelIpcStartupError> {
+    let mut entropy = [0_u8; 32];
+    OpenOptions::new()
+        .read(true)
+        .open("/dev/urandom")?
+        .read_exact(&mut entropy)?;
+    let mut token = String::with_capacity(64);
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    for byte in entropy {
+        token.push(HEX[(byte >> 4) as usize] as char);
+        token.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    Ok(token)
+}
+
+fn load_token(path: &Path) -> Result<String, ChannelIpcStartupError> {
+    let metadata = fs::symlink_metadata(path)?;
+    if !metadata.file_type().is_file() || metadata.permissions().mode() & 0o077 != 0 {
+        return Err(ChannelIpcStartupError::UnsafeTokenFile);
+    }
+    let mut token = String::new();
+    OpenOptions::new()
+        .read(true)
+        .open(path)?
+        .read_to_string(&mut token)?;
+    if token.len() != 64
+        || !token
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return Err(ChannelIpcStartupError::UnsafeTokenFile);
+    }
+    Ok(token)
+}
+
+fn constant_time_equal(left: &[u8], right: &[u8]) -> bool {
+    if left.len() != right.len() {
+        return false;
+    }
+    left.iter()
+        .zip(right)
+        .fold(0_u8, |difference, (left, right)| {
+            difference | (left ^ right)
+        })
+        == 0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{WireRequest, constant_time_equal};
+
+    #[test]
+    fn envelope_is_strict_and_authentication_comparison_is_exact() {
+        let valid = r#"{
+            "protocolVersion":1,
+            "requestId":"request-1",
+            "authentication":"token",
+            "capability":"native-channel.channel_status",
+            "input":{"binding_id":"binding-1"}
+        }"#;
+        assert!(serde_json::from_str::<WireRequest>(valid).is_ok());
+        let unknown = valid.replace("\"input\":", "\"unknown\":true,\"input\":");
+        assert!(serde_json::from_str::<WireRequest>(&unknown).is_err());
+        assert!(constant_time_equal(b"same", b"same"));
+        assert!(!constant_time_equal(b"same", b"diff"));
+        assert!(!constant_time_equal(b"same", b"short"));
+    }
+}

@@ -11,9 +11,13 @@ extern crate agent_host_contract as boxology_generated_contract;
 
 use std::{path::Path, sync::Arc};
 
+mod channel_ipc;
 mod config;
 mod configured;
 
+pub use channel_ipc::{
+    ChannelIpcClient, ChannelIpcClientError, ChannelIpcPaths, ChannelIpcStartupError,
+};
 pub use config::*;
 pub use configured::*;
 
@@ -129,6 +133,8 @@ pub enum RuntimeStartError {
     ReplaceBridge(boxology_contract::CallError<bridge_host_contract::BridgeHostError>),
     /// A bridge removed from configuration could not be stopped.
     StopBridge(boxology_contract::CallError<bridge_host_contract::BridgeHostError>),
+    /// The authenticated local native-channel endpoint could not start.
+    ChannelIpc(ChannelIpcStartupError),
     /// The durable state directory could not be created.
     StateDirectory(std::io::Error),
     /// Boxology rejected the composition graph.

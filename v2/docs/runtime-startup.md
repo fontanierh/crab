@@ -10,6 +10,8 @@ runtime state/
 ├── agent-host.sqlite
 ├── bridge-credentials/
 ├── bridge-host.sqlite
+├── channel-ipc.sock       owner-only, ephemeral
+├── channel-ipc.token      owner-only, persistent
 ├── native-channel.sqlite
 ├── sub-agent-host.sqlite
 ├── trigger-inbox.sqlite
@@ -45,4 +47,5 @@ cargo run -p crab-v2-runtime --bin crab-v2 -- \
 
 Agent-owned compaction is not resumed or reconstructed. Durable trigger IDs still deduplicate
 retries, and each configured lane is drained serially until SIGINT/SIGTERM stops workers and closes
-the live ACP sessions.
+the local endpoint, then the live ACP sessions. UI process disconnects never close a Crab-owned
+session. See the [local transport contract](channel-ipc.md).

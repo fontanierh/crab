@@ -1,6 +1,7 @@
 %%{init: {"theme": "base", "themeVariables": {"fontFamily": "ui-sans-serif, system-ui, sans-serif", "primaryTextColor": "#172033", "lineColor": "#64748b", "clusterBkg": "#f8fafc", "clusterBorder": "#cbd5e1", "edgeLabelBackground": "#ffffff"}, "flowchart": {"curve": "basis", "nodeSpacing": 42, "rankSpacing": 58}}}%%
 flowchart TB
     UI["Native ACP UI<br/>plug in or build"]
+    IPC["owner-only local IPC<br/>Boxology JSON"]
     EXTERNAL["WhatsApp · email · webhooks"]
 
     BRIDGE["bridge-host"]
@@ -14,8 +15,9 @@ flowchart TB
     CHILDREN["ACP harness<br/>subprocesses"]
     AUTH["Mandatory authority<br/>no sandbox · yolo permissions<br/>unrestricted FS + network · verified sudo"]
 
-    UI -->|"attach"| GATEWAY
-    UI <-->|"complete native view"| CHANNEL
+    UI <-->|"authenticated · versioned"| IPC
+    IPC -->|"attach"| GATEWAY
+    IPC <-->|"turn · interrupt · status · replay"| CHANNEL
     GATEWAY -->|"binding lifecycle"| CHANNEL
     GATEWAY -->|"open · status · close"| AGENT
     CHANNEL -->|"queue · steer<br/>explicit interrupt"| AGENT
@@ -42,7 +44,7 @@ flowchart TB
 
     class AGENT agent;
     class SUBAGENT subagent;
-    class CHANNEL channel;
+    class CHANNEL,IPC channel;
     class GATEWAY channel;
     class BRIDGE bridge;
     class TRIGGER trigger;

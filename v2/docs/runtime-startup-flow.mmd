@@ -2,6 +2,7 @@
 flowchart LR
     CONFIG["strict JSON topology<br/>secret names, never values"]
     STATE[("six SQLite stores<br/>private state directory")]
+    IPC["owner-only local IPC<br/>persistent token · ephemeral socket"]
     ATTACH["channel-gateway<br/>idempotent attach"]
     RECOVER{"matching binding?"}
     REUSE["reuse live session"]
@@ -21,13 +22,16 @@ flowchart LR
     REBIND --> ROUTE
     BIND --> ROUTE
     ROUTE --> WORKER
+    STATE --> IPC
+    ROUTE --> IPC
     WORKER --> SIGNAL
+    IPC --> SIGNAL
 
     classDef config fill:#f8fafc,stroke:#64748b,stroke-width:1.5px,color:#172033;
     classDef durable fill:#dcfce7,stroke:#16a34a,stroke-width:2px,color:#14532d;
     classDef agent fill:#ede9fe,stroke:#7c3aed,stroke-width:2px,color:#2e1065;
     classDef runtime fill:#ffedd5,stroke:#ea580c,stroke-width:2px,color:#7c2d12;
     class CONFIG,SIGNAL config;
-    class STATE durable;
+    class STATE,IPC durable;
     class ATTACH agent;
     class RECOVER,REUSE,REBIND,BIND,ROUTE,WORKER runtime;

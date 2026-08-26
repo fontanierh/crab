@@ -1,0 +1,25 @@
+%%{init: {"theme": "base", "themeVariables": {"fontFamily": "ui-sans-serif, system-ui, sans-serif", "primaryTextColor": "#172033", "lineColor": "#64748b", "edgeLabelBackground": "#ffffff"}, "flowchart": {"curve": "basis", "nodeSpacing": 44, "rankSpacing": 58}}}%%
+flowchart LR
+    UI["T3 provider or native UI"]
+    AUTH["0600 token<br/>version · request ID · bounded frame"]
+    IPC["Crab local IPC<br/>canonical Boxology JSON"]
+    GATEWAY["channel-gateway<br/>attach · reuse · recover"]
+    CHANNEL["native-channel<br/>turn · interrupt · status · replay"]
+    HOST["agent-host<br/>Crab-owned ACP process"]
+
+    UI --> AUTH --> IPC
+    IPC -->|"attach"| GATEWAY
+    IPC <-->|"native operations"| CHANNEL
+    GATEWAY --> CHANNEL
+    GATEWAY --> HOST
+    CHANNEL <--> HOST
+    UI -. "disconnect: session stays live" .-> HOST
+
+    classDef client fill:#f8fafc,stroke:#64748b,stroke-width:1.5px,color:#172033;
+    classDef guard fill:#fee2e2,stroke:#dc2626,stroke-width:2px,color:#7f1d1d;
+    classDef channel fill:#dbeafe,stroke:#2563eb,stroke-width:2px,color:#172554;
+    classDef agent fill:#ede9fe,stroke:#7c3aed,stroke-width:2px,color:#2e1065;
+    class UI client;
+    class AUTH guard;
+    class IPC,GATEWAY,CHANNEL channel;
+    class HOST agent;
