@@ -12,7 +12,7 @@ path = "composition"
 role = "composition"
 
 [composition]
-boxes = ["agent-host", "native-channel", "bridge-host", "sub-agent-host", "trigger-inbox"]
+boxes = ["agent-host", "native-channel", "bridge-host", "sub-agent-host", "trigger-inbox", "turn-router"]
 
 [[composition.bindings]]
 box = "agent-host"
@@ -37,4 +37,9 @@ transport = "in-process"
 [[composition.bindings]]
 box = "trigger-inbox"
 capability = "trigger-inbox.*"
+transport = "in-process"
+
+[[composition.bindings]]
+box = "turn-router"
+capability = "turn-router.*"
 transport = "in-process"

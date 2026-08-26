@@ -1,0 +1,26 @@
+%%{init: {"theme": "base", "themeVariables": {"fontFamily": "ui-sans-serif, system-ui, sans-serif", "primaryTextColor": "#172033", "lineColor": "#64748b", "edgeLabelBackground": "#ffffff"}, "flowchart": {"curve": "basis", "nodeSpacing": 42, "rankSpacing": 58}}}%%
+flowchart LR
+    SOURCE["Bridge · scheduler<br/>self-work · operator"]
+    INBOX[("trigger-inbox<br/>lease + retry state")]
+    ROUTER["turn-router<br/>route lookup · lane lock<br/>queue · steer · interrupt"]
+    ROUTES[("route SQLite<br/>target → binding")]
+    CHANNEL["native-channel<br/>durable turn acceptance"]
+    ACP["ACP session"]
+
+    SOURCE -->|"durable enqueue"| INBOX
+    INBOX <-->|"claim · settle"| ROUTER
+    ROUTER <-->|"CAS routes"| ROUTES
+    ROUTER -->|"non-blocking input"| CHANNEL
+    CHANNEL <-->|"complete native view"| ACP
+
+    classDef external fill:#f8fafc,stroke:#64748b,stroke-width:1.5px,color:#172033;
+    classDef durable fill:#dcfce7,stroke:#16a34a,stroke-width:2px,color:#14532d;
+    classDef runtime fill:#ffedd5,stroke:#ea580c,stroke-width:2px,color:#7c2d12;
+    classDef channel fill:#dbeafe,stroke:#2563eb,stroke-width:2px,color:#172554;
+    classDef agent fill:#ede9fe,stroke:#7c3aed,stroke-width:2px,color:#2e1065;
+
+    class SOURCE external;
+    class INBOX,ROUTES durable;
+    class ROUTER runtime;
+    class CHANNEL channel;
+    class ACP agent;

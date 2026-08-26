@@ -15,6 +15,8 @@ native-channel-contract = { version = "=0.0.0", path = "../../native-channel/gen
 native-channel-implementation = { version = "=0.0.0", path = "../../native-channel/implementation" }
 sub-agent-host-contract = { version = "=0.0.0", path = "../../sub-agent-host/generated/contract" }
 sub-agent-host-implementation = { version = "=0.0.0", path = "../../sub-agent-host/implementation" }
+turn-router-contract = { version = "=0.0.0", path = "../../turn-router/generated/contract" }
+turn-router-implementation = { version = "=0.0.0", path = "../../turn-router/implementation" }
 trigger-inbox-implementation = { version = "=0.0.0", path = "../../trigger-inbox/implementation" }
 trigger-inbox-contract = { version = "=0.0.0", path = "../../trigger-inbox/generated/contract" }
 

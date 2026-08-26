@@ -1,0 +1,19 @@
+[package]
+name = "turn-router-implementation"
+version = "0.0.0"
+edition.workspace = true
+publish = false
+
+[dependencies]
+boxology = { workspace = true }
+boxology-contract = { workspace = true }
+boxology-runtime = { workspace = true }
+boxology_generated_contract = { package = "turn-router-contract", version = "=0.0.0", path = "../generated/contract" }
+boxology_import_native_channel = { package = "native-channel-contract", version = "=0.0.0", path = "../../native-channel/generated/contract" }
+boxology_import_trigger_inbox = { package = "trigger-inbox-contract", version = "=0.0.0", path = "../../trigger-inbox/generated/contract" }
+rusqlite = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true, features = ["sync"] }
+
+[dev-dependencies]
+tempfile = { workspace = true }

@@ -438,6 +438,8 @@ dependencies = [
  "tokio",
  "trigger-inbox-contract",
  "trigger-inbox-implementation",
+ "turn-router-contract",
+ "turn-router-implementation",
 ]
 
 [[package]]
@@ -1721,6 +1723,29 @@ dependencies = [
  "tokio",
  "trigger-inbox-contract",
  "uuid",
+]
+
+[[package]]
+name = "turn-router-contract"
+version = "0.0.0"
+dependencies = [
+ "boxology-contract",
+]
+
+[[package]]
+name = "turn-router-implementation"
+version = "0.0.0"
+dependencies = [
+ "boxology",
+ "boxology-contract",
+ "boxology-runtime",
+ "native-channel-contract",
+ "rusqlite",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "trigger-inbox-contract",
+ "turn-router-contract",
 ]
 
 [[package]]

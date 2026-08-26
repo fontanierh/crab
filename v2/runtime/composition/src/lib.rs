@@ -1,7 +1,7 @@
 //! Thin assembly proof for the Crab v2 contract draft.
 //!
 //! This crate deliberately contains no routing, auth or agent policy. Those decisions belong to
-//! the five boxes. The composition only proves that generated adapters form one coherent graph.
+//! the six boxes. The composition only proves that generated adapters form one coherent graph.
 
 #![deny(missing_docs)]
 #![forbid(unsafe_code)]
@@ -24,6 +24,7 @@ use sub_agent_host_implementation::{
     SubAgentHostError, SubAgentHostState, generated as sub_agent_host,
 };
 use trigger_inbox_implementation::{TriggerInbox, TriggerInboxError, generated as trigger_inbox};
+use turn_router_implementation::{TurnRouterError, TurnRouterState, generated as turn_router};
 
 /// A started draft graph and its in-process binding.
 pub struct DraftRuntime {
@@ -35,6 +36,7 @@ pub struct DraftRuntime {
     bridge_host: bridge_host_contract::BridgeHostHandle,
     native_channel: native_channel_contract::NativeChannelHandle,
     sub_agent_host: sub_agent_host_contract::SubAgentHostHandle,
+    turn_router: turn_router_contract::TurnRouterHandle,
     trigger_inbox: trigger_inbox_contract::TriggerInboxHandle,
 }
 
@@ -59,6 +61,11 @@ impl DraftRuntime {
         &self.sub_agent_host
     }
 
+    /// Returns the typed durable ingress router.
+    pub fn turn_router(&self) -> &turn_router_contract::TurnRouterHandle {
+        &self.turn_router
+    }
+
     /// Returns the ordinary typed handle for the implemented trigger inbox.
     pub fn trigger_inbox(&self) -> &trigger_inbox_contract::TriggerInboxHandle {
         &self.trigger_inbox
@@ -78,6 +85,8 @@ pub enum RuntimeStartError {
     NativeChannel(NativeChannelError),
     /// The concrete sub-agent-host state could not start.
     SubAgentHost(SubAgentHostError),
+    /// The concrete turn-router state could not start.
+    TurnRouter(TurnRouterError),
     /// The concrete trigger store could not start.
     TriggerInbox(TriggerInboxError),
     /// The durable state directory could not be created.
@@ -100,6 +109,7 @@ pub fn start_draft() -> Result<DraftRuntime, RuntimeStartError> {
         NativeChannelState::open_in_memory().map_err(RuntimeStartError::NativeChannel)?;
     let sub_agent_host =
         SubAgentHostState::open_in_memory().map_err(RuntimeStartError::SubAgentHost)?;
+    let turn_router = TurnRouterState::open_in_memory().map_err(RuntimeStartError::TurnRouter)?;
     let trigger_store = TriggerInbox::open_in_memory().map_err(RuntimeStartError::TriggerInbox)?;
     assemble_draft(
         agent_host,
@@ -107,6 +117,7 @@ pub fn start_draft() -> Result<DraftRuntime, RuntimeStartError> {
         Arc::new(InMemoryCredentialStore::default()),
         native_channel,
         sub_agent_host,
+        turn_router,
         trigger_store,
     )
 }
@@ -121,6 +132,7 @@ pub fn start_draft_with_trigger_store(
         NativeChannelState::open_in_memory().map_err(RuntimeStartError::NativeChannel)?;
     let sub_agent_host =
         SubAgentHostState::open_in_memory().map_err(RuntimeStartError::SubAgentHost)?;
+    let turn_router = TurnRouterState::open_in_memory().map_err(RuntimeStartError::TurnRouter)?;
     let trigger_store = TriggerInbox::open(path).map_err(RuntimeStartError::TriggerInbox)?;
     assemble_draft(
         agent_host,
@@ -128,6 +140,7 @@ pub fn start_draft_with_trigger_store(
         Arc::new(InMemoryCredentialStore::default()),
         native_channel,
         sub_agent_host,
+        turn_router,
         trigger_store,
     )
 }
@@ -155,6 +168,8 @@ pub fn start_draft_with_state_directory(
         .map_err(RuntimeStartError::NativeChannel)?;
     let sub_agent_host = SubAgentHostState::open(path.join("sub-agent-host.sqlite"))
         .map_err(RuntimeStartError::SubAgentHost)?;
+    let turn_router = TurnRouterState::open(path.join("turn-router.sqlite"))
+        .map_err(RuntimeStartError::TurnRouter)?;
     let trigger_store = TriggerInbox::open(path.join("trigger-inbox.sqlite"))
         .map_err(RuntimeStartError::TriggerInbox)?;
     assemble_draft(
@@ -163,6 +178,7 @@ pub fn start_draft_with_state_directory(
         Arc::new(credentials),
         native_channel,
         sub_agent_host,
+        turn_router,
         trigger_store,
     )
 }
@@ -173,6 +189,7 @@ fn assemble_draft(
     credential_store: Arc<dyn CredentialStore>,
     native_channel_state: NativeChannelState,
     sub_agent_host_state: SubAgentHostState,
+    turn_router_state: TurnRouterState,
     trigger_store: TriggerInbox,
 ) -> Result<DraftRuntime, RuntimeStartError> {
     let in_process = Arc::new(StubTransport::new());
@@ -207,6 +224,14 @@ fn assemble_draft(
         ExposureLevel::CodeOnly,
     );
 
+    let turn_router = turn_router::register(&mut builder, move |imports| {
+        turn_router_state.connect(imports.trigger_inbox, imports.native_channel)
+    });
+    builder.connect(&turn_router, &trigger_inbox_box);
+    builder.connect(&turn_router, &native_channel);
+    let turn_router_handle = builder.handle::<turn_router_contract::TurnRouterHandle>(&turn_router);
+    builder.expose_all(&turn_router, in_process.clone(), ExposureLevel::CodeOnly);
+
     let bridge_host = bridge_host::register(&mut builder, move |imports| {
         bridge_host_state.connect(
             imports.trigger_inbox,
@@ -226,6 +251,7 @@ fn assemble_draft(
         bridge_host: bridge_host_handle,
         native_channel: native_channel_handle,
         sub_agent_host: sub_agent_host_handle,
+        turn_router: turn_router_handle,
         trigger_inbox,
     })
 }
@@ -255,7 +281,7 @@ mod tests {
     }
 
     #[test]
-    fn manifest_and_runtime_expose_the_same_five_box_graph() {
+    fn manifest_and_runtime_expose_the_same_six_box_graph() {
         let manifest = Manifest::parse(
             RelativePath::new("boxology.toml").expect("manifest path is valid"),
             MANIFEST.as_bytes(),
@@ -285,7 +311,8 @@ mod tests {
                 "bridge-host",
                 "native-channel",
                 "sub-agent-host",
-                "trigger-inbox"
+                "trigger-inbox",
+                "turn-router"
             ]
         );
         assert!(counts.values().all(|count| *count > 0));
@@ -295,7 +322,7 @@ mod tests {
                 .expect("composition exists")
                 .boxes()
                 .len(),
-            5
+            6
         );
     }
 
@@ -309,6 +336,7 @@ mod tests {
             "bridge-host.sqlite",
             "native-channel.sqlite",
             "sub-agent-host.sqlite",
+            "turn-router.sqlite",
             "trigger-inbox.sqlite",
         ] {
             assert!(state.join(expected).is_file(), "missing {expected}");

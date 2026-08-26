@@ -12,6 +12,7 @@ v2/
 ├── bridge-host/      supervised external integrations, auth and selected delivery
 ├── sub-agent-host/   supervised ACP subprocesses with bidirectional live interaction
 ├── trigger-inbox/    transactional SQLite ingress used by bridges, cron and self-work
+├── turn-router/      durable target resolution, lane ordering and trigger settlement
 └── runtime/          thin composition; no domain policy
 ```
 
@@ -67,6 +68,10 @@ interrupt as a separate explicit action.
   [rendered flow](docs/sub-agent-host-flow.png).
 - `trigger-inbox` is implemented with durable deduplication, FIFO leases and restart recovery.
   Its [storage contract](docs/trigger-inbox-storage.md) is schema-versioned from day one.
+- `turn-router` resolves bridge/scheduler/self-work ingress without pretending those sources are
+  native channels. It serializes each lane, maps queue/steer/interrupt explicitly, and settles only
+  after durable channel acceptance. See its [state contract](docs/turn-router-storage.md) and
+  [rendered flow](docs/turn-router-flow.png).
 - For a native UI, start by testing an off-the-shelf ACP client; build on reusable ACP components
   only if that cannot attach cleanly. See [the UI landscape](docs/acp-native-ui.md).
 
