@@ -1,0 +1,1122 @@
+use std::{collections::VecDeque, path::PathBuf, sync::Arc};
+
+use agent_client_protocol::{
+    AcpAgent, Agent, ConnectionTo, LineDirection, Responder,
+    schema::{ProtocolVersion, v1, v2},
+};
+use serde::Serialize;
+use serde_json::{Map, Value, json};
+use tokio::sync::{mpsc, oneshot};
+use uuid::Uuid;
+
+use crate::Clock;
+use crate::{
+    AcpEventDirection, AcpNegotiation, AgentHostError, AgentInputMode, AgentLifecycle,
+    AgentSession, ConfiguredAgent, OperationReceipt, PromptAccepted, PromptDisposition,
+    PromptRequest, store::AgentStore,
+};
+
+pub(crate) enum SessionCommand {
+    Prompt {
+        request: PromptRequest,
+        reply: oneshot::Sender<Result<PromptAccepted, AgentHostError>>,
+    },
+    Cancel {
+        run_id: String,
+        reply: oneshot::Sender<Result<OperationReceipt, AgentHostError>>,
+    },
+    Close {
+        reply: oneshot::Sender<Result<OperationReceipt, AgentHostError>>,
+    },
+}
+
+#[derive(Clone)]
+pub(crate) struct SessionHandle {
+    pub(crate) commands: mpsc::Sender<SessionCommand>,
+}
+
+enum ActorSignal {
+    V1PromptFinished {
+        run_id: String,
+        succeeded: bool,
+    },
+    V2PromptAcknowledged {
+        run_id: String,
+        client_turn_id: String,
+        started_run: bool,
+        succeeded: bool,
+    },
+    V2Idle,
+    Fatal,
+}
+
+struct QueuedPrompt {
+    request: PromptRequest,
+    run_id: String,
+}
+
+struct ActorState {
+    active_run_id: Option<String>,
+    queued: VecDeque<QueuedPrompt>,
+}
+
+pub(crate) fn spawn_session(
+    agent: Arc<ConfiguredAgent>,
+    store: Arc<AgentStore>,
+    clock: Clock,
+    session_id: String,
+    working_directory: PathBuf,
+    bootstrap_prompt: Option<String>,
+    metadata: Map<String, Value>,
+) -> (
+    SessionHandle,
+    oneshot::Receiver<Result<AgentSession, AgentHostError>>,
+) {
+    let (command_tx, command_rx) = mpsc::channel(128);
+    let (opened_tx, opened_rx) = oneshot::channel();
+    let handle = SessionHandle {
+        commands: command_tx,
+    };
+    tokio::spawn(async move {
+        let result = match agent.protocol {
+            crate::AgentProtocol::V1 => {
+                run_v1_session(
+                    agent,
+                    store.clone(),
+                    clock.clone(),
+                    session_id.clone(),
+                    working_directory,
+                    bootstrap_prompt,
+                    metadata,
+                    command_rx,
+                    opened_tx,
+                )
+                .await
+            }
+            crate::AgentProtocol::V2 => {
+                run_v2_session(
+                    agent,
+                    store.clone(),
+                    clock.clone(),
+                    session_id.clone(),
+                    working_directory,
+                    bootstrap_prompt,
+                    metadata,
+                    command_rx,
+                    opened_tx,
+                )
+                .await
+            }
+        };
+        if result.is_err()
+            && !matches!(
+                store.status(&session_id).map(|status| status.lifecycle),
+                Ok(AgentLifecycle::Stopped)
+            )
+        {
+            let now_ms = clock().unwrap_or_default();
+            let _ = store.set_lifecycle(&session_id, &AgentLifecycle::Failed, now_ms);
+        }
+    });
+    (handle, opened_rx)
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_v1_session(
+    agent: Arc<ConfiguredAgent>,
+    store: Arc<AgentStore>,
+    clock: Clock,
+    session_id: String,
+    working_directory: PathBuf,
+    bootstrap_prompt: Option<String>,
+    metadata: Map<String, Value>,
+    command_rx: mpsc::Receiver<SessionCommand>,
+    opened_tx: oneshot::Sender<Result<AgentSession, AgentHostError>>,
+) -> Result<(), AgentHostError> {
+    let (signal_tx, signal_rx) = mpsc::unbounded_channel();
+    let process = instrumented_process(
+        &agent,
+        store.clone(),
+        clock.clone(),
+        session_id.clone(),
+        signal_tx.clone(),
+    );
+    let permission_store = store.clone();
+    let permission_clock = clock.clone();
+    let permission_session = session_id.clone();
+    let permission_signals = signal_tx.clone();
+
+    let result = agent_client_protocol::Client
+        .builder()
+        .name("crab-v2")
+        .on_receive_notification(
+            async move |_notification: v1::SessionNotification, _connection| Ok(()),
+            agent_client_protocol::on_receive_notification!(),
+        )
+        .on_receive_request(
+            async move |request: v1::RequestPermissionRequest, responder, _connection| {
+                resolve_v1_permission(
+                    request,
+                    responder,
+                    &permission_store,
+                    &permission_clock,
+                    &permission_session,
+                    &permission_signals,
+                )
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
+        .connect_with(process, async move |connection: ConnectionTo<Agent>| {
+            let initialized = initialize_v1(
+                &connection,
+                &store,
+                &clock,
+                &session_id,
+                working_directory,
+                metadata,
+            )
+            .await;
+            let session = match initialized {
+                Ok(session) => session,
+                Err(error) => {
+                    let _ = opened_tx.send(Err(error.clone()));
+                    return Err(acp_error(error));
+                }
+            };
+            let _ = opened_tx.send(Ok(session.clone()));
+            run_v1_loop(
+                connection,
+                store,
+                clock,
+                session_id,
+                session.native_session_id,
+                bootstrap_prompt,
+                command_rx,
+                signal_rx,
+                signal_tx,
+            )
+            .await
+            .map_err(acp_error)
+        })
+        .await;
+    result.map_err(|_| AgentHostError::TransportFailed)
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_v2_session(
+    agent: Arc<ConfiguredAgent>,
+    store: Arc<AgentStore>,
+    clock: Clock,
+    session_id: String,
+    working_directory: PathBuf,
+    bootstrap_prompt: Option<String>,
+    metadata: Map<String, Value>,
+    command_rx: mpsc::Receiver<SessionCommand>,
+    opened_tx: oneshot::Sender<Result<AgentSession, AgentHostError>>,
+) -> Result<(), AgentHostError> {
+    let (signal_tx, signal_rx) = mpsc::unbounded_channel();
+    let process = instrumented_process(
+        &agent,
+        store.clone(),
+        clock.clone(),
+        session_id.clone(),
+        signal_tx.clone(),
+    );
+    let update_signals = signal_tx.clone();
+    let permission_store = store.clone();
+    let permission_clock = clock.clone();
+    let permission_session = session_id.clone();
+    let permission_signals = signal_tx.clone();
+
+    let result = agent_client_protocol::Client
+        .v2()
+        .name("crab-v2")
+        .on_receive_notification(
+            async move |notification: v2::UpdateSessionNotification, _connection| {
+                if matches!(
+                    notification.update,
+                    v2::SessionUpdate::StateUpdate(v2::StateUpdate::Idle(_))
+                ) {
+                    let _ = update_signals.send(ActorSignal::V2Idle);
+                }
+                Ok(())
+            },
+            agent_client_protocol::on_receive_notification!(),
+        )
+        .on_receive_request(
+            async move |request: v2::RequestPermissionRequest, responder, _connection| {
+                resolve_v2_permission(
+                    request,
+                    responder,
+                    &permission_store,
+                    &permission_clock,
+                    &permission_session,
+                    &permission_signals,
+                )
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
+        .connect_with(process, async move |connection: ConnectionTo<Agent>| {
+            let initialized = initialize_v2(
+                &connection,
+                &store,
+                &clock,
+                &session_id,
+                working_directory,
+                metadata,
+            )
+            .await;
+            let session = match initialized {
+                Ok(session) => session,
+                Err(error) => {
+                    let _ = opened_tx.send(Err(error.clone()));
+                    return Err(acp_error(error));
+                }
+            };
+            let _ = opened_tx.send(Ok(session.clone()));
+            run_v2_loop(
+                connection,
+                store,
+                clock,
+                session_id,
+                session.native_session_id,
+                bootstrap_prompt,
+                command_rx,
+                signal_rx,
+                signal_tx,
+            )
+            .await
+            .map_err(acp_error)
+        })
+        .await;
+    result.map_err(|_| AgentHostError::TransportFailed)
+}
+
+fn instrumented_process(
+    agent: &ConfiguredAgent,
+    store: Arc<AgentStore>,
+    clock: Clock,
+    session_id: String,
+    signals: mpsc::UnboundedSender<ActorSignal>,
+) -> AcpAgent {
+    AcpAgent::new(agent.process_config()).with_debug(move |line, direction| {
+        let direction = match direction {
+            LineDirection::Stdin => AcpEventDirection::ClientToAgent,
+            LineDirection::Stdout => AcpEventDirection::AgentToClient,
+            LineDirection::Stderr => return,
+        };
+        let recorded = clock()
+            .and_then(|now_ms| store.record_native_line(&session_id, direction, line, now_ms));
+        if recorded.is_err() {
+            let _ = signals.send(ActorSignal::Fatal);
+        }
+    })
+}
+
+async fn initialize_v1(
+    connection: &ConnectionTo<Agent>,
+    store: &AgentStore,
+    clock: &Clock,
+    session_id: &str,
+    working_directory: PathBuf,
+    metadata: Map<String, Value>,
+) -> Result<AgentSession, AgentHostError> {
+    let response = connection
+        .send_request(v1::InitializeRequest::new(ProtocolVersion::V1).client_info(
+            v1::Implementation::new("crab-v2", env!("CARGO_PKG_VERSION")),
+        ))
+        .block_task()
+        .await
+        .map_err(|_| AgentHostError::ProtocolNegotiationFailed)?;
+    if response.protocol_version != ProtocolVersion::V1 {
+        return Err(AgentHostError::UnsupportedProtocolProfile);
+    }
+    let new_session = connection
+        .send_request(v1::NewSessionRequest::new(working_directory).meta(nonempty(metadata)))
+        .block_task()
+        .await
+        .map_err(|_| AgentHostError::TransportFailed)?;
+    let capabilities = serde_json::to_string(&response.agent_capabilities)
+        .map_err(|_| AgentHostError::ProtocolNegotiationFailed)?;
+    let now_ms = clock()?;
+    store.set_ready(
+        session_id,
+        &new_session.session_id.to_string(),
+        &AcpNegotiation {
+            protocol_version: 1,
+            protocol_profile: crate::AcpProtocolProfile::V1Stable,
+            steering: crate::SteeringSupport::TurnBoundaryQueue,
+            compaction_reporting: crate::CompactionReporting::OpaqueAgentManaged,
+            agent_capabilities_json: capabilities,
+        },
+        now_ms,
+    )
+}
+
+async fn initialize_v2(
+    connection: &ConnectionTo<Agent>,
+    store: &AgentStore,
+    clock: &Clock,
+    session_id: &str,
+    working_directory: PathBuf,
+    metadata: Map<String, Value>,
+) -> Result<AgentSession, AgentHostError> {
+    let response = connection
+        .send_request(v2::InitializeRequest::new(
+            ProtocolVersion::V2,
+            v2::Implementation::new("crab-v2", env!("CARGO_PKG_VERSION")),
+        ))
+        .block_task()
+        .await
+        .map_err(|_| AgentHostError::ProtocolNegotiationFailed)?;
+    if response.protocol_version != ProtocolVersion::V2 {
+        return Err(AgentHostError::UnsupportedProtocolProfile);
+    }
+    let new_session = connection
+        .send_request(v2::NewSessionRequest::new(working_directory).meta(nonempty(metadata)))
+        .block_task()
+        .await
+        .map_err(|_| AgentHostError::TransportFailed)?;
+    let capabilities = serde_json::to_string(&response.capabilities)
+        .map_err(|_| AgentHostError::ProtocolNegotiationFailed)?;
+    let now_ms = clock()?;
+    store.set_ready(
+        session_id,
+        &new_session.session_id.to_string(),
+        &AcpNegotiation {
+            protocol_version: 2,
+            protocol_profile: crate::AcpProtocolProfile::V2Draft,
+            steering: crate::SteeringSupport::AcpV2ConcurrentPrompt,
+            compaction_reporting: crate::CompactionReporting::DraftLifecycleUpdates,
+            agent_capabilities_json: capabilities,
+        },
+        now_ms,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_v1_loop(
+    connection: ConnectionTo<Agent>,
+    store: Arc<AgentStore>,
+    clock: Clock,
+    session_id: String,
+    native_session_id: String,
+    bootstrap_prompt: Option<String>,
+    mut commands: mpsc::Receiver<SessionCommand>,
+    mut signals: mpsc::UnboundedReceiver<ActorSignal>,
+    signal_tx: mpsc::UnboundedSender<ActorSignal>,
+) -> Result<(), AgentHostError> {
+    let mut state = ActorState {
+        active_run_id: None,
+        queued: VecDeque::new(),
+    };
+    if let Some(bootstrap) = bootstrap_prompt.filter(|prompt| !prompt.is_empty()) {
+        let (reply, _) = oneshot::channel();
+        accept_v1_prompt(
+            &connection,
+            &store,
+            &clock,
+            &session_id,
+            &native_session_id,
+            &mut state,
+            PromptRequest {
+                session_id: session_id.clone(),
+                client_turn_id: "__crab_bootstrap__".into(),
+                mode: AgentInputMode::Queue,
+                native_prompt_json: text_prompt_json(&bootstrap)?,
+            },
+            reply,
+            &signal_tx,
+        );
+    }
+
+    loop {
+        tokio::select! {
+            command = commands.recv() => match command {
+                Some(SessionCommand::Prompt { request, reply }) => {
+                    accept_v1_prompt(
+                        &connection, &store, &clock, &session_id, &native_session_id,
+                        &mut state, request, reply, &signal_tx,
+                    );
+                }
+                Some(SessionCommand::Cancel { run_id, reply }) => {
+                    let result = cancel_v1(
+                        &connection, &store, &clock, &session_id, &native_session_id,
+                        &mut state, &run_id,
+                    );
+                    let _ = reply.send(result);
+                }
+                Some(SessionCommand::Close { reply }) => {
+                    let result = stop_v1(
+                        &connection, &store, &clock, &session_id, &native_session_id,
+                        state.active_run_id.is_some(),
+                    ).await;
+                    let _ = reply.send(result);
+                    return Ok(());
+                }
+                None => {
+                    stop_v1(
+                        &connection, &store, &clock, &session_id, &native_session_id,
+                        state.active_run_id.is_some(),
+                    ).await?;
+                    return Ok(());
+                }
+            },
+            signal = signals.recv() => match signal {
+                Some(ActorSignal::V1PromptFinished { run_id, succeeded }) => {
+                    if state.active_run_id.as_deref() == Some(run_id.as_str()) {
+                        store.complete_run(
+                            &session_id,
+                            &run_id,
+                            if succeeded { "Completed" } else { "Failed" },
+                            clock()?,
+                        )?;
+                        state.active_run_id = None;
+                        start_next_v1(
+                            &connection, &store, &clock, &session_id, &native_session_id,
+                            &mut state, &signal_tx,
+                        )?;
+                    }
+                }
+                Some(ActorSignal::Fatal) | None => return Err(AgentHostError::TransportFailed),
+                _ => {}
+            },
+            _ = connection.incoming_closed() => return Err(AgentHostError::TransportFailed),
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_v2_loop(
+    connection: ConnectionTo<Agent>,
+    store: Arc<AgentStore>,
+    clock: Clock,
+    session_id: String,
+    native_session_id: String,
+    bootstrap_prompt: Option<String>,
+    mut commands: mpsc::Receiver<SessionCommand>,
+    mut signals: mpsc::UnboundedReceiver<ActorSignal>,
+    signal_tx: mpsc::UnboundedSender<ActorSignal>,
+) -> Result<(), AgentHostError> {
+    let mut state = ActorState {
+        active_run_id: None,
+        queued: VecDeque::new(),
+    };
+    if let Some(bootstrap) = bootstrap_prompt.filter(|prompt| !prompt.is_empty()) {
+        let (reply, _) = oneshot::channel();
+        accept_v2_prompt(
+            &connection,
+            &store,
+            &clock,
+            &session_id,
+            &native_session_id,
+            &mut state,
+            PromptRequest {
+                session_id: session_id.clone(),
+                client_turn_id: "__crab_bootstrap__".into(),
+                mode: AgentInputMode::Queue,
+                native_prompt_json: text_prompt_json(&bootstrap)?,
+            },
+            reply,
+            &signal_tx,
+        );
+    }
+
+    loop {
+        tokio::select! {
+            biased;
+            signal = signals.recv() => match signal {
+                Some(ActorSignal::V2Idle) => {
+                    if let Some(run_id) = state.active_run_id.take() {
+                        store.complete_run(&session_id, &run_id, "Completed", clock()?)?;
+                        start_next_v2(
+                            &connection, &store, &clock, &session_id, &native_session_id,
+                            &mut state, &signal_tx,
+                        )?;
+                    }
+                }
+                Some(ActorSignal::V2PromptAcknowledged {
+                    run_id,
+                    client_turn_id,
+                    started_run,
+                    succeeded,
+                }) if !succeeded => {
+                    store.fail_prompt(&session_id, &client_turn_id)?;
+                    if started_run && state.active_run_id.as_deref() == Some(run_id.as_str()) {
+                        store.complete_run(&session_id, &run_id, "Failed", clock()?)?;
+                        state.active_run_id = None;
+                        start_next_v2(
+                            &connection, &store, &clock, &session_id, &native_session_id,
+                            &mut state, &signal_tx,
+                        )?;
+                    }
+                }
+                Some(ActorSignal::Fatal) | None => return Err(AgentHostError::TransportFailed),
+                _ => {}
+            },
+            command = commands.recv() => match command {
+                Some(SessionCommand::Prompt { request, reply }) => {
+                    accept_v2_prompt(
+                        &connection, &store, &clock, &session_id, &native_session_id,
+                        &mut state, request, reply, &signal_tx,
+                    );
+                }
+                Some(SessionCommand::Cancel { run_id, reply }) => {
+                    let result = cancel_v2(
+                        &connection, &store, &clock, &session_id, &native_session_id,
+                        &mut state, &run_id,
+                    );
+                    let _ = reply.send(result);
+                }
+                Some(SessionCommand::Close { reply }) => {
+                    let result = stop_v2(
+                        &connection, &store, &clock, &session_id, &native_session_id,
+                        state.active_run_id.is_some(),
+                    ).await;
+                    let _ = reply.send(result);
+                    return Ok(());
+                }
+                None => {
+                    stop_v2(
+                        &connection, &store, &clock, &session_id, &native_session_id,
+                        state.active_run_id.is_some(),
+                    ).await?;
+                    return Ok(());
+                }
+            },
+            _ = connection.incoming_closed() => return Err(AgentHostError::TransportFailed),
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn accept_v1_prompt(
+    connection: &ConnectionTo<Agent>,
+    store: &AgentStore,
+    clock: &Clock,
+    session_id: &str,
+    native_session_id: &str,
+    state: &mut ActorState,
+    request: PromptRequest,
+    reply: oneshot::Sender<Result<PromptAccepted, AgentHostError>>,
+    signals: &mpsc::UnboundedSender<ActorSignal>,
+) {
+    let result = accept_v1_prompt_inner(
+        connection,
+        store,
+        clock,
+        session_id,
+        native_session_id,
+        state,
+        request,
+        signals,
+    );
+    let _ = reply.send(result);
+}
+
+#[allow(clippy::too_many_arguments)]
+fn accept_v1_prompt_inner(
+    connection: &ConnectionTo<Agent>,
+    store: &AgentStore,
+    clock: &Clock,
+    session_id: &str,
+    native_session_id: &str,
+    state: &mut ActorState,
+    request: PromptRequest,
+    signals: &mpsc::UnboundedSender<ActorSignal>,
+) -> Result<PromptAccepted, AgentHostError> {
+    validate_prompt(session_id, &request)?;
+    if !matches!(request.mode, AgentInputMode::Queue) {
+        return Err(AgentHostError::SteeringUnavailable);
+    }
+    let content = parse_v1_prompt(&request.native_prompt_json)?;
+    let run_id = new_run_id();
+    let busy = state.active_run_id.is_some();
+    let disposition = if busy {
+        PromptDisposition::QueuedForTurnBoundary
+    } else {
+        PromptDisposition::StartedForegroundWork
+    };
+    let (accepted, inserted) =
+        store.accept_prompt(&request, &run_id, &disposition, !busy, clock()?)?;
+    if !inserted {
+        return Ok(accepted);
+    }
+    if busy {
+        state.queued.push_back(QueuedPrompt { request, run_id });
+    } else {
+        state.active_run_id = Some(run_id.clone());
+        dispatch_v1_prompt(
+            connection,
+            native_session_id,
+            content,
+            run_id,
+            signals.clone(),
+        );
+    }
+    Ok(accepted)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn accept_v2_prompt(
+    connection: &ConnectionTo<Agent>,
+    store: &AgentStore,
+    clock: &Clock,
+    session_id: &str,
+    native_session_id: &str,
+    state: &mut ActorState,
+    request: PromptRequest,
+    reply: oneshot::Sender<Result<PromptAccepted, AgentHostError>>,
+    signals: &mpsc::UnboundedSender<ActorSignal>,
+) {
+    let result = accept_v2_prompt_inner(
+        connection,
+        store,
+        clock,
+        session_id,
+        native_session_id,
+        state,
+        request,
+        signals,
+    );
+    let _ = reply.send(result);
+}
+
+#[allow(clippy::too_many_arguments)]
+fn accept_v2_prompt_inner(
+    connection: &ConnectionTo<Agent>,
+    store: &AgentStore,
+    clock: &Clock,
+    session_id: &str,
+    native_session_id: &str,
+    state: &mut ActorState,
+    request: PromptRequest,
+    signals: &mpsc::UnboundedSender<ActorSignal>,
+) -> Result<PromptAccepted, AgentHostError> {
+    validate_prompt(session_id, &request)?;
+    let content = parse_v2_prompt(&request.native_prompt_json)?;
+    let busy = state.active_run_id.is_some();
+    let (run_id, disposition, activate, dispatch) = match (&request.mode, busy) {
+        (AgentInputMode::Queue, true) => (
+            new_run_id(),
+            PromptDisposition::QueuedForTurnBoundary,
+            false,
+            false,
+        ),
+        (AgentInputMode::Steer, true) => (
+            state.active_run_id.clone().expect("busy session has run"),
+            PromptDisposition::ContributedToActiveWork,
+            false,
+            true,
+        ),
+        (AgentInputMode::Queue | AgentInputMode::Steer, false) => (
+            new_run_id(),
+            PromptDisposition::StartedForegroundWork,
+            true,
+            true,
+        ),
+        (AgentInputMode::Unknown { .. }, _) => {
+            return Err(AgentHostError::InvalidNativePayload);
+        }
+    };
+    let (accepted, inserted) =
+        store.accept_prompt(&request, &run_id, &disposition, activate, clock()?)?;
+    if !inserted {
+        return Ok(accepted);
+    }
+    if !dispatch {
+        state.queued.push_back(QueuedPrompt { request, run_id });
+    } else {
+        if activate {
+            state.active_run_id = Some(run_id.clone());
+        }
+        dispatch_v2_prompt(
+            connection,
+            native_session_id,
+            content,
+            run_id,
+            request.client_turn_id,
+            activate,
+            signals.clone(),
+        );
+    }
+    Ok(accepted)
+}
+
+fn start_next_v1(
+    connection: &ConnectionTo<Agent>,
+    store: &AgentStore,
+    clock: &Clock,
+    session_id: &str,
+    native_session_id: &str,
+    state: &mut ActorState,
+    signals: &mpsc::UnboundedSender<ActorSignal>,
+) -> Result<(), AgentHostError> {
+    let Some(next) = state.queued.pop_front() else {
+        return Ok(());
+    };
+    let content = parse_v1_prompt(&next.request.native_prompt_json)?;
+    store.activate_queued_run(session_id, &next.run_id, clock()?)?;
+    state.active_run_id = Some(next.run_id.clone());
+    dispatch_v1_prompt(
+        connection,
+        native_session_id,
+        content,
+        next.run_id,
+        signals.clone(),
+    );
+    Ok(())
+}
+
+fn start_next_v2(
+    connection: &ConnectionTo<Agent>,
+    store: &AgentStore,
+    clock: &Clock,
+    session_id: &str,
+    native_session_id: &str,
+    state: &mut ActorState,
+    signals: &mpsc::UnboundedSender<ActorSignal>,
+) -> Result<(), AgentHostError> {
+    let Some(next) = state.queued.pop_front() else {
+        return Ok(());
+    };
+    let content = parse_v2_prompt(&next.request.native_prompt_json)?;
+    store.activate_queued_run(session_id, &next.run_id, clock()?)?;
+    state.active_run_id = Some(next.run_id.clone());
+    dispatch_v2_prompt(
+        connection,
+        native_session_id,
+        content,
+        next.run_id,
+        next.request.client_turn_id,
+        true,
+        signals.clone(),
+    );
+    Ok(())
+}
+
+fn dispatch_v1_prompt(
+    connection: &ConnectionTo<Agent>,
+    native_session_id: &str,
+    content: Vec<v1::ContentBlock>,
+    run_id: String,
+    signals: mpsc::UnboundedSender<ActorSignal>,
+) {
+    let request = connection.send_request(v1::PromptRequest::new(
+        native_session_id.to_owned(),
+        content,
+    ));
+    tokio::spawn(async move {
+        let succeeded = request.block_task().await.is_ok();
+        let _ = signals.send(ActorSignal::V1PromptFinished { run_id, succeeded });
+    });
+}
+
+fn dispatch_v2_prompt(
+    connection: &ConnectionTo<Agent>,
+    native_session_id: &str,
+    content: Vec<v2::ContentBlock>,
+    run_id: String,
+    client_turn_id: String,
+    started_run: bool,
+    signals: mpsc::UnboundedSender<ActorSignal>,
+) {
+    let request = connection.send_request(v2::PromptRequest::new(
+        native_session_id.to_owned(),
+        content,
+    ));
+    tokio::spawn(async move {
+        let succeeded = request.block_task().await.is_ok();
+        let _ = signals.send(ActorSignal::V2PromptAcknowledged {
+            run_id,
+            client_turn_id,
+            started_run,
+            succeeded,
+        });
+    });
+}
+
+fn cancel_v1(
+    connection: &ConnectionTo<Agent>,
+    store: &AgentStore,
+    clock: &Clock,
+    session_id: &str,
+    native_session_id: &str,
+    state: &mut ActorState,
+    run_id: &str,
+) -> Result<OperationReceipt, AgentHostError> {
+    let now_ms = clock()?;
+    if state.active_run_id.as_deref() == Some(run_id) {
+        connection
+            .send_notification(v1::CancelNotification::new(native_session_id.to_owned()))
+            .map_err(|_| AgentHostError::TransportFailed)?;
+    } else if let Some(index) = state
+        .queued
+        .iter()
+        .position(|queued| queued.run_id == run_id)
+    {
+        state.queued.remove(index);
+        store.cancel_queued_run(session_id, run_id)?;
+    } else {
+        return Err(AgentHostError::UnknownRun);
+    }
+    Ok(OperationReceipt {
+        accepted: true,
+        recorded_at_ms: now_ms,
+    })
+}
+
+fn cancel_v2(
+    connection: &ConnectionTo<Agent>,
+    store: &AgentStore,
+    clock: &Clock,
+    session_id: &str,
+    native_session_id: &str,
+    state: &mut ActorState,
+    run_id: &str,
+) -> Result<OperationReceipt, AgentHostError> {
+    let now_ms = clock()?;
+    if state.active_run_id.as_deref() == Some(run_id) {
+        connection
+            .send_notification(v2::CancelSessionNotification::new(
+                native_session_id.to_owned(),
+            ))
+            .map_err(|_| AgentHostError::TransportFailed)?;
+    } else if let Some(index) = state
+        .queued
+        .iter()
+        .position(|queued| queued.run_id == run_id)
+    {
+        state.queued.remove(index);
+        store.cancel_queued_run(session_id, run_id)?;
+    } else {
+        return Err(AgentHostError::UnknownRun);
+    }
+    Ok(OperationReceipt {
+        accepted: true,
+        recorded_at_ms: now_ms,
+    })
+}
+
+async fn stop_v1(
+    connection: &ConnectionTo<Agent>,
+    store: &AgentStore,
+    clock: &Clock,
+    session_id: &str,
+    native_session_id: &str,
+    busy: bool,
+) -> Result<OperationReceipt, AgentHostError> {
+    let now_ms = clock()?;
+    store.set_lifecycle(session_id, &AgentLifecycle::Stopping, now_ms)?;
+    if busy {
+        connection
+            .send_notification(v1::CancelNotification::new(native_session_id.to_owned()))
+            .map_err(|_| AgentHostError::TransportFailed)?;
+    }
+    connection
+        .send_request(v1::CloseSessionRequest::new(native_session_id.to_owned()))
+        .block_task()
+        .await
+        .map_err(|_| AgentHostError::TransportFailed)?;
+    store.set_lifecycle(session_id, &AgentLifecycle::Stopped, now_ms)?;
+    Ok(OperationReceipt {
+        accepted: true,
+        recorded_at_ms: now_ms,
+    })
+}
+
+async fn stop_v2(
+    connection: &ConnectionTo<Agent>,
+    store: &AgentStore,
+    clock: &Clock,
+    session_id: &str,
+    native_session_id: &str,
+    busy: bool,
+) -> Result<OperationReceipt, AgentHostError> {
+    let now_ms = clock()?;
+    store.set_lifecycle(session_id, &AgentLifecycle::Stopping, now_ms)?;
+    if busy {
+        connection
+            .send_notification(v2::CancelSessionNotification::new(
+                native_session_id.to_owned(),
+            ))
+            .map_err(|_| AgentHostError::TransportFailed)?;
+    }
+    connection
+        .send_request(v2::CloseSessionRequest::new(native_session_id.to_owned()))
+        .block_task()
+        .await
+        .map_err(|_| AgentHostError::TransportFailed)?;
+    store.set_lifecycle(session_id, &AgentLifecycle::Stopped, now_ms)?;
+    Ok(OperationReceipt {
+        accepted: true,
+        recorded_at_ms: now_ms,
+    })
+}
+
+fn resolve_v1_permission(
+    request: v1::RequestPermissionRequest,
+    responder: Responder<v1::RequestPermissionResponse>,
+    store: &AgentStore,
+    clock: &Clock,
+    session_id: &str,
+    signals: &mpsc::UnboundedSender<ActorSignal>,
+) -> Result<(), agent_client_protocol::Error> {
+    let Some(option) = request
+        .options
+        .iter()
+        .find(|option| matches!(option.kind, v1::PermissionOptionKind::AllowAlways))
+        .or_else(|| {
+            request
+                .options
+                .iter()
+                .find(|option| matches!(option.kind, v1::PermissionOptionKind::AllowOnce))
+        })
+    else {
+        let _ = signals.send(ActorSignal::Fatal);
+        return responder.respond(v1::RequestPermissionResponse::new(
+            v1::RequestPermissionOutcome::Cancelled,
+        ));
+    };
+    let response = v1::RequestPermissionResponse::new(v1::RequestPermissionOutcome::Selected(
+        v1::SelectedPermissionOutcome::new(option.option_id.clone()),
+    ));
+    persist_permission(
+        &request,
+        &response,
+        responder.id(),
+        store,
+        clock,
+        session_id,
+    )?;
+    responder.respond(response)
+}
+
+fn resolve_v2_permission(
+    request: v2::RequestPermissionRequest,
+    responder: Responder<v2::RequestPermissionResponse>,
+    store: &AgentStore,
+    clock: &Clock,
+    session_id: &str,
+    signals: &mpsc::UnboundedSender<ActorSignal>,
+) -> Result<(), agent_client_protocol::Error> {
+    let Some(option) = request
+        .options
+        .iter()
+        .find(|option| matches!(option.kind, v2::PermissionOptionKind::AllowAlways))
+        .or_else(|| {
+            request
+                .options
+                .iter()
+                .find(|option| matches!(option.kind, v2::PermissionOptionKind::AllowOnce))
+        })
+    else {
+        let _ = signals.send(ActorSignal::Fatal);
+        return responder.respond(v2::RequestPermissionResponse::new(
+            v2::RequestPermissionOutcome::Cancelled,
+        ));
+    };
+    let response = v2::RequestPermissionResponse::new(v2::RequestPermissionOutcome::Selected(
+        v2::SelectedPermissionOutcome::new(option.option_id.clone()),
+    ));
+    persist_permission(
+        &request,
+        &response,
+        responder.id(),
+        store,
+        clock,
+        session_id,
+    )?;
+    responder.respond(response)
+}
+
+fn persist_permission<Request: Serialize, Response: Serialize>(
+    request: &Request,
+    response: &Response,
+    id: &v1::RequestId,
+    store: &AgentStore,
+    clock: &Clock,
+    session_id: &str,
+) -> Result<(), agent_client_protocol::Error> {
+    let request_id = request_id(id);
+    let native_request = serde_json::to_string(&json!({
+        "jsonrpc": "2.0",
+        "id": id,
+        "method": "session/request_permission",
+        "params": request,
+    }))
+    .map_err(|_| acp_error(AgentHostError::InvalidNativePayload))?;
+    let native_response = serde_json::to_string(&json!({
+        "jsonrpc": "2.0",
+        "id": id,
+        "result": response,
+    }))
+    .map_err(|_| acp_error(AgentHostError::InvalidNativePayload))?;
+    let now_ms = clock().map_err(acp_error)?;
+    store
+        .record_permission_resolution(
+            session_id,
+            &request_id,
+            &native_request,
+            &native_response,
+            now_ms,
+        )
+        .map_err(acp_error)
+}
+
+fn validate_prompt(session_id: &str, request: &PromptRequest) -> Result<(), AgentHostError> {
+    if request.session_id != session_id
+        || request.client_turn_id.trim().is_empty()
+        || request.native_prompt_json.trim().is_empty()
+    {
+        return Err(AgentHostError::InvalidNativePayload);
+    }
+    Ok(())
+}
+
+fn parse_v1_prompt(raw: &str) -> Result<Vec<v1::ContentBlock>, AgentHostError> {
+    let content = serde_json::from_str::<Vec<v1::ContentBlock>>(raw)
+        .map_err(|_| AgentHostError::InvalidNativePayload)?;
+    if content.is_empty() {
+        return Err(AgentHostError::InvalidNativePayload);
+    }
+    Ok(content)
+}
+
+fn parse_v2_prompt(raw: &str) -> Result<Vec<v2::ContentBlock>, AgentHostError> {
+    let content = serde_json::from_str::<Vec<v2::ContentBlock>>(raw)
+        .map_err(|_| AgentHostError::InvalidNativePayload)?;
+    if content.is_empty() {
+        return Err(AgentHostError::InvalidNativePayload);
+    }
+    Ok(content)
+}
+
+fn text_prompt_json(text: &str) -> Result<String, AgentHostError> {
+    serde_json::to_string(&json!([{ "type": "text", "text": text }]))
+        .map_err(|_| AgentHostError::InvalidNativePayload)
+}
+
+fn nonempty(metadata: Map<String, Value>) -> Option<Map<String, Value>> {
+    (!metadata.is_empty()).then_some(metadata)
+}
+
+fn new_run_id() -> String {
+    format!("run_{}", Uuid::new_v4())
+}
+
+fn request_id(id: &v1::RequestId) -> String {
+    serde_json::to_value(id)
+        .ok()
+        .and_then(|value| {
+            value
+                .as_str()
+                .map(ToOwned::to_owned)
+                .or_else(|| Some(value.to_string()))
+        })
+        .unwrap_or_else(|| "unknown".into())
+}
+
+fn acp_error(error: AgentHostError) -> agent_client_protocol::Error {
+    agent_client_protocol::Error::internal_error().data(format!("agent host error: {error:?}"))
+}

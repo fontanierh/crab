@@ -13,6 +13,11 @@ static __BOXOLOGY_CONTRACT_DESCRIPTOR: ::std::sync::LazyLock<
                 None,
             ),
             ::boxology_contract::VariantDescriptor::new(
+                "InvalidConfiguration",
+                ::boxology_contract::VariantPayload::Unit,
+                None,
+            ),
+            ::boxology_contract::VariantDescriptor::new(
                 "UnknownAgent",
                 ::boxology_contract::VariantPayload::Unit,
                 None,
@@ -43,7 +48,27 @@ static __BOXOLOGY_CONTRACT_DESCRIPTOR: ::std::sync::LazyLock<
                 None,
             ),
             ::boxology_contract::VariantDescriptor::new(
+                "SessionClosed",
+                ::boxology_contract::VariantPayload::Unit,
+                None,
+            ),
+            ::boxology_contract::VariantDescriptor::new(
                 "SteeringUnavailable",
+                ::boxology_contract::VariantPayload::Unit,
+                None,
+            ),
+            ::boxology_contract::VariantDescriptor::new(
+                "DuplicateTurnConflict",
+                ::boxology_contract::VariantPayload::Unit,
+                None,
+            ),
+            ::boxology_contract::VariantDescriptor::new(
+                "UnknownRun",
+                ::boxology_contract::VariantPayload::Unit,
+                None,
+            ),
+            ::boxology_contract::VariantDescriptor::new(
+                "UnknownPermission",
                 ::boxology_contract::VariantPayload::Unit,
                 None,
             ),
@@ -59,6 +84,11 @@ static __BOXOLOGY_CONTRACT_DESCRIPTOR: ::std::sync::LazyLock<
             ),
             ::boxology_contract::VariantDescriptor::new(
                 "TransportFailed",
+                ::boxology_contract::VariantPayload::Unit,
+                None,
+            ),
+            ::boxology_contract::VariantDescriptor::new(
+                "StorageUnavailable",
                 ::boxology_contract::VariantPayload::Unit,
                 None,
             ),
@@ -697,6 +727,23 @@ static __BOXOLOGY_CONTRACT_DESCRIPTOR: ::std::sync::LazyLock<
                                         None,
                                     ),
                                     ::boxology_contract::FieldDescriptor::new(
+                                        "direction",
+                                        ::boxology_contract::TypeDescriptor::enumeration([
+                                                ::boxology_contract::VariantDescriptor::new(
+                                                    "ClientToAgent",
+                                                    ::boxology_contract::VariantPayload::Unit,
+                                                    None,
+                                                ),
+                                                ::boxology_contract::VariantDescriptor::new(
+                                                    "AgentToClient",
+                                                    ::boxology_contract::VariantPayload::Unit,
+                                                    None,
+                                                ),
+                                            ])
+                                            .expect("generated enum descriptor is valid"),
+                                        None,
+                                    ),
+                                    ::boxology_contract::FieldDescriptor::new(
                                         "native_event_json",
                                         ::boxology_contract::TypeDescriptor::string(),
                                         None,
@@ -948,7 +995,7 @@ static __BOXOLOGY_CONTRACT_DESCRIPTOR: ::std::sync::LazyLock<
                 capability_8,
             ],
             ::boxology_contract::ContractRevision::new(
-                    "sha256:3908bb9783b1e97b28d45b80475216536f3d95b3e8572cc745fb7eb597bfed6c",
+                    "sha256:3c8c419cb08579a976cd3eb26083da2b8a114c2a7d6beece21a3cec37679c366",
                 )
                 .expect("generated contract revision is non-empty"),
         )
@@ -1630,6 +1677,23 @@ impl AgentHostHandle {
                                         None,
                                     ),
                                     ::boxology_contract::FieldDescriptor::new(
+                                        "direction",
+                                        TypeDescriptor::enumeration([
+                                                ::boxology_contract::VariantDescriptor::new(
+                                                    "ClientToAgent",
+                                                    ::boxology_contract::VariantPayload::Unit,
+                                                    None,
+                                                ),
+                                                ::boxology_contract::VariantDescriptor::new(
+                                                    "AgentToClient",
+                                                    ::boxology_contract::VariantPayload::Unit,
+                                                    None,
+                                                ),
+                                            ])
+                                            .expect("generated enum descriptor is valid"),
+                                        None,
+                                    ),
+                                    ::boxology_contract::FieldDescriptor::new(
                                         "native_event_json",
                                         TypeDescriptor::string(),
                                         None,
@@ -1945,6 +2009,11 @@ static AGENT_HOST_ERROR_DESCRIPTOR: LazyLock<TypeDescriptor> = LazyLock::new(|| 
                 None,
             ),
             ::boxology_contract::VariantDescriptor::new(
+                "InvalidConfiguration",
+                ::boxology_contract::VariantPayload::Unit,
+                None,
+            ),
+            ::boxology_contract::VariantDescriptor::new(
                 "UnknownAgent",
                 ::boxology_contract::VariantPayload::Unit,
                 None,
@@ -1975,7 +2044,27 @@ static AGENT_HOST_ERROR_DESCRIPTOR: LazyLock<TypeDescriptor> = LazyLock::new(|| 
                 None,
             ),
             ::boxology_contract::VariantDescriptor::new(
+                "SessionClosed",
+                ::boxology_contract::VariantPayload::Unit,
+                None,
+            ),
+            ::boxology_contract::VariantDescriptor::new(
                 "SteeringUnavailable",
+                ::boxology_contract::VariantPayload::Unit,
+                None,
+            ),
+            ::boxology_contract::VariantDescriptor::new(
+                "DuplicateTurnConflict",
+                ::boxology_contract::VariantPayload::Unit,
+                None,
+            ),
+            ::boxology_contract::VariantDescriptor::new(
+                "UnknownRun",
+                ::boxology_contract::VariantPayload::Unit,
+                None,
+            ),
+            ::boxology_contract::VariantDescriptor::new(
+                "UnknownPermission",
                 ::boxology_contract::VariantPayload::Unit,
                 None,
             ),
@@ -1991,6 +2080,11 @@ static AGENT_HOST_ERROR_DESCRIPTOR: LazyLock<TypeDescriptor> = LazyLock::new(|| 
             ),
             ::boxology_contract::VariantDescriptor::new(
                 "TransportFailed",
+                ::boxology_contract::VariantPayload::Unit,
+                None,
+            ),
+            ::boxology_contract::VariantDescriptor::new(
+                "StorageUnavailable",
                 ::boxology_contract::VariantPayload::Unit,
                 None,
             ),
@@ -4230,7 +4324,8 @@ pub struct PromptRequest {
     /// Stable caller key used to deduplicate a retried turn.
     pub client_turn_id: ::std::string::String,
     pub mode: AgentInputMode,
-    /// Exact ACP prompt payload encoded as JSON. Crab must not narrow multimodal ACP content.
+    /// Exact JSON array carried in ACP's `prompt` field. Crab must not narrow multimodal ACP
+    /// content blocks.
     pub native_prompt_json: ::std::string::String,
 }
 #[rustfmt::skip]
@@ -4861,6 +4956,115 @@ impl ::boxology_contract::ContractType for AcpEventKind {
     }
 }
 #[rustfmt::skip]
+/// Which side emitted the preserved JSON-RPC message.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub enum AcpEventDirection {
+    #[default]
+    ClientToAgent,
+    AgentToClient,
+    Unknown { tag: ::std::string::String, payload: ::boxology_contract::OpaquePayload },
+}
+#[rustfmt::skip]
+impl ::boxology_contract::ContractType for AcpEventDirection {
+    fn encode_value(
+        &self,
+    ) -> ::core::result::Result<
+        ::boxology_contract::ContractValue,
+        ::boxology_contract::EncodeError,
+    > {
+        let (tag, payload) = match self {
+            Self::ClientToAgent => {
+                ("ClientToAgent".into(), ::boxology_contract::SlotValue::Null)
+            }
+            Self::AgentToClient => {
+                ("AgentToClient".into(), ::boxology_contract::SlotValue::Null)
+            }
+            Self::Unknown { tag, payload } => {
+                (
+                    tag.clone(),
+                    ::boxology_contract::SlotValue::Value(
+                        ::boxology_contract::ContractValue::opaque(payload.forward()),
+                    ),
+                )
+            }
+        };
+        Ok(::boxology_contract::ContractValue::enum_value(tag, payload))
+    }
+    fn decode_value(
+        value: &::boxology_contract::ContractValue,
+    ) -> ::core::result::Result<Self, ::boxology_contract::DecodeError> {
+        let ::boxology_contract::ValueRef::Enum { tag, payload } = value.view() else {
+            return Err(
+                ::boxology_contract::DecodeError::new(
+                    ::boxology_contract::DecodeErrorKind::KindMismatch,
+                ),
+            );
+        };
+        match tag {
+            "ClientToAgent" if matches!(
+                payload, ::boxology_contract::SlotValue::Null
+            ) => Ok(Self::ClientToAgent),
+            "ClientToAgent" => {
+                Err(
+                    ::boxology_contract::DecodeError::new(
+                            ::boxology_contract::DecodeErrorKind::UnexpectedPayload,
+                        )
+                        .under(::boxology_contract::PathSegment::Variant(tag.into())),
+                )
+            }
+            "AgentToClient" if matches!(
+                payload, ::boxology_contract::SlotValue::Null
+            ) => Ok(Self::AgentToClient),
+            "AgentToClient" => {
+                Err(
+                    ::boxology_contract::DecodeError::new(
+                            ::boxology_contract::DecodeErrorKind::UnexpectedPayload,
+                        )
+                        .under(::boxology_contract::PathSegment::Variant(tag.into())),
+                )
+            }
+            _ => {
+                match payload {
+                    ::boxology_contract::SlotValue::Value(value) => {
+                        match value.view() {
+                            ::boxology_contract::ValueRef::Opaque(payload) => {
+                                Ok(Self::Unknown {
+                                    tag: tag.into(),
+                                    payload: payload.forward(),
+                                })
+                            }
+                            _ => {
+                                Err(
+                                    ::boxology_contract::DecodeError::new(
+                                            ::boxology_contract::DecodeErrorKind::UnknownVariant(
+                                                tag.into(),
+                                            ),
+                                        )
+                                        .under(
+                                            ::boxology_contract::PathSegment::Variant(tag.into()),
+                                        ),
+                                )
+                            }
+                        }
+                    }
+                    _ => {
+                        Err(
+                            ::boxology_contract::DecodeError::new(
+                                    ::boxology_contract::DecodeErrorKind::UnknownVariant(
+                                        tag.into(),
+                                    ),
+                                )
+                                .under(
+                                    ::boxology_contract::PathSegment::Variant(tag.into()),
+                                ),
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+#[rustfmt::skip]
 /// One lossless event from the ACP connection, ordered within a Crab session.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct AcpEvent {
@@ -4869,7 +5073,9 @@ pub struct AcpEvent {
     pub sequence: u64,
     pub observed_at_ms: u64,
     pub kind: AcpEventKind,
-    /// The complete ACP JSON-RPC message. Channels render this, including tool activity.
+    pub direction: AcpEventDirection,
+    /// The complete ACP JSON-RPC message. `crab/*` lifecycle notifications are the only
+    /// Crab-authored extension; every native ACP message remains byte-for-byte intact.
     pub native_event_json: ::std::string::String,
 }
 #[rustfmt::skip]
@@ -4928,6 +5134,15 @@ impl ::boxology_contract::ContractType for AcpEvent {
             fields.push(("kind".into(), value));
         }
         if let Some(value) = ::boxology_contract::ContractType::encode_field(
+                &self.direction,
+            )
+            .map_err(|error| {
+                error.under(::boxology_contract::PathSegment::Field("direction".into()))
+            })?
+        {
+            fields.push(("direction".into(), value));
+        }
+        if let Some(value) = ::boxology_contract::ContractType::encode_field(
                 &self.native_event_json,
             )
             .map_err(|error| {
@@ -4957,7 +5172,7 @@ impl ::boxology_contract::ContractType for AcpEvent {
         for (field, _) in fields.entries() {
             match field {
                 "session_id" | "run_id" | "sequence" | "observed_at_ms" | "kind"
-                | "native_event_json" => {}
+                | "direction" | "native_event_json" => {}
                 _ => {
                     return Err(
                         ::boxology_contract::DecodeError::new(
@@ -5011,6 +5226,15 @@ impl ::boxology_contract::ContractType for AcpEvent {
                 )
                 .map_err(|error| {
                     error.under(::boxology_contract::PathSegment::Field("kind".into()))
+                })?,
+            direction: <AcpEventDirection as ::boxology_contract::ContractType>::decode_field(
+                    fields.get("direction"),
+                )
+                .map_err(|error| {
+                    error
+                        .under(
+                            ::boxology_contract::PathSegment::Field("direction".into()),
+                        )
                 })?,
             native_event_json: <::std::string::String as ::boxology_contract::ContractType>::decode_field(
                     fields.get("native_event_json"),
@@ -5913,19 +6137,25 @@ impl ::boxology_contract::ContractType for OperationReceipt {
 #[rustfmt::skip]
 #[derive(Debug, Clone, PartialEq, Default)]
 pub enum AgentHostError {
-    /// This contract draft intentionally has no live backend yet.
+    /// Retained so older draft consumers decode cleanly; the live host never returns it.
     #[default]
     DraftOnly,
+    InvalidConfiguration,
     UnknownAgent,
     PreflightFailed,
     AuthorityUnavailable,
     ProtocolNegotiationFailed,
     UnsupportedProtocolProfile,
     UnknownSession,
+    SessionClosed,
     SteeringUnavailable,
+    DuplicateTurnConflict,
+    UnknownRun,
+    UnknownPermission,
     InvalidCursor,
     InvalidNativePayload,
     TransportFailed,
+    StorageUnavailable,
     Unknown { tag: ::std::string::String, payload: ::boxology_contract::OpaquePayload },
 }
 #[rustfmt::skip]
@@ -5938,6 +6168,9 @@ impl ::boxology_contract::ContractType for AgentHostError {
     > {
         let (tag, payload) = match self {
             Self::DraftOnly => ("DraftOnly".into(), ::boxology_contract::SlotValue::Null),
+            Self::InvalidConfiguration => {
+                ("InvalidConfiguration".into(), ::boxology_contract::SlotValue::Null)
+            }
             Self::UnknownAgent => {
                 ("UnknownAgent".into(), ::boxology_contract::SlotValue::Null)
             }
@@ -5962,8 +6195,20 @@ impl ::boxology_contract::ContractType for AgentHostError {
             Self::UnknownSession => {
                 ("UnknownSession".into(), ::boxology_contract::SlotValue::Null)
             }
+            Self::SessionClosed => {
+                ("SessionClosed".into(), ::boxology_contract::SlotValue::Null)
+            }
             Self::SteeringUnavailable => {
                 ("SteeringUnavailable".into(), ::boxology_contract::SlotValue::Null)
+            }
+            Self::DuplicateTurnConflict => {
+                ("DuplicateTurnConflict".into(), ::boxology_contract::SlotValue::Null)
+            }
+            Self::UnknownRun => {
+                ("UnknownRun".into(), ::boxology_contract::SlotValue::Null)
+            }
+            Self::UnknownPermission => {
+                ("UnknownPermission".into(), ::boxology_contract::SlotValue::Null)
             }
             Self::InvalidCursor => {
                 ("InvalidCursor".into(), ::boxology_contract::SlotValue::Null)
@@ -5973,6 +6218,9 @@ impl ::boxology_contract::ContractType for AgentHostError {
             }
             Self::TransportFailed => {
                 ("TransportFailed".into(), ::boxology_contract::SlotValue::Null)
+            }
+            Self::StorageUnavailable => {
+                ("StorageUnavailable".into(), ::boxology_contract::SlotValue::Null)
             }
             Self::Unknown { tag, payload } => {
                 (
@@ -6000,6 +6248,17 @@ impl ::boxology_contract::ContractType for AgentHostError {
                 Ok(Self::DraftOnly)
             }
             "DraftOnly" => {
+                Err(
+                    ::boxology_contract::DecodeError::new(
+                            ::boxology_contract::DecodeErrorKind::UnexpectedPayload,
+                        )
+                        .under(::boxology_contract::PathSegment::Variant(tag.into())),
+                )
+            }
+            "InvalidConfiguration" if matches!(
+                payload, ::boxology_contract::SlotValue::Null
+            ) => Ok(Self::InvalidConfiguration),
+            "InvalidConfiguration" => {
                 Err(
                     ::boxology_contract::DecodeError::new(
                             ::boxology_contract::DecodeErrorKind::UnexpectedPayload,
@@ -6073,10 +6332,54 @@ impl ::boxology_contract::ContractType for AgentHostError {
                         .under(::boxology_contract::PathSegment::Variant(tag.into())),
                 )
             }
+            "SessionClosed" if matches!(
+                payload, ::boxology_contract::SlotValue::Null
+            ) => Ok(Self::SessionClosed),
+            "SessionClosed" => {
+                Err(
+                    ::boxology_contract::DecodeError::new(
+                            ::boxology_contract::DecodeErrorKind::UnexpectedPayload,
+                        )
+                        .under(::boxology_contract::PathSegment::Variant(tag.into())),
+                )
+            }
             "SteeringUnavailable" if matches!(
                 payload, ::boxology_contract::SlotValue::Null
             ) => Ok(Self::SteeringUnavailable),
             "SteeringUnavailable" => {
+                Err(
+                    ::boxology_contract::DecodeError::new(
+                            ::boxology_contract::DecodeErrorKind::UnexpectedPayload,
+                        )
+                        .under(::boxology_contract::PathSegment::Variant(tag.into())),
+                )
+            }
+            "DuplicateTurnConflict" if matches!(
+                payload, ::boxology_contract::SlotValue::Null
+            ) => Ok(Self::DuplicateTurnConflict),
+            "DuplicateTurnConflict" => {
+                Err(
+                    ::boxology_contract::DecodeError::new(
+                            ::boxology_contract::DecodeErrorKind::UnexpectedPayload,
+                        )
+                        .under(::boxology_contract::PathSegment::Variant(tag.into())),
+                )
+            }
+            "UnknownRun" if matches!(payload, ::boxology_contract::SlotValue::Null) => {
+                Ok(Self::UnknownRun)
+            }
+            "UnknownRun" => {
+                Err(
+                    ::boxology_contract::DecodeError::new(
+                            ::boxology_contract::DecodeErrorKind::UnexpectedPayload,
+                        )
+                        .under(::boxology_contract::PathSegment::Variant(tag.into())),
+                )
+            }
+            "UnknownPermission" if matches!(
+                payload, ::boxology_contract::SlotValue::Null
+            ) => Ok(Self::UnknownPermission),
+            "UnknownPermission" => {
                 Err(
                     ::boxology_contract::DecodeError::new(
                             ::boxology_contract::DecodeErrorKind::UnexpectedPayload,
@@ -6110,6 +6413,17 @@ impl ::boxology_contract::ContractType for AgentHostError {
                 payload, ::boxology_contract::SlotValue::Null
             ) => Ok(Self::TransportFailed),
             "TransportFailed" => {
+                Err(
+                    ::boxology_contract::DecodeError::new(
+                            ::boxology_contract::DecodeErrorKind::UnexpectedPayload,
+                        )
+                        .under(::boxology_contract::PathSegment::Variant(tag.into())),
+                )
+            }
+            "StorageUnavailable" if matches!(
+                payload, ::boxology_contract::SlotValue::Null
+            ) => Ok(Self::StorageUnavailable),
+            "StorageUnavailable" => {
                 Err(
                     ::boxology_contract::DecodeError::new(
                             ::boxology_contract::DecodeErrorKind::UnexpectedPayload,
@@ -6163,16 +6477,22 @@ impl ::boxology_contract::ContractError for AgentHostError {
     fn error_tag(&self) -> &str {
         match self {
             Self::DraftOnly => "DraftOnly",
+            Self::InvalidConfiguration => "InvalidConfiguration",
             Self::UnknownAgent => "UnknownAgent",
             Self::PreflightFailed => "PreflightFailed",
             Self::AuthorityUnavailable => "AuthorityUnavailable",
             Self::ProtocolNegotiationFailed => "ProtocolNegotiationFailed",
             Self::UnsupportedProtocolProfile => "UnsupportedProtocolProfile",
             Self::UnknownSession => "UnknownSession",
+            Self::SessionClosed => "SessionClosed",
             Self::SteeringUnavailable => "SteeringUnavailable",
+            Self::DuplicateTurnConflict => "DuplicateTurnConflict",
+            Self::UnknownRun => "UnknownRun",
+            Self::UnknownPermission => "UnknownPermission",
             Self::InvalidCursor => "InvalidCursor",
             Self::InvalidNativePayload => "InvalidNativePayload",
             Self::TransportFailed => "TransportFailed",
+            Self::StorageUnavailable => "StorageUnavailable",
             Self::Unknown { tag, .. } => tag,
         }
     }
@@ -6881,8 +7201,8 @@ pub mod test_support {
 #[rustfmt::skip]
 #[doc(hidden)]
 pub const __BOXOLOGY_SEMANTIC_DIGEST: [u8; 32] = [
-    225, 182, 215, 112, 50, 236, 53, 112, 214, 57, 239, 219, 207, 179, 90, 153, 189, 16,
-    105, 140, 240, 52, 157, 17, 125, 40, 40, 200, 104, 23, 126, 12,
+    145, 218, 136, 33, 156, 251, 240, 187, 243, 118, 158, 237, 171, 171, 187, 128, 116,
+    207, 171, 18, 201, 135, 236, 75, 62, 188, 186, 130, 148, 216, 250, 131,
 ];
 #[rustfmt::skip]
 #[doc(hidden)]

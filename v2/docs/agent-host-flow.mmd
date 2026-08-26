@@ -1,0 +1,28 @@
+%%{init: {"theme": "base", "themeVariables": {"fontFamily": "ui-sans-serif, system-ui, sans-serif", "primaryTextColor": "#172033", "lineColor": "#64748b", "edgeLabelBackground": "#ffffff"}, "flowchart": {"curve": "basis", "nodeSpacing": 42, "rankSpacing": 58}}}%%
+flowchart LR
+    CONFIG["Configured agent<br/>command · ACP profile · probe"]
+    PREFLIGHT{"Authority preflight<br/>no sandbox · yolo · sudo"}
+    ACTOR["Session actor<br/>one durable FIFO"]
+    ACP["ACP subprocess<br/>one process group"]
+    DB[("SQLite journal<br/>sessions · prompts<br/>events · permissions")]
+    UI["Native channel / UI<br/>lossless event view"]
+
+    CONFIG --> PREFLIGHT
+    PREFLIGHT -->|"verified"| ACTOR
+    ACTOR <-->|"ACP v1/v2 JSON-RPC"| ACP
+    ACTOR -->|"queue · steer · cancel"| ACP
+    ACTOR <-->|"transactional state"| DB
+    DB -->|"ordered raw messages"| UI
+    UI -->|"non-blocking input"| ACTOR
+
+    classDef config fill:#f8fafc,stroke:#64748b,stroke-width:1.5px,color:#172033;
+    classDef gate fill:#fef3c7,stroke:#d97706,stroke-width:2px,color:#78350f;
+    classDef runtime fill:#dbeafe,stroke:#2563eb,stroke-width:2px,color:#172554;
+    classDef durable fill:#dcfce7,stroke:#16a34a,stroke-width:2px,color:#14532d;
+    classDef ui fill:#f3e8ff,stroke:#9333ea,stroke-width:2px,color:#581c87;
+
+    class CONFIG config;
+    class PREFLIGHT gate;
+    class ACTOR,ACP runtime;
+    class DB durable;
+    class UI ui;

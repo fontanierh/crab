@@ -47,9 +47,14 @@ interrupt as a separate explicit action.
 - Bridges are packages the agent may add. Crab owns supervision, auth state, health and delivery
   semantics—not service-specific behavior. WhatsApp is the first intended first-party package.
 - Tests target useful contract and composition behavior. There is no percentage coverage gate.
+- `agent-host` runs real ACP v1/v2 subprocesses with mandatory authority preflight, durable
+  prompts/events/permissions, queue/steer/cancel, and native process-group shutdown. Its
+  [state contract](docs/agent-host-storage.md) is schema-versioned from day one; the
+  [rendered flow](docs/agent-host-flow.png) shows the process boundary.
 - `trigger-inbox` is implemented with durable deduplication, FIFO leases and restart recovery.
   Its [storage contract](docs/trigger-inbox-storage.md) is schema-versioned from day one.
-- The remaining box implementations return an explicit `DraftOnly` error; they do not fake a runtime.
+- The remaining channel, bridge, and sub-agent boxes return an explicit `DraftOnly` error; they do
+  not fake a runtime.
 - For a native UI, start by testing an off-the-shelf ACP client; build on reusable ACP components
   only if that cannot attach cleanly. See [the UI landscape](docs/acp-native-ui.md).
 
