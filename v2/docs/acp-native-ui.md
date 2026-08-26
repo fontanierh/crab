@@ -1,33 +1,42 @@
-# ACP native UI landscape
+# ACP native UI
 
-## Recommendation
+## Decision
 
-Keep `native-channel` UI-agnostic and keep Crab—not the UI—as session/process owner. For a plug-in
-client, expose a thin ACP agent facade: the UI speaks ordinary ACP while Crab maps session
-list/resume, prompt, cancel and updates onto its already-owned persistent session.
+Use the MIT-licensed [T3 Code](https://github.com/pingdotgg/t3code) as Crab's first native UI and
+maintain the integration in the [Crab fork](https://github.com/fontanierh/t3code). T3 supplies mature
+web, desktop, mobile and remote clients; Crab remains the only owner of agent sessions and processes.
 
-1. Spike [ACP UI](https://github.com/formulahendry/acp-ui) as the drop-in client. It already renders
-   sessions, permissions, thoughts, tools and protocol traffic across desktop, mobile and web.
-2. If direct attachment is too constraining, build Crab's channel with
-   [acp-components](https://github.com/zvzuola/acp-components): its typed core and React workbench
-   cover the same rich ACP lifecycle without forcing us to adopt another orchestrator.
-3. Track the official remote-transport and proxy-chain RFDs. Until stable, version the facade
-   transport at the channel edge and retain Crab's lossless ordered event log as source of truth.
+![T3 Code attach architecture](t3code-channel-flow.png)
 
-## Shortlist
+The decision was validated against `pingdotgg/t3code@a3a8cbd` and
+`deepseek-ai/deepseek-harness@b150a55` on 2026-08-26.
 
-| Project | Best use | Fit |
+## Fit
+
+| Candidate | Reusable strengths | Blocking mismatch |
 |---|---|---|
-| [ACP UI](https://github.com/formulahendry/acp-ui) | Plug-in client | Best first experiment; MIT, Tauri/web/mobile, remote WebSocket support |
-| [acp-components](https://github.com/zvzuola/acp-components) | Build our UI | Best foundation; MIT, framework-neutral core plus full React workbench |
-| [Codeg](https://github.com/xintaofei/codeg) | Adopt a whole workspace | Mature and Apache-2.0, but overlaps Crab's session/sub-agent ownership |
-| [Anycode](https://github.com/anycode-ade/anycode) | Full browser IDE | Rich Apache-2.0 React/Rust IDE; much larger surface than a channel |
-| [AgentX](https://github.com/sxhxliang/agent-studio) | Native desktop IDE | Strong ACP/tool/session UI; heavier GPUI application to embed |
-| [Harnss](https://github.com/OpenSource03/harnss) | Desktop reference | Rich rendering, but its maintainers explicitly flag an active rewrite |
-| [ACP to AG-UI](https://github.com/namanrajpal/acp-to-agui) | Custom web product | Useful thin bridge; translation risks losing new ACP-native detail |
+| T3 Code | Multi-surface product, remote transport, rich tool/session UI, reusable ACP client runtime and provider drivers | ACP providers currently own their subprocesses; active follow-ups do not expose Crab's explicit queue/steer choice |
+| DeepSeek Harness | Rich plugin UI and a tested ACP agent server | Its ACP endpoint is explicitly automation-only and its UI is coupled to the DeepSeek Harness runtime |
+| ACP UI | Direct ACP client with a smaller integration surface | Less complete remote/mobile control surface than T3 Code |
+| acp-components | Good typed components for a future custom client | Requires Crab to own and finish the surrounding product |
 
-Official inventories and evolving protocol work:
-[ACP clients](https://agentclientprotocol.com/get-started/clients),
-[ACP v2 prompt lifecycle](https://agentclientprotocol.com/protocol/v2/prompt-lifecycle),
-[remote transport RFD](https://agentclientprotocol.com/rfds/streamable-http-websocket-transport),
-[proxy-chain RFD](https://agentclientprotocol.com/rfds/proxy-chains).
+## Attach seam
+
+The T3 Crab provider starts one lightweight `crab-v2-acp-channel` process per T3 thread. That process
+speaks standard ACP over stdio, but only attaches to the single long-running Crab runtime over a
+versioned local IPC transport. It must never launch or own the underlying ACP agent.
+
+| T3 / ACP operation | Crab operation |
+|---|---|
+| `session/new`, `session/load`, `session/resume` | Create or attach one durable native-channel binding |
+| `session/prompt` in queue mode | `accept_turn(Queue)` |
+| `session/prompt` in steer mode | `accept_turn(Steer)` |
+| `session/cancel` | `interrupt_and_drain` |
+| `session/update` | Lossless ordered native-channel replay with facade session IDs |
+
+Queue and steer must be separate UI actions or an explicit composer mode. Interrupt remains a
+separate action. The proxy may rewrite transport-local request and session IDs, but it must retain
+every native agent update needed to render thoughts, plans, tools, terminals, diffs, usage and
+compaction. Credentials never cross this seam.
+
+Implementation is tracked in [Crab #206](https://github.com/fontanierh/crab/issues/206).

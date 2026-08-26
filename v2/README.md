@@ -76,8 +76,9 @@ interrupt as a separate explicit action.
 - `crab-v2` loads secret-free schema-v1 topology, opens fresh ACP sessions, recovers persisted
   bindings/routes and continuously drains every configured trigger lane. See the
   [startup contract and rendered flow](docs/runtime-startup.md).
-- For a native UI, start by testing an off-the-shelf ACP client; build on reusable ACP components
-  only if that cannot attach cleanly. See [the UI landscape](docs/acp-native-ui.md).
+- The first native UI target is the Crab fork of T3 Code. A small ACP stdio proxy will attach each
+  T3 thread to the single Crab-owned runtime without transferring session ownership. See the
+  [decision and attach seam](docs/acp-native-ui.md).
 
 ## Validate
 
