@@ -8,7 +8,7 @@ platform-specific directory and refuses a dirty source tree. Development builds 
 
 ```text
 crab-v2-<commit>-<platform>/
-├── bin/                  six production binaries; no test fixtures
+├── bin/                  seven production binaries; no test fixtures
 ├── agents/claude/        Claude ACP adapter 0.70.0 + locked production closure
 ├── bridges/whatsapp/     first-party package + locked production closure
 ├── config/               generic and bundle-relative launch presets

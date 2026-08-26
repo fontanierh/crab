@@ -16,8 +16,10 @@ use uuid::Uuid;
 use crate::Clock;
 use crate::{
     AcpEventDirection, AcpNegotiation, AgentHostError, AgentInputMode, AgentLifecycle,
-    AgentSession, ConfiguredAgent, OperationReceipt, PromptAccepted, PromptDisposition,
-    PromptRequest, store::AgentStore,
+    AgentSession, CRAB_AGENT_ID_ENV, CRAB_PARENT_SESSION_ID_ENV, CRAB_SESSION_ID_ENV,
+    CRAB_STATE_DIRECTORY_ENV, CRAB_SUB_AGENT_ID_ENV, CRAB_WORKING_DIRECTORY_ENV, ConfiguredAgent,
+    ConfiguredMcpServer, OperationReceipt, PromptAccepted, PromptDisposition, PromptRequest,
+    store::AgentStore,
 };
 
 pub(crate) enum SessionCommand {
@@ -64,6 +66,7 @@ struct ActorState {
     queued: VecDeque<QueuedPrompt>,
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn spawn_session(
     agent: Arc<ConfiguredAgent>,
     store: Arc<AgentStore>,
@@ -72,6 +75,7 @@ pub(crate) fn spawn_session(
     working_directory: PathBuf,
     bootstrap_prompt: Option<String>,
     metadata: Map<String, Value>,
+    state_directory: Option<PathBuf>,
 ) -> (
     SessionHandle,
     oneshot::Receiver<Result<AgentSession, AgentHostError>>,
@@ -92,6 +96,7 @@ pub(crate) fn spawn_session(
                     working_directory,
                     bootstrap_prompt,
                     metadata,
+                    state_directory,
                     command_rx,
                     opened_tx,
                 )
@@ -106,6 +111,7 @@ pub(crate) fn spawn_session(
                     working_directory,
                     bootstrap_prompt,
                     metadata,
+                    state_directory,
                     command_rx,
                     opened_tx,
                 )
@@ -134,6 +140,7 @@ async fn run_v1_session(
     working_directory: PathBuf,
     bootstrap_prompt: Option<String>,
     metadata: Map<String, Value>,
+    state_directory: Option<PathBuf>,
     command_rx: mpsc::Receiver<SessionCommand>,
     opened_tx: oneshot::Sender<Result<AgentSession, AgentHostError>>,
 ) -> Result<(), AgentHostError> {
@@ -178,7 +185,10 @@ async fn run_v1_session(
                 &session_id,
                 working_directory,
                 metadata,
+                &agent.agent_id,
                 &agent.session_options,
+                &agent.session_mcp_servers,
+                state_directory.as_deref(),
             )
             .await;
             let session = match initialized {
@@ -216,6 +226,7 @@ async fn run_v2_session(
     working_directory: PathBuf,
     bootstrap_prompt: Option<String>,
     metadata: Map<String, Value>,
+    state_directory: Option<PathBuf>,
     command_rx: mpsc::Receiver<SessionCommand>,
     opened_tx: oneshot::Sender<Result<AgentSession, AgentHostError>>,
 ) -> Result<(), AgentHostError> {
@@ -269,7 +280,10 @@ async fn run_v2_session(
                 &session_id,
                 working_directory,
                 metadata,
+                &agent.agent_id,
                 &agent.session_options,
+                &agent.session_mcp_servers,
+                state_directory.as_deref(),
             )
             .await;
             let session = match initialized {
@@ -319,6 +333,7 @@ fn instrumented_process(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn initialize_v1(
     connection: &ConnectionTo<Agent>,
     store: &AgentStore,
@@ -326,7 +341,10 @@ async fn initialize_v1(
     session_id: &str,
     working_directory: PathBuf,
     metadata: Map<String, Value>,
+    agent_id: &str,
     session_options: &BTreeMap<String, String>,
+    mcp_servers: &[ConfiguredMcpServer],
+    state_directory: Option<&std::path::Path>,
 ) -> Result<AgentSession, AgentHostError> {
     let response = connection
         .send_request(v1::InitializeRequest::new(ProtocolVersion::V1).client_info(
@@ -338,8 +356,20 @@ async fn initialize_v1(
     if response.protocol_version != ProtocolVersion::V1 {
         return Err(AgentHostError::UnsupportedProtocolProfile);
     }
+    let mcp_servers = build_v1_mcp_servers(
+        mcp_servers,
+        state_directory,
+        session_id,
+        agent_id,
+        &working_directory,
+        &metadata,
+    )?;
     let new_session = connection
-        .send_request(v1::NewSessionRequest::new(working_directory).meta(nonempty(metadata)))
+        .send_request(
+            v1::NewSessionRequest::new(working_directory)
+                .mcp_servers(mcp_servers)
+                .meta(nonempty(metadata)),
+        )
         .block_task()
         .await
         .map_err(|_| AgentHostError::TransportFailed)?;
@@ -361,6 +391,7 @@ async fn initialize_v1(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn initialize_v2(
     connection: &ConnectionTo<Agent>,
     store: &AgentStore,
@@ -368,7 +399,10 @@ async fn initialize_v2(
     session_id: &str,
     working_directory: PathBuf,
     metadata: Map<String, Value>,
+    agent_id: &str,
     session_options: &BTreeMap<String, String>,
+    mcp_servers: &[ConfiguredMcpServer],
+    state_directory: Option<&std::path::Path>,
 ) -> Result<AgentSession, AgentHostError> {
     let response = connection
         .send_request(v2::InitializeRequest::new(
@@ -381,8 +415,31 @@ async fn initialize_v2(
     if response.protocol_version != ProtocolVersion::V2 {
         return Err(AgentHostError::UnsupportedProtocolProfile);
     }
+    if !mcp_servers.is_empty()
+        && response
+            .capabilities
+            .session
+            .as_ref()
+            .and_then(|session| session.mcp.as_ref())
+            .and_then(|mcp| mcp.stdio.as_ref())
+            .is_none()
+    {
+        return Err(AgentHostError::ProtocolNegotiationFailed);
+    }
+    let mcp_servers = build_v2_mcp_servers(
+        mcp_servers,
+        state_directory,
+        session_id,
+        agent_id,
+        &working_directory,
+        &metadata,
+    )?;
     let new_session = connection
-        .send_request(v2::NewSessionRequest::new(working_directory).meta(nonempty(metadata)))
+        .send_request(
+            v2::NewSessionRequest::new(working_directory)
+                .mcp_servers(mcp_servers)
+                .meta(nonempty(metadata)),
+        )
         .block_task()
         .await
         .map_err(|_| AgentHostError::TransportFailed)?;
@@ -402,6 +459,111 @@ async fn initialize_v2(
         },
         now_ms,
     )
+}
+
+fn build_v1_mcp_servers(
+    configured: &[ConfiguredMcpServer],
+    state_directory: Option<&std::path::Path>,
+    session_id: &str,
+    agent_id: &str,
+    working_directory: &std::path::Path,
+    metadata: &Map<String, Value>,
+) -> Result<Vec<v1::McpServer>, AgentHostError> {
+    configured
+        .iter()
+        .map(|server| {
+            let environment = mcp_environment(
+                server,
+                state_directory,
+                session_id,
+                agent_id,
+                working_directory,
+                metadata,
+            )?
+            .into_iter()
+            .map(|(name, value)| v1::EnvVariable::new(name, value))
+            .collect();
+            Ok(v1::McpServer::Stdio(
+                v1::McpServerStdio::new(&server.name, server.executable.clone())
+                    .args(server.arguments.clone())
+                    .env(environment),
+            ))
+        })
+        .collect()
+}
+
+fn build_v2_mcp_servers(
+    configured: &[ConfiguredMcpServer],
+    state_directory: Option<&std::path::Path>,
+    session_id: &str,
+    agent_id: &str,
+    working_directory: &std::path::Path,
+    metadata: &Map<String, Value>,
+) -> Result<Vec<v2::McpServer>, AgentHostError> {
+    configured
+        .iter()
+        .map(|server| {
+            let environment = mcp_environment(
+                server,
+                state_directory,
+                session_id,
+                agent_id,
+                working_directory,
+                metadata,
+            )?
+            .into_iter()
+            .map(|(name, value)| v2::EnvVariable::new(name, value))
+            .collect();
+            Ok(v2::McpServer::Stdio(
+                v2::McpServerStdio::new(
+                    &server.name,
+                    v2::AbsolutePath::new(server.executable.clone()),
+                )
+                .args(server.arguments.clone())
+                .env(environment),
+            ))
+        })
+        .collect()
+}
+
+fn mcp_environment(
+    server: &ConfiguredMcpServer,
+    state_directory: Option<&std::path::Path>,
+    session_id: &str,
+    agent_id: &str,
+    working_directory: &std::path::Path,
+    metadata: &Map<String, Value>,
+) -> Result<BTreeMap<String, String>, AgentHostError> {
+    let state_directory = state_directory.ok_or(AgentHostError::InvalidConfiguration)?;
+    let mut environment = server.environment.clone();
+    environment.insert(
+        CRAB_STATE_DIRECTORY_ENV.into(),
+        state_directory.to_string_lossy().into_owned(),
+    );
+    environment.insert(CRAB_SESSION_ID_ENV.into(), session_id.into());
+    environment.insert(CRAB_AGENT_ID_ENV.into(), agent_id.into());
+    environment.insert(
+        CRAB_WORKING_DIRECTORY_ENV.into(),
+        working_directory.to_string_lossy().into_owned(),
+    );
+    if let Some(context) = metadata.get("crabSubAgent") {
+        let Value::Object(context) = context else {
+            return Err(AgentHostError::InvalidNativePayload);
+        };
+        let sub_agent_id = context
+            .get("subAgentId")
+            .and_then(Value::as_str)
+            .filter(|value| !value.trim().is_empty())
+            .ok_or(AgentHostError::InvalidNativePayload)?;
+        let parent_session_id = context
+            .get("parentSessionId")
+            .and_then(Value::as_str)
+            .filter(|value| !value.trim().is_empty())
+            .ok_or(AgentHostError::InvalidNativePayload)?;
+        environment.insert(CRAB_SUB_AGENT_ID_ENV.into(), sub_agent_id.into());
+        environment.insert(CRAB_PARENT_SESSION_ID_ENV.into(), parent_session_id.into());
+    }
+    Ok(environment)
 }
 
 async fn apply_v1_session_options(

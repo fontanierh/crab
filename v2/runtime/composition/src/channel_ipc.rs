@@ -11,6 +11,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
+use agent_host_contract::{AgentHostHandle, SessionReference, SessionStatus};
 use boxology_contract::{
     CallContext, CallError, Caller, CancelToken, CapabilityDescriptor, ContractDescriptor,
     ContractError, ContractType, DecodeRole, TraceContext,
@@ -64,6 +65,7 @@ const INVALIDATE_CREDENTIALS: &str = "bridge-host.invalidate_credentials";
 const BRIDGE_STATUS: &str = "bridge-host.bridge_status";
 const STOP_BRIDGE: &str = "bridge-host.stop_bridge";
 const SUSPEND_BRIDGE: &str = "bridge-host.suspend_bridge";
+const AGENT_SESSION_STATUS: &str = "agent-host.session_status";
 const SPAWN_SUB_AGENT: &str = "sub-agent-host.spawn";
 const SEND_TO_CHILD: &str = "sub-agent-host.send_to_child";
 const SEND_TO_PARENT: &str = "sub-agent-host.send_to_parent";
@@ -413,6 +415,19 @@ impl ChannelIpcClient {
         .await
     }
 
+    /// Inspect the current parent cursor before creating an inherited child snapshot.
+    pub async fn agent_session_status(
+        &self,
+        request: SessionReference,
+    ) -> Result<SessionStatus, ChannelIpcClientError> {
+        self.invoke(
+            AGENT_SESSION_STATUS,
+            agent_host_contract::contract_descriptor(),
+            request,
+        )
+        .await
+    }
+
     /// Durably deliver one queue, steer or interrupt-and-steer input to the child.
     pub async fn send_to_child(
         &self,
@@ -558,6 +573,7 @@ pub(crate) struct ChannelIpcServer {
 
 #[derive(Clone)]
 struct IpcCapabilities {
+    agent_host: AgentHostHandle,
     channel_gateway: ChannelGatewayHandle,
     native_channel: NativeChannelHandle,
     bridge_host: BridgeHostHandle,
@@ -568,6 +584,7 @@ struct IpcCapabilities {
 impl ChannelIpcServer {
     pub(crate) async fn start(
         paths: ChannelIpcPaths,
+        agent_host: AgentHostHandle,
         channel_gateway: ChannelGatewayHandle,
         native_channel: NativeChannelHandle,
         bridge_host: BridgeHostHandle,
@@ -585,6 +602,7 @@ impl ChannelIpcServer {
         let server_socket = socket_path.clone();
         let server_sessions = attached_sessions.clone();
         let capabilities = IpcCapabilities {
+            agent_host,
             channel_gateway,
             native_channel,
             bridge_host,
@@ -791,6 +809,7 @@ async fn dispatch(
     attached_sessions: Arc<Mutex<HashSet<String>>>,
 ) -> WireOutcome {
     let IpcCapabilities {
+        agent_host,
         channel_gateway,
         native_channel,
         bridge_host,
@@ -798,6 +817,14 @@ async fn dispatch(
         sub_agent_host,
     } = capabilities;
     match request.capability.as_str() {
+        AGENT_SESSION_STATUS => {
+            invoke_agent::<SessionReference, SessionStatus, _, _>(
+                &request.input,
+                AGENT_SESSION_STATUS,
+                |input| agent_host.session_status(call_context(), input),
+            )
+            .await
+        }
         ATTACH => {
             let Some(capability) =
                 capability(channel_gateway_contract::contract_descriptor(), ATTACH)
@@ -1036,6 +1063,26 @@ where
     Fut: Future<Output = Result<O, CallError<sub_agent_host_contract::SubAgentHostError>>>,
 {
     let Some(capability) = capability(sub_agent_host_contract::contract_descriptor(), name) else {
+        return wire_failure("internal", "MissingDescriptor");
+    };
+    let input = match decode_input::<I>(input, capability) {
+        Ok(input) => input,
+        Err(error) => return error,
+    };
+    match invoke(input).await {
+        Ok(output) => encode_output(output, capability),
+        Err(error) => wire_call_error(error),
+    }
+}
+
+async fn invoke_agent<I, O, F, Fut>(input: &RawValue, name: &str, invoke: F) -> WireOutcome
+where
+    I: ContractType,
+    O: ContractType,
+    F: FnOnce(I) -> Fut,
+    Fut: Future<Output = Result<O, CallError<agent_host_contract::AgentHostError>>>,
+{
+    let Some(capability) = capability(agent_host_contract::contract_descriptor(), name) else {
         return wire_failure("internal", "MissingDescriptor");
     };
     let input = match decode_input::<I>(input, capability) {

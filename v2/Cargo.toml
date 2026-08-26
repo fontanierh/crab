@@ -29,11 +29,13 @@ boxology-contract = { git = "https://github.com/fontanierh/boxology", rev = "4dd
 boxology-manifest = { git = "https://github.com/fontanierh/boxology", rev = "4dd00888445c6506704a3e3f69932a3c4bc32efa" }
 boxology-runtime = { git = "https://github.com/fontanierh/boxology", rev = "4dd00888445c6506704a3e3f69932a3c4bc32efa" }
 agent-client-protocol = { version = "=2.0.0", features = ["unstable_protocol_v2"] }
+agent-client-protocol-rmcp = "=3.0.0"
 async-trait = "0.1.89"
 nix = { version = "0.30.1", features = ["process", "signal"] }
 rusqlite = { version = "0.40.2", features = ["bundled"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = { version = "=1.0.150", features = ["raw_value"] }
+schemars = "=1.2.2"
 sha2 = "0.10.9"
 tempfile = "3.27.0"
 tokio = { version = "1.53.0", features = ["fs", "io-util", "macros", "net", "process", "rt-multi-thread", "signal", "sync", "time"] }

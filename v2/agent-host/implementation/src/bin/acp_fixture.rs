@@ -67,12 +67,19 @@ impl FixtureAgent {
                 "authMethods": [],
                 "agentInfo": { "name": "crab-fixture", "version": "1" }
             }),
-            Protocol::V2 => json!({
-                "protocolVersion": 2,
-                "info": { "name": "crab-fixture", "version": "1" },
-                "capabilities": {},
-                "authMethods": []
-            }),
+            Protocol::V2 => {
+                let capabilities = if std::env::var_os("ACP_FIXTURE_HIDE_STDIO_MCP").is_some() {
+                    json!({})
+                } else {
+                    json!({ "session": { "mcp": { "stdio": {} } } })
+                };
+                json!({
+                    "protocolVersion": 2,
+                    "info": { "name": "crab-fixture", "version": "1" },
+                    "capabilities": capabilities,
+                    "authMethods": []
+                })
+            }
         };
         self.respond(request, result)
     }

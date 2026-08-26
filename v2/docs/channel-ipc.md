@@ -23,6 +23,7 @@ operators never open Crab's databases or credential store.
 | `bridge-host.bridge_status` | `bridge-host` |
 | `bridge-host.suspend_bridge` | `bridge-host` |
 | `bridge-host.stop_bridge` | `bridge-host` |
+| `agent-host.session_status` | `agent-host` |
 | `sub-agent-host.spawn` | `sub-agent-host` |
 | `sub-agent-host.send_to_child` | `sub-agent-host` |
 | `sub-agent-host.send_to_parent` | `sub-agent-host` |

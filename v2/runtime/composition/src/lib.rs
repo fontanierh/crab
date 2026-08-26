@@ -15,6 +15,7 @@ mod acp_channel;
 mod channel_ipc;
 mod config;
 mod configured;
+mod sub_agent_mcp;
 
 pub use acp_channel::{AcpChannelError, AcpChannelOptions, run_acp_channel_stdio};
 pub use channel_ipc::{
@@ -22,6 +23,7 @@ pub use channel_ipc::{
 };
 pub use config::*;
 pub use configured::*;
+pub use sub_agent_mcp::{SubAgentMcpError, run_sub_agent_mcp_stdio};
 
 use agent_host_implementation::{
     AgentHost, AgentHostError, ConfiguredAgent, generated as agent_host,

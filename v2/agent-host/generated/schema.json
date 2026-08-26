@@ -175,9 +175,9 @@
   "provenance": {
     "generator": "boxology-generator",
     "generator_version": "0.1.1",
-    "semantic_digest": "sha256:91da88219cfbf0bbf3769eedababbb8074cfab12c987ec4b3ebcba8294d8fa83"
+    "semantic_digest": "sha256:1e9beca1ed6b217d3ec282d31c5124009a1bf168782ae727838e82e70bb2878e"
   },
-  "revision": "sha256:3c8c419cb08579a976cd3eb26083da2b8a114c2a7d6beece21a3cec37679c366",
+  "revision": "sha256:95e518c5ca4645fef7105b27adfce20c8a3c834d22021b5933d08c52470ab2fd",
   "schema_format": 1,
   "types": [
     {
@@ -393,6 +393,14 @@
             " Names only. Secret values remain in the host's credential provider."
           ],
           "name": "environment_names",
+          "type": "Vec<String>"
+        },
+        {
+          "deprecation": null,
+          "docs": [
+            " Configured stdio MCP servers attached by Crab to every session."
+          ],
+          "name": "mcp_server_names",
           "type": "Vec<String>"
         },
         {

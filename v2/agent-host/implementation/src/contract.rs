@@ -59,6 +59,8 @@ boxology::contract! {
         pub arguments: Vec<String>,
         /// Names only. Secret values remain in the host's credential provider.
         pub environment_names: Vec<String>,
+        /// Configured stdio MCP servers attached by Crab to every session.
+        pub mcp_server_names: Vec<String>,
         pub lifecycle: AgentLifecycle,
     }
 

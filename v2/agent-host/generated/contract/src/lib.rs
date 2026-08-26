@@ -139,6 +139,14 @@ static __BOXOLOGY_CONTRACT_DESCRIPTOR: ::std::sync::LazyLock<
                                         None,
                                     ),
                                     ::boxology_contract::FieldDescriptor::new(
+                                        "mcp_server_names",
+                                        ::boxology_contract::TypeDescriptor::list(
+                                                ::boxology_contract::TypeDescriptor::string(),
+                                            )
+                                            .expect("generated list descriptor is valid"),
+                                        None,
+                                    ),
+                                    ::boxology_contract::FieldDescriptor::new(
                                         "lifecycle",
                                         ::boxology_contract::TypeDescriptor::enumeration([
                                                 ::boxology_contract::VariantDescriptor::new(
@@ -995,7 +1003,7 @@ static __BOXOLOGY_CONTRACT_DESCRIPTOR: ::std::sync::LazyLock<
                 capability_8,
             ],
             ::boxology_contract::ContractRevision::new(
-                    "sha256:3c8c419cb08579a976cd3eb26083da2b8a114c2a7d6beece21a3cec37679c366",
+                    "sha256:95e518c5ca4645fef7105b27adfce20c8a3c834d22021b5933d08c52470ab2fd",
                 )
                 .expect("generated contract revision is non-empty"),
         )
@@ -1134,6 +1142,12 @@ impl AgentHostHandle {
                                     ),
                                     ::boxology_contract::FieldDescriptor::new(
                                         "environment_names",
+                                        TypeDescriptor::list(TypeDescriptor::string())
+                                            .expect("generated list descriptor is valid"),
+                                        None,
+                                    ),
+                                    ::boxology_contract::FieldDescriptor::new(
+                                        "mcp_server_names",
                                         TypeDescriptor::list(TypeDescriptor::string())
                                             .expect("generated list descriptor is valid"),
                                         None,
@@ -2935,6 +2949,8 @@ pub struct AgentDescriptor {
     pub arguments: ::std::vec::Vec<::std::string::String>,
     /// Names only. Secret values remain in the host's credential provider.
     pub environment_names: ::std::vec::Vec<::std::string::String>,
+    /// Configured stdio MCP servers attached by Crab to every session.
+    pub mcp_server_names: ::std::vec::Vec<::std::string::String>,
     pub lifecycle: AgentLifecycle,
 }
 #[rustfmt::skip]
@@ -3000,6 +3016,20 @@ impl ::boxology_contract::ContractType for AgentDescriptor {
             fields.push(("environment_names".into(), value));
         }
         if let Some(value) = ::boxology_contract::ContractType::encode_field(
+                &self.mcp_server_names,
+            )
+            .map_err(|error| {
+                error
+                    .under(
+                        ::boxology_contract::PathSegment::Field(
+                            "mcp_server_names".into(),
+                        ),
+                    )
+            })?
+        {
+            fields.push(("mcp_server_names".into(), value));
+        }
+        if let Some(value) = ::boxology_contract::ContractType::encode_field(
                 &self.lifecycle,
             )
             .map_err(|error| {
@@ -3024,7 +3054,7 @@ impl ::boxology_contract::ContractType for AgentDescriptor {
         for (field, _) in fields.entries() {
             match field {
                 "agent_id" | "display_name" | "executable" | "arguments"
-                | "environment_names" | "lifecycle" => {}
+                | "environment_names" | "mcp_server_names" | "lifecycle" => {}
                 _ => {
                     return Err(
                         ::boxology_contract::DecodeError::new(
@@ -3088,6 +3118,19 @@ impl ::boxology_contract::ContractType for AgentDescriptor {
                         .under(
                             ::boxology_contract::PathSegment::Field(
                                 "environment_names".into(),
+                            ),
+                        )
+                })?,
+            mcp_server_names: <::std::vec::Vec<
+                ::std::string::String,
+            > as ::boxology_contract::ContractType>::decode_field(
+                    fields.get("mcp_server_names"),
+                )
+                .map_err(|error| {
+                    error
+                        .under(
+                            ::boxology_contract::PathSegment::Field(
+                                "mcp_server_names".into(),
                             ),
                         )
                 })?,
@@ -7201,8 +7244,8 @@ pub mod test_support {
 #[rustfmt::skip]
 #[doc(hidden)]
 pub const __BOXOLOGY_SEMANTIC_DIGEST: [u8; 32] = [
-    145, 218, 136, 33, 156, 251, 240, 187, 243, 118, 158, 237, 171, 171, 187, 128, 116,
-    207, 171, 18, 201, 135, 236, 75, 62, 188, 186, 130, 148, 216, 250, 131,
+    30, 155, 236, 161, 237, 107, 33, 125, 62, 194, 130, 211, 28, 81, 36, 0, 154, 27, 241,
+    104, 120, 42, 231, 39, 131, 142, 130, 231, 11, 178, 135, 142,
 ];
 #[rustfmt::skip]
 #[doc(hidden)]
