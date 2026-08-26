@@ -25,6 +25,7 @@ RUNTIME_BINARIES = (
     "crab-v2",
     "crab-v2-acp-channel",
     "crab-v2-bridge",
+    "crab-v2-bridge-mcp",
     "crab-v2-sub-agent",
     "crab-v2-sub-agent-mcp",
     "crab-v2-trigger",

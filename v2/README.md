@@ -72,6 +72,10 @@ interrupt as a separate explicit action.
   lifecycle through authenticated local IPC without disclosing credential material. See the
   [operator flow](docs/bridge-operations.md),
   [state contract](docs/bridge-host-storage.md) and [rendered flow](docs/bridge-host-flow.png).
+- Every configured ACP parent and child receives 13 strict native bridge tools. An agent can install
+  a package it wrote, change it under generation control, authenticate it, validate its credentials,
+  and send deliberately selected output without gaining credential-store access. See the
+  [agent bridge boundary](docs/native-bridge-tools.md).
 - `sub-agent-host` composes through the generated `agent-host` import, durably journals both
   message directions and the complete child ACP stream, and fails closed when requested context or
   crash recovery cannot be honored. `crab-v2-sub-agent` exposes spawn, bidirectional messaging,

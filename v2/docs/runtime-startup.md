@@ -26,7 +26,8 @@ unknown fields, missing variables, broken references and zero-valued worker boun
 
 Each agent may declare `sessionMcpServers`. Their commands resolve like other runtime commands and
 are attached to every ACP session. The shipped presets register Crab's
-[`crab-v2-sub-agent-mcp`](native-sub-agent-tools.md) so native sub-agent tools work without
+[`crab-v2-sub-agent-mcp`](native-sub-agent-tools.md) and
+[`crab-v2-bridge-mcp`](native-bridge-tools.md), so orchestration and harness extension work without
 agent-specific plugins.
 
 Start from [`runtime.example.json`](../runtime/runtime.example.json):
