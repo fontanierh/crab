@@ -915,6 +915,181 @@ static __BOXOLOGY_CONTRACT_DESCRIPTOR: ::std::sync::LazyLock<
     let capability_7 = ::boxology_contract::CapabilityDescriptor::new(
         ::boxology_contract::CapabilityId::new(
             box_id.clone(),
+            ::boxology_contract::CapabilityName::new("inspect_binding")
+                .expect("generated capability name is valid"),
+        ),
+        ::boxology_contract::TypeDescriptor::structure([
+                ::boxology_contract::FieldDescriptor::new(
+                    "binding_id",
+                    ::boxology_contract::TypeDescriptor::string(),
+                    None,
+                ),
+            ])
+            .expect("generated struct descriptor is valid"),
+        ::boxology_contract::TypeDescriptor::structure([
+                ::boxology_contract::FieldDescriptor::new(
+                    "binding_id",
+                    ::boxology_contract::TypeDescriptor::string(),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
+                    "channel_id",
+                    ::boxology_contract::TypeDescriptor::string(),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
+                    "adapter_id",
+                    ::boxology_contract::TypeDescriptor::string(),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
+                    "session_id",
+                    ::boxology_contract::TypeDescriptor::string(),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
+                    "lifecycle",
+                    ::boxology_contract::TypeDescriptor::enumeration([
+                            ::boxology_contract::VariantDescriptor::new(
+                                "Binding",
+                                ::boxology_contract::VariantPayload::Unit,
+                                None,
+                            ),
+                            ::boxology_contract::VariantDescriptor::new(
+                                "Attached",
+                                ::boxology_contract::VariantPayload::Unit,
+                                None,
+                            ),
+                            ::boxology_contract::VariantDescriptor::new(
+                                "Replaying",
+                                ::boxology_contract::VariantPayload::Unit,
+                                None,
+                            ),
+                            ::boxology_contract::VariantDescriptor::new(
+                                "Detached",
+                                ::boxology_contract::VariantPayload::Unit,
+                                None,
+                            ),
+                            ::boxology_contract::VariantDescriptor::new(
+                                "Failed",
+                                ::boxology_contract::VariantPayload::Unit,
+                                None,
+                            ),
+                        ])
+                        .expect("generated enum descriptor is valid"),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
+                    "native_channel_json",
+                    ::boxology_contract::TypeDescriptor::string(),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
+                    "published_sequence",
+                    ::boxology_contract::TypeDescriptor::u64(),
+                    None,
+                ),
+            ])
+            .expect("generated struct descriptor is valid"),
+        error.clone(),
+        ::boxology_contract::CapabilityShape::Unary,
+        ::boxology_contract::ExposureLevel::CodeOnly,
+        ::boxology_contract::Idempotency::None,
+        None,
+    );
+    let capability_8 = ::boxology_contract::CapabilityDescriptor::new(
+        ::boxology_contract::CapabilityId::new(
+            box_id.clone(),
+            ::boxology_contract::CapabilityName::new("find_binding")
+                .expect("generated capability name is valid"),
+        ),
+        ::boxology_contract::TypeDescriptor::structure([
+                ::boxology_contract::FieldDescriptor::new(
+                    "channel_id",
+                    ::boxology_contract::TypeDescriptor::string(),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
+                    "adapter_id",
+                    ::boxology_contract::TypeDescriptor::string(),
+                    None,
+                ),
+            ])
+            .expect("generated struct descriptor is valid"),
+        ::boxology_contract::TypeDescriptor::structure([
+                ::boxology_contract::FieldDescriptor::new(
+                    "binding_id",
+                    ::boxology_contract::TypeDescriptor::string(),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
+                    "channel_id",
+                    ::boxology_contract::TypeDescriptor::string(),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
+                    "adapter_id",
+                    ::boxology_contract::TypeDescriptor::string(),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
+                    "session_id",
+                    ::boxology_contract::TypeDescriptor::string(),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
+                    "lifecycle",
+                    ::boxology_contract::TypeDescriptor::enumeration([
+                            ::boxology_contract::VariantDescriptor::new(
+                                "Binding",
+                                ::boxology_contract::VariantPayload::Unit,
+                                None,
+                            ),
+                            ::boxology_contract::VariantDescriptor::new(
+                                "Attached",
+                                ::boxology_contract::VariantPayload::Unit,
+                                None,
+                            ),
+                            ::boxology_contract::VariantDescriptor::new(
+                                "Replaying",
+                                ::boxology_contract::VariantPayload::Unit,
+                                None,
+                            ),
+                            ::boxology_contract::VariantDescriptor::new(
+                                "Detached",
+                                ::boxology_contract::VariantPayload::Unit,
+                                None,
+                            ),
+                            ::boxology_contract::VariantDescriptor::new(
+                                "Failed",
+                                ::boxology_contract::VariantPayload::Unit,
+                                None,
+                            ),
+                        ])
+                        .expect("generated enum descriptor is valid"),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
+                    "native_channel_json",
+                    ::boxology_contract::TypeDescriptor::string(),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
+                    "published_sequence",
+                    ::boxology_contract::TypeDescriptor::u64(),
+                    None,
+                ),
+            ])
+            .expect("generated struct descriptor is valid"),
+        error.clone(),
+        ::boxology_contract::CapabilityShape::Unary,
+        ::boxology_contract::ExposureLevel::CodeOnly,
+        ::boxology_contract::Idempotency::None,
+        None,
+    );
+    let capability_9 = ::boxology_contract::CapabilityDescriptor::new(
+        ::boxology_contract::CapabilityId::new(
+            box_id.clone(),
             ::boxology_contract::CapabilityName::new("unbind_channel")
                 .expect("generated capability name is valid"),
         ),
@@ -956,9 +1131,11 @@ static __BOXOLOGY_CONTRACT_DESCRIPTOR: ::std::sync::LazyLock<
                 capability_5,
                 capability_6,
                 capability_7,
+                capability_8,
+                capability_9,
             ],
             ::boxology_contract::ContractRevision::new(
-                    "sha256:4395f8de32429f96d57bc2b1eab16b96d415b649a5cc1a189a20bbd091251bfd",
+                    "sha256:a571d395b427730d2a56b7d8d40081f37c06a2b7e52d02966f591e33bb5bb095",
                 )
                 .expect("generated contract revision is non-empty"),
         )
@@ -1036,6 +1213,20 @@ pub trait NativeChannelDispatch: Send + Sync + 'static {
         request: BindingReference,
     ) -> Pin<
         Box<dyn Future<Output = Result<ChannelStatus, NativeChannelError>> + Send + 'a>,
+    >;
+    fn inspect_binding<'a>(
+        &'a self,
+        context: CallContext,
+        request: BindingReference,
+    ) -> Pin<
+        Box<dyn Future<Output = Result<ChannelBinding, NativeChannelError>> + Send + 'a>,
+    >;
+    fn find_binding<'a>(
+        &'a self,
+        context: CallContext,
+        request: LocateBindingRequest,
+    ) -> Pin<
+        Box<dyn Future<Output = Result<ChannelBinding, NativeChannelError>> + Send + 'a>,
     >;
     fn unbind_channel<'a>(
         &'a self,
@@ -1704,6 +1895,182 @@ impl NativeChannelHandle {
             .map_err(|error| conversion_detail("output_decode", error))
             .map_err(CallError::InvalidResponse)
     }
+    pub async fn inspect_binding(
+        &self,
+        context: CallContext,
+        request: BindingReference,
+    ) -> Result<ChannelBinding, CallError<NativeChannelError>> {
+        let input = request
+            .encode()
+            .map_err(|error| conversion_detail("input_encode", error))
+            .map_err(CallError::ContractViolation)?;
+        let output = self
+            .target
+            .call(&NATIVE_CHANNEL_INSPECT_BINDING, context, input)
+            .await
+            .map_err(|error| {
+                error.into_typed::<NativeChannelError>(&NATIVE_CHANNEL_ERROR_DESCRIPTOR)
+            })?;
+        let output = TypeDescriptor::structure([
+                ::boxology_contract::FieldDescriptor::new(
+                    "binding_id",
+                    TypeDescriptor::string(),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
+                    "channel_id",
+                    TypeDescriptor::string(),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
+                    "adapter_id",
+                    TypeDescriptor::string(),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
+                    "session_id",
+                    TypeDescriptor::string(),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
+                    "lifecycle",
+                    TypeDescriptor::enumeration([
+                            ::boxology_contract::VariantDescriptor::new(
+                                "Binding",
+                                ::boxology_contract::VariantPayload::Unit,
+                                None,
+                            ),
+                            ::boxology_contract::VariantDescriptor::new(
+                                "Attached",
+                                ::boxology_contract::VariantPayload::Unit,
+                                None,
+                            ),
+                            ::boxology_contract::VariantDescriptor::new(
+                                "Replaying",
+                                ::boxology_contract::VariantPayload::Unit,
+                                None,
+                            ),
+                            ::boxology_contract::VariantDescriptor::new(
+                                "Detached",
+                                ::boxology_contract::VariantPayload::Unit,
+                                None,
+                            ),
+                            ::boxology_contract::VariantDescriptor::new(
+                                "Failed",
+                                ::boxology_contract::VariantPayload::Unit,
+                                None,
+                            ),
+                        ])
+                        .expect("generated enum descriptor is valid"),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
+                    "native_channel_json",
+                    TypeDescriptor::string(),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
+                    "published_sequence",
+                    TypeDescriptor::u64(),
+                    None,
+                ),
+            ])
+            .expect("generated struct descriptor is valid")
+            .conform(DecodeRole::ConsumerOutput, output)
+            .map_err(|error| conversion_detail("output_decode", error))
+            .map_err(CallError::InvalidResponse)?;
+        <ChannelBinding as ContractType>::decode(&output)
+            .map_err(|error| conversion_detail("output_decode", error))
+            .map_err(CallError::InvalidResponse)
+    }
+    pub async fn find_binding(
+        &self,
+        context: CallContext,
+        request: LocateBindingRequest,
+    ) -> Result<ChannelBinding, CallError<NativeChannelError>> {
+        let input = request
+            .encode()
+            .map_err(|error| conversion_detail("input_encode", error))
+            .map_err(CallError::ContractViolation)?;
+        let output = self
+            .target
+            .call(&NATIVE_CHANNEL_FIND_BINDING, context, input)
+            .await
+            .map_err(|error| {
+                error.into_typed::<NativeChannelError>(&NATIVE_CHANNEL_ERROR_DESCRIPTOR)
+            })?;
+        let output = TypeDescriptor::structure([
+                ::boxology_contract::FieldDescriptor::new(
+                    "binding_id",
+                    TypeDescriptor::string(),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
+                    "channel_id",
+                    TypeDescriptor::string(),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
+                    "adapter_id",
+                    TypeDescriptor::string(),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
+                    "session_id",
+                    TypeDescriptor::string(),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
+                    "lifecycle",
+                    TypeDescriptor::enumeration([
+                            ::boxology_contract::VariantDescriptor::new(
+                                "Binding",
+                                ::boxology_contract::VariantPayload::Unit,
+                                None,
+                            ),
+                            ::boxology_contract::VariantDescriptor::new(
+                                "Attached",
+                                ::boxology_contract::VariantPayload::Unit,
+                                None,
+                            ),
+                            ::boxology_contract::VariantDescriptor::new(
+                                "Replaying",
+                                ::boxology_contract::VariantPayload::Unit,
+                                None,
+                            ),
+                            ::boxology_contract::VariantDescriptor::new(
+                                "Detached",
+                                ::boxology_contract::VariantPayload::Unit,
+                                None,
+                            ),
+                            ::boxology_contract::VariantDescriptor::new(
+                                "Failed",
+                                ::boxology_contract::VariantPayload::Unit,
+                                None,
+                            ),
+                        ])
+                        .expect("generated enum descriptor is valid"),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
+                    "native_channel_json",
+                    TypeDescriptor::string(),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
+                    "published_sequence",
+                    TypeDescriptor::u64(),
+                    None,
+                ),
+            ])
+            .expect("generated struct descriptor is valid")
+            .conform(DecodeRole::ConsumerOutput, output)
+            .map_err(|error| conversion_detail("output_decode", error))
+            .map_err(CallError::InvalidResponse)?;
+        <ChannelBinding as ContractType>::decode(&output)
+            .map_err(|error| conversion_detail("output_decode", error))
+            .map_err(CallError::InvalidResponse)
+    }
     pub async fn unbind_channel(
         &self,
         context: CallContext,
@@ -1799,6 +2166,21 @@ static NATIVE_CHANNEL_CHANNEL_STATUS: LazyLock<CapabilityId> = LazyLock::new(|| 
         BoxId::new("native-channel").expect("generated box identity is valid"),
         CapabilityName::new("channel_status")
             .expect("generated capability name is valid"),
+    )
+});
+#[rustfmt::skip]
+static NATIVE_CHANNEL_INSPECT_BINDING: LazyLock<CapabilityId> = LazyLock::new(|| {
+    CapabilityId::new(
+        BoxId::new("native-channel").expect("generated box identity is valid"),
+        CapabilityName::new("inspect_binding")
+            .expect("generated capability name is valid"),
+    )
+});
+#[rustfmt::skip]
+static NATIVE_CHANNEL_FIND_BINDING: LazyLock<CapabilityId> = LazyLock::new(|| {
+    CapabilityId::new(
+        BoxId::new("native-channel").expect("generated box identity is valid"),
+        CapabilityName::new("find_binding").expect("generated capability name is valid"),
     )
 });
 #[rustfmt::skip]
@@ -4031,6 +4413,89 @@ impl ::boxology_contract::ContractType for BindingReference {
     }
 }
 #[rustfmt::skip]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Default)]
+pub struct LocateBindingRequest {
+    pub channel_id: ::std::string::String,
+    pub adapter_id: ::std::string::String,
+}
+#[rustfmt::skip]
+impl ::boxology_contract::ContractType for LocateBindingRequest {
+    fn encode_value(
+        &self,
+    ) -> ::core::result::Result<
+        ::boxology_contract::ContractValue,
+        ::boxology_contract::EncodeError,
+    > {
+        let mut fields = ::std::vec::Vec::new();
+        if let Some(value) = ::boxology_contract::ContractType::encode_field(
+                &self.channel_id,
+            )
+            .map_err(|error| {
+                error.under(::boxology_contract::PathSegment::Field("channel_id".into()))
+            })?
+        {
+            fields.push(("channel_id".into(), value));
+        }
+        if let Some(value) = ::boxology_contract::ContractType::encode_field(
+                &self.adapter_id,
+            )
+            .map_err(|error| {
+                error.under(::boxology_contract::PathSegment::Field("adapter_id".into()))
+            })?
+        {
+            fields.push(("adapter_id".into(), value));
+        }
+        ::boxology_contract::ContractValue::object(fields)
+            .map_err(|_| unreachable!("validated generated field identities are unique"))
+    }
+    fn decode_value(
+        value: &::boxology_contract::ContractValue,
+    ) -> ::core::result::Result<Self, ::boxology_contract::DecodeError> {
+        let ::boxology_contract::ValueRef::Object(fields) = value.view() else {
+            return Err(
+                ::boxology_contract::DecodeError::new(
+                    ::boxology_contract::DecodeErrorKind::KindMismatch,
+                ),
+            );
+        };
+        for (field, _) in fields.entries() {
+            match field {
+                "channel_id" | "adapter_id" => {}
+                _ => {
+                    return Err(
+                        ::boxology_contract::DecodeError::new(
+                                ::boxology_contract::DecodeErrorKind::UnknownField(
+                                    field.into(),
+                                ),
+                            )
+                            .under(::boxology_contract::PathSegment::Field(field.into())),
+                    );
+                }
+            }
+        }
+        Ok(Self {
+            channel_id: <::std::string::String as ::boxology_contract::ContractType>::decode_field(
+                    fields.get("channel_id"),
+                )
+                .map_err(|error| {
+                    error
+                        .under(
+                            ::boxology_contract::PathSegment::Field("channel_id".into()),
+                        )
+                })?,
+            adapter_id: <::std::string::String as ::boxology_contract::ContractType>::decode_field(
+                    fields.get("adapter_id"),
+                )
+                .map_err(|error| {
+                    error
+                        .under(
+                            ::boxology_contract::PathSegment::Field("adapter_id".into()),
+                        )
+                })?,
+        })
+    }
+}
+#[rustfmt::skip]
 /// Explicit cooperative interruption. The router cancels current ACP work, retains every
 /// already accepted queue/steer input, then drains those inputs immediately in stable order.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Default)]
@@ -4838,8 +5303,9 @@ pub mod test_support {
         NativeChannelError, NATIVE_CHANNEL_BIND_CHANNEL, NATIVE_CHANNEL_ACCEPT_TURN,
         NATIVE_CHANNEL_INTERRUPT_AND_DRAIN, NATIVE_CHANNEL_PUBLISH_NATIVE_EVENT,
         NATIVE_CHANNEL_REPLAY_NATIVE_EVENTS, NATIVE_CHANNEL_REPLACE_SESSION,
-        NATIVE_CHANNEL_CHANNEL_STATUS, NATIVE_CHANNEL_UNBIND_CHANNEL,
-        NativeChannelHandle, conversion_detail,
+        NATIVE_CHANNEL_CHANNEL_STATUS, NATIVE_CHANNEL_INSPECT_BINDING,
+        NATIVE_CHANNEL_FIND_BINDING, NATIVE_CHANNEL_UNBIND_CHANNEL, NativeChannelHandle,
+        conversion_detail,
     };
     type BindChannelFuture = Pin<
         Box<
@@ -4918,6 +5384,28 @@ pub mod test_support {
         CallContext,
         super::BindingReference,
     ) -> ChannelStatusFuture + Send + Sync + 'static;
+    type InspectBindingFuture = Pin<
+        Box<
+            dyn Future<
+                Output = Result<super::ChannelBinding, NativeChannelError>,
+            > + Send + 'static,
+        >,
+    >;
+    type InspectBindingResponder = dyn Fn(
+        CallContext,
+        super::BindingReference,
+    ) -> InspectBindingFuture + Send + Sync + 'static;
+    type FindBindingFuture = Pin<
+        Box<
+            dyn Future<
+                Output = Result<super::ChannelBinding, NativeChannelError>,
+            > + Send + 'static,
+        >,
+    >;
+    type FindBindingResponder = dyn Fn(
+        CallContext,
+        super::LocateBindingRequest,
+    ) -> FindBindingFuture + Send + Sync + 'static;
     type UnbindChannelFuture = Pin<
         Box<
             dyn Future<
@@ -4938,6 +5426,8 @@ pub mod test_support {
         replay_native_events: Option<Arc<ReplayNativeEventsResponder>>,
         replace_session: Option<Arc<ReplaceSessionResponder>>,
         channel_status: Option<Arc<ChannelStatusResponder>>,
+        inspect_binding: Option<Arc<InspectBindingResponder>>,
+        find_binding: Option<Arc<FindBindingResponder>>,
         unbind_channel: Option<Arc<UnbindChannelResponder>>,
     }
     impl NativeChannelFake {
@@ -5030,6 +5520,33 @@ pub mod test_support {
                 + 'static,
         {
             self.channel_status = Some(
+                Arc::new(move |context, request| {
+                    Box::pin(responder(context, request))
+                }),
+            );
+            self
+        }
+        pub fn with_inspect_binding<F, Fut>(mut self, responder: F) -> Self
+        where
+            F: Fn(CallContext, super::BindingReference) -> Fut + Send + Sync + 'static,
+            Fut: Future<Output = Result<super::ChannelBinding, NativeChannelError>>
+                + Send + 'static,
+        {
+            self.inspect_binding = Some(
+                Arc::new(move |context, request| {
+                    Box::pin(responder(context, request))
+                }),
+            );
+            self
+        }
+        pub fn with_find_binding<F, Fut>(mut self, responder: F) -> Self
+        where
+            F: Fn(CallContext, super::LocateBindingRequest) -> Fut + Send + Sync
+                + 'static,
+            Fut: Future<Output = Result<super::ChannelBinding, NativeChannelError>>
+                + Send + 'static,
+        {
+            self.find_binding = Some(
                 Arc::new(move |context, request| {
                     Box::pin(responder(context, request))
                 }),
@@ -5555,6 +6072,93 @@ pub mod test_support {
                     }
                 });
             }
+            if capability == &*NATIVE_CHANNEL_INSPECT_BINDING {
+                let Some(responder) = self.inspect_binding.clone() else {
+                    return Box::pin(ready(Err(unprogrammed())));
+                };
+                return Box::pin(async move {
+                    let input = TypeDescriptor::structure([
+                            ::boxology_contract::FieldDescriptor::new(
+                                "binding_id",
+                                TypeDescriptor::string(),
+                                None,
+                            ),
+                        ])
+                        .expect("generated struct descriptor is valid")
+                        .conform(DecodeRole::ProviderInput, input)
+                        .map_err(|error| {
+                            ErasedCallError::ContractViolation(
+                                conversion_detail("input_decode", error),
+                            )
+                        })?;
+                    let request = <super::BindingReference as ContractType>::decode(
+                            &input,
+                        )
+                        .map_err(|error| {
+                            ErasedCallError::ContractViolation(
+                                conversion_detail("input_decode", error),
+                            )
+                        })?;
+                    match responder(context, request).await {
+                        Ok(output) => {
+                            output
+                                .encode()
+                                .map_err(|error| {
+                                    ErasedCallError::InvalidResponse(
+                                        conversion_detail("output_encode", error),
+                                    )
+                                })
+                        }
+                        Err(error) => Err(ErasedCallError::from_domain(&error)),
+                    }
+                });
+            }
+            if capability == &*NATIVE_CHANNEL_FIND_BINDING {
+                let Some(responder) = self.find_binding.clone() else {
+                    return Box::pin(ready(Err(unprogrammed())));
+                };
+                return Box::pin(async move {
+                    let input = TypeDescriptor::structure([
+                            ::boxology_contract::FieldDescriptor::new(
+                                "channel_id",
+                                TypeDescriptor::string(),
+                                None,
+                            ),
+                            ::boxology_contract::FieldDescriptor::new(
+                                "adapter_id",
+                                TypeDescriptor::string(),
+                                None,
+                            ),
+                        ])
+                        .expect("generated struct descriptor is valid")
+                        .conform(DecodeRole::ProviderInput, input)
+                        .map_err(|error| {
+                            ErasedCallError::ContractViolation(
+                                conversion_detail("input_decode", error),
+                            )
+                        })?;
+                    let request = <super::LocateBindingRequest as ContractType>::decode(
+                            &input,
+                        )
+                        .map_err(|error| {
+                            ErasedCallError::ContractViolation(
+                                conversion_detail("input_decode", error),
+                            )
+                        })?;
+                    match responder(context, request).await {
+                        Ok(output) => {
+                            output
+                                .encode()
+                                .map_err(|error| {
+                                    ErasedCallError::InvalidResponse(
+                                        conversion_detail("output_encode", error),
+                                    )
+                                })
+                        }
+                        Err(error) => Err(ErasedCallError::from_domain(&error)),
+                    }
+                });
+            }
             if capability == &*NATIVE_CHANNEL_UNBIND_CHANNEL {
                 let Some(responder) = self.unbind_channel.clone() else {
                     return Box::pin(ready(Err(unprogrammed())));
@@ -5606,8 +6210,8 @@ pub mod test_support {
 #[rustfmt::skip]
 #[doc(hidden)]
 pub const __BOXOLOGY_SEMANTIC_DIGEST: [u8; 32] = [
-    236, 242, 72, 205, 25, 115, 172, 137, 77, 215, 198, 206, 237, 4, 219, 66, 247, 214,
-    242, 15, 93, 47, 232, 237, 17, 50, 218, 160, 2, 254, 101, 232,
+    120, 77, 4, 123, 217, 94, 236, 43, 227, 55, 199, 69, 103, 65, 99, 237, 92, 123, 211,
+    226, 33, 147, 174, 220, 195, 193, 213, 44, 205, 253, 42, 79,
 ];
 #[rustfmt::skip]
 #[doc(hidden)]
@@ -5624,6 +6228,9 @@ macro_rules! __boxology_check_implementation {
         $crate::__boxology_check_implementation!(@ find_replace_session $receiver;
         $($method $validity;)*); $crate::__boxology_check_implementation!(@
         find_channel_status $receiver; $($method $validity;)*);
+        $crate::__boxology_check_implementation!(@ find_inspect_binding $receiver;
+        $($method $validity;)*); $crate::__boxology_check_implementation!(@
+        find_find_binding $receiver; $($method $validity;)*);
         $crate::__boxology_check_implementation!(@ find_unbind_channel $receiver;
         $($method $validity;)*); impl $crate::NativeChannelDispatch for $receiver { fn
         bind_channel <'a > (&'a self, context : ::boxology::CallContext, input :
@@ -5660,7 +6267,17 @@ macro_rules! __boxology_check_implementation {
         ::std::boxed::Box < dyn ::core::future::Future < Output = ::core::result::Result
         <$crate::ChannelStatus, $crate::NativeChannelError >, > + ::core::marker::Send +
         'a, >, > { ::std::boxed::Box::pin(self.channel_status(context, input)) } fn
-        unbind_channel <'a > (&'a self, context : ::boxology::CallContext, input :
+        inspect_binding <'a > (&'a self, context : ::boxology::CallContext, input :
+        $crate::BindingReference,) -> ::std::pin::Pin < ::std::boxed::Box < dyn
+        ::core::future::Future < Output = ::core::result::Result <$crate::ChannelBinding,
+        $crate::NativeChannelError >, > + ::core::marker::Send + 'a, >, > {
+        ::std::boxed::Box::pin(self.inspect_binding(context, input)) } fn find_binding
+        <'a > (&'a self, context : ::boxology::CallContext, input :
+        $crate::LocateBindingRequest,) -> ::std::pin::Pin < ::std::boxed::Box < dyn
+        ::core::future::Future < Output = ::core::result::Result <$crate::ChannelBinding,
+        $crate::NativeChannelError >, > + ::core::marker::Send + 'a, >, > {
+        ::std::boxed::Box::pin(self.find_binding(context, input)) } fn unbind_channel <'a
+        > (&'a self, context : ::boxology::CallContext, input :
         $crate::BindingReference,) -> ::std::pin::Pin < ::std::boxed::Box < dyn
         ::core::future::Future < Output = ::core::result::Result <$crate::ChannelReceipt,
         $crate::NativeChannelError >, > + ::core::marker::Send + 'a, >, > {
@@ -5825,6 +6442,46 @@ macro_rules! __boxology_check_implementation {
         $($rest)*);
     };
     (@ find_channel_status $receiver:ty;) => {
+        compile_error!("Boxology capability implementation is missing");
+    };
+    (@ find_inspect_binding $receiver:ty; inspect_binding valid; $($rest:tt)*) => {
+        const _ : () = { fn require_service < T : ::core::marker::Send +
+        ::core::marker::Sync + 'static > () {} fn require_future < F :
+        ::core::future::Future < Output = ::core::result::Result <$crate::ChannelBinding,
+        $crate::NativeChannelError >> + ::core::marker::Send > (_ : F) {} fn
+        check(receiver : &$receiver, context : ::boxology::CallContext, input :
+        $crate::BindingReference) { require_service::<$receiver > ();
+        require_future(receiver.inspect_binding(context, input)); } };
+    };
+    (@ find_inspect_binding $receiver:ty; inspect_binding invalid; $($rest:tt)*) => {
+        compile_error!("Boxology capability has an invalid structural signature");
+    };
+    (
+        @ find_inspect_binding $receiver:ty; $other:ident $validity:ident; $($rest:tt)*
+    ) => {
+        $crate::__boxology_check_implementation!(@ find_inspect_binding $receiver;
+        $($rest)*);
+    };
+    (@ find_inspect_binding $receiver:ty;) => {
+        compile_error!("Boxology capability implementation is missing");
+    };
+    (@ find_find_binding $receiver:ty; find_binding valid; $($rest:tt)*) => {
+        const _ : () = { fn require_service < T : ::core::marker::Send +
+        ::core::marker::Sync + 'static > () {} fn require_future < F :
+        ::core::future::Future < Output = ::core::result::Result <$crate::ChannelBinding,
+        $crate::NativeChannelError >> + ::core::marker::Send > (_ : F) {} fn
+        check(receiver : &$receiver, context : ::boxology::CallContext, input :
+        $crate::LocateBindingRequest) { require_service::<$receiver > ();
+        require_future(receiver.find_binding(context, input)); } };
+    };
+    (@ find_find_binding $receiver:ty; find_binding invalid; $($rest:tt)*) => {
+        compile_error!("Boxology capability has an invalid structural signature");
+    };
+    (@ find_find_binding $receiver:ty; $other:ident $validity:ident; $($rest:tt)*) => {
+        $crate::__boxology_check_implementation!(@ find_find_binding $receiver;
+        $($rest)*);
+    };
+    (@ find_find_binding $receiver:ty;) => {
         compile_error!("Boxology capability implementation is missing");
     };
     (@ find_unbind_channel $receiver:ty; unbind_channel valid; $($rest:tt)*) => {

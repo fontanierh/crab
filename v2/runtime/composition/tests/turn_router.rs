@@ -7,8 +7,9 @@ use boxology_runtime::CompositionBuilder;
 use native_channel_implementation::{
     AcceptedTurn, BindChannelRequest, BindingReference, ChannelBinding, ChannelInputMode,
     ChannelLifecycle, ChannelReceipt, ChannelStatus, ChannelTurn, ChannelTurnDisposition,
-    InterruptReceipt, InterruptRequest, NativeChannelError, NativeChannelEvent, PublishReceipt,
-    PublishedEventPage, ReplaceSessionRequest, ReplayRequest, generated as native_channel,
+    InterruptReceipt, InterruptRequest, LocateBindingRequest, NativeChannelError,
+    NativeChannelEvent, PublishReceipt, PublishedEventPage, ReplaceSessionRequest, ReplayRequest,
+    generated as native_channel,
 };
 use trigger_inbox_contract::{
     EnqueueTrigger, TriggerAttachment, TriggerMode, TriggerReference, TriggerSource, TriggerState,
@@ -144,6 +145,46 @@ impl FakeNativeChannel {
             pending_input_count: 0,
             last_error: None,
             updated_at_ms: 1,
+        })
+    }
+
+    async fn inspect_binding(
+        &self,
+        context: CallContext,
+        request: BindingReference,
+    ) -> Result<ChannelBinding, NativeChannelError> {
+        let _ = context;
+        if request.binding_id != "binding-good" {
+            return Err(NativeChannelError::UnknownBinding);
+        }
+        Ok(ChannelBinding {
+            binding_id: request.binding_id,
+            channel_id: "target-good".into(),
+            adapter_id: "test".into(),
+            session_id: "session-1".into(),
+            lifecycle: ChannelLifecycle::Attached,
+            native_channel_json: "{}".into(),
+            published_sequence: 0,
+        })
+    }
+
+    async fn find_binding(
+        &self,
+        context: CallContext,
+        request: LocateBindingRequest,
+    ) -> Result<ChannelBinding, NativeChannelError> {
+        let _ = context;
+        if request.channel_id != "target-good" || request.adapter_id != "test" {
+            return Err(NativeChannelError::UnknownBinding);
+        }
+        Ok(ChannelBinding {
+            binding_id: "binding-good".into(),
+            channel_id: request.channel_id,
+            adapter_id: request.adapter_id,
+            session_id: "session-1".into(),
+            lifecycle: ChannelLifecycle::Attached,
+            native_channel_json: "{}".into(),
+            published_sequence: 0,
         })
     }
 

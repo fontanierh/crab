@@ -135,6 +135,46 @@
     },
     {
       "deprecation": null,
+      "docs": [
+        " Read persisted binding identity even when its previous ACP session is unavailable. Runtime",
+        " startup uses this to attach a fresh session after a crash without inventing a second route."
+      ],
+      "error": "NativeChannelError",
+      "id": "native-channel.inspect_binding",
+      "idempotency": "none",
+      "input": {
+        "name": "request",
+        "type": "BindingReference"
+      },
+      "max_exposure": "code_only",
+      "name": "inspect_binding",
+      "output": {
+        "type": "ChannelBinding"
+      },
+      "shape": "unary"
+    },
+    {
+      "deprecation": null,
+      "docs": [
+        " Recover the one non-detached binding for an adapter/channel pair after a crash between",
+        " binding creation and route registration."
+      ],
+      "error": "NativeChannelError",
+      "id": "native-channel.find_binding",
+      "idempotency": "none",
+      "input": {
+        "name": "request",
+        "type": "LocateBindingRequest"
+      },
+      "max_exposure": "code_only",
+      "name": "find_binding",
+      "output": {
+        "type": "ChannelBinding"
+      },
+      "shape": "unary"
+    },
+    {
+      "deprecation": null,
       "docs": [],
       "error": "NativeChannelError",
       "id": "native-channel.unbind_channel",
@@ -154,9 +194,9 @@
   "provenance": {
     "generator": "boxology-generator",
     "generator_version": "0.1.1",
-    "semantic_digest": "sha256:ecf248cd1973ac894dd7c6ceed04db42f7d6f20f5d2fe8ed1132daa002fe65e8"
+    "semantic_digest": "sha256:784d047bd95eec2be337c745674163ed5c7bd3e22193aedcc3c1d52ccdfd2a4f"
   },
-  "revision": "sha256:4395f8de32429f96d57bc2b1eab16b96d415b649a5cc1a189a20bbd091251bfd",
+  "revision": "sha256:a571d395b427730d2a56b7d8d40081f37c06a2b7e52d02966f591e33bb5bb095",
   "schema_format": 1,
   "types": [
     {
@@ -711,6 +751,26 @@
       ],
       "kind": "struct",
       "name": "BindingReference"
+    },
+    {
+      "deprecation": null,
+      "docs": [],
+      "fields": [
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "channel_id",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "adapter_id",
+          "type": "String"
+        }
+      ],
+      "kind": "struct",
+      "name": "LocateBindingRequest"
     },
     {
       "deprecation": null,

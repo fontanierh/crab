@@ -132,6 +132,11 @@ boxology::contract! {
         pub binding_id: String,
     }
 
+    pub struct LocateBindingRequest {
+        pub channel_id: String,
+        pub adapter_id: String,
+    }
+
     /// Explicit cooperative interruption. The router cancels current ACP work, retains every
     /// already accepted queue/steer input, then drains those inputs immediately in stable order.
     pub struct InterruptRequest {
@@ -206,6 +211,16 @@ boxology::contract! {
 
     #[capability]
     pub async fn channel_status(request: BindingReference) -> Result<ChannelStatus, NativeChannelError>;
+
+    /// Read persisted binding identity even when its previous ACP session is unavailable. Runtime
+    /// startup uses this to attach a fresh session after a crash without inventing a second route.
+    #[capability]
+    pub async fn inspect_binding(request: BindingReference) -> Result<ChannelBinding, NativeChannelError>;
+
+    /// Recover the one non-detached binding for an adapter/channel pair after a crash between
+    /// binding creation and route registration.
+    #[capability]
+    pub async fn find_binding(request: LocateBindingRequest) -> Result<ChannelBinding, NativeChannelError>;
 
     #[capability]
     pub async fn unbind_channel(request: BindingReference) -> Result<ChannelReceipt, NativeChannelError>;

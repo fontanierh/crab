@@ -13,17 +13,18 @@ bridge-host-contract = { version = "=0.0.0", path = "../../bridge-host/generated
 bridge-host-implementation = { version = "=0.0.0", path = "../../bridge-host/implementation" }
 native-channel-contract = { version = "=0.0.0", path = "../../native-channel/generated/contract" }
 native-channel-implementation = { version = "=0.0.0", path = "../../native-channel/implementation" }
+serde = { workspace = true }
+serde_json = { workspace = true }
 sub-agent-host-contract = { version = "=0.0.0", path = "../../sub-agent-host/generated/contract" }
 sub-agent-host-implementation = { version = "=0.0.0", path = "../../sub-agent-host/implementation" }
 turn-router-contract = { version = "=0.0.0", path = "../../turn-router/generated/contract" }
 turn-router-implementation = { version = "=0.0.0", path = "../../turn-router/implementation" }
 trigger-inbox-implementation = { version = "=0.0.0", path = "../../trigger-inbox/implementation" }
 trigger-inbox-contract = { version = "=0.0.0", path = "../../trigger-inbox/generated/contract" }
+tokio = { workspace = true }
 
 [dev-dependencies]
 async-trait = { workspace = true }
 boxology = { workspace = true }
 boxology-manifest = { workspace = true }
-serde_json = { workspace = true }
 tempfile = { workspace = true }
-tokio = { workspace = true }

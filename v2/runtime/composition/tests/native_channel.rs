@@ -16,7 +16,8 @@ use boxology_contract::{CallContext, Caller, CancelToken, TraceContext};
 use boxology_runtime::CompositionBuilder;
 use native_channel_contract::{
     BindChannelRequest, BindingReference, ChannelInputMode, ChannelTurn, ChannelTurnDisposition,
-    InterruptRequest, NativeChannelError, NativeEventDirection, ReplayRequest,
+    InterruptRequest, LocateBindingRequest, NativeChannelError, NativeEventDirection,
+    ReplayRequest,
 };
 use native_channel_implementation::{NativeChannelState, generated as native_channel};
 
@@ -264,6 +265,31 @@ async fn native_channel_routes_replays_publishes_and_interrupts_through_import()
         .await
         .expect("live session binds");
     assert_eq!(binding.native_channel_json, r#"{"title":"Jim"}"#);
+    assert_eq!(
+        handle
+            .inspect_binding(
+                context(),
+                BindingReference {
+                    binding_id: binding.binding_id.clone(),
+                },
+            )
+            .await
+            .expect("binding identity is inspectable"),
+        binding
+    );
+    assert_eq!(
+        handle
+            .find_binding(
+                context(),
+                LocateBindingRequest {
+                    channel_id: "native-1".into(),
+                    adapter_id: "test-ui".into(),
+                },
+            )
+            .await
+            .expect("binding is locatable by configured identity"),
+        binding
+    );
 
     let active = handle
         .accept_turn(
