@@ -60,7 +60,8 @@ interrupt as a separate explicit action.
 - `bridge-host` supervises agent-installed JSON-lines packages, brokers private file-backed
   credentials, actively probes health and credential validity, and applies bounded restart
   backoff. Package-originated ingress is acknowledged only after the generated `trigger-inbox`
-  import commits it; selected outbound delivery is durable and idempotent. See its
+  import commits it; mutable service credentials use fingerprint-CAS atomic snapshots; selected
+  outbound delivery is durable and idempotent. See its
   [state contract](docs/bridge-host-storage.md) and [rendered flow](docs/bridge-host-flow.png).
 - `sub-agent-host` composes through the generated `agent-host` import, durably journals both
   message directions and the complete child ACP stream, and fails closed when requested context or

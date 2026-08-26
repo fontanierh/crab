@@ -1,6 +1,7 @@
 use std::io::{self, BufRead, Write};
 
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 
 fn main() {
     let stdin = io::stdin();
@@ -35,7 +36,7 @@ fn main() {
             stdout.flush().expect("fixture flushes inbound request");
         }
         let result = match method {
-            "bridge/initialize" => json!({}),
+            "bridge/initialize" => json!({ "protocolVersion": 2 }),
             "bridge/health" => json!({
                 "processAlive": true,
                 "serviceConnected": true,
@@ -61,6 +62,24 @@ fn main() {
                 "accountHint": "fixture-account",
                 "detail": { "validated": true }
             }),
+            "bridge/auth/committed" => {
+                write_response(&mut stdout, id, json!({}));
+                let credential = params["credential"].to_string();
+                let previous_fingerprint = format!("{:x}", Sha256::digest(credential.as_bytes()));
+                let update = json!({
+                    "jsonrpc": "2.0",
+                    "id": "fixture-credential-update-1",
+                    "method": "bridge/credential/update",
+                    "params": {
+                        "bridgeId": "fixture-bridge",
+                        "previousFingerprint": previous_fingerprint,
+                        "credential": { "token": "fixture-secret", "revision": 2 }
+                    }
+                });
+                writeln!(stdout, "{update}").expect("fixture writes credential update");
+                stdout.flush().expect("fixture flushes credential update");
+                continue;
+            }
             "bridge/auth/invalidate" => json!({}),
             "bridge/deliver" => json!({
                 "externalDeliveryId": format!("external-{}", params["messageId"].as_str().unwrap_or("unknown")),

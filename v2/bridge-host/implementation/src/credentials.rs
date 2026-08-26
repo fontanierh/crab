@@ -8,7 +8,7 @@ use async_trait::async_trait;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use uuid::Uuid;
 
-const MAX_CREDENTIAL_BYTES: usize = 1024 * 1024;
+const MAX_CREDENTIAL_BYTES: usize = 16 * 1024 * 1024;
 
 /// Credential-provider failures carry no secret-bearing payload.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -24,6 +24,13 @@ pub trait CredentialStore: Send + Sync {
     async fn put(&self, bridge_id: &str, secret_json: &str)
     -> Result<String, CredentialStoreError>;
     async fn get(&self, handle: &str) -> Result<String, CredentialStoreError>;
+    /// Atomically replace secret material while retaining its opaque handle.
+    async fn replace(
+        &self,
+        handle: &str,
+        bridge_id: &str,
+        secret_json: &str,
+    ) -> Result<(), CredentialStoreError>;
     async fn invalidate(&self, handle: &str) -> Result<(), CredentialStoreError>;
 }
 
@@ -65,32 +72,7 @@ impl CredentialStore for FileCredentialStore {
         let handle = format!("credential_{}", Uuid::new_v4());
         let path = self.path(&handle)?;
         let temporary = self.root.join(format!(".{handle}.tmp"));
-        let mut options = tokio::fs::OpenOptions::new();
-        options.write(true).create_new(true);
-        #[cfg(unix)]
-        options.mode(0o600);
-        let result = async {
-            let mut file = options
-                .open(&temporary)
-                .await
-                .map_err(|_| CredentialStoreError::Unavailable)?;
-            file.write_all(secret_json.as_bytes())
-                .await
-                .map_err(|_| CredentialStoreError::Unavailable)?;
-            file.sync_all()
-                .await
-                .map_err(|_| CredentialStoreError::Unavailable)?;
-            drop(file);
-            tokio::fs::rename(&temporary, &path)
-                .await
-                .map_err(|_| CredentialStoreError::Unavailable)?;
-            sync_directory(&self.root).await
-        }
-        .await;
-        if result.is_err() {
-            let _ = tokio::fs::remove_file(&temporary).await;
-        }
-        result?;
+        write_secret(&self.root, &path, &temporary, secret_json).await?;
         Ok(handle)
     }
 
@@ -119,6 +101,26 @@ impl CredentialStore for FileCredentialStore {
         Ok(secret)
     }
 
+    async fn replace(
+        &self,
+        handle: &str,
+        bridge_id: &str,
+        secret_json: &str,
+    ) -> Result<(), CredentialStoreError> {
+        validate_secret(bridge_id, secret_json)?;
+        let path = self.path(handle)?;
+        match tokio::fs::metadata(&path).await {
+            Ok(entry) if entry.is_file() => {}
+            Ok(_) => return Err(CredentialStoreError::InvalidCredential),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Err(CredentialStoreError::UnknownHandle);
+            }
+            Err(_) => return Err(CredentialStoreError::Unavailable),
+        }
+        let temporary = self.root.join(format!(".{handle}.{}.tmp", Uuid::new_v4()));
+        write_secret(&self.root, &path, &temporary, secret_json).await
+    }
+
     async fn invalidate(&self, handle: &str) -> Result<(), CredentialStoreError> {
         match tokio::fs::remove_file(self.path(handle)?).await {
             Ok(()) => sync_directory(&self.root).await,
@@ -126,6 +128,40 @@ impl CredentialStore for FileCredentialStore {
             Err(_) => Err(CredentialStoreError::Unavailable),
         }
     }
+}
+
+async fn write_secret(
+    root: &Path,
+    path: &Path,
+    temporary: &Path,
+    secret_json: &str,
+) -> Result<(), CredentialStoreError> {
+    let mut options = tokio::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    options.mode(0o600);
+    let result = async {
+        let mut file = options
+            .open(&temporary)
+            .await
+            .map_err(|_| CredentialStoreError::Unavailable)?;
+        file.write_all(secret_json.as_bytes())
+            .await
+            .map_err(|_| CredentialStoreError::Unavailable)?;
+        file.sync_all()
+            .await
+            .map_err(|_| CredentialStoreError::Unavailable)?;
+        drop(file);
+        tokio::fs::rename(&temporary, &path)
+            .await
+            .map_err(|_| CredentialStoreError::Unavailable)?;
+        sync_directory(root).await
+    }
+    .await;
+    if result.is_err() {
+        let _ = tokio::fs::remove_file(&temporary).await;
+    }
+    result
 }
 
 /// Ephemeral provider for tests and in-memory compositions.
@@ -157,6 +193,24 @@ impl CredentialStore for InMemoryCredentialStore {
             .get(handle)
             .cloned()
             .ok_or(CredentialStoreError::UnknownHandle)
+    }
+
+    async fn replace(
+        &self,
+        handle: &str,
+        bridge_id: &str,
+        secret_json: &str,
+    ) -> Result<(), CredentialStoreError> {
+        validate_secret(bridge_id, secret_json)?;
+        let mut secrets = self
+            .secrets
+            .lock()
+            .map_err(|_| CredentialStoreError::Unavailable)?;
+        let secret = secrets
+            .get_mut(handle)
+            .ok_or(CredentialStoreError::UnknownHandle)?;
+        *secret = secret_json.to_owned();
+        Ok(())
     }
 
     async fn invalidate(&self, handle: &str) -> Result<(), CredentialStoreError> {
@@ -231,6 +285,36 @@ mod tests {
         assert_eq!(
             store.get(&handle).await.expect("secret loads"),
             r#"{"token":"secret"}"#
+        );
+        store
+            .replace(&handle, "bridge-1", r#"{"token":"rotated"}"#)
+            .await
+            .expect("secret replaces atomically");
+        assert_eq!(
+            store.get(&handle).await.expect("replacement loads"),
+            r#"{"token":"rotated"}"#
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            assert_eq!(
+                std::fs::metadata(store.path(&handle).expect("replacement path"))
+                    .expect("replacement metadata")
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o600
+            );
+        }
+        drop(store);
+        let store = FileCredentialStore::open(directory.path()).expect("store reopens");
+        assert_eq!(
+            store
+                .get(&handle)
+                .await
+                .expect("replacement survives restart"),
+            r#"{"token":"rotated"}"#
         );
         store.invalidate(&handle).await.expect("secret invalidates");
         assert!(store.get(&handle).await.is_err());

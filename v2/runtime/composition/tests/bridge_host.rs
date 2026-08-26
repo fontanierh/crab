@@ -1,5 +1,5 @@
 use std::sync::{
-    Arc,
+    Arc, Mutex,
     atomic::{AtomicUsize, Ordering},
 };
 
@@ -12,10 +12,12 @@ use bridge_host_contract::{
     ReconcileBridgeRequest, ReplaceBridgeRequest, SubmitAuthenticationRequest,
 };
 use bridge_host_implementation::{
-    BridgeHostState, BridgeInboundSink, BridgePackage, BridgePackageError, BridgePackageFactory,
+    BridgeCredentialReceipt, BridgeCredentialSink, BridgeCredentialUpdate, BridgeHostState,
+    BridgeInboundSink, BridgePackage, BridgePackageError, BridgePackageFactory, CredentialStore,
     InMemoryCredentialStore, PackageChallenge, PackageCredential, PackageCredentialValidation,
     PackageDelivery, PackageHealth, generated as bridge_host,
 };
+use sha2::{Digest, Sha256};
 use trigger_inbox_contract::{TriggerMode, TriggerReference};
 use trigger_inbox_implementation::{TriggerInbox, generated as trigger_inbox};
 
@@ -24,6 +26,7 @@ struct FakePackage {
     deliveries: AtomicUsize,
     stops: AtomicUsize,
     validations: AtomicUsize,
+    credential_commits: AtomicUsize,
 }
 
 #[async_trait]
@@ -82,6 +85,12 @@ impl BridgePackage for FakePackage {
         })
     }
 
+    async fn credential_committed(&self, credential_json: &str) -> Result<(), BridgePackageError> {
+        assert!(credential_json.contains("secret-token"));
+        self.credential_commits.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    }
+
     async fn invalidate_credentials(
         &self,
         _credential_json: &str,
@@ -111,6 +120,7 @@ impl BridgePackage for FakePackage {
 struct FakeFactory {
     package: Arc<FakePackage>,
     launches: Arc<AtomicUsize>,
+    credential_sink: Arc<Mutex<Option<Arc<dyn BridgeCredentialSink>>>>,
 }
 
 struct FailOnceFactory {
@@ -124,6 +134,7 @@ impl BridgePackageFactory for FailOnceFactory {
         &self,
         _spec: &BridgeSpec,
         _inbound: Arc<dyn BridgeInboundSink>,
+        _credentials: Arc<dyn BridgeCredentialSink>,
     ) -> Result<Arc<dyn BridgePackage>, BridgePackageError> {
         if self.launches.fetch_add(1, Ordering::SeqCst) == 0 {
             Err(BridgePackageError::LaunchFailed)
@@ -139,8 +150,10 @@ impl BridgePackageFactory for FakeFactory {
         &self,
         _spec: &BridgeSpec,
         _inbound: Arc<dyn BridgeInboundSink>,
+        credentials: Arc<dyn BridgeCredentialSink>,
     ) -> Result<Arc<dyn BridgePackage>, BridgePackageError> {
         self.launches.fetch_add(1, Ordering::SeqCst);
+        *self.credential_sink.lock().expect("credential sink lock") = Some(credentials);
         Ok(self.package.clone())
     }
 }
@@ -177,19 +190,24 @@ async fn bridge_host_owns_auth_ingress_delivery_and_generations() {
     let package = Arc::new(FakePackage::default());
     let observed_package = package.clone();
     let launches = Arc::new(AtomicUsize::new(0));
+    let credential_sink = Arc::new(Mutex::new(None));
+    let credential_store = Arc::new(InMemoryCredentialStore::default());
     let bridge_state = BridgeHostState::open_in_memory().expect("bridge state opens");
     let trigger_store = TriggerInbox::open_in_memory().expect("trigger inbox opens");
     let mut builder = CompositionBuilder::new();
     let trigger = trigger_inbox::register(&mut builder, trigger_store);
     let trigger_handle = builder.handle::<trigger_inbox_contract::TriggerInboxHandle>(&trigger);
+    let factory_credential_sink = credential_sink.clone();
+    let host_credential_store = credential_store.clone();
     let bridge = bridge_host::register(&mut builder, move |imports| {
         bridge_state.connect(
             imports.trigger_inbox,
             Arc::new(FakeFactory {
                 package: package.clone(),
                 launches: launches.clone(),
+                credential_sink: factory_credential_sink.clone(),
             }),
-            Arc::new(InMemoryCredentialStore::default()),
+            host_credential_store.clone(),
         )
     });
     builder.connect(&bridge, &trigger);
@@ -234,6 +252,57 @@ async fn bridge_host_owns_auth_ingress_delivery_and_generations() {
         .expect("credential is stored by opaque handle");
     assert!(credential.credential_handle.is_some());
     assert!(!format!("{credential:?}").contains("secret-token"));
+    assert_eq!(
+        observed_package.credential_commits.load(Ordering::SeqCst),
+        1
+    );
+    let handle = credential
+        .credential_handle
+        .as_deref()
+        .expect("opaque credential handle");
+    let original = credential_store
+        .get(handle)
+        .await
+        .expect("initial credential loads");
+    let previous_fingerprint = format!("{:x}", Sha256::digest(original.as_bytes()));
+    let sink = credential_sink
+        .lock()
+        .expect("credential sink lock")
+        .clone()
+        .expect("factory captured credential sink");
+    let refreshed = r#"{"revision":2,"token":"secret-token"}"#;
+    let receipt = sink
+        .persist(BridgeCredentialUpdate {
+            bridge_id: "whatsapp".into(),
+            previous_fingerprint: previous_fingerprint.clone(),
+            credential_json: refreshed.into(),
+        })
+        .await
+        .expect("live credential update persists");
+    assert_eq!(
+        receipt,
+        BridgeCredentialReceipt {
+            credential_fingerprint: format!("{:x}", Sha256::digest(refreshed.as_bytes())),
+        }
+    );
+    let accepted_fingerprint = receipt.credential_fingerprint.clone();
+    assert_eq!(
+        credential_store
+            .get(handle)
+            .await
+            .expect("refreshed credential loads"),
+        refreshed
+    );
+    assert!(
+        sink.persist(BridgeCredentialUpdate {
+            bridge_id: "whatsapp".into(),
+            previous_fingerprint,
+            credential_json: r#"{"revision":3,"token":"secret-token"}"#.into(),
+        })
+        .await
+        .is_err(),
+        "a stale package snapshot cannot overwrite the accepted update"
+    );
 
     let healthy = bridge_handle
         .reconcile_bridge(
@@ -324,6 +393,16 @@ async fn bridge_host_owns_auth_ingress_delivery_and_generations() {
         .expect("policy changes require a new generation");
     assert_eq!(replacement.generation, 2);
     assert_eq!(replacement.ingress_mode, BridgeIngressMode::Queue);
+    assert!(
+        sink.persist(BridgeCredentialUpdate {
+            bridge_id: "whatsapp".into(),
+            previous_fingerprint: accepted_fingerprint,
+            credential_json: r#"{"revision":3,"token":"secret-token"}"#.into(),
+        })
+        .await
+        .is_err(),
+        "a superseded package instance cannot mutate current credentials"
+    );
 
     bridge_handle
         .stop_bridge(
