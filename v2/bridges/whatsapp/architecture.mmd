@@ -1,0 +1,9 @@
+flowchart LR
+    WA[WhatsApp] <-->|Baileys websocket| PKG[WhatsApp provider]
+    PKG -->|inbound event| HOST[Crab bridge host]
+    HOST -->|selected text| PKG
+    PKG -->|credential snapshot<br/>previous hash| CAS{active instance<br/>and hash match?}
+    CAS -->|yes| FILE[(opaque credential file)]
+    FILE -->|durable ack| PKG
+    CAS -->|no| STOP[reject and restart]
+    HOST --> INBOX[(durable trigger inbox)]
