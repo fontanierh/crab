@@ -1,0 +1,34 @@
+%%{init: {"theme": "base", "themeVariables": {"fontFamily": "ui-sans-serif, system-ui, sans-serif", "primaryTextColor": "#172033", "lineColor": "#64748b", "edgeLabelBackground": "#ffffff"}, "flowchart": {"curve": "basis", "nodeSpacing": 42, "rankSpacing": 58}}}%%
+flowchart LR
+    SOURCE["bridge · scheduler<br/>self-work · operator"]
+    DEDUP{"source + key<br/>already exists?"}
+    PENDING["Pending<br/>strict lane FIFO"]
+    LEASED["Leased<br/>worker + token + expiry"]
+    RETRY["Retry scheduled<br/>not-before gate"]
+    DONE["Completed"]
+    DEAD["Dead-lettered"]
+
+    SOURCE -->|"transactional enqueue"| DEDUP
+    DEDUP -->|"same payload: original receipt"| PENDING
+    DEDUP -->|"new"| PENDING
+    DEDUP -->|"different payload: conflict"| REJECT["Rejected"]
+    PENDING -->|"claim ready lane prefix"| LEASED
+    LEASED -->|"complete"| DONE
+    LEASED -->|"retry"| RETRY
+    RETRY -->|"ready"| PENDING
+    LEASED -->|"dead letter"| DEAD
+    LEASED -->|"lease expires"| PENDING
+
+    classDef source fill:#f8fafc,stroke:#64748b,stroke-width:1.5px,color:#172033;
+    classDef pending fill:#ffedd5,stroke:#ea580c,stroke-width:2px,color:#7c2d12;
+    classDef leased fill:#dbeafe,stroke:#2563eb,stroke-width:2px,color:#172554;
+    classDef retry fill:#fef3c7,stroke:#d97706,stroke-width:2px,color:#78350f;
+    classDef terminal fill:#dcfce7,stroke:#16a34a,stroke-width:2px,color:#14532d;
+    classDef reject fill:#fee2e2,stroke:#dc2626,stroke-width:2px,color:#7f1d1d;
+
+    class SOURCE source;
+    class PENDING pending;
+    class LEASED leased;
+    class RETRY retry;
+    class DONE,DEAD terminal;
+    class REJECT reject;
