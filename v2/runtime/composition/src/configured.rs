@@ -1,7 +1,15 @@
-use std::{fmt, path::Path, time::Duration};
+use std::{
+    collections::{HashMap, HashSet},
+    fmt,
+    path::Path,
+    time::Duration,
+};
 
 use agent_host_contract::{OpenSessionRequest, SessionReference};
 use boxology_contract::{CallContext, CallError, Caller, CancelToken, TraceContext};
+use bridge_host_contract::{
+    BridgeHostError, BridgeReference, BridgeSpec, ListBridgesRequest, ReplaceBridgeRequest,
+};
 use native_channel_contract::{
     BindChannelRequest, BindingReference, ChannelBinding, ChannelLifecycle, LocateBindingRequest,
     ReplaceSessionRequest,
@@ -18,6 +26,7 @@ use crate::{
 pub struct ConfiguredRuntime {
     runtime: DraftRuntime,
     sessions: Vec<String>,
+    bridges: Vec<String>,
     shutdown: watch::Sender<bool>,
     workers: JoinSet<Result<(), RuntimeRunError>>,
 }
@@ -33,6 +42,8 @@ pub enum RuntimeRunError {
     SignalUnavailable,
     /// A live ACP session could not be closed cleanly.
     AgentHostUnavailable,
+    /// A live bridge package could not be suspended cleanly.
+    BridgeHostUnavailable,
 }
 
 impl fmt::Display for RuntimeRunError {
@@ -42,6 +53,7 @@ impl fmt::Display for RuntimeRunError {
             Self::WorkerStopped => formatter.write_str("runtime worker stopped unexpectedly"),
             Self::SignalUnavailable => formatter.write_str("shutdown signal is unavailable"),
             Self::AgentHostUnavailable => formatter.write_str("ACP session shutdown failed"),
+            Self::BridgeHostUnavailable => formatter.write_str("bridge shutdown failed"),
         }
     }
 }
@@ -66,7 +78,14 @@ impl ConfiguredRuntime {
         config.validate()?;
         let agents = config.configured_agents()?;
         let runtime = start_runtime_with_state_directory(state_directory.as_ref(), agents)?;
-        let sessions = initialize_topology(&runtime, &config).await?;
+        let bridges = initialize_bridges(runtime.bridge_host(), &config).await?;
+        let sessions = match initialize_topology(&runtime, &config).await {
+            Ok(sessions) => sessions,
+            Err(error) => {
+                suspend_bridges(runtime.bridge_host(), &bridges).await;
+                return Err(error);
+            }
+        };
         let (shutdown, receiver) = watch::channel(false);
         let mut workers = JoinSet::new();
         for lane in config.lanes {
@@ -80,6 +99,7 @@ impl ConfiguredRuntime {
         Ok(Self {
             runtime,
             sessions,
+            bridges,
             shutdown,
             workers,
         })
@@ -118,11 +138,115 @@ impl ConfiguredRuntime {
                 Err(_) => outcome = outcome.and(Err(RuntimeRunError::WorkerStopped)),
             }
         }
+        if !suspend_bridges(self.runtime.bridge_host(), &self.bridges).await {
+            outcome = outcome.and(Err(RuntimeRunError::BridgeHostUnavailable));
+        }
         if !close_sessions(self.runtime.agent_host(), &self.sessions).await {
             outcome = outcome.and(Err(RuntimeRunError::AgentHostUnavailable));
         }
         outcome
     }
+}
+
+async fn initialize_bridges(
+    bridge_host: &bridge_host_contract::BridgeHostHandle,
+    config: &RuntimeConfig,
+) -> Result<Vec<String>, RuntimeStartError> {
+    let specs = config.bridge_specs()?;
+    let catalog = bridge_host
+        .list_bridges(call_context(), ListBridgesRequest {})
+        .await
+        .map_err(RuntimeStartError::ListBridges)?;
+    let persisted = catalog
+        .bridges
+        .into_iter()
+        .map(|record| (record.bridge_id.clone(), record))
+        .collect::<HashMap<_, _>>();
+    let configured = specs
+        .iter()
+        .map(|spec| spec.bridge_id.clone())
+        .collect::<HashSet<_>>();
+    let mut initialized = Vec::with_capacity(specs.len());
+    for spec in specs {
+        let result = reconcile_bridge_spec(bridge_host, &persisted, spec).await;
+        match result {
+            Ok(bridge_id) => initialized.push(bridge_id),
+            Err(error) => {
+                suspend_bridges(bridge_host, &initialized).await;
+                return Err(error);
+            }
+        }
+    }
+    for (bridge_id, record) in persisted {
+        if !configured.contains(&bridge_id)
+            && record.desired_running
+            && let Err(error) = bridge_host
+                .stop_bridge(call_context(), BridgeReference { bridge_id })
+                .await
+        {
+            suspend_bridges(bridge_host, &initialized).await;
+            return Err(RuntimeStartError::StopBridge(error));
+        }
+    }
+    Ok(initialized)
+}
+
+async fn reconcile_bridge_spec(
+    bridge_host: &bridge_host_contract::BridgeHostHandle,
+    persisted: &HashMap<String, bridge_host_contract::BridgeRecord>,
+    spec: BridgeSpec,
+) -> Result<String, RuntimeStartError> {
+    let bridge_id = spec.bridge_id.clone();
+    match bridge_host
+        .register_bridge(call_context(), spec.clone())
+        .await
+    {
+        Ok(_) => Ok(bridge_id),
+        Err(CallError::Domain(BridgeHostError::DuplicateBridgeConflict)) => {
+            let generation = persisted
+                .get(&bridge_id)
+                .ok_or({
+                    RuntimeStartError::RegisterBridge(CallError::Domain(
+                        BridgeHostError::DuplicateBridgeConflict,
+                    ))
+                })?
+                .generation;
+            bridge_host
+                .replace_bridge(
+                    call_context(),
+                    ReplaceBridgeRequest {
+                        expected_generation: generation,
+                        spec,
+                    },
+                )
+                .await
+                .map_err(RuntimeStartError::ReplaceBridge)?;
+            Ok(bridge_id)
+        }
+        Err(error) => Err(RuntimeStartError::RegisterBridge(error)),
+    }
+}
+
+async fn suspend_bridges(
+    bridge_host: &bridge_host_contract::BridgeHostHandle,
+    bridge_ids: &[String],
+) -> bool {
+    let mut clean = true;
+    for bridge_id in bridge_ids {
+        if bridge_host
+            .suspend_bridge(
+                call_context(),
+                BridgeReference {
+                    bridge_id: bridge_id.clone(),
+                },
+            )
+            .await
+            .is_err()
+        {
+            clean = false;
+        }
+    }
+    clean
 }
 
 #[derive(Clone, Copy)]
@@ -465,6 +589,10 @@ impl fmt::Display for RuntimeStartError {
             Self::ReplaceSession(_) => "channel session replacement failed",
             Self::UnbindChannel(_) => "stale binding cleanup failed",
             Self::PutRoute(_) => "route registration failed",
+            Self::ListBridges(_) => "bridge catalog recovery failed",
+            Self::RegisterBridge(_) => "bridge registration failed",
+            Self::ReplaceBridge(_) => "bridge replacement failed",
+            Self::StopBridge(_) => "stale bridge cleanup failed",
             Self::StateDirectory(_) => "state-directory startup failed",
             Self::Assembly(_) => "Boxology assembly failed",
         };
@@ -479,7 +607,10 @@ mod tests {
     use std::{
         collections::HashSet,
         path::PathBuf,
-        sync::{Arc, Mutex},
+        sync::{
+            Arc, Mutex,
+            atomic::{AtomicUsize, Ordering},
+        },
         time::Duration,
     };
 
@@ -494,6 +625,13 @@ mod tests {
     };
     use boxology_contract::CallContext;
     use boxology_runtime::{Composition, CompositionBuilder};
+    use bridge_host_contract::ListBridgesRequest;
+    use bridge_host_implementation::{
+        AuthenticationMethod, BridgeCredentialSink, BridgeHostState, BridgeInboundSink,
+        BridgeOutbound, BridgePackage, BridgePackageError, BridgePackageFactory, BridgeSpec,
+        InMemoryCredentialStore, PackageChallenge, PackageCredential, PackageCredentialValidation,
+        PackageDelivery, PackageHealth, generated as bridge_host,
+    };
     use native_channel_contract::{BindingReference, ChannelLifecycle};
     use native_channel_implementation::{NativeChannelState, generated as native_channel};
     use serde_json::json;
@@ -506,11 +644,12 @@ mod tests {
     use turn_router_implementation::{TurnRouterState, generated as turn_router};
 
     use super::{
-        StartupHandles, call_context, close_sessions, initialize_topology_with_handles,
-        spawn_lane_worker,
+        StartupHandles, call_context, close_sessions, initialize_bridges,
+        initialize_topology_with_handles, spawn_lane_worker, suspend_bridges,
     };
     use crate::{
-        AgentConfig, ChannelConfig, CommandConfig, LaneConfig, ProtocolConfig, RuntimeConfig,
+        AgentConfig, BridgeConfig, BridgeIngressConfig, ChannelConfig, CommandConfig, LaneConfig,
+        ProtocolConfig, RuntimeConfig,
     };
 
     #[derive(Default)]
@@ -522,6 +661,102 @@ mod tests {
 
     struct FakeAgentHost {
         state: Arc<Mutex<FakeState>>,
+    }
+
+    #[derive(Default)]
+    struct FakeBridgeProcesses {
+        launches: AtomicUsize,
+        stops: AtomicUsize,
+    }
+
+    struct FakeBridgePackage {
+        processes: Arc<FakeBridgeProcesses>,
+    }
+
+    #[async_trait::async_trait]
+    impl BridgePackage for FakeBridgePackage {
+        async fn health(
+            &self,
+            _credential_json: Option<&str>,
+        ) -> Result<PackageHealth, BridgePackageError> {
+            Ok(PackageHealth {
+                process_alive: true,
+                service_connected: true,
+                can_receive: true,
+                can_send: true,
+                credential_valid: true,
+                detail_json: "{}".into(),
+            })
+        }
+
+        async fn begin_authentication(
+            &self,
+            _method: Option<&AuthenticationMethod>,
+            _context_json: &str,
+        ) -> Result<PackageChallenge, BridgePackageError> {
+            Err(BridgePackageError::ProtocolFailed)
+        }
+
+        async fn submit_authentication(
+            &self,
+            _challenge_id: &str,
+            _response_json: &str,
+        ) -> Result<PackageCredential, BridgePackageError> {
+            Err(BridgePackageError::ProtocolFailed)
+        }
+
+        async fn validate_credentials(
+            &self,
+            _credential_json: &str,
+        ) -> Result<PackageCredentialValidation, BridgePackageError> {
+            Err(BridgePackageError::ProtocolFailed)
+        }
+
+        async fn credential_committed(
+            &self,
+            _credential_json: &str,
+        ) -> Result<(), BridgePackageError> {
+            Err(BridgePackageError::ProtocolFailed)
+        }
+
+        async fn invalidate_credentials(
+            &self,
+            _credential_json: &str,
+        ) -> Result<(), BridgePackageError> {
+            Err(BridgePackageError::ProtocolFailed)
+        }
+
+        async fn deliver(
+            &self,
+            _request: &BridgeOutbound,
+            _credential_json: Option<&str>,
+        ) -> Result<PackageDelivery, BridgePackageError> {
+            Err(BridgePackageError::ProtocolFailed)
+        }
+
+        async fn stop(&self) -> Result<(), BridgePackageError> {
+            self.processes.stops.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+    }
+
+    struct FakeBridgeFactory {
+        processes: Arc<FakeBridgeProcesses>,
+    }
+
+    #[async_trait::async_trait]
+    impl BridgePackageFactory for FakeBridgeFactory {
+        async fn launch(
+            &self,
+            _spec: &BridgeSpec,
+            _inbound: Arc<dyn BridgeInboundSink>,
+            _credentials: Arc<dyn BridgeCredentialSink>,
+        ) -> Result<Arc<dyn BridgePackage>, BridgePackageError> {
+            self.processes.launches.fetch_add(1, Ordering::SeqCst);
+            Ok(Arc::new(FakeBridgePackage {
+                processes: self.processes.clone(),
+            }))
+        }
     }
 
     #[boxology::implementation]
@@ -670,6 +905,8 @@ mod tests {
     struct TestGraph {
         _composition: Composition,
         agent_host: agent_host_contract::AgentHostHandle,
+        bridge_host: bridge_host_contract::BridgeHostHandle,
+        bridge_processes: Arc<FakeBridgeProcesses>,
         native_channel: native_channel_contract::NativeChannelHandle,
         turn_router: turn_router_contract::TurnRouterHandle,
         trigger_inbox: trigger_inbox_contract::TriggerInboxHandle,
@@ -703,6 +940,21 @@ mod tests {
             TriggerInbox::open(path.join("inbox.sqlite")).expect("trigger store opens");
         let inbox = trigger_inbox::register(&mut builder, inbox_store);
         let trigger_inbox = builder.handle::<trigger_inbox_contract::TriggerInboxHandle>(&inbox);
+        let bridge_processes = Arc::new(FakeBridgeProcesses::default());
+        let processes_for_factory = bridge_processes.clone();
+        let bridge_state =
+            BridgeHostState::open(path.join("bridge.sqlite")).expect("bridge store opens");
+        let bridge = bridge_host::register(&mut builder, move |imports| {
+            bridge_state.connect(
+                imports.trigger_inbox,
+                Arc::new(FakeBridgeFactory {
+                    processes: processes_for_factory.clone(),
+                }),
+                Arc::new(InMemoryCredentialStore::default()),
+            )
+        });
+        builder.connect(&bridge, &inbox);
+        let bridge_host = builder.handle::<bridge_host_contract::BridgeHostHandle>(&bridge);
         let router_state =
             TurnRouterState::open(path.join("router.sqlite")).expect("route store opens");
         let router = turn_router::register(&mut builder, move |imports| {
@@ -715,6 +967,8 @@ mod tests {
         TestGraph {
             _composition: composition,
             agent_host,
+            bridge_host,
+            bridge_processes,
             native_channel,
             turn_router,
             trigger_inbox,
@@ -756,6 +1010,27 @@ mod tests {
                 max_attempts: 3,
                 poll_interval_ms: 10,
             }],
+            bridges: Vec::new(),
+        }
+    }
+
+    fn bridge_config(working_directory: PathBuf) -> BridgeConfig {
+        BridgeConfig {
+            bridge_id: "whatsapp".into(),
+            package_id: "crab.whatsapp".into(),
+            display_name: "WhatsApp".into(),
+            executable: "/fixture/whatsapp".into(),
+            arguments: Vec::new(),
+            environment_from: Vec::new(),
+            working_directory,
+            configuration: json!({"targetChannelId":"primary"}),
+            authentication_methods: Vec::new(),
+            ingress_mode: BridgeIngressConfig::Queue,
+            desired_running: true,
+            health_interval_ms: 60_000,
+            credential_validation_interval_ms: 60_000,
+            restart_limit: 3,
+            restart_window_ms: 60_000,
         }
     }
 
@@ -812,6 +1087,74 @@ mod tests {
         assert_eq!(binding.session_id, restarted_sessions[0]);
         assert_ne!(binding.session_id, first_sessions[0]);
         assert!(close_sessions(&restarted.agent_host, &restarted_sessions).await);
+    }
+
+    #[tokio::test]
+    async fn configured_bridges_restore_replace_suspend_and_stop_removed_registrations() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let state = Arc::new(Mutex::new(FakeState::default()));
+        let graph = graph(directory.path(), state);
+        let mut config = config(directory.path().to_path_buf());
+        config
+            .bridges
+            .push(bridge_config(directory.path().to_path_buf()));
+
+        assert_eq!(
+            initialize_bridges(&graph.bridge_host, &config)
+                .await
+                .expect("bridge registers"),
+            ["whatsapp"]
+        );
+        initialize_bridges(&graph.bridge_host, &config)
+            .await
+            .expect("same bridge restores idempotently");
+        assert_eq!(graph.bridge_processes.launches.load(Ordering::SeqCst), 1);
+
+        config.bridges[0].ingress_mode = BridgeIngressConfig::Steer;
+        initialize_bridges(&graph.bridge_host, &config)
+            .await
+            .expect("changed bridge replaces");
+        let replaced = graph
+            .bridge_host
+            .list_bridges(call_context(), ListBridgesRequest {})
+            .await
+            .expect("catalog lists")
+            .bridges
+            .remove(0);
+        assert_eq!(replaced.generation, 2);
+        assert_eq!(graph.bridge_processes.launches.load(Ordering::SeqCst), 2);
+        assert_eq!(graph.bridge_processes.stops.load(Ordering::SeqCst), 1);
+
+        assert!(suspend_bridges(&graph.bridge_host, &["whatsapp".into()]).await);
+        let suspended = graph
+            .bridge_host
+            .list_bridges(call_context(), ListBridgesRequest {})
+            .await
+            .expect("suspended catalog lists")
+            .bridges
+            .remove(0);
+        assert!(suspended.desired_running);
+        assert_eq!(suspended.generation, 2);
+        assert_eq!(graph.bridge_processes.stops.load(Ordering::SeqCst), 2);
+
+        initialize_bridges(&graph.bridge_host, &config)
+            .await
+            .expect("suspended bridge restarts without generation churn");
+        assert_eq!(graph.bridge_processes.launches.load(Ordering::SeqCst), 3);
+        config.bridges.clear();
+        initialize_bridges(&graph.bridge_host, &config)
+            .await
+            .expect("removed bridge stops durably");
+        let removed = graph
+            .bridge_host
+            .list_bridges(call_context(), ListBridgesRequest {})
+            .await
+            .expect("removed catalog lists")
+            .bridges
+            .remove(0);
+        assert!(!removed.desired_running);
+        assert_eq!(removed.generation, 3);
+        assert_eq!(graph.bridge_processes.stops.load(Ordering::SeqCst), 3);
     }
 
     #[tokio::test]
