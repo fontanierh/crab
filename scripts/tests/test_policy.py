@@ -253,8 +253,12 @@ class RepositoryPolicyTests(unittest.TestCase):
     def test_make_clippy_uses_the_ordered_policy_wrapper(self) -> None:
         makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
         orchestrator = (ROOT / "scripts" / "run_gates.py").read_text(encoding="utf-8")
-        self.assertIn("scripts/clippy_policy.py", makefile)
-        self.assertIn("clippy_policy.py", orchestrator)
+        workspace_gate = (ROOT / "scripts" / "workspace_gate.py").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("scripts/workspace_gate.py clippy", makefile)
+        self.assertIn("workspace_gate.py", orchestrator)
+        self.assertIn("clippy_policy.py", workspace_gate)
         self.assertIn(
             "scripts/clippy_policy.py",
             (ROOT / "Cargo.toml").read_text(encoding="utf-8"),

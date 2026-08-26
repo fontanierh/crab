@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import contextlib
+import io
 import json
 import tempfile
 import unittest
@@ -9,7 +11,10 @@ from scripts.changed_scope import (
     ScopeResult,
     classify_paths,
     collect_changed_files,
+    is_full_scope_trigger,
     is_docs_path,
+    is_v2_path,
+    main as changed_scope_main,
     select_packages_from_metadata,
     select_scope,
 )
@@ -45,6 +50,9 @@ class ChangedScopeUnitTests(unittest.TestCase):
             "crab/DESIGN.md",
             "crab/WORKSTREAMS.md",
             ".github/pull_request_template.md",
+            "v2/README.md",
+            "v2/docs/runtime.md",
+            "v2/bridges/whatsapp/README.md",
         ]
         negatives = [
             "crates/crab-core/tests/fixtures/data.txt",
@@ -63,6 +71,21 @@ class ChangedScopeUnitTests(unittest.TestCase):
             with self.subTest(path=path):
                 self.assertFalse(is_docs_path(path))
         self.assertEqual(classify_paths(["scripts/x.md"]), (False, True))
+
+    def test_nested_workspace_paths_are_owned_without_expanding_v1_scope(self) -> None:
+        self.assertTrue(is_v2_path("v2/runtime/src/lib.rs"))
+        self.assertFalse(is_v2_path("crates/crab-core/src/lib.rs"))
+        self.assertTrue(is_full_scope_trigger("Cargo.toml"))
+        self.assertFalse(is_full_scope_trigger("v2/Cargo.toml"))
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            selected, fallback = select_packages_from_metadata(
+                root,
+                ["v2/runtime/composition/src/lib.rs"],
+                fixture_metadata(root),
+            )
+        self.assertEqual(selected, [])
+        self.assertIsNone(fallback)
 
     def test_core_edit_selects_actual_reverse_dependents_but_not_telemetry(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -196,6 +219,29 @@ class ChangedScopeGitIntegrationTests(unittest.TestCase):
         self.assertTrue(result.full_workspace)
         self.assertIsNone(result.base_sha)
         self.assertIn("unavailable", result.fallback_reason or "")
+
+    def test_github_outputs_route_a_v2_only_change_without_root_setup(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            base = init_repo(root)
+            write(root / "v2/runtime/src/lib.rs", "pub fn changed() {}\n")
+            output = root / "github-output"
+            with contextlib.redirect_stdout(io.StringIO()):
+                code = changed_scope_main(
+                    [
+                        "--root",
+                        str(root),
+                        "--base-sha",
+                        base,
+                        "--docs-only-check",
+                        "--github-output",
+                        str(output),
+                    ]
+                )
+            values = output.read_text(encoding="utf-8")
+        self.assertEqual(code, 0)
+        self.assertIn("v2_needed=true", values)
+        self.assertIn("root_needed=false", values)
 
     def test_deletion_only_committed_change_selects_package_and_reverse_dependent(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

@@ -22,7 +22,7 @@ from scripts.workflow_common import WorkflowError, compact_reason, repository_ro
 
 FULL_SCOPE_NAMES = {"Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "Makefile"}
 FULL_SCOPE_PREFIXES = ("scripts/", ".github/workflows/", ".cargo/")
-DOC_DIRECTORY_PREFIXES = ("docs/", "crab/docs/", "notes/", "design/")
+DOC_DIRECTORY_PREFIXES = ("docs/", "crab/docs/", "notes/", "design/", "v2/docs/")
 DOC_FILES = {
     "README.md",
     "AGENTS.md",
@@ -33,6 +33,8 @@ DOC_FILES = {
     "crab/DESIGN.md",
     "crab/WORKSTREAMS.md",
     ".github/pull_request_template.md",
+    "v2/README.md",
+    "v2/bridges/whatsapp/README.md",
 }
 DOC_SUFFIXES = {".md", ".mdx", ".rst", ".txt"}
 
@@ -59,10 +61,13 @@ def is_docs_path(path: str) -> bool:
 def is_full_scope_trigger(path: str) -> bool:
     normalized = PurePosixPath(path).as_posix()
     return (
-        PurePosixPath(normalized).name == "Cargo.toml"
-        or normalized in FULL_SCOPE_NAMES
+        normalized in FULL_SCOPE_NAMES
         or normalized.startswith(FULL_SCOPE_PREFIXES)
     )
+
+
+def is_v2_path(path: str) -> bool:
+    return PurePosixPath(path).as_posix().startswith("v2/")
 
 
 def classify_paths(paths: Sequence[str]) -> tuple[bool, bool]:
@@ -188,7 +193,7 @@ def select_packages_from_metadata(
         ]
         if matches:
             directly_changed.update(matches)
-        elif not is_docs_path(raw_path):
+        elif not is_docs_path(raw_path) and not is_v2_path(raw_path):
             unknown_code_paths.append(raw_path)
 
     if unknown_code_paths:
@@ -335,6 +340,15 @@ def main(arguments: list[str] | None = None) -> int:
             with args.github_output.open("a", encoding="utf-8") as output:
                 output.write(f"docs_only={'true' if result.docs_only else 'false'}\n")
                 output.write(f"base_sha={result.base_sha or ''}\n")
+                v2_needed = result.full_workspace or any(
+                    is_v2_path(path) for path in result.changed_files
+                )
+                output.write(f"v2_needed={'true' if v2_needed else 'false'}\n")
+                root_needed = result.full_workspace or any(
+                    not is_v2_path(path) and not is_docs_path(path)
+                    for path in result.changed_files
+                )
+                output.write(f"root_needed={'true' if root_needed else 'false'}\n")
         except OSError as error:
             print(f"changed-scope: could not write GitHub output: {error}", file=sys.stderr)
             return 2

@@ -10,8 +10,8 @@ help: ## Show the repository-owned agent workflow (read-only).
 	@printf '%s\n' \
 	  'Crab agent workflow:' \
 	  '  make doctor              Verify pinned, read-only prerequisites.' \
-	  '  make check               Run changed-scope format, Clippy, and tests.' \
-	  '  make quality             Run full format, Clippy, and tests.' \
+	  '  make check               Run changed-scope format, Clippy, and tests across v1/v2.' \
+	  '  make quality             Run full v1/v2 format, Clippy, and tests.' \
 	  '' \
 	  'Optional diagnostics (never merge gates):' \
 	  '  make coverage-quick      Generate focused coverage totals.' \
@@ -61,16 +61,16 @@ gate-tests: ## Run workflow/gate regression tests offline.
 	@$(PYTHON) -m unittest discover -s scripts/tests -p 'test_*.py'
 
 fmt: ## Format Rust sources (mutating).
-	cargo fmt --all
+	@$(PYTHON) scripts/workspace_gate.py fmt --root-workspace --v2-workspace --write
 
 fmt-check: ## Check Rust formatting.
-	cargo fmt --all -- --check
+	@$(PYTHON) scripts/workspace_gate.py fmt --root-workspace --v2-workspace
 
 clippy: ## Run full-workspace Clippy under the manifest lint policy.
-	@$(PYTHON) scripts/clippy_policy.py --workspace --all-targets --all-features --locked
+	@$(PYTHON) scripts/workspace_gate.py clippy --root-workspace --v2-workspace
 
 test: ## Run full-workspace tests.
-	@$(PYTHON) scripts/cargo_target.py build -- cargo test --workspace --all-features --locked
+	@$(PYTHON) scripts/workspace_gate.py tests --root-workspace --v2-workspace
 
 public-api-check: ## Check public functions have cross-file use.
 	@bash scripts/public_api_usage_check.sh

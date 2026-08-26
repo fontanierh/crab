@@ -97,8 +97,8 @@ duplication remain available as optional reports without numeric merge gates.
 
 ```bash
 make doctor      # Read-only deterministic prerequisite check
-make check       # Changed-scope format, Clippy, and tests during edits
-make quality     # Authoritative full gate and exact-tree status artifact
+make check       # Changed v1/v2 scope: format, Clippy, and tests
+make quality     # Full v1/v2 gate and exact-tree status artifact
 ```
 
 See [the agent workflow](docs/agent-workflow.md) and [CONTRIBUTING.md](CONTRIBUTING.md) for details.

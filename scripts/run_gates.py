@@ -21,7 +21,7 @@ sys.dont_write_bytecode = True
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from scripts.changed_scope import ScopeResult, select_scope
+from scripts.changed_scope import ScopeResult, is_v2_path, select_scope
 from scripts.workflow_common import (
     Fingerprint,
     WorkflowError,
@@ -271,31 +271,30 @@ def run_specs(
     return records
 
 
-def _cargo_wrapper(root: Path, *command: str) -> tuple[str, ...]:
-    return (
-        sys.executable,
-        str(root / "scripts" / "cargo_target.py"),
-        "build",
-        "--",
-        *command,
-    )
-
-
-def _clippy_wrapper(root: Path, *arguments: str) -> tuple[str, ...]:
-    return (
-        sys.executable,
-        str(root / "scripts" / "clippy_policy.py"),
-        *arguments,
-    )
-
-
-def _package_arguments(scope: ScopeResult) -> list[str]:
+def selected_workspaces(scope: ScopeResult) -> tuple[bool, bool]:
     if scope.full_workspace:
-        return ["--workspace"]
-    output: list[str] = []
-    for package in scope.selected_packages:
-        output.extend(("--package", package))
-    return output
+        return True, True
+    return bool(scope.selected_packages), any(
+        is_v2_path(path) for path in scope.changed_files
+    )
+
+
+def _workspace_gate_command(
+    root: Path,
+    gate: str,
+    *,
+    include_root: bool,
+    include_v2: bool,
+    root_packages: Sequence[str] = (),
+) -> tuple[str, ...]:
+    command = [sys.executable, str(root / "scripts" / "workspace_gate.py"), gate]
+    if include_root:
+        command.append("--root-workspace")
+    if include_v2:
+        command.append("--v2-workspace")
+    for package in root_packages:
+        command.extend(("--root-package", package))
+    return tuple(command)
 
 
 def check_specs(root: Path, scope: ScopeResult) -> list[GateSpec]:
@@ -308,35 +307,41 @@ def check_specs(root: Path, scope: ScopeResult) -> list[GateSpec]:
         and scope.fallback_reason is None
     ):
         skip_reason = "no changed files"
-    package_args = _package_arguments(scope)
+    include_root, include_v2 = selected_workspaces(scope)
+    root_packages = () if scope.full_workspace else tuple(scope.selected_packages)
     return [
         GateSpec(
             "fmt",
-            ("cargo", "fmt", "--all", "--", "--check"),
+            _workspace_gate_command(
+                root,
+                "fmt",
+                include_root=include_root,
+                include_v2=include_v2,
+                root_packages=root_packages,
+            ),
             "make fmt-check",
             skip_reason,
         ),
         GateSpec(
             "clippy",
-            _clippy_wrapper(
+            _workspace_gate_command(
                 root,
-                *package_args,
-                "--all-targets",
-                "--all-features",
-                "--locked",
+                "clippy",
+                include_root=include_root,
+                include_v2=include_v2,
+                root_packages=root_packages,
             ),
             "make check",
             skip_reason,
         ),
         GateSpec(
             "tests",
-            _cargo_wrapper(
+            _workspace_gate_command(
                 root,
-                "cargo",
-                "test",
-                *package_args,
-                "--all-features",
-                "--locked",
+                "tests",
+                include_root=include_root,
+                include_v2=include_v2,
+                root_packages=root_packages,
             ),
             "make check",
             skip_reason,
@@ -349,27 +354,30 @@ def quality_specs(root: Path, mode: str = "worktree", base_sha: str = "") -> lis
     # core handoff gate no longer depends on a Git diff or a coverage baseline.
     del mode, base_sha
     by_name = {
-        "fmt": GateSpec("fmt", ("cargo", "fmt", "--all", "--", "--check"), "make fmt-check"),
+        "fmt": GateSpec(
+            "fmt",
+            _workspace_gate_command(
+                root, "fmt", include_root=True, include_v2=True
+            ),
+            "make fmt-check",
+        ),
         "clippy": GateSpec(
             "clippy",
-            _clippy_wrapper(
+            _workspace_gate_command(
                 root,
-                "--workspace",
-                "--all-targets",
-                "--all-features",
-                "--locked",
+                "clippy",
+                include_root=True,
+                include_v2=True,
             ),
             "make clippy",
         ),
         "tests": GateSpec(
             "tests",
-            _cargo_wrapper(
+            _workspace_gate_command(
                 root,
-                "cargo",
-                "test",
-                "--workspace",
-                "--all-features",
-                "--locked",
+                "tests",
+                include_root=True,
+                include_v2=True,
             ),
             "make test",
         ),
@@ -389,6 +397,8 @@ def tool_versions(root: Path) -> dict[str, str]:
     return {
         "rustc": command_version(root, ["rustc", "-V"]),
         "clippy": command_version(root, ["cargo", "clippy", "-V"]),
+        "v2_rustc": command_version(root / "v2", ["rustc", "-V"]),
+        "node": command_version(root, ["node", "--version"]),
     }
 
 
@@ -547,10 +557,17 @@ def run_check(
     if scope.docs_only:
         print("check: scope docs-only")
     elif scope.full_workspace:
-        print("check: scope workspace")
+        print("check: scope workspaces: v1, v2 (full)")
     else:
-        packages = ", ".join(scope.selected_packages) or "none"
-        print(f"check: scope packages: {packages}")
+        include_root, include_v2 = selected_workspaces(scope)
+        workspaces = []
+        if include_root:
+            workspaces.append("v1")
+        if include_v2:
+            workspaces.append("v2")
+        print(f"check: scope workspaces: {', '.join(workspaces) or 'none'}")
+        if scope.selected_packages:
+            print(f"check: v1 packages: {', '.join(scope.selected_packages)}")
     print("check: changed files: " + (", ".join(scope.changed_files) or "none"))
     if scope.fallback_reason:
         print(f"check: fallback: {scope.fallback_reason}")

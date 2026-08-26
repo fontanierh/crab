@@ -9,6 +9,8 @@ preflight        edit loop       handoff attestation
 
 ![Required and optional quality paths](quality-gates-flow.png)
 
+![Workspace-aware gate routing](quality-workspace-flow.png)
+
 Bare `make` prints help. Workflow scripts use exit `0` for success, `1` for a check failure, and
 `2` for a usage, environment, or stale-attestation error.
 
@@ -16,13 +18,14 @@ Bare `make` prints help. Workflow scripts use exit `0` for success, `1` for a ch
 
 Only three checks block handoff and CI:
 
-1. `cargo fmt --all -- --check`
-2. Crab's ordered Clippy policy
-3. Rust tests
+1. Rust format
+2. Clippy
+3. Tests
 
-`make check` runs those checks over the changed packages and all reverse workspace dependents.
-`make quality` runs them over the full workspace and writes an exact-tree attestation to
-`quality/status.json`.
+Each gate is grouped across the selected workspace. V1 keeps reverse-dependent package selection;
+any v2 code change selects the complete, still-small v2 Rust workspace. The tests gate also runs
+every first-party v2 bridge's Node tests. `make quality` selects both workspaces and writes one
+exact-tree attestation to `quality/status.json`.
 
 This keeps the required path focused on executable correctness. Coverage percentage, duplication,
 public-API wiring, and workflow-tool analyses are useful diagnostics, but they do not block every
@@ -31,18 +34,18 @@ product change.
 ## Preflight
 
 `make doctor` is read-only and never installs software. The required environment is Git, Python
-3.11+, rustup, and the pinned Rust toolchain with rustfmt and Clippy. It also validates the Cargo
-target and Git worktree shape.
+3.11+, rustup, and both pinned Rust toolchains with rustfmt and Clippy. It also validates the Cargo
+target and Git worktree shape. Node 20+ is required when v2 bridge tests are selected.
 
 Optional tools are reported as information rather than failures:
 
 - `cargo-llvm-cov` and `llvm-tools-preview` for coverage reports
 - `jscpd` for duplication reports
 - ripgrep for public-API analysis
-- Node/npm for installing jscpd
+- Node/npm availability (Node also runs first-party v2 bridge tests)
 - an `origin/main` merge base, which makes changed-scope selection faster
 
-If the merge base is unavailable, `make check` safely selects the full workspace. `make quality`
+If the merge base is unavailable, `make check` safely selects both workspaces. `make quality`
 does not need a merge base.
 
 ## Changed-scope edit loop
@@ -52,22 +55,22 @@ selected scope and exact commands. The default `worktree` mode includes committe
 unstaged, and untracked files relative to the merge base; CI uses
 `DIFF_MODE=committed BASE_SHA=<sha>`.
 
-Crate edits select the changed crates and every reverse workspace dependent. Workspace manifests,
-the lockfile, toolchain, Makefile, CI, `.cargo/`, workflow scripts, unknown code paths, or metadata
-failures select the full workspace. Approved Markdown-only changes skip Rust setup and checks.
+V1 crate edits select the changed crates and every reverse dependent. V2 code edits select v2 only;
+mixed edits select both. Root workflow/configuration changes, unknown code paths, and selection
+failures select both workspaces. Approved Markdown-only changes skip setup and checks.
 
 The selector handles docs-only and full-workspace triggers before Cargo metadata. For crate edits,
 it reads `cargo metadata --no-deps --locked --offline` and follows `packages[].dependencies` to add
 reverse dependents. Metadata failure records the reason and falls back to the full workspace so the
 real compiler diagnostic can surface. Missing-baseline and Git diff failures also run all three
-checks against the full workspace, even when no changed paths could be collected; dry-run prints
-the fallback reason and full commands. Workspace manifests, `Cargo.lock`, the toolchain, Makefile,
-CI, `.cargo/`, and workflow scripts trigger full scope. Unknown code paths also select full scope.
+checks against both workspaces, even when no changed paths could be collected; dry-run prints
+the fallback reason and full commands. Root workspace manifests, `Cargo.lock`, the toolchain,
+Makefile, CI, `.cargo/`, and workflow scripts trigger both workspaces. Unknown code paths do too.
 Docs-only classification requires both a documentation suffix (`.md`, `.mdx`, `.rst`, or `.txt`)
-and an approved location: `docs/`, `crab/docs/`, `notes/`, or `design/`; or one of the explicitly
+and an approved location: `docs/`, `crab/docs/`, `notes/`, `design/`, or `v2/docs/`; or one of the explicitly
 approved repository documents (`README.md`, `AGENTS.md`, `CLAUDE.md`, `CONTRIBUTING.md`,
 `PHILOSOPHY.md`, `CODE_QUALITY_REPORT.md`, `crab/DESIGN.md`, `crab/WORKSTREAMS.md`,
-`.github/pull_request_template.md`). Files under
+`.github/pull_request_template.md`, `v2/README.md`, `v2/bridges/whatsapp/README.md`). Files under
 `crates/`, `scripts/`, `crab/config/`, and unknown/root paths are never inferred to be docs merely
 from their suffix. Binary assets under a docs directory are also code-scope inputs.
 
@@ -119,9 +122,10 @@ and `2` for missing, malformed, invalid, or stale evidence.
 
 ## CI
 
-CI has one `quality` job. It classifies docs-only changes immediately after checkout, then runs the
-changed-scope format, Clippy, and test checks. The Rust toolchain and actions are pinned; workflow
-permissions are read-only and checkout credentials are not persisted.
+CI has one `quality` job. It classifies docs-only and workspace scope immediately after checkout,
+installs only the selected Rust toolchain(s), and runs the three grouped checks. Node is installed
+only when v2 is selected. Toolchains and actions are pinned; workflow permissions are read-only and
+checkout credentials are not persisted.
 
-Coverage no longer re-runs the full test suite under instrumentation in CI. Node, jscpd,
-cargo-llvm-cov, LLVM tools, and ripgrep are not installed in the required job.
+Coverage no longer re-runs the full test suite under instrumentation in CI. jscpd, cargo-llvm-cov,
+LLVM tools, and ripgrep are not installed in the required job.
