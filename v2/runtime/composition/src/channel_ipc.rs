@@ -1,4 +1,4 @@
-//! Owner-only local transport for native-channel Boxology capabilities.
+//! Owner-only local transport for native-channel and trigger-inbox Boxology capabilities.
 
 use std::{
     collections::HashSet,
@@ -29,6 +29,7 @@ use tokio::{
     sync::watch,
     task::{JoinHandle, JoinSet},
 };
+use trigger_inbox_contract::{EnqueueTrigger, TriggerInboxHandle, TriggerReceipt};
 use uuid::Uuid;
 
 const PROTOCOL_VERSION: u16 = 1;
@@ -43,8 +44,9 @@ const ACCEPT_TURN: &str = "native-channel.accept_turn";
 const INTERRUPT: &str = "native-channel.interrupt_and_drain";
 const STATUS: &str = "native-channel.channel_status";
 const REPLAY: &str = "native-channel.replay_native_events";
+const ENQUEUE_TRIGGER: &str = "trigger-inbox.enqueue";
 
-/// Stable filesystem endpoints for Crab's local native-channel transport.
+/// Stable filesystem endpoints for Crab's local capability transport.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChannelIpcPaths {
     socket: PathBuf,
@@ -90,13 +92,11 @@ pub enum ChannelIpcStartupError {
 impl fmt::Display for ChannelIpcStartupError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Io(error) => write!(formatter, "local channel IPC failed: {error}"),
-            Self::AlreadyRunning => formatter.write_str("local channel IPC is already running"),
-            Self::UnsafeSocketPath => {
-                formatter.write_str("local channel IPC path is not a Unix socket")
-            }
+            Self::Io(error) => write!(formatter, "local IPC failed: {error}"),
+            Self::AlreadyRunning => formatter.write_str("local IPC is already running"),
+            Self::UnsafeSocketPath => formatter.write_str("local IPC path is not a Unix socket"),
             Self::UnsafeTokenFile => {
-                formatter.write_str("local channel IPC token is malformed or not owner-only")
+                formatter.write_str("local IPC token is malformed or not owner-only")
             }
         }
     }
@@ -136,11 +136,11 @@ pub enum ChannelIpcClientError {
 impl fmt::Display for ChannelIpcClientError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Io(error) => write!(formatter, "local channel IPC failed: {error}"),
+            Self::Io(error) => write!(formatter, "local IPC failed: {error}"),
             Self::Protocol(stage) => {
-                write!(formatter, "local channel IPC protocol violation: {stage}")
+                write!(formatter, "local IPC protocol violation: {stage}")
             }
-            Self::Remote { kind, code } => write!(formatter, "local channel IPC {kind}: {code}"),
+            Self::Remote { kind, code } => write!(formatter, "local IPC {kind}: {code}"),
         }
     }
 }
@@ -248,6 +248,19 @@ impl ChannelIpcClient {
         .await
     }
 
+    /// Durably enqueue one bridge, schedule, self-work or operator trigger.
+    pub async fn enqueue_trigger(
+        &self,
+        request: EnqueueTrigger,
+    ) -> Result<TriggerReceipt, ChannelIpcClientError> {
+        self.invoke(
+            ENQUEUE_TRIGGER,
+            trigger_inbox_contract::contract_descriptor(),
+            request,
+        )
+        .await
+    }
+
     async fn invoke<I, O>(
         &self,
         capability_name: &str,
@@ -331,6 +344,7 @@ impl ChannelIpcServer {
         paths: ChannelIpcPaths,
         channel_gateway: ChannelGatewayHandle,
         native_channel: NativeChannelHandle,
+        trigger_inbox: TriggerInboxHandle,
     ) -> Result<Self, ChannelIpcStartupError> {
         let authentication = load_or_create_token(&paths.token)?;
         prepare_socket(&paths.socket).await?;
@@ -349,6 +363,7 @@ impl ChannelIpcServer {
                 authentication,
                 channel_gateway,
                 native_channel,
+                trigger_inbox,
                 server_sessions,
             )
             .await;
@@ -468,6 +483,7 @@ async fn serve(
     authentication: String,
     channel_gateway: ChannelGatewayHandle,
     native_channel: NativeChannelHandle,
+    trigger_inbox: TriggerInboxHandle,
     attached_sessions: Arc<Mutex<HashSet<String>>>,
 ) -> io::Result<()> {
     let mut connections = JoinSet::new();
@@ -485,6 +501,7 @@ async fn serve(
                     authentication.clone(),
                     channel_gateway.clone(),
                     native_channel.clone(),
+                    trigger_inbox.clone(),
                     attached_sessions.clone(),
                 ));
             }
@@ -501,6 +518,7 @@ async fn handle_connection(
     authentication: String,
     channel_gateway: ChannelGatewayHandle,
     native_channel: NativeChannelHandle,
+    trigger_inbox: TriggerInboxHandle,
     attached_sessions: Arc<Mutex<HashSet<String>>>,
 ) {
     let (reader, mut writer) = stream.into_split();
@@ -519,7 +537,14 @@ async fn handle_connection(
     } else if !constant_time_equal(request.authentication.as_bytes(), authentication.as_bytes()) {
         wire_failure("authentication", "Unauthorized")
     } else {
-        dispatch(request, channel_gateway, native_channel, attached_sessions).await
+        dispatch(
+            request,
+            channel_gateway,
+            native_channel,
+            trigger_inbox,
+            attached_sessions,
+        )
+        .await
     };
     let response = WireResponse::new(request_id, outcome);
     let Ok(mut bytes) = serde_json::to_vec(&response) else {
@@ -544,6 +569,7 @@ async fn dispatch(
     request: WireRequest,
     channel_gateway: ChannelGatewayHandle,
     native_channel: NativeChannelHandle,
+    trigger_inbox: TriggerInboxHandle,
     attached_sessions: Arc<Mutex<HashSet<String>>>,
 ) -> WireOutcome {
     match request.capability.as_str() {
@@ -596,6 +622,22 @@ async fn dispatch(
                 |input| native_channel.replay_native_events(call_context(), input),
             )
             .await
+        }
+        ENQUEUE_TRIGGER => {
+            let Some(capability) = capability(
+                trigger_inbox_contract::contract_descriptor(),
+                ENQUEUE_TRIGGER,
+            ) else {
+                return wire_failure("internal", "MissingDescriptor");
+            };
+            let input = match decode_input::<EnqueueTrigger>(&request.input, capability) {
+                Ok(input) => input,
+                Err(error) => return error,
+            };
+            match trigger_inbox.enqueue(call_context(), input).await {
+                Ok(output) => encode_output(output, capability),
+                Err(error) => wire_call_error(error),
+            }
         }
         _ => wire_failure("protocol", "UnknownCapability"),
     }

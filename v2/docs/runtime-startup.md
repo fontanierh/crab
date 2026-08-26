@@ -35,6 +35,23 @@ cargo run -p crab-v2-runtime --bin crab-v2 -- \
   --state-dir /private/path/to/crab-v2-state
 ```
 
+## Trigger ingress
+
+`crab-v2-trigger` is the single supported recipe for cron, self-work and operator ingress. It reads
+the owner-only token from the state directory and calls generated `trigger-inbox.enqueue`; it never
+opens SQLite directly. Retries must reuse the same source ID and deduplication key.
+
+```sh
+crab-v2-trigger \
+  --state-dir /private/path/to/crab-v2-state \
+  --channel primary --lane primary \
+  --source self-work --source-id jim --dedupe-key follow-up-42 \
+  --mode queue --message "Continue the accepted follow-up"
+```
+
+Use `--message-json` for a native payload and `--not-before-ms` for delayed delivery. Modes are
+`queue`, `steer` and `interrupt-and-steer`; queue is the default.
+
 ## Restart contract
 
 | Persisted state | Startup action |

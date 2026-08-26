@@ -90,7 +90,7 @@ pub enum AcpChannelError {
 impl fmt::Display for AcpChannelError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::LocalIpc(_) => formatter.write_str("Crab local channel IPC is unavailable"),
+            Self::LocalIpc(_) => formatter.write_str("Crab local IPC is unavailable"),
             Self::Acp(_) => formatter.write_str("ACP stdio transport failed"),
             Self::InvalidConfiguration => {
                 formatter.write_str("ACP channel configuration is invalid")

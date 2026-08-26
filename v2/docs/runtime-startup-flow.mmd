@@ -3,7 +3,10 @@ flowchart LR
     CONFIG["strict JSON topology<br/>secret names, never values"]
     STATE[("six SQLite stores<br/>private state directory")]
     IPC["owner-only local IPC<br/>persistent token · ephemeral socket"]
+    UI["native UI adapter"]
+    TRIGGER["cron · self-work · operator<br/>crab-v2-trigger"]
     ATTACH["channel-gateway<br/>idempotent attach"]
+    INBOX["trigger-inbox.enqueue<br/>durable · idempotent"]
     RECOVER{"matching binding?"}
     REUSE["reuse live session"]
     REBIND["open once · replace unavailable"]
@@ -13,6 +16,8 @@ flowchart LR
     SIGNAL["SIGINT / SIGTERM<br/>stop workers · close sessions"]
 
     CONFIG --> ATTACH
+    UI --> IPC --> ATTACH
+    TRIGGER --> IPC --> INBOX --> WORKER
     STATE --> RECOVER
     ATTACH --> RECOVER
     RECOVER -->|"live + same"| REUSE
@@ -23,7 +28,6 @@ flowchart LR
     BIND --> ROUTE
     ROUTE --> WORKER
     STATE --> IPC
-    ROUTE --> IPC
     WORKER --> SIGNAL
     IPC --> SIGNAL
 
@@ -31,7 +35,7 @@ flowchart LR
     classDef durable fill:#dcfce7,stroke:#16a34a,stroke-width:2px,color:#14532d;
     classDef agent fill:#ede9fe,stroke:#7c3aed,stroke-width:2px,color:#2e1065;
     classDef runtime fill:#ffedd5,stroke:#ea580c,stroke-width:2px,color:#7c2d12;
-    class CONFIG,SIGNAL config;
+    class CONFIG,UI,TRIGGER,SIGNAL config;
     class STATE,IPC durable;
     class ATTACH agent;
-    class RECOVER,REUSE,REBIND,BIND,ROUTE,WORKER runtime;
+    class RECOVER,REUSE,REBIND,BIND,ROUTE,INBOX,WORKER runtime;
