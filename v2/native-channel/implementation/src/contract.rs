@@ -125,6 +125,9 @@ boxology::contract! {
         pub binding_id: String,
         pub expected_session_id: String,
         pub fresh_session_id: String,
+        /// Fresh adapter destination metadata, atomically installed with the new session. Omit to
+        /// retain the current metadata when only the physical session changes.
+        pub fresh_native_channel_json: Option<String>,
         pub reason: String,
     }
 

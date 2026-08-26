@@ -720,6 +720,14 @@ static __BOXOLOGY_CONTRACT_DESCRIPTOR: ::std::sync::LazyLock<
                     None,
                 ),
                 ::boxology_contract::FieldDescriptor::new(
+                    "fresh_native_channel_json",
+                    ::boxology_contract::TypeDescriptor::optional(
+                            ::boxology_contract::TypeDescriptor::string(),
+                        )
+                        .expect("generated optional descriptor is valid"),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
                     "reason",
                     ::boxology_contract::TypeDescriptor::string(),
                     None,
@@ -1135,7 +1143,7 @@ static __BOXOLOGY_CONTRACT_DESCRIPTOR: ::std::sync::LazyLock<
                 capability_9,
             ],
             ::boxology_contract::ContractRevision::new(
-                    "sha256:a571d395b427730d2a56b7d8d40081f37c06a2b7e52d02966f591e33bb5bb095",
+                    "sha256:2788474d5e325e82972fdd03b8296b794267bcd3342e6e1e2a01c25ef15fc6cd",
                 )
                 .expect("generated contract revision is non-empty"),
         )
@@ -4222,6 +4230,9 @@ pub struct ReplaceSessionRequest {
     pub binding_id: ::std::string::String,
     pub expected_session_id: ::std::string::String,
     pub fresh_session_id: ::std::string::String,
+    /// Fresh adapter destination metadata, atomically installed with the new session. Omit to
+    /// retain the current metadata when only the physical session changes.
+    pub fresh_native_channel_json: ::core::option::Option<::std::string::String>,
     pub reason: ::std::string::String,
 }
 #[rustfmt::skip]
@@ -4271,6 +4282,20 @@ impl ::boxology_contract::ContractType for ReplaceSessionRequest {
             fields.push(("fresh_session_id".into(), value));
         }
         if let Some(value) = ::boxology_contract::ContractType::encode_field(
+                &self.fresh_native_channel_json,
+            )
+            .map_err(|error| {
+                error
+                    .under(
+                        ::boxology_contract::PathSegment::Field(
+                            "fresh_native_channel_json".into(),
+                        ),
+                    )
+            })?
+        {
+            fields.push(("fresh_native_channel_json".into(), value));
+        }
+        if let Some(value) = ::boxology_contract::ContractType::encode_field(
                 &self.reason,
             )
             .map_err(|error| {
@@ -4294,7 +4319,8 @@ impl ::boxology_contract::ContractType for ReplaceSessionRequest {
         };
         for (field, _) in fields.entries() {
             match field {
-                "binding_id" | "expected_session_id" | "fresh_session_id" | "reason" => {}
+                "binding_id" | "expected_session_id" | "fresh_session_id"
+                | "fresh_native_channel_json" | "reason" => {}
                 _ => {
                     return Err(
                         ::boxology_contract::DecodeError::new(
@@ -4336,6 +4362,19 @@ impl ::boxology_contract::ContractType for ReplaceSessionRequest {
                         .under(
                             ::boxology_contract::PathSegment::Field(
                                 "fresh_session_id".into(),
+                            ),
+                        )
+                })?,
+            fresh_native_channel_json: <::core::option::Option<
+                ::std::string::String,
+            > as ::boxology_contract::ContractType>::decode_field(
+                    fields.get("fresh_native_channel_json"),
+                )
+                .map_err(|error| {
+                    error
+                        .under(
+                            ::boxology_contract::PathSegment::Field(
+                                "fresh_native_channel_json".into(),
                             ),
                         )
                 })?,
@@ -5997,6 +6036,12 @@ pub mod test_support {
                                 None,
                             ),
                             ::boxology_contract::FieldDescriptor::new(
+                                "fresh_native_channel_json",
+                                TypeDescriptor::optional(TypeDescriptor::string())
+                                    .expect("generated optional descriptor is valid"),
+                                None,
+                            ),
+                            ::boxology_contract::FieldDescriptor::new(
                                 "reason",
                                 TypeDescriptor::string(),
                                 None,
@@ -6210,8 +6255,8 @@ pub mod test_support {
 #[rustfmt::skip]
 #[doc(hidden)]
 pub const __BOXOLOGY_SEMANTIC_DIGEST: [u8; 32] = [
-    120, 77, 4, 123, 217, 94, 236, 43, 227, 55, 199, 69, 103, 65, 99, 237, 92, 123, 211,
-    226, 33, 147, 174, 220, 195, 193, 213, 44, 205, 253, 42, 79,
+    28, 6, 112, 26, 24, 179, 83, 120, 187, 71, 71, 143, 39, 21, 21, 209, 230, 90, 116,
+    209, 28, 4, 59, 230, 215, 213, 185, 126, 2, 214, 229, 153,
 ];
 #[rustfmt::skip]
 #[doc(hidden)]

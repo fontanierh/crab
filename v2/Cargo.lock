@@ -373,6 +373,30 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f079e83a288787bcd14a6aea84cee5c87a67c5a3e660c30f557a3d24761b3527"
 
 [[package]]
+name = "channel-gateway-contract"
+version = "0.0.0"
+dependencies = [
+ "boxology-contract",
+]
+
+[[package]]
+name = "channel-gateway-implementation"
+version = "0.0.0"
+dependencies = [
+ "agent-host-contract",
+ "async-trait",
+ "boxology",
+ "boxology-contract",
+ "boxology-runtime",
+ "channel-gateway-contract",
+ "native-channel-contract",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
 name = "chrono"
 version = "0.4.45"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -430,6 +454,8 @@ dependencies = [
  "boxology-runtime",
  "bridge-host-contract",
  "bridge-host-implementation",
+ "channel-gateway-contract",
+ "channel-gateway-implementation",
  "native-channel-contract",
  "native-channel-implementation",
  "serde",

@@ -6,6 +6,7 @@ flowchart TB
     BRIDGE["bridge-host"]
     TRIGGER["trigger-inbox"]
     ROUTER["turn-router"]
+    GATEWAY["channel-gateway"]
     CHANNEL["native-channel"]
     AGENT["agent-host<br/>ACP"]
     SUBAGENT["sub-agent-host"]
@@ -13,7 +14,10 @@ flowchart TB
     CHILDREN["ACP harness<br/>subprocesses"]
     AUTH["Mandatory authority<br/>no sandbox · yolo permissions<br/>unrestricted FS + network · verified sudo"]
 
+    UI -->|"attach"| GATEWAY
     UI <-->|"complete native view"| CHANNEL
+    GATEWAY -->|"binding lifecycle"| CHANNEL
+    GATEWAY -->|"open · status · close"| AGENT
     CHANNEL -->|"queue · steer<br/>explicit interrupt"| AGENT
     AGENT -->|"messages · tools · state<br/>compaction when reported"| CHANNEL
 
@@ -39,6 +43,7 @@ flowchart TB
     class AGENT agent;
     class SUBAGENT subagent;
     class CHANNEL channel;
+    class GATEWAY channel;
     class BRIDGE bridge;
     class TRIGGER trigger;
     class ROUTER router;

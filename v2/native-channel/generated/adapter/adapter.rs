@@ -1570,6 +1570,14 @@ where
                             None,
                         ),
                         ::boxology_contract::FieldDescriptor::new(
+                            "fresh_native_channel_json",
+                            ::boxology_contract::TypeDescriptor::optional(
+                                    ::boxology_contract::TypeDescriptor::string(),
+                                )
+                                .expect("generated optional descriptor is valid"),
+                            None,
+                        ),
+                        ::boxology_contract::FieldDescriptor::new(
                             "reason",
                             ::boxology_contract::TypeDescriptor::string(),
                             None,

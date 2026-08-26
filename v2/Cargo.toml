@@ -5,6 +5,8 @@ members = [
     "agent-host/implementation",
     "bridge-host/generated/contract",
     "bridge-host/implementation",
+    "channel-gateway/generated/contract",
+    "channel-gateway/implementation",
     "native-channel/generated/contract",
     "native-channel/implementation",
     "runtime/composition",

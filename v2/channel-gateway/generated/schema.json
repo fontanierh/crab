@@ -1,0 +1,205 @@
+{
+  "box_id": "channel-gateway",
+  "capabilities": [
+    {
+      "deprecation": null,
+      "docs": [
+        " Attach idempotently. A matching live binding is reused; only an unavailable physical ACP",
+        " session may be replaced. A changed request never replaces a live session implicitly."
+      ],
+      "error": "ChannelGatewayError",
+      "id": "channel-gateway.attach_channel",
+      "idempotency": "none",
+      "input": {
+        "name": "request",
+        "type": "AttachChannelRequest"
+      },
+      "max_exposure": "code_only",
+      "name": "attach_channel",
+      "output": {
+        "type": "ChannelAttachment"
+      },
+      "shape": "unary"
+    }
+  ],
+  "provenance": {
+    "generator": "boxology-generator",
+    "generator_version": "0.1.1",
+    "semantic_digest": "sha256:6a9ce1fdefbac34313c01c8c7122cd39b731efb0b6c770fc10dbab4019d68a48"
+  },
+  "revision": "sha256:260a8030aa670231a0d76f7c05e1324a8758bbe88d21fa86b77a61fba3c8c91d",
+  "schema_format": 1,
+  "types": [
+    {
+      "deprecation": null,
+      "docs": [
+        " Whether attach created a binding, reused its live session or recovered an unavailable one."
+      ],
+      "kind": "enum",
+      "name": "ChannelAttachmentDisposition",
+      "variants": [
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "Created"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "ReusedLiveSession"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "ReplacedUnavailableSession"
+        }
+      ]
+    },
+    {
+      "deprecation": null,
+      "docs": [
+        " Complete non-secret intent required to attach one native UI identity."
+      ],
+      "fields": [
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "channel_id",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "adapter_id",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "agent_id",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "working_directory",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "bootstrap_prompt",
+          "type": "Option<String>"
+        },
+        {
+          "deprecation": null,
+          "docs": [
+            " Exact non-secret agent session metadata as a JSON object."
+          ],
+          "name": "session_metadata_json",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [
+            " Exact adapter-owned destination metadata as a JSON object."
+          ],
+          "name": "native_channel_json",
+          "type": "String"
+        }
+      ],
+      "kind": "struct",
+      "name": "AttachChannelRequest"
+    },
+    {
+      "deprecation": null,
+      "docs": [
+        " Stable native binding and the one live Crab-owned ACP session behind it."
+      ],
+      "fields": [
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "binding_id",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "channel_id",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "adapter_id",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "session_id",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "disposition",
+          "type": "ChannelAttachmentDisposition"
+        }
+      ],
+      "kind": "struct",
+      "name": "ChannelAttachment"
+    },
+    {
+      "deprecation": null,
+      "docs": [],
+      "kind": "error",
+      "name": "ChannelGatewayError",
+      "variants": [
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "DraftOnly",
+          "payload": "unit"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "InvalidRequest",
+          "payload": "unit"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "UnknownAgent",
+          "payload": "unit"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "AgentUnavailable",
+          "payload": "unit"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "AttachmentConflict",
+          "payload": "unit"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "ChannelUnavailable",
+          "payload": "unit"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "StorageUnavailable",
+          "payload": "unit"
+        }
+      ]
+    }
+  ]
+}
