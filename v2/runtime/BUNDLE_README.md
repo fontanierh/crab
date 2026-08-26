@@ -16,19 +16,29 @@ python3 libexec/v2_bundle.py verify .
 The verifier rejects missing, changed, extra, special, absolute-symlink, and escaping-symlink
 entries. `bundle-manifest.json` records the source commit and SHA-256 of every runtime entry.
 
-## Configure and start
+## Install or update
 
-1. Copy `config/runtime.bundle.example.json` to a durable location.
-2. Replace `/absolute/path/to/agent-workspace` with the real workspace.
-3. Keep the config beside this bundle's `config/` directory, or preserve its relative paths.
-4. Authenticate Claude using its native login, then start:
+The same command handles first installation and every update. Only the first run needs the
+workspace argument:
 
 ```sh
-bin/crab-v2 \
-  --config config/runtime.bundle.example.json \
-  --state-dir /private/path/to/crab-v2-state
+python3 libexec/v2_bundle.py deploy . --workspace /absolute/path/to/agent-workspace
+
+# Later, from a newly verified bundle:
+python3 libexec/v2_bundle.py deploy .
 ```
 
-The runtime requires macOS, Python 3 for verification, Node.js 22 or newer for the bundled agent
-and bridge, and Crab's documented unrestricted-host preflight. Credentials and runtime state are
-not part of the bundle.
+Deployment copies the bundle into an immutable release under `~/.crab-v2`, keeps config, state,
+logs and credentials outside releases, and owns the single `com.crab.v2.runtime` user LaunchAgent.
+It stops the old runtime gracefully, switches one `current` symlink, then proves one launchd-owned
+process and authenticated local IPC. Any failure restores and verifies the previous release.
+
+Check all layers without exposing the captured environment:
+
+```sh
+python3 ~/.crab-v2/libexec/v2_bundle.py status
+```
+
+The runtime requires macOS, Python 3, Node.js 22 or newer, and Crab's documented unrestricted-host
+preflight. Authenticate each ACP agent and bridge with its native flow. Credentials, runtime state,
+and logs are never part of a release bundle.
