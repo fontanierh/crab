@@ -2,6 +2,7 @@ use std::{
     collections::{BTreeMap, VecDeque},
     path::PathBuf,
     sync::Arc,
+    time::Duration,
 };
 
 use agent_client_protocol::{
@@ -32,6 +33,9 @@ pub(crate) enum SessionCommand {
         reply: oneshot::Sender<Result<OperationReceipt, AgentHostError>>,
     },
     Close {
+        reply: oneshot::Sender<Result<OperationReceipt, AgentHostError>>,
+    },
+    Detach {
         reply: oneshot::Sender<Result<OperationReceipt, AgentHostError>>,
     },
 }
@@ -79,6 +83,8 @@ struct ActorState {
     active_run_id: Option<String>,
     queued: VecDeque<QueuedPrompt>,
 }
+
+const DETACH_CANCEL_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn spawn_session(
@@ -135,7 +141,7 @@ pub(crate) fn spawn_session(
         if result.is_err()
             && !matches!(
                 store.status(&session_id).map(|status| status.lifecycle),
-                Ok(AgentLifecycle::Stopped)
+                Ok(AgentLifecycle::Stopped | AgentLifecycle::Detached)
             )
         {
             let now_ms = clock().unwrap_or_default();
@@ -751,13 +757,25 @@ async fn run_v1_loop(
                         &connection, &store, &clock, &session_id, &native_session_id,
                         state.active_run_id.is_some(),
                     ).await;
+                    let completion = result.as_ref().map(|_| ()).map_err(Clone::clone);
                     let _ = reply.send(result);
+                    completion?;
+                    return Ok(());
+                }
+                Some(SessionCommand::Detach { reply }) => {
+                    let result = detach_v1(
+                        &connection, &store, &clock, &session_id, &native_session_id,
+                        state.active_run_id.as_deref(), &mut signals,
+                    ).await;
+                    let completion = result.as_ref().map(|_| ()).map_err(Clone::clone);
+                    let _ = reply.send(result);
+                    completion?;
                     return Ok(());
                 }
                 None => {
-                    stop_v1(
+                    detach_v1(
                         &connection, &store, &clock, &session_id, &native_session_id,
-                        state.active_run_id.is_some(),
+                        state.active_run_id.as_deref(), &mut signals,
                     ).await?;
                     return Ok(());
                 }
@@ -873,13 +891,25 @@ async fn run_v2_loop(
                         &connection, &store, &clock, &session_id, &native_session_id,
                         state.active_run_id.is_some(),
                     ).await;
+                    let completion = result.as_ref().map(|_| ()).map_err(Clone::clone);
                     let _ = reply.send(result);
+                    completion?;
+                    return Ok(());
+                }
+                Some(SessionCommand::Detach { reply }) => {
+                    let result = detach_v2(
+                        &connection, &store, &clock, &session_id, &native_session_id,
+                        state.active_run_id.is_some(), &mut signals,
+                    ).await;
+                    let completion = result.as_ref().map(|_| ()).map_err(Clone::clone);
+                    let _ = reply.send(result);
+                    completion?;
                     return Ok(());
                 }
                 None => {
-                    stop_v2(
+                    detach_v2(
                         &connection, &store, &clock, &session_id, &native_session_id,
-                        state.active_run_id.is_some(),
+                        state.active_run_id.is_some(), &mut signals,
                     ).await?;
                     return Ok(());
                 }
@@ -1225,6 +1255,30 @@ async fn stop_v1(
     })
 }
 
+async fn detach_v1(
+    connection: &ConnectionTo<Agent>,
+    store: &AgentStore,
+    clock: &Clock,
+    session_id: &str,
+    native_session_id: &str,
+    active_run_id: Option<&str>,
+    signals: &mut mpsc::UnboundedReceiver<ActorSignal>,
+) -> Result<OperationReceipt, AgentHostError> {
+    let now_ms = clock()?;
+    store.set_lifecycle(session_id, &AgentLifecycle::Detaching, now_ms)?;
+    if let Some(active_run_id) = active_run_id {
+        connection
+            .send_notification(v1::CancelNotification::new(native_session_id.to_owned()))
+            .map_err(|_| AgentHostError::TransportFailed)?;
+        wait_for_v1_cancel(signals, active_run_id).await?;
+    }
+    store.set_lifecycle(session_id, &AgentLifecycle::Detached, now_ms)?;
+    Ok(OperationReceipt {
+        accepted: true,
+        recorded_at_ms: now_ms,
+    })
+}
+
 async fn stop_v2(
     connection: &ConnectionTo<Agent>,
     store: &AgentStore,
@@ -1252,6 +1306,67 @@ async fn stop_v2(
         accepted: true,
         recorded_at_ms: now_ms,
     })
+}
+
+async fn detach_v2(
+    connection: &ConnectionTo<Agent>,
+    store: &AgentStore,
+    clock: &Clock,
+    session_id: &str,
+    native_session_id: &str,
+    busy: bool,
+    signals: &mut mpsc::UnboundedReceiver<ActorSignal>,
+) -> Result<OperationReceipt, AgentHostError> {
+    let now_ms = clock()?;
+    store.set_lifecycle(session_id, &AgentLifecycle::Detaching, now_ms)?;
+    if busy {
+        connection
+            .send_notification(v2::CancelSessionNotification::new(
+                native_session_id.to_owned(),
+            ))
+            .map_err(|_| AgentHostError::TransportFailed)?;
+        wait_for_v2_idle(signals).await?;
+    }
+    store.set_lifecycle(session_id, &AgentLifecycle::Detached, now_ms)?;
+    Ok(OperationReceipt {
+        accepted: true,
+        recorded_at_ms: now_ms,
+    })
+}
+
+async fn wait_for_v1_cancel(
+    signals: &mut mpsc::UnboundedReceiver<ActorSignal>,
+    active_run_id: &str,
+) -> Result<(), AgentHostError> {
+    tokio::time::timeout(DETACH_CANCEL_TIMEOUT, async {
+        loop {
+            match signals.recv().await {
+                Some(ActorSignal::V1PromptFinished { run_id, .. }) if run_id == active_run_id => {
+                    return Ok(());
+                }
+                Some(ActorSignal::Fatal) | None => return Err(AgentHostError::TransportFailed),
+                _ => {}
+            }
+        }
+    })
+    .await
+    .map_err(|_| AgentHostError::TransportFailed)?
+}
+
+async fn wait_for_v2_idle(
+    signals: &mut mpsc::UnboundedReceiver<ActorSignal>,
+) -> Result<(), AgentHostError> {
+    tokio::time::timeout(DETACH_CANCEL_TIMEOUT, async {
+        loop {
+            match signals.recv().await {
+                Some(ActorSignal::V2Idle) => return Ok(()),
+                Some(ActorSignal::Fatal) | None => return Err(AgentHostError::TransportFailed),
+                _ => {}
+            }
+        }
+    })
+    .await
+    .map_err(|_| AgentHostError::TransportFailed)?
 }
 
 fn resolve_v1_permission(

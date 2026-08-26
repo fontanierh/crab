@@ -9,7 +9,7 @@ pub fn implementation_descriptor() -> ::boxology_contract::ImplementationDescrip
                         ::boxology_contract::BoxId::new("agent-host")
                             .expect("generated import package id is valid"),
                         ::boxology_contract::ContractRevision::new(
-                                "sha256:5d37728e0b3bc383aa50c7785417912552b9390ed2a384e9212424eb4eb4feeb",
+                                "sha256:44f44a7532a8994299080d3c39a826ef3102457f4efd6a47f4f5ba9637d9616a",
                             )
                             .expect("generated import revision is valid"),
                         [
@@ -67,6 +67,12 @@ pub fn implementation_descriptor() -> ::boxology_contract::ImplementationDescrip
                                 ::boxology_contract::BoxId::new("agent-host")
                                     .expect("generated import package id is valid"),
                                 ::boxology_contract::CapabilityName::new("cancel_run")
+                                    .expect("generated import capability name is valid"),
+                            ),
+                            ::boxology_contract::CapabilityId::new(
+                                ::boxology_contract::BoxId::new("agent-host")
+                                    .expect("generated import package id is valid"),
+                                ::boxology_contract::CapabilityName::new("detach_sessions")
                                     .expect("generated import capability name is valid"),
                             ),
                             ::boxology_contract::CapabilityId::new(
@@ -207,6 +213,16 @@ impl AgentHostImport {
                                                 ),
                                                 ::boxology_contract::VariantDescriptor::new(
                                                     "Busy",
+                                                    ::boxology_contract::VariantPayload::Unit,
+                                                    None,
+                                                ),
+                                                ::boxology_contract::VariantDescriptor::new(
+                                                    "Detaching",
+                                                    ::boxology_contract::VariantPayload::Unit,
+                                                    None,
+                                                ),
+                                                ::boxology_contract::VariantDescriptor::new(
+                                                    "Detached",
                                                     ::boxology_contract::VariantPayload::Unit,
                                                     None,
                                                 ),
@@ -1157,6 +1173,16 @@ impl AgentHostImport {
                                 None,
                             ),
                             ::boxology_contract::VariantDescriptor::new(
+                                "Detaching",
+                                ::boxology_contract::VariantPayload::Unit,
+                                None,
+                            ),
+                            ::boxology_contract::VariantDescriptor::new(
+                                "Detached",
+                                ::boxology_contract::VariantPayload::Unit,
+                                None,
+                            ),
+                            ::boxology_contract::VariantDescriptor::new(
                                 "Stopping",
                                 ::boxology_contract::VariantPayload::Unit,
                                 None,
@@ -1247,6 +1273,62 @@ impl AgentHostImport {
                 )
             })?;
         <::boxology_import_agent_host::OperationReceipt as ::boxology_contract::ContractType>::decode(
+                &output,
+            )
+            .map_err(|error| {
+                ::boxology_contract::ErasedCallError::InvalidResponse(
+                    conversion_detail("output_decode", error),
+                )
+            })
+    }
+    pub async fn detach_sessions(
+        &self,
+        context: ::boxology_contract::CallContext,
+        input: ::boxology_import_agent_host::DetachSessionsRequest,
+    ) -> Result<
+        ::boxology_import_agent_host::DetachSessionsReport,
+        ::boxology_contract::ErasedCallError,
+    > {
+        let capability = ::boxology_contract::CapabilityId::new(
+            ::boxology_contract::BoxId::new("agent-host")
+                .expect("generated import package id is valid"),
+            ::boxology_contract::CapabilityName::new("detach_sessions")
+                .expect("generated import capability name is valid"),
+        );
+        let input = input
+            .encode()
+            .map_err(|error| {
+                ::boxology_contract::ErasedCallError::ContractViolation(
+                    conversion_detail("input_encode", error),
+                )
+            })?;
+        let output = self.handle.call(&capability, context, input).await?;
+        let output = ::boxology_contract::TypeDescriptor::structure([
+                ::boxology_contract::FieldDescriptor::new(
+                    "detached_session_ids",
+                    ::boxology_contract::TypeDescriptor::list(
+                            ::boxology_contract::TypeDescriptor::string(),
+                        )
+                        .expect("generated imported list descriptor is valid"),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
+                    "failed_session_ids",
+                    ::boxology_contract::TypeDescriptor::list(
+                            ::boxology_contract::TypeDescriptor::string(),
+                        )
+                        .expect("generated imported list descriptor is valid"),
+                    None,
+                ),
+            ])
+            .expect("generated imported struct descriptor is valid")
+            .conform(::boxology_contract::DecodeRole::ConsumerOutput, output)
+            .map_err(|error| {
+                ::boxology_contract::ErasedCallError::InvalidResponse(
+                    conversion_detail("output_decode", error),
+                )
+            })?;
+        <::boxology_import_agent_host::DetachSessionsReport as ::boxology_contract::ContractType>::decode(
                 &output,
             )
             .map_err(|error| {

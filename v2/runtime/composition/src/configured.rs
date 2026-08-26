@@ -5,7 +5,7 @@ use std::{
     time::Duration,
 };
 
-use agent_host_contract::SessionReference;
+use agent_host_contract::{DetachSessionsRequest, SessionReference};
 use boxology_contract::{CallContext, CallError, Caller, CancelToken, TraceContext};
 use bridge_host_contract::{
     BridgeHostError, BridgeReference, BridgeSpec, ListBridgesRequest, ReplaceBridgeRequest,
@@ -24,7 +24,6 @@ use crate::{
 /// A configured, restored graph with one continuously draining worker per trigger lane.
 pub struct ConfiguredRuntime {
     runtime: DraftRuntime,
-    sessions: Vec<String>,
     bridges: Vec<String>,
     channel_ipc: ChannelIpcServer,
     shutdown: watch::Sender<bool>,
@@ -40,7 +39,7 @@ pub enum RuntimeRunError {
     WorkerStopped,
     /// The operating-system shutdown signal could not be installed.
     SignalUnavailable,
-    /// A live ACP session could not be closed cleanly.
+    /// A live ACP session could not be detached cleanly.
     AgentHostUnavailable,
     /// A live bridge package could not be suspended cleanly.
     BridgeHostUnavailable,
@@ -54,7 +53,7 @@ impl fmt::Display for RuntimeRunError {
             Self::RouterUnavailable => formatter.write_str("turn-router worker failed"),
             Self::WorkerStopped => formatter.write_str("runtime worker stopped unexpectedly"),
             Self::SignalUnavailable => formatter.write_str("shutdown signal is unavailable"),
-            Self::AgentHostUnavailable => formatter.write_str("ACP session shutdown failed"),
+            Self::AgentHostUnavailable => formatter.write_str("ACP session detach failed"),
             Self::BridgeHostUnavailable => formatter.write_str("bridge shutdown failed"),
             Self::ChannelIpcUnavailable => formatter.write_str("local IPC failed"),
         }
@@ -130,7 +129,6 @@ impl ConfiguredRuntime {
         }
         Ok(Self {
             runtime,
-            sessions,
             bridges,
             channel_ipc,
             shutdown,
@@ -143,7 +141,7 @@ impl ConfiguredRuntime {
         &self.runtime
     }
 
-    /// Run until SIGINT/SIGTERM or an unexpected worker exit, then close every ACP session.
+    /// Run until SIGINT/SIGTERM or an unexpected worker exit, then detach every ACP session.
     pub async fn run_until_signal(mut self) -> Result<(), RuntimeRunError> {
         let outcome = tokio::select! {
             signal = wait_for_shutdown_signal() => signal,
@@ -157,7 +155,7 @@ impl ConfiguredRuntime {
         outcome.and(cleanup)
     }
 
-    /// Request graceful worker shutdown and close every opened ACP session.
+    /// Request graceful worker shutdown and detach every live ACP session.
     pub async fn shutdown(mut self) -> Result<(), RuntimeRunError> {
         self.finish().await
     }
@@ -168,11 +166,6 @@ impl ConfiguredRuntime {
         } else {
             Err(RuntimeRunError::ChannelIpcUnavailable)
         };
-        for session_id in self.channel_ipc.attached_session_ids() {
-            if !self.sessions.contains(&session_id) {
-                self.sessions.push(session_id);
-            }
-        }
         self.shutdown.send_replace(true);
         while let Some(worker) = self.workers.join_next().await {
             match worker {
@@ -184,7 +177,7 @@ impl ConfiguredRuntime {
         if !suspend_bridges(self.runtime.bridge_host(), &self.bridges).await {
             outcome = outcome.and(Err(RuntimeRunError::BridgeHostUnavailable));
         }
-        if !close_sessions(self.runtime.agent_host(), &self.sessions).await {
+        if !detach_sessions(self.runtime.agent_host()).await {
             outcome = outcome.and(Err(RuntimeRunError::AgentHostUnavailable));
         }
         outcome
@@ -546,6 +539,16 @@ async fn close_sessions(
     clean
 }
 
+async fn detach_sessions(agent_host: &agent_host_contract::AgentHostHandle) -> bool {
+    match agent_host
+        .detach_sessions(call_context(), DetachSessionsRequest {})
+        .await
+    {
+        Ok(report) => report.failed_session_ids.is_empty(),
+        Err(_) => false,
+    }
+}
+
 fn call_context() -> CallContext {
     CallContext::new(
         Caller::System("crab-v2-runtime"),
@@ -634,12 +637,12 @@ mod tests {
     use agent_host_implementation::{
         AcpEvent, AcpEventDirection, AcpEventKind, AcpNegotiation, AcpProtocolProfile,
         AgentCatalog, AgentHostError, AgentLifecycle, AgentSession, AuthorityAttestation,
-        CompactionReporting, DiscoverAgentsRequest, EventPage, FilesystemAuthority,
-        NetworkAuthority, OpenSessionRequest, OperationReceipt, PermissionAuthority,
-        PermissionRequest, PermissionResolution, PreflightReport, PreflightRequest, PromptAccepted,
-        PromptDisposition, PromptRequest, ReadEventsRequest, ResumeSessionRequest, RootAuthority,
-        RunReference, SandboxAuthority, SessionReference, SessionStatus, SteeringSupport,
-        generated as agent_host,
+        CompactionReporting, DetachSessionsReport, DetachSessionsRequest, DiscoverAgentsRequest,
+        EventPage, FilesystemAuthority, NetworkAuthority, OpenSessionRequest, OperationReceipt,
+        PermissionAuthority, PermissionRequest, PermissionResolution, PreflightReport,
+        PreflightRequest, PromptAccepted, PromptDisposition, PromptRequest, ReadEventsRequest,
+        ResumeSessionRequest, RootAuthority, RunReference, SandboxAuthority, SessionReference,
+        SessionStatus, SteeringSupport, generated as agent_host,
     };
     use boxology_contract::{CallContext, CallError};
     use boxology_runtime::{Composition, CompositionBuilder};
@@ -677,7 +680,7 @@ mod tests {
     use turn_router_implementation::{TurnRouterState, generated as turn_router};
 
     use super::{
-        StartupHandles, call_context, close_sessions, initialize_bridges,
+        StartupHandles, call_context, close_sessions, detach_sessions, initialize_bridges,
         initialize_topology_with_handles, recover_sub_agents, session_metadata, spawn_lane_worker,
         suspend_bridges,
     };
@@ -1109,6 +1112,22 @@ mod tests {
                 recorded_at_ms: 1,
             })
         }
+
+        async fn detach_sessions(
+            &self,
+            context: CallContext,
+            request: DetachSessionsRequest,
+        ) -> Result<DetachSessionsReport, AgentHostError> {
+            let _ = (context, request);
+            let mut state = self.state.lock().expect("fake state lock");
+            let mut detached_session_ids = state.live_sessions.drain().collect::<Vec<_>>();
+            detached_session_ids.sort();
+            state.active_runs.clear();
+            Ok(DetachSessionsReport {
+                detached_session_ids,
+                failed_session_ids: Vec::new(),
+            })
+        }
     }
 
     fn authority() -> AuthorityAttestation {
@@ -1335,7 +1354,7 @@ mod tests {
             )
             .await
             .expect("first route exists");
-        assert!(close_sessions(&first.agent_host, &first_sessions).await);
+        assert!(detach_sessions(&first.agent_host).await);
         drop(first);
 
         let restarted = graph(directory.path(), state.clone());
@@ -1401,7 +1420,7 @@ mod tests {
             )
             .await
             .expect("first route exists");
-        assert!(close_sessions(&first.agent_host, &first_sessions).await);
+        assert!(detach_sessions(&first.agent_host).await);
         drop(first);
         state.lock().expect("fake state lock").resume_mode = FakeResumeMode::Success;
 
@@ -1509,6 +1528,16 @@ mod tests {
             )
             .await
             .expect("durable child starts");
+        let mut expected_detached =
+            vec![parent_sessions[0].clone(), child.child_session_id.clone()];
+        expected_detached.sort();
+        let detached = first
+            .agent_host
+            .detach_sessions(call_context(), DetachSessionsRequest {})
+            .await
+            .expect("graceful shutdown detaches every host-owned session");
+        assert_eq!(detached.detached_session_ids, expected_detached);
+        assert!(detached.failed_session_ids.is_empty());
         drop(first);
         state.lock().expect("fake state lock").resume_mode = FakeResumeMode::Success;
 
@@ -2248,9 +2277,8 @@ mod tests {
         .expect("second ACP connection succeeds");
         assert_eq!(state.lock().expect("fake state lock").next_session, 1);
 
-        let attached_sessions = server.attached_session_ids();
         server.shutdown().await.expect("IPC shuts down");
-        assert!(close_sessions(&graph.agent_host, &attached_sessions).await);
+        assert!(detach_sessions(&graph.agent_host).await);
     }
 
     #[tokio::test]

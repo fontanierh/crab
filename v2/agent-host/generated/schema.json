@@ -175,6 +175,26 @@
     {
       "deprecation": null,
       "docs": [
+        " Disconnect every live ACP process without closing its native session. Active work is",
+        " cancelled first; queued and running Crab prompts fail rather than replaying after restart."
+      ],
+      "error": "AgentHostError",
+      "id": "agent-host.detach_sessions",
+      "idempotency": "none",
+      "input": {
+        "name": "request",
+        "type": "DetachSessionsRequest"
+      },
+      "max_exposure": "code_only",
+      "name": "detach_sessions",
+      "output": {
+        "type": "DetachSessionsReport"
+      },
+      "shape": "unary"
+    },
+    {
+      "deprecation": null,
+      "docs": [
         " Close the native session. There is intentionally no `compact` capability: ACP's current",
         " compaction proposal reports agent-owned compaction; it does not transfer control to Crab."
       ],
@@ -196,9 +216,9 @@
   "provenance": {
     "generator": "boxology-generator",
     "generator_version": "0.1.1",
-    "semantic_digest": "sha256:eb481d8aab749b2a44fa337a87fc7e42ff5e0675908e385cfbf1934a648f7e9a"
+    "semantic_digest": "sha256:c4ef9ea44f3ec05fbdde10e94c91df937343ff49177d3820122e94f4009b284c"
   },
-  "revision": "sha256:5d37728e0b3bc383aa50c7785417912552b9390ed2a384e9212424eb4eb4feeb",
+  "revision": "sha256:44f44a7532a8994299080d3c39a826ef3102457f4efd6a47f4f5ba9637d9616a",
   "schema_format": 1,
   "types": [
     {
@@ -228,6 +248,16 @@
           "deprecation": null,
           "docs": [],
           "name": "Busy"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "Detaching"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "Detached"
         },
         {
           "deprecation": null,
@@ -1117,6 +1147,38 @@
       ],
       "kind": "struct",
       "name": "SessionReference"
+    },
+    {
+      "deprecation": null,
+      "docs": [
+        " Explicit unit request for a host-wide graceful detach. The host owns the live-session set,",
+        " including sessions created dynamically by channels and sub-agents."
+      ],
+      "fields": [],
+      "kind": "struct",
+      "name": "DetachSessionsRequest"
+    },
+    {
+      "deprecation": null,
+      "docs": [
+        " Per-session outcomes let the runtime finish every detach before reporting a partial failure."
+      ],
+      "fields": [
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "detached_session_ids",
+          "type": "Vec<String>"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "failed_session_ids",
+          "type": "Vec<String>"
+        }
+      ],
+      "kind": "struct",
+      "name": "DetachSessionsReport"
     },
     {
       "deprecation": null,

@@ -118,27 +118,40 @@ impl AgentHost {
         })
     }
 
-    /// Cooperatively close every live session. Dropping the returned future is safe because
-    /// dropping the host also disconnects the ACP transports and kills their process groups.
+    /// Cooperatively detach every live session without destroying its native ACP identity.
+    /// Dropping the returned future is safe because dropping the host also detaches transports.
     pub async fn shutdown(&self) {
-        let handles = {
+        let _ = self.detach_live_sessions().await;
+    }
+
+    async fn detach_live_sessions(&self) -> DetachSessionsReport {
+        let mut handles = {
             let mut sessions = self.sessions.write().await;
-            sessions
-                .drain()
-                .map(|(_, handle)| handle)
-                .collect::<Vec<_>>()
+            sessions.drain().collect::<Vec<_>>()
         };
-        for handle in handles {
+        handles.sort_by(|left, right| left.0.cmp(&right.0));
+        let mut report = DetachSessionsReport {
+            detached_session_ids: Vec::with_capacity(handles.len()),
+            failed_session_ids: Vec::new(),
+        };
+        for (session_id, handle) in handles {
             let (reply, response) = oneshot::channel();
-            if handle
+            let detached = handle
                 .commands
-                .send(SessionCommand::Close { reply })
+                .send(SessionCommand::Detach { reply })
                 .await
                 .is_ok()
-            {
-                let _ = tokio::time::timeout(CONTROL_TIMEOUT, response).await;
+                && matches!(
+                    tokio::time::timeout(CONTROL_TIMEOUT, response).await,
+                    Ok(Ok(Ok(_)))
+                );
+            if detached {
+                report.detached_session_ids.push(session_id);
+            } else {
+                report.failed_session_ids.push(session_id);
             }
         }
+        report
     }
 
     async fn run_preflight(
@@ -393,6 +406,15 @@ impl AgentHost {
             .map_err(|_| AgentHostError::SessionClosed)?
     }
 
+    pub async fn detach_sessions(
+        &self,
+        context: boxology::CallContext,
+        request: DetachSessionsRequest,
+    ) -> Result<DetachSessionsReport, AgentHostError> {
+        let _ = (context, request);
+        Ok(self.detach_live_sessions().await)
+    }
+
     pub async fn close_session(
         &self,
         context: boxology::CallContext,
@@ -420,7 +442,7 @@ impl Drop for AgentHost {
         if let Ok(sessions) = self.sessions.try_read() {
             for handle in sessions.values() {
                 let (reply, _) = oneshot::channel();
-                let _ = handle.commands.try_send(SessionCommand::Close { reply });
+                let _ = handle.commands.try_send(SessionCommand::Detach { reply });
             }
         }
     }
@@ -472,6 +494,7 @@ mod tests {
                 "resolve_permission",
                 "session_status",
                 "cancel_run",
+                "detach_sessions",
                 "close_session",
             ]
         );

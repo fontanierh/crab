@@ -175,6 +175,16 @@ static __BOXOLOGY_CONTRACT_DESCRIPTOR: ::std::sync::LazyLock<
                                                     None,
                                                 ),
                                                 ::boxology_contract::VariantDescriptor::new(
+                                                    "Detaching",
+                                                    ::boxology_contract::VariantPayload::Unit,
+                                                    None,
+                                                ),
+                                                ::boxology_contract::VariantDescriptor::new(
+                                                    "Detached",
+                                                    ::boxology_contract::VariantPayload::Unit,
+                                                    None,
+                                                ),
+                                                ::boxology_contract::VariantDescriptor::new(
                                                     "Stopping",
                                                     ::boxology_contract::VariantPayload::Unit,
                                                     None,
@@ -1072,6 +1082,16 @@ static __BOXOLOGY_CONTRACT_DESCRIPTOR: ::std::sync::LazyLock<
                                 None,
                             ),
                             ::boxology_contract::VariantDescriptor::new(
+                                "Detaching",
+                                ::boxology_contract::VariantPayload::Unit,
+                                None,
+                            ),
+                            ::boxology_contract::VariantDescriptor::new(
+                                "Detached",
+                                ::boxology_contract::VariantPayload::Unit,
+                                None,
+                            ),
+                            ::boxology_contract::VariantDescriptor::new(
                                 "Stopping",
                                 ::boxology_contract::VariantPayload::Unit,
                                 None,
@@ -1152,6 +1172,39 @@ static __BOXOLOGY_CONTRACT_DESCRIPTOR: ::std::sync::LazyLock<
     let capability_9 = ::boxology_contract::CapabilityDescriptor::new(
         ::boxology_contract::CapabilityId::new(
             box_id.clone(),
+            ::boxology_contract::CapabilityName::new("detach_sessions")
+                .expect("generated capability name is valid"),
+        ),
+        ::boxology_contract::TypeDescriptor::structure([])
+            .expect("generated struct descriptor is valid"),
+        ::boxology_contract::TypeDescriptor::structure([
+                ::boxology_contract::FieldDescriptor::new(
+                    "detached_session_ids",
+                    ::boxology_contract::TypeDescriptor::list(
+                            ::boxology_contract::TypeDescriptor::string(),
+                        )
+                        .expect("generated list descriptor is valid"),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
+                    "failed_session_ids",
+                    ::boxology_contract::TypeDescriptor::list(
+                            ::boxology_contract::TypeDescriptor::string(),
+                        )
+                        .expect("generated list descriptor is valid"),
+                    None,
+                ),
+            ])
+            .expect("generated struct descriptor is valid"),
+        error.clone(),
+        ::boxology_contract::CapabilityShape::Unary,
+        ::boxology_contract::ExposureLevel::CodeOnly,
+        ::boxology_contract::Idempotency::None,
+        None,
+    );
+    let capability_10 = ::boxology_contract::CapabilityDescriptor::new(
+        ::boxology_contract::CapabilityId::new(
+            box_id.clone(),
             ::boxology_contract::CapabilityName::new("close_session")
                 .expect("generated capability name is valid"),
         ),
@@ -1195,9 +1248,10 @@ static __BOXOLOGY_CONTRACT_DESCRIPTOR: ::std::sync::LazyLock<
                 capability_7,
                 capability_8,
                 capability_9,
+                capability_10,
             ],
             ::boxology_contract::ContractRevision::new(
-                    "sha256:5d37728e0b3bc383aa50c7785417912552b9390ed2a384e9212424eb4eb4feeb",
+                    "sha256:44f44a7532a8994299080d3c39a826ef3102457f4efd6a47f4f5ba9637d9616a",
                 )
                 .expect("generated contract revision is non-empty"),
         )
@@ -1277,6 +1331,15 @@ pub trait AgentHostDispatch: Send + Sync + 'static {
         request: RunReference,
     ) -> Pin<
         Box<dyn Future<Output = Result<OperationReceipt, AgentHostError>> + Send + 'a>,
+    >;
+    fn detach_sessions<'a>(
+        &'a self,
+        context: CallContext,
+        request: DetachSessionsRequest,
+    ) -> Pin<
+        Box<
+            dyn Future<Output = Result<DetachSessionsReport, AgentHostError>> + Send + 'a,
+        >,
     >;
     fn close_session<'a>(
         &'a self,
@@ -1371,6 +1434,16 @@ impl AgentHostHandle {
                                                 ),
                                                 ::boxology_contract::VariantDescriptor::new(
                                                     "Busy",
+                                                    ::boxology_contract::VariantPayload::Unit,
+                                                    None,
+                                                ),
+                                                ::boxology_contract::VariantDescriptor::new(
+                                                    "Detaching",
+                                                    ::boxology_contract::VariantPayload::Unit,
+                                                    None,
+                                                ),
+                                                ::boxology_contract::VariantDescriptor::new(
+                                                    "Detached",
                                                     ::boxology_contract::VariantPayload::Unit,
                                                     None,
                                                 ),
@@ -2221,6 +2294,16 @@ impl AgentHostHandle {
                                 None,
                             ),
                             ::boxology_contract::VariantDescriptor::new(
+                                "Detaching",
+                                ::boxology_contract::VariantPayload::Unit,
+                                None,
+                            ),
+                            ::boxology_contract::VariantDescriptor::new(
+                                "Detached",
+                                ::boxology_contract::VariantPayload::Unit,
+                                None,
+                            ),
+                            ::boxology_contract::VariantDescriptor::new(
                                 "Stopping",
                                 ::boxology_contract::VariantPayload::Unit,
                                 None,
@@ -2292,6 +2375,44 @@ impl AgentHostHandle {
             .map_err(|error| conversion_detail("output_decode", error))
             .map_err(CallError::InvalidResponse)?;
         <OperationReceipt as ContractType>::decode(&output)
+            .map_err(|error| conversion_detail("output_decode", error))
+            .map_err(CallError::InvalidResponse)
+    }
+    pub async fn detach_sessions(
+        &self,
+        context: CallContext,
+        request: DetachSessionsRequest,
+    ) -> Result<DetachSessionsReport, CallError<AgentHostError>> {
+        let input = request
+            .encode()
+            .map_err(|error| conversion_detail("input_encode", error))
+            .map_err(CallError::ContractViolation)?;
+        let output = self
+            .target
+            .call(&AGENT_HOST_DETACH_SESSIONS, context, input)
+            .await
+            .map_err(|error| {
+                error.into_typed::<AgentHostError>(&AGENT_HOST_ERROR_DESCRIPTOR)
+            })?;
+        let output = TypeDescriptor::structure([
+                ::boxology_contract::FieldDescriptor::new(
+                    "detached_session_ids",
+                    TypeDescriptor::list(TypeDescriptor::string())
+                        .expect("generated list descriptor is valid"),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
+                    "failed_session_ids",
+                    TypeDescriptor::list(TypeDescriptor::string())
+                        .expect("generated list descriptor is valid"),
+                    None,
+                ),
+            ])
+            .expect("generated struct descriptor is valid")
+            .conform(DecodeRole::ConsumerOutput, output)
+            .map_err(|error| conversion_detail("output_decode", error))
+            .map_err(CallError::InvalidResponse)?;
+        <DetachSessionsReport as ContractType>::decode(&output)
             .map_err(|error| conversion_detail("output_decode", error))
             .map_err(CallError::InvalidResponse)
     }
@@ -2403,6 +2524,14 @@ static AGENT_HOST_CANCEL_RUN: LazyLock<CapabilityId> = LazyLock::new(|| {
     CapabilityId::new(
         BoxId::new("agent-host").expect("generated box identity is valid"),
         CapabilityName::new("cancel_run").expect("generated capability name is valid"),
+    )
+});
+#[rustfmt::skip]
+static AGENT_HOST_DETACH_SESSIONS: LazyLock<CapabilityId> = LazyLock::new(|| {
+    CapabilityId::new(
+        BoxId::new("agent-host").expect("generated box identity is valid"),
+        CapabilityName::new("detach_sessions")
+            .expect("generated capability name is valid"),
     )
 });
 #[rustfmt::skip]
@@ -2521,6 +2650,8 @@ pub enum AgentLifecycle {
     Starting,
     Ready,
     Busy,
+    Detaching,
+    Detached,
     Stopping,
     Stopped,
     Failed,
@@ -2541,6 +2672,8 @@ impl ::boxology_contract::ContractType for AgentLifecycle {
             Self::Starting => ("Starting".into(), ::boxology_contract::SlotValue::Null),
             Self::Ready => ("Ready".into(), ::boxology_contract::SlotValue::Null),
             Self::Busy => ("Busy".into(), ::boxology_contract::SlotValue::Null),
+            Self::Detaching => ("Detaching".into(), ::boxology_contract::SlotValue::Null),
+            Self::Detached => ("Detached".into(), ::boxology_contract::SlotValue::Null),
             Self::Stopping => ("Stopping".into(), ::boxology_contract::SlotValue::Null),
             Self::Stopped => ("Stopped".into(), ::boxology_contract::SlotValue::Null),
             Self::Failed => ("Failed".into(), ::boxology_contract::SlotValue::Null),
@@ -2603,6 +2736,28 @@ impl ::boxology_contract::ContractType for AgentLifecycle {
                 Ok(Self::Busy)
             }
             "Busy" => {
+                Err(
+                    ::boxology_contract::DecodeError::new(
+                            ::boxology_contract::DecodeErrorKind::UnexpectedPayload,
+                        )
+                        .under(::boxology_contract::PathSegment::Variant(tag.into())),
+                )
+            }
+            "Detaching" if matches!(payload, ::boxology_contract::SlotValue::Null) => {
+                Ok(Self::Detaching)
+            }
+            "Detaching" => {
+                Err(
+                    ::boxology_contract::DecodeError::new(
+                            ::boxology_contract::DecodeErrorKind::UnexpectedPayload,
+                        )
+                        .under(::boxology_contract::PathSegment::Variant(tag.into())),
+                )
+            }
+            "Detached" if matches!(payload, ::boxology_contract::SlotValue::Null) => {
+                Ok(Self::Detached)
+            }
+            "Detached" => {
                 Err(
                     ::boxology_contract::DecodeError::new(
                             ::boxology_contract::DecodeErrorKind::UnexpectedPayload,
@@ -6346,6 +6501,146 @@ impl ::boxology_contract::ContractType for SessionReference {
     }
 }
 #[rustfmt::skip]
+/// Explicit unit request for a host-wide graceful detach. The host owns the live-session set,
+/// including sessions created dynamically by channels and sub-agents.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Default)]
+pub struct DetachSessionsRequest {}
+#[rustfmt::skip]
+impl ::boxology_contract::ContractType for DetachSessionsRequest {
+    fn encode_value(
+        &self,
+    ) -> ::core::result::Result<
+        ::boxology_contract::ContractValue,
+        ::boxology_contract::EncodeError,
+    > {
+        let fields = ::std::vec::Vec::new();
+        ::boxology_contract::ContractValue::object(fields)
+            .map_err(|_| unreachable!("validated generated field identities are unique"))
+    }
+    fn decode_value(
+        value: &::boxology_contract::ContractValue,
+    ) -> ::core::result::Result<Self, ::boxology_contract::DecodeError> {
+        let ::boxology_contract::ValueRef::Object(fields) = value.view() else {
+            return Err(
+                ::boxology_contract::DecodeError::new(
+                    ::boxology_contract::DecodeErrorKind::KindMismatch,
+                ),
+            );
+        };
+        if let Some((field, _)) = fields.entries().next() {
+            return Err(
+                ::boxology_contract::DecodeError::new(
+                        ::boxology_contract::DecodeErrorKind::UnknownField(field.into()),
+                    )
+                    .under(::boxology_contract::PathSegment::Field(field.into())),
+            );
+        }
+        Ok(Self {})
+    }
+}
+#[rustfmt::skip]
+/// Per-session outcomes let the runtime finish every detach before reporting a partial failure.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Default)]
+pub struct DetachSessionsReport {
+    pub detached_session_ids: ::std::vec::Vec<::std::string::String>,
+    pub failed_session_ids: ::std::vec::Vec<::std::string::String>,
+}
+#[rustfmt::skip]
+impl ::boxology_contract::ContractType for DetachSessionsReport {
+    fn encode_value(
+        &self,
+    ) -> ::core::result::Result<
+        ::boxology_contract::ContractValue,
+        ::boxology_contract::EncodeError,
+    > {
+        let mut fields = ::std::vec::Vec::new();
+        if let Some(value) = ::boxology_contract::ContractType::encode_field(
+                &self.detached_session_ids,
+            )
+            .map_err(|error| {
+                error
+                    .under(
+                        ::boxology_contract::PathSegment::Field(
+                            "detached_session_ids".into(),
+                        ),
+                    )
+            })?
+        {
+            fields.push(("detached_session_ids".into(), value));
+        }
+        if let Some(value) = ::boxology_contract::ContractType::encode_field(
+                &self.failed_session_ids,
+            )
+            .map_err(|error| {
+                error
+                    .under(
+                        ::boxology_contract::PathSegment::Field(
+                            "failed_session_ids".into(),
+                        ),
+                    )
+            })?
+        {
+            fields.push(("failed_session_ids".into(), value));
+        }
+        ::boxology_contract::ContractValue::object(fields)
+            .map_err(|_| unreachable!("validated generated field identities are unique"))
+    }
+    fn decode_value(
+        value: &::boxology_contract::ContractValue,
+    ) -> ::core::result::Result<Self, ::boxology_contract::DecodeError> {
+        let ::boxology_contract::ValueRef::Object(fields) = value.view() else {
+            return Err(
+                ::boxology_contract::DecodeError::new(
+                    ::boxology_contract::DecodeErrorKind::KindMismatch,
+                ),
+            );
+        };
+        for (field, _) in fields.entries() {
+            match field {
+                "detached_session_ids" | "failed_session_ids" => {}
+                _ => {
+                    return Err(
+                        ::boxology_contract::DecodeError::new(
+                                ::boxology_contract::DecodeErrorKind::UnknownField(
+                                    field.into(),
+                                ),
+                            )
+                            .under(::boxology_contract::PathSegment::Field(field.into())),
+                    );
+                }
+            }
+        }
+        Ok(Self {
+            detached_session_ids: <::std::vec::Vec<
+                ::std::string::String,
+            > as ::boxology_contract::ContractType>::decode_field(
+                    fields.get("detached_session_ids"),
+                )
+                .map_err(|error| {
+                    error
+                        .under(
+                            ::boxology_contract::PathSegment::Field(
+                                "detached_session_ids".into(),
+                            ),
+                        )
+                })?,
+            failed_session_ids: <::std::vec::Vec<
+                ::std::string::String,
+            > as ::boxology_contract::ContractType>::decode_field(
+                    fields.get("failed_session_ids"),
+                )
+                .map_err(|error| {
+                    error
+                        .under(
+                            ::boxology_contract::PathSegment::Field(
+                                "failed_session_ids".into(),
+                            ),
+                        )
+                })?,
+        })
+    }
+}
+#[rustfmt::skip]
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Default)]
 pub struct RunReference {
     pub session_id: ::std::string::String,
@@ -7039,8 +7334,8 @@ pub mod test_support {
         AgentHostError, AGENT_HOST_DISCOVER_AGENTS, AGENT_HOST_PREFLIGHT,
         AGENT_HOST_OPEN_SESSION, AGENT_HOST_RESUME_SESSION, AGENT_HOST_PROMPT,
         AGENT_HOST_READ_EVENTS, AGENT_HOST_RESOLVE_PERMISSION, AGENT_HOST_SESSION_STATUS,
-        AGENT_HOST_CANCEL_RUN, AGENT_HOST_CLOSE_SESSION, AgentHostHandle,
-        conversion_detail,
+        AGENT_HOST_CANCEL_RUN, AGENT_HOST_DETACH_SESSIONS, AGENT_HOST_CLOSE_SESSION,
+        AgentHostHandle, conversion_detail,
     };
     type DiscoverAgentsFuture = Pin<
         Box<
@@ -7141,6 +7436,17 @@ pub mod test_support {
         CallContext,
         super::RunReference,
     ) -> CancelRunFuture + Send + Sync + 'static;
+    type DetachSessionsFuture = Pin<
+        Box<
+            dyn Future<
+                Output = Result<super::DetachSessionsReport, AgentHostError>,
+            > + Send + 'static,
+        >,
+    >;
+    type DetachSessionsResponder = dyn Fn(
+        CallContext,
+        super::DetachSessionsRequest,
+    ) -> DetachSessionsFuture + Send + Sync + 'static;
     type CloseSessionFuture = Pin<
         Box<
             dyn Future<
@@ -7163,6 +7469,7 @@ pub mod test_support {
         resolve_permission: Option<Arc<ResolvePermissionResponder>>,
         session_status: Option<Arc<SessionStatusResponder>>,
         cancel_run: Option<Arc<CancelRunResponder>>,
+        detach_sessions: Option<Arc<DetachSessionsResponder>>,
         close_session: Option<Arc<CloseSessionResponder>>,
     }
     impl AgentHostFake {
@@ -7282,6 +7589,20 @@ pub mod test_support {
                 + 'static,
         {
             self.cancel_run = Some(
+                Arc::new(move |context, request| {
+                    Box::pin(responder(context, request))
+                }),
+            );
+            self
+        }
+        pub fn with_detach_sessions<F, Fut>(mut self, responder: F) -> Self
+        where
+            F: Fn(CallContext, super::DetachSessionsRequest) -> Fut + Send + Sync
+                + 'static,
+            Fut: Future<Output = Result<super::DetachSessionsReport, AgentHostError>>
+                + Send + 'static,
+        {
+            self.detach_sessions = Some(
                 Arc::new(move |context, request| {
                     Box::pin(responder(context, request))
                 }),
@@ -7746,6 +8067,41 @@ pub mod test_support {
                     }
                 });
             }
+            if capability == &*AGENT_HOST_DETACH_SESSIONS {
+                let Some(responder) = self.detach_sessions.clone() else {
+                    return Box::pin(ready(Err(unprogrammed())));
+                };
+                return Box::pin(async move {
+                    let input = TypeDescriptor::structure([])
+                        .expect("generated struct descriptor is valid")
+                        .conform(DecodeRole::ProviderInput, input)
+                        .map_err(|error| {
+                            ErasedCallError::ContractViolation(
+                                conversion_detail("input_decode", error),
+                            )
+                        })?;
+                    let request = <super::DetachSessionsRequest as ContractType>::decode(
+                            &input,
+                        )
+                        .map_err(|error| {
+                            ErasedCallError::ContractViolation(
+                                conversion_detail("input_decode", error),
+                            )
+                        })?;
+                    match responder(context, request).await {
+                        Ok(output) => {
+                            output
+                                .encode()
+                                .map_err(|error| {
+                                    ErasedCallError::InvalidResponse(
+                                        conversion_detail("output_encode", error),
+                                    )
+                                })
+                        }
+                        Err(error) => Err(ErasedCallError::from_domain(&error)),
+                    }
+                });
+            }
             if capability == &*AGENT_HOST_CLOSE_SESSION {
                 let Some(responder) = self.close_session.clone() else {
                     return Box::pin(ready(Err(unprogrammed())));
@@ -7797,8 +8153,8 @@ pub mod test_support {
 #[rustfmt::skip]
 #[doc(hidden)]
 pub const __BOXOLOGY_SEMANTIC_DIGEST: [u8; 32] = [
-    235, 72, 29, 138, 171, 116, 155, 42, 68, 250, 51, 122, 135, 252, 126, 66, 255, 94, 6,
-    117, 144, 142, 56, 92, 251, 241, 147, 74, 100, 143, 126, 154,
+    196, 239, 158, 164, 79, 62, 192, 95, 189, 222, 16, 233, 76, 145, 223, 147, 115, 67,
+    255, 73, 23, 125, 56, 32, 18, 46, 148, 244, 0, 155, 40, 76,
 ];
 #[rustfmt::skip]
 #[doc(hidden)]
@@ -7817,19 +8173,21 @@ macro_rules! __boxology_check_implementation {
         $receiver; $($method $validity;)*); $crate::__boxology_check_implementation!(@
         find_session_status $receiver; $($method $validity;)*);
         $crate::__boxology_check_implementation!(@ find_cancel_run $receiver; $($method
-        $validity;)*); $crate::__boxology_check_implementation!(@ find_close_session
-        $receiver; $($method $validity;)*); impl $crate::AgentHostDispatch for $receiver
-        { fn discover_agents <'a > (&'a self, context : ::boxology::CallContext, input :
-        $crate::DiscoverAgentsRequest,) -> ::std::pin::Pin < ::std::boxed::Box < dyn
-        ::core::future::Future < Output = ::core::result::Result <$crate::AgentCatalog,
-        $crate::AgentHostError >, > + ::core::marker::Send + 'a, >, > {
-        ::std::boxed::Box::pin(self.discover_agents(context, input)) } fn preflight <'a >
-        (&'a self, context : ::boxology::CallContext, input : $crate::PreflightRequest,)
-        -> ::std::pin::Pin < ::std::boxed::Box < dyn ::core::future::Future < Output =
-        ::core::result::Result <$crate::PreflightReport, $crate::AgentHostError >, > +
-        ::core::marker::Send + 'a, >, > { ::std::boxed::Box::pin(self.preflight(context,
-        input)) } fn open_session <'a > (&'a self, context : ::boxology::CallContext,
-        input : $crate::OpenSessionRequest,) -> ::std::pin::Pin < ::std::boxed::Box < dyn
+        $validity;)*); $crate::__boxology_check_implementation!(@ find_detach_sessions
+        $receiver; $($method $validity;)*); $crate::__boxology_check_implementation!(@
+        find_close_session $receiver; $($method $validity;)*); impl
+        $crate::AgentHostDispatch for $receiver { fn discover_agents <'a > (&'a self,
+        context : ::boxology::CallContext, input : $crate::DiscoverAgentsRequest,) ->
+        ::std::pin::Pin < ::std::boxed::Box < dyn ::core::future::Future < Output =
+        ::core::result::Result <$crate::AgentCatalog, $crate::AgentHostError >, > +
+        ::core::marker::Send + 'a, >, > { ::std::boxed::Box::pin(self
+        .discover_agents(context, input)) } fn preflight <'a > (&'a self, context :
+        ::boxology::CallContext, input : $crate::PreflightRequest,) -> ::std::pin::Pin <
+        ::std::boxed::Box < dyn ::core::future::Future < Output = ::core::result::Result
+        <$crate::PreflightReport, $crate::AgentHostError >, > + ::core::marker::Send +
+        'a, >, > { ::std::boxed::Box::pin(self.preflight(context, input)) } fn
+        open_session <'a > (&'a self, context : ::boxology::CallContext, input :
+        $crate::OpenSessionRequest,) -> ::std::pin::Pin < ::std::boxed::Box < dyn
         ::core::future::Future < Output = ::core::result::Result <$crate::AgentSession,
         $crate::AgentHostError >, > + ::core::marker::Send + 'a, >, > {
         ::std::boxed::Box::pin(self.open_session(context, input)) } fn resume_session <'a
@@ -7861,8 +8219,13 @@ macro_rules! __boxology_check_implementation {
         ::std::pin::Pin < ::std::boxed::Box < dyn ::core::future::Future < Output =
         ::core::result::Result <$crate::OperationReceipt, $crate::AgentHostError >, > +
         ::core::marker::Send + 'a, >, > { ::std::boxed::Box::pin(self.cancel_run(context,
-        input)) } fn close_session <'a > (&'a self, context : ::boxology::CallContext,
-        input : $crate::SessionReference,) -> ::std::pin::Pin < ::std::boxed::Box < dyn
+        input)) } fn detach_sessions <'a > (&'a self, context : ::boxology::CallContext,
+        input : $crate::DetachSessionsRequest,) -> ::std::pin::Pin < ::std::boxed::Box <
+        dyn ::core::future::Future < Output = ::core::result::Result
+        <$crate::DetachSessionsReport, $crate::AgentHostError >, > + ::core::marker::Send
+        + 'a, >, > { ::std::boxed::Box::pin(self.detach_sessions(context, input)) } fn
+        close_session <'a > (&'a self, context : ::boxology::CallContext, input :
+        $crate::SessionReference,) -> ::std::pin::Pin < ::std::boxed::Box < dyn
         ::core::future::Future < Output = ::core::result::Result
         <$crate::OperationReceipt, $crate::AgentHostError >, > + ::core::marker::Send +
         'a, >, > { ::std::boxed::Box::pin(self.close_session(context, input)) } }
@@ -8040,6 +8403,27 @@ macro_rules! __boxology_check_implementation {
         $crate::__boxology_check_implementation!(@ find_cancel_run $receiver; $($rest)*);
     };
     (@ find_cancel_run $receiver:ty;) => {
+        compile_error!("Boxology capability implementation is missing");
+    };
+    (@ find_detach_sessions $receiver:ty; detach_sessions valid; $($rest:tt)*) => {
+        const _ : () = { fn require_service < T : ::core::marker::Send +
+        ::core::marker::Sync + 'static > () {} fn require_future < F :
+        ::core::future::Future < Output = ::core::result::Result
+        <$crate::DetachSessionsReport, $crate::AgentHostError >> + ::core::marker::Send >
+        (_ : F) {} fn check(receiver : &$receiver, context : ::boxology::CallContext,
+        input : $crate::DetachSessionsRequest) { require_service::<$receiver > ();
+        require_future(receiver.detach_sessions(context, input)); } };
+    };
+    (@ find_detach_sessions $receiver:ty; detach_sessions invalid; $($rest:tt)*) => {
+        compile_error!("Boxology capability has an invalid structural signature");
+    };
+    (
+        @ find_detach_sessions $receiver:ty; $other:ident $validity:ident; $($rest:tt)*
+    ) => {
+        $crate::__boxology_check_implementation!(@ find_detach_sessions $receiver;
+        $($rest)*);
+    };
+    (@ find_detach_sessions $receiver:ty;) => {
         compile_error!("Boxology capability implementation is missing");
     };
     (@ find_close_session $receiver:ty; close_session valid; $($rest:tt)*) => {

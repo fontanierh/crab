@@ -57,7 +57,7 @@ impl AgentStore {
             .execute(
                 "UPDATE sessions
                  SET lifecycle = 'Failed', active_run_id = NULL
-                 WHERE lifecycle IN ('Starting', 'Ready', 'Busy', 'Stopping')",
+                 WHERE lifecycle IN ('Starting', 'Ready', 'Busy', 'Detaching', 'Stopping')",
                 [],
             )
             .map_err(storage_error)?;
@@ -223,7 +223,7 @@ impl AgentStore {
             .optional()
             .map_err(storage_error)?
             .ok_or(AgentHostError::UnknownSession)?;
-        if row.5 != "Failed" || row.0.trim().is_empty() {
+        if !matches!(row.5.as_str(), "Failed" | "Detached") || row.0.trim().is_empty() {
             return Err(AgentHostError::SessionResumeUnavailable);
         }
         Ok(RecoverableSession {
@@ -247,7 +247,8 @@ impl AgentStore {
                 "UPDATE sessions
                  SET lifecycle = 'Starting', authority_verified_at_ms = ?2,
                      authority_evidence_json = ?3, active_run_id = NULL, updated_at_ms = ?4
-                 WHERE session_id = ?1 AND lifecycle = 'Failed' AND native_session_id <> ''",
+                 WHERE session_id = ?1 AND lifecycle IN ('Failed', 'Detached')
+                       AND native_session_id <> ''",
                 params![
                     session_id,
                     db_i64(authority.verified_at_ms)?,
@@ -498,7 +499,10 @@ impl AgentStore {
         if changed != 1 {
             return Err(AgentHostError::UnknownSession);
         }
-        if matches!(lifecycle, AgentLifecycle::Failed | AgentLifecycle::Stopped) {
+        if matches!(
+            lifecycle,
+            AgentLifecycle::Detached | AgentLifecycle::Failed | AgentLifecycle::Stopped
+        ) {
             connection
                 .execute(
                     "UPDATE prompts SET state = 'Failed'
@@ -966,6 +970,8 @@ fn lifecycle_tag(value: &AgentLifecycle) -> Result<&'static str, AgentHostError>
         AgentLifecycle::Starting => Ok("Starting"),
         AgentLifecycle::Ready => Ok("Ready"),
         AgentLifecycle::Busy => Ok("Busy"),
+        AgentLifecycle::Detaching => Ok("Detaching"),
+        AgentLifecycle::Detached => Ok("Detached"),
         AgentLifecycle::Stopping => Ok("Stopping"),
         AgentLifecycle::Stopped => Ok("Stopped"),
         AgentLifecycle::Failed => Ok("Failed"),
@@ -979,6 +985,8 @@ fn parse_lifecycle(value: &str) -> Result<AgentLifecycle, AgentHostError> {
         "Starting" => Ok(AgentLifecycle::Starting),
         "Ready" => Ok(AgentLifecycle::Ready),
         "Busy" => Ok(AgentLifecycle::Busy),
+        "Detaching" => Ok(AgentLifecycle::Detaching),
+        "Detached" => Ok(AgentLifecycle::Detached),
         "Stopping" => Ok(AgentLifecycle::Stopping),
         "Stopped" => Ok(AgentLifecycle::Stopped),
         "Failed" => Ok(AgentLifecycle::Failed),

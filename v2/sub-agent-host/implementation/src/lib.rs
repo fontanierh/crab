@@ -239,6 +239,13 @@ impl SubAgentHost {
                         }
                         AgentLifecycle::Ready => SubAgentLifecycle::Idle,
                         AgentLifecycle::Busy => SubAgentLifecycle::Running,
+                        AgentLifecycle::Detaching | AgentLifecycle::Detached => {
+                            // Host-wide detach means the runtime is leaving the native child
+                            // resumable. Preserve the durable child lifecycle so startup marks it
+                            // as a recovery candidate instead of a completed or failed child.
+                            tokio::time::sleep(PUMP_INTERVAL).await;
+                            continue;
+                        }
                         AgentLifecycle::Stopping => SubAgentLifecycle::Stopping,
                         AgentLifecycle::Stopped => SubAgentLifecycle::Completed,
                         AgentLifecycle::Failed | AgentLifecycle::Unknown { .. } => {

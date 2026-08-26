@@ -1,14 +1,12 @@
 //! Owner-only local transport for selected generated Boxology capabilities.
 
 use std::{
-    collections::HashSet,
     fmt,
     fs::{self, OpenOptions},
     future::Future,
     io::{self, Read as _, Write as _},
     os::unix::fs::{FileTypeExt as _, OpenOptionsExt as _, PermissionsExt as _},
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
 };
 
 use agent_host_contract::{AgentHostHandle, SessionReference, SessionStatus};
@@ -622,7 +620,6 @@ impl ChannelIpcClient {
 
 pub(crate) struct ChannelIpcServer {
     socket_path: PathBuf,
-    attached_sessions: Arc<Mutex<HashSet<String>>>,
     shutdown: watch::Sender<bool>,
     failed: watch::Receiver<bool>,
     task: Option<JoinHandle<io::Result<()>>>,
@@ -654,10 +651,8 @@ impl ChannelIpcServer {
         fs::set_permissions(&paths.socket, fs::Permissions::from_mode(0o600))?;
         let (shutdown, receiver) = watch::channel(false);
         let (failed_sender, failed) = watch::channel(false);
-        let attached_sessions = Arc::new(Mutex::new(HashSet::new()));
         let socket_path = paths.socket.clone();
         let server_socket = socket_path.clone();
-        let server_sessions = attached_sessions.clone();
         let capabilities = IpcCapabilities {
             agent_host,
             channel_gateway,
@@ -667,14 +662,7 @@ impl ChannelIpcServer {
             sub_agent_host,
         };
         let task = tokio::spawn(async move {
-            let result = serve(
-                listener,
-                receiver,
-                authentication,
-                capabilities,
-                server_sessions,
-            )
-            .await;
+            let result = serve(listener, receiver, authentication, capabilities).await;
             if result.is_err() {
                 failed_sender.send_replace(true);
             }
@@ -683,7 +671,6 @@ impl ChannelIpcServer {
         });
         Ok(Self {
             socket_path,
-            attached_sessions,
             shutdown,
             failed,
             task: Some(task),
@@ -701,13 +688,6 @@ impl ChannelIpcServer {
         };
         task.await
             .map_err(|error| io::Error::other(error.to_string()))?
-    }
-
-    pub(crate) fn attached_session_ids(&self) -> Vec<String> {
-        self.attached_sessions
-            .lock()
-            .map(|sessions| sessions.iter().cloned().collect())
-            .unwrap_or_default()
     }
 }
 
@@ -790,7 +770,6 @@ async fn serve(
     mut shutdown: watch::Receiver<bool>,
     authentication: String,
     capabilities: IpcCapabilities,
-    attached_sessions: Arc<Mutex<HashSet<String>>>,
 ) -> io::Result<()> {
     let mut connections = JoinSet::new();
     loop {
@@ -806,7 +785,6 @@ async fn serve(
                     stream,
                     authentication.clone(),
                     capabilities.clone(),
-                    attached_sessions.clone(),
                 ));
             }
             _ = connections.join_next(), if !connections.is_empty() => {}
@@ -821,7 +799,6 @@ async fn handle_connection(
     stream: UnixStream,
     authentication: String,
     capabilities: IpcCapabilities,
-    attached_sessions: Arc<Mutex<HashSet<String>>>,
 ) {
     let (reader, mut writer) = stream.into_split();
     let Ok(frame) = read_frame(&mut BufReader::new(reader), MAX_REQUEST_BYTES).await else {
@@ -839,7 +816,7 @@ async fn handle_connection(
     } else if !constant_time_equal(request.authentication.as_bytes(), authentication.as_bytes()) {
         wire_failure("authentication", "Unauthorized")
     } else {
-        dispatch(request, capabilities, attached_sessions).await
+        dispatch(request, capabilities).await
     };
     let response = WireResponse::new(request_id, outcome);
     let Ok(mut bytes) = serde_json::to_vec(&response) else {
@@ -860,11 +837,7 @@ async fn handle_connection(
     let _ = writer.flush().await;
 }
 
-async fn dispatch(
-    request: WireRequest,
-    capabilities: IpcCapabilities,
-    attached_sessions: Arc<Mutex<HashSet<String>>>,
-) -> WireOutcome {
+async fn dispatch(request: WireRequest, capabilities: IpcCapabilities) -> WireOutcome {
     let IpcCapabilities {
         agent_host,
         channel_gateway,
@@ -893,12 +866,7 @@ async fn dispatch(
                 Err(error) => return error,
             };
             match channel_gateway.attach_channel(call_context(), input).await {
-                Ok(output) => {
-                    if let Ok(mut sessions) = attached_sessions.lock() {
-                        sessions.insert(output.session_id.clone());
-                    }
-                    encode_output(output, capability)
-                }
+                Ok(output) => encode_output(output, capability),
                 Err(error) => wire_call_error(error),
             }
         }
