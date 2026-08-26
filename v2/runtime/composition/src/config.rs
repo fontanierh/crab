@@ -5,6 +5,7 @@ use std::{
 };
 
 use agent_host_implementation::{AgentProtocol, AuthorityProbeConfig, ConfiguredAgent};
+use bridge_host_contract::{AuthenticationMethod, BridgeIngressMode, BridgeSpec};
 use serde::Deserialize;
 use serde_json::{Map, Value};
 
@@ -22,6 +23,9 @@ pub struct RuntimeConfig {
     pub channels: Vec<ChannelConfig>,
     /// Durable trigger lanes drained by background workers.
     pub lanes: Vec<LaneConfig>,
+    /// Package-defined bridges reconciled against durable registrations at startup.
+    #[serde(default)]
+    pub bridges: Vec<BridgeConfig>,
 }
 
 /// One ACP harness command. Environment values are always read by name at runtime.
@@ -112,6 +116,76 @@ pub struct LaneConfig {
     pub max_attempts: u64,
     /// Idle delay between bounded drain calls.
     pub poll_interval_ms: u64,
+}
+
+/// One bridge package and its immutable ingress/supervision policy.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct BridgeConfig {
+    /// Stable registration identity.
+    pub bridge_id: String,
+    /// Stable package identity.
+    pub package_id: String,
+    /// Operator-facing label.
+    pub display_name: String,
+    /// Absolute path or path relative to the runtime configuration file.
+    pub executable: PathBuf,
+    /// Exact executable arguments without shell evaluation.
+    #[serde(default)]
+    pub arguments: Vec<String>,
+    /// Environment values are copied at launch by name and never serialized into durable state.
+    #[serde(default)]
+    pub environment_from: Vec<String>,
+    /// Absolute path or path relative to the runtime configuration file.
+    pub working_directory: PathBuf,
+    /// Non-secret package configuration.
+    #[serde(default = "empty_object")]
+    pub configuration: Value,
+    /// Authentication presentations supported by the package.
+    #[serde(default)]
+    pub authentication_methods: Vec<BridgeAuthenticationConfig>,
+    /// Fixed ingress behavior for this bridge generation.
+    pub ingress_mode: BridgeIngressConfig,
+    /// Whether the package should be supervised.
+    pub desired_running: bool,
+    /// Delay between live health probes.
+    pub health_interval_ms: u64,
+    /// Delay between active credential validations.
+    pub credential_validation_interval_ms: u64,
+    /// Maximum process starts within the restart window.
+    pub restart_limit: u64,
+    /// Restart-budget window and maximum backoff.
+    pub restart_window_ms: u64,
+}
+
+/// Authentication presentation selected from the generic bridge contract.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub enum BridgeAuthenticationConfig {
+    /// Renderable QR payload.
+    QrCode,
+    /// Phone-number link code.
+    PhoneCode,
+    /// OAuth redirect flow.
+    OAuth,
+    /// Browser-owned flow.
+    Browser,
+    /// Terminal-owned flow.
+    Terminal,
+    /// Package-defined manual flow.
+    Manual,
+}
+
+/// How an inbound bridge event contributes to agent work.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub enum BridgeIngressConfig {
+    /// Wait in FIFO order.
+    Queue,
+    /// Contribute to compatible active work.
+    Steer,
+    /// Cancel active work before steering immediately.
+    InterruptAndSteer,
 }
 
 /// Safe configuration failures. Values from referenced environment variables are never retained.
@@ -208,6 +282,10 @@ impl RuntimeConfig {
             .transpose()
     }
 
+    pub(crate) fn bridge_specs(&self) -> Result<Vec<BridgeSpec>, RuntimeConfigError> {
+        self.bridges.iter().map(BridgeConfig::spec).collect()
+    }
+
     fn resolve_paths(&mut self, base: &Path) {
         for agent in &mut self.agents {
             resolve_command_path(base, &mut agent.executable);
@@ -218,6 +296,10 @@ impl RuntimeConfig {
             if let Some(path) = &mut channel.bootstrap_prompt_file {
                 resolve_path(base, path);
             }
+        }
+        for bridge in &mut self.bridges {
+            resolve_command_path(base, &mut bridge.executable);
+            resolve_path(base, &mut bridge.working_directory);
         }
     }
 
@@ -270,7 +352,81 @@ impl RuntimeConfig {
                 return Err(RuntimeConfigError::InvalidTopology);
             }
         }
+        let mut bridge_ids = HashSet::new();
+        for bridge in &self.bridges {
+            let unique_methods = bridge
+                .authentication_methods
+                .iter()
+                .copied()
+                .collect::<HashSet<_>>();
+            if bridge.bridge_id.trim().is_empty()
+                || bridge.package_id.trim().is_empty()
+                || bridge.display_name.trim().is_empty()
+                || bridge.executable.as_os_str().is_empty()
+                || !bridge.executable.is_absolute()
+                || bridge.working_directory.as_os_str().is_empty()
+                || !bridge.working_directory.is_absolute()
+                || !bridge.configuration.is_object()
+                || !valid_environment_names(&bridge.environment_from)
+                || unique_methods.len() != bridge.authentication_methods.len()
+                || bridge.health_interval_ms == 0
+                || bridge.credential_validation_interval_ms == 0
+                || bridge.restart_limit == 0
+                || bridge.restart_window_ms == 0
+                || !bridge_ids.insert(bridge.bridge_id.as_str())
+            {
+                return Err(RuntimeConfigError::InvalidTopology);
+            }
+            if let Some(target) = bridge.configuration.get("targetChannelId")
+                && (!target.is_string() || !channels.contains(target.as_str().unwrap_or_default()))
+            {
+                return Err(RuntimeConfigError::InvalidTopology);
+            }
+        }
         Ok(())
+    }
+}
+
+impl BridgeConfig {
+    fn spec(&self) -> Result<BridgeSpec, RuntimeConfigError> {
+        let launch_json = serde_json::to_string(&serde_json::json!({
+            "executable": self.executable,
+            "arguments": self.arguments,
+            "workingDirectory": self.working_directory,
+            "environmentNames": self.environment_from,
+        }))
+        .map_err(|_| RuntimeConfigError::InvalidTopology)?;
+        let configuration_json = serde_json::to_string(&self.configuration)
+            .map_err(|_| RuntimeConfigError::InvalidTopology)?;
+        Ok(BridgeSpec {
+            bridge_id: self.bridge_id.clone(),
+            package_id: self.package_id.clone(),
+            display_name: self.display_name.clone(),
+            launch_json,
+            configuration_json,
+            authentication_methods: self
+                .authentication_methods
+                .iter()
+                .map(|method| match method {
+                    BridgeAuthenticationConfig::QrCode => AuthenticationMethod::QrCode,
+                    BridgeAuthenticationConfig::PhoneCode => AuthenticationMethod::PhoneCode,
+                    BridgeAuthenticationConfig::OAuth => AuthenticationMethod::OAuth,
+                    BridgeAuthenticationConfig::Browser => AuthenticationMethod::Browser,
+                    BridgeAuthenticationConfig::Terminal => AuthenticationMethod::Terminal,
+                    BridgeAuthenticationConfig::Manual => AuthenticationMethod::Manual,
+                })
+                .collect(),
+            ingress_mode: match self.ingress_mode {
+                BridgeIngressConfig::Queue => BridgeIngressMode::Queue,
+                BridgeIngressConfig::Steer => BridgeIngressMode::Steer,
+                BridgeIngressConfig::InterruptAndSteer => BridgeIngressMode::InterruptAndSteer,
+            },
+            desired_running: self.desired_running,
+            health_interval_ms: self.health_interval_ms,
+            credential_validation_interval_ms: self.credential_validation_interval_ms,
+            restart_limit: self.restart_limit,
+            restart_window_ms: self.restart_window_ms,
+        })
     }
 }
 
@@ -334,6 +490,17 @@ mod tests {
                 "lane": "primary", "workerId": "runtime-1", "batchLimit": 16,
                 "leaseDurationMs": 30000, "retryDelayMs": 1000, "maxAttempts": 3,
                 "pollIntervalMs": 25
+              }],
+              "bridges": [{
+                "bridgeId": "whatsapp", "packageId": "crab.whatsapp",
+                "displayName": "WhatsApp", "executable": "../bridges/whatsapp/src/index.js",
+                "arguments": [], "environmentFrom": ["PATH"],
+                "workingDirectory": "../bridges/whatsapp",
+                "configuration": {"targetChannelId":"primary","browserName":"Crab"},
+                "authenticationMethods": ["qrCode", "phoneCode"],
+                "ingressMode": "queue", "desiredRunning": true,
+                "healthIntervalMs": 5000, "credentialValidationIntervalMs": 3600000,
+                "restartLimit": 5, "restartWindowMs": 300000
               }]
             }"#,
         )
@@ -348,6 +515,14 @@ mod tests {
             directory.path().join("workspace")
         );
         assert_eq!(config.lanes[0].max_attempts, 3);
+        assert_eq!(
+            config.bridges[0].executable,
+            directory.path().join("../bridges/whatsapp/src/index.js")
+        );
+        let spec = &config.bridge_specs().expect("bridge specs encode")[0];
+        assert!(spec.launch_json.contains("PATH"));
+        assert!(!spec.launch_json.contains("secret"));
+        assert_eq!(spec.authentication_methods.len(), 2);
     }
 
     #[test]

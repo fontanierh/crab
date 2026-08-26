@@ -1,0 +1,9 @@
+flowchart LR
+    CONFIG[runtime bridge config] --> DIFF{compare catalog}
+    CATALOG[(durable catalog)] --> DIFF
+    DIFF -->|new| REGISTER[register]
+    DIFF -->|same| RESTORE[restore]
+    DIFF -->|changed| REPLACE[replace generation]
+    DIFF -->|removed| STOP[stop durably]
+    SHUTDOWN[runtime shutdown] --> SUSPEND[suspend processes]
+    SUSPEND --> CATALOG

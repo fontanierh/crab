@@ -36,5 +36,27 @@
       "maxAttempts": 3,
       "pollIntervalMs": 100
     }
+  ],
+  "bridges": [
+    {
+      "bridgeId": "whatsapp",
+      "packageId": "crab.whatsapp",
+      "displayName": "WhatsApp",
+      "executable": "../bridges/whatsapp/src/index.js",
+      "arguments": [],
+      "environmentFrom": ["PATH"],
+      "workingDirectory": "../bridges/whatsapp",
+      "configuration": {
+        "targetChannelId": "primary",
+        "browserName": "Crab"
+      },
+      "authenticationMethods": ["qrCode", "phoneCode"],
+      "ingressMode": "queue",
+      "desiredRunning": true,
+      "healthIntervalMs": 5000,
+      "credentialValidationIntervalMs": 3600000,
+      "restartLimit": 5,
+      "restartWindowMs": 300000
+    }
   ]
 }

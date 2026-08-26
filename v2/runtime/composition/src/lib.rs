@@ -120,6 +120,14 @@ pub enum RuntimeStartError {
     UnbindChannel(boxology_contract::CallError<native_channel_contract::NativeChannelError>),
     /// A durable channel route could not be registered.
     PutRoute(boxology_contract::CallError<turn_router_contract::TurnRouterError>),
+    /// Durable bridge registrations could not be listed.
+    ListBridges(boxology_contract::CallError<bridge_host_contract::BridgeHostError>),
+    /// A configured bridge could not be registered.
+    RegisterBridge(boxology_contract::CallError<bridge_host_contract::BridgeHostError>),
+    /// A changed configured bridge generation could not be installed.
+    ReplaceBridge(boxology_contract::CallError<bridge_host_contract::BridgeHostError>),
+    /// A bridge removed from configuration could not be stopped.
+    StopBridge(boxology_contract::CallError<bridge_host_contract::BridgeHostError>),
     /// The durable state directory could not be created.
     StateDirectory(std::io::Error),
     /// Boxology rejected the composition graph.
