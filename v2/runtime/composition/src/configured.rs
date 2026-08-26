@@ -43,7 +43,7 @@ pub enum RuntimeRunError {
     AgentHostUnavailable,
     /// A live bridge package could not be suspended cleanly.
     BridgeHostUnavailable,
-    /// The local native-channel endpoint failed or could not shut down cleanly.
+    /// The local capability endpoint failed or could not shut down cleanly.
     ChannelIpcUnavailable,
 }
 
@@ -55,7 +55,7 @@ impl fmt::Display for RuntimeRunError {
             Self::SignalUnavailable => formatter.write_str("shutdown signal is unavailable"),
             Self::AgentHostUnavailable => formatter.write_str("ACP session shutdown failed"),
             Self::BridgeHostUnavailable => formatter.write_str("bridge shutdown failed"),
-            Self::ChannelIpcUnavailable => formatter.write_str("local channel IPC failed"),
+            Self::ChannelIpcUnavailable => formatter.write_str("local IPC failed"),
         }
     }
 }
@@ -95,6 +95,7 @@ impl ConfiguredRuntime {
             paths,
             runtime.channel_gateway().clone(),
             runtime.native_channel().clone(),
+            runtime.trigger_inbox().clone(),
         )
         .await
         {
@@ -568,7 +569,7 @@ impl fmt::Display for RuntimeStartError {
             Self::RegisterBridge(_) => "bridge registration failed",
             Self::ReplaceBridge(_) => "bridge replacement failed",
             Self::StopBridge(_) => "stale bridge cleanup failed",
-            Self::ChannelIpc(_) => "local channel IPC startup failed",
+            Self::ChannelIpc(_) => "local IPC startup failed",
             Self::StateDirectory(_) => "state-directory startup failed",
             Self::Assembly(_) => "Boxology assembly failed",
         };
@@ -1248,6 +1249,7 @@ mod tests {
             paths.clone(),
             graph.channel_gateway.clone(),
             graph.native_channel.clone(),
+            graph.trigger_inbox.clone(),
         )
         .await
         .expect("IPC starts");
@@ -1256,6 +1258,7 @@ mod tests {
                 paths.clone(),
                 graph.channel_gateway.clone(),
                 graph.native_channel.clone(),
+                graph.trigger_inbox.clone(),
             )
             .await,
             Err(ChannelIpcStartupError::AlreadyRunning)
@@ -1331,6 +1334,7 @@ mod tests {
             paths.clone(),
             graph.channel_gateway.clone(),
             graph.native_channel.clone(),
+            graph.trigger_inbox.clone(),
         )
         .await
         .expect("IPC restarts");
@@ -1361,6 +1365,7 @@ mod tests {
             paths,
             graph.channel_gateway.clone(),
             graph.native_channel.clone(),
+            graph.trigger_inbox.clone(),
         )
         .await
         .expect("IPC starts");
@@ -1573,24 +1578,38 @@ mod tests {
         let sessions = initialize_topology_with_handles(graph.handles(), &config)
             .await
             .expect("topology starts");
-        let receipt = graph
-            .trigger_inbox
-            .enqueue(
-                call_context(),
-                EnqueueTrigger {
-                    source: TriggerSource::Operator,
-                    source_id: "runtime-test".into(),
-                    deduplication_key: "worker-turn-1".into(),
-                    target_channel_id: "primary".into(),
-                    lane: "primary".into(),
-                    mode: TriggerMode::Queue,
-                    not_before_ms: 0,
-                    message_json: r#"{"text":"hello"}"#.into(),
-                    attachments: Vec::new(),
-                },
-            )
+        let paths = ChannelIpcPaths::for_state_directory(directory.path()).expect("paths resolve");
+        let mut server = ChannelIpcServer::start(
+            paths,
+            graph.channel_gateway.clone(),
+            graph.native_channel.clone(),
+            graph.trigger_inbox.clone(),
+        )
+        .await
+        .expect("IPC starts");
+        let client =
+            ChannelIpcClient::from_state_directory(directory.path()).expect("client opens");
+        let trigger = EnqueueTrigger {
+            source: TriggerSource::Operator,
+            source_id: "runtime-test".into(),
+            deduplication_key: "worker-turn-1".into(),
+            target_channel_id: "primary".into(),
+            lane: "primary".into(),
+            mode: TriggerMode::Queue,
+            not_before_ms: 0,
+            message_json: r#"{"text":"hello"}"#.into(),
+            attachments: Vec::new(),
+        };
+        let receipt = client
+            .enqueue_trigger(trigger.clone())
             .await
-            .expect("trigger enqueues");
+            .expect("trigger enqueues through authenticated IPC");
+        let duplicate = client
+            .enqueue_trigger(trigger)
+            .await
+            .expect("retry returns the durable trigger");
+        assert_eq!(duplicate.trigger_id, receipt.trigger_id);
+        assert!(duplicate.deduplicated);
         let (shutdown, receiver) = watch::channel(false);
         let mut workers = JoinSet::new();
         spawn_lane_worker(
@@ -1633,6 +1652,7 @@ mod tests {
             assert_eq!(state.prompts.len(), 1);
             assert!(state.prompts[0].native_prompt_json.contains("hello"));
         }
+        server.shutdown().await.expect("IPC shuts down");
         assert!(close_sessions(&graph.agent_host, &sessions).await);
     }
 }

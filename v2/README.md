@@ -72,7 +72,9 @@ interrupt as a separate explicit action.
   crash recovery cannot be honored. See its [state contract](docs/sub-agent-host-storage.md) and
   [rendered flow](docs/sub-agent-host-flow.png).
 - `trigger-inbox` is implemented with durable deduplication, FIFO leases and restart recovery.
-  Its [storage contract](docs/trigger-inbox-storage.md) is schema-versioned from day one.
+  `crab-v2-trigger` exposes its enqueue capability through owner-only authenticated local IPC for
+  cron, self-work and operator ingress. Its
+  [storage contract](docs/trigger-inbox-storage.md) is schema-versioned from day one.
 - `turn-router` resolves bridge/scheduler/self-work ingress without pretending those sources are
   native channels. It serializes each lane, maps queue/steer/interrupt explicitly, and settles only
   after durable channel acceptance. See its [state contract](docs/turn-router-storage.md) and

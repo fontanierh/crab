@@ -135,7 +135,7 @@ pub enum RuntimeStartError {
     ReplaceBridge(boxology_contract::CallError<bridge_host_contract::BridgeHostError>),
     /// A bridge removed from configuration could not be stopped.
     StopBridge(boxology_contract::CallError<bridge_host_contract::BridgeHostError>),
-    /// The authenticated local native-channel endpoint could not start.
+    /// The authenticated local capability endpoint could not start.
     ChannelIpc(ChannelIpcStartupError),
     /// The durable state directory could not be created.
     StateDirectory(std::io::Error),

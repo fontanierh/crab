@@ -1,7 +1,8 @@
-# Native channel IPC
+# Local capability IPC
 
 The long-running Crab runtime exposes selected generated Boxology capabilities through one local
-Unix socket. UI adapters attach to Crab; they never inherit ownership of the underlying ACP agent.
+Unix socket. UI adapters attach to Crab without inheriting agent ownership; trigger producers
+enqueue durably without opening or writing the inbox database.
 
 ![Authenticated local channel flow](channel-ipc-flow.png)
 
@@ -12,6 +13,7 @@ Unix socket. UI adapters attach to Crab; they never inherit ownership of the und
 | `native-channel.interrupt_and_drain` | `native-channel` |
 | `native-channel.channel_status` | `native-channel` |
 | `native-channel.replay_native_events` | `native-channel` |
+| `trigger-inbox.enqueue` | `trigger-inbox` |
 
 ## Boundary
 
@@ -25,3 +27,5 @@ Unix socket. UI adapters attach to Crab; they never inherit ownership of the und
   diagnostics and credentials are not forwarded.
 - Client disconnect only closes that transport connection. Session replacement and shutdown remain
   explicit Crab operations.
+- The token is loaded from the state directory by the local client. It never appears in CLI
+  arguments, output or trigger records.
