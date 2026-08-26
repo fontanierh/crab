@@ -1,0 +1,19 @@
+{
+  "name": "@crab/whatsapp-bridge",
+  "version": "0.0.0",
+  "private": true,
+  "description": "First-party WhatsApp bridge package for Crab v2",
+  "type": "module",
+  "bin": {
+    "crab-v2-whatsapp-bridge": "src/index.js"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@whiskeysockets/baileys": "7.0.0-rc14"
+  }
+}
