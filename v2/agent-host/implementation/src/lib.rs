@@ -19,7 +19,7 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use actor::{SessionCommand, SessionHandle, spawn_session};
+use actor::{SessionCommand, SessionHandle, SessionLaunch, spawn_session};
 use authority::SharedAuthorityVerifier;
 use serde_json::{Map, Value};
 use store::AgentStore;
@@ -238,14 +238,76 @@ impl AgentHost {
             self.clock.clone(),
             session_id.clone(),
             preflight.working_directory.into(),
-            request.bootstrap_prompt,
+            SessionLaunch::New {
+                bootstrap_prompt: request.bootstrap_prompt,
+            },
             metadata,
             state_directory,
         );
         let opened = tokio::time::timeout(CONTROL_TIMEOUT, opened).await;
         let session = match opened {
             Ok(Ok(Ok(session))) => session,
-            Ok(Ok(Err(error))) => return Err(error),
+            Ok(Ok(Err(error))) => {
+                self.store
+                    .set_lifecycle(&session_id, &AgentLifecycle::Failed, (self.clock)()?)?;
+                return Err(error);
+            }
+            Ok(Err(_)) | Err(_) => {
+                let (reply, _) = oneshot::channel();
+                let _ = handle.commands.try_send(SessionCommand::Close { reply });
+                self.store
+                    .set_lifecycle(&session_id, &AgentLifecycle::Failed, (self.clock)()?)?;
+                return Err(AgentHostError::TransportFailed);
+            }
+        };
+        self.sessions.write().await.insert(session_id, handle);
+        Ok(session)
+    }
+
+    pub async fn resume_session(
+        &self,
+        context: boxology::CallContext,
+        request: ResumeSessionRequest,
+    ) -> Result<AgentSession, AgentHostError> {
+        let _ = context;
+        let recoverable = self.store.recoverable_session(&request.session_id)?;
+        let metadata = serde_json::from_str::<Map<String, Value>>(&recoverable.metadata_json)
+            .map_err(|_| AgentHostError::InvalidNativePayload)?;
+        let agent = self
+            .agents
+            .get(&recoverable.agent_id)
+            .cloned()
+            .ok_or(AgentHostError::UnknownAgent)?;
+        if agent.protocol.profile() != recoverable.protocol_profile {
+            return Err(AgentHostError::SessionResumeUnavailable);
+        }
+        let preflight = self
+            .run_preflight(&recoverable.agent_id, &recoverable.working_directory)
+            .await?;
+        self.store
+            .prepare_resume(&request.session_id, &preflight.authority, (self.clock)()?)?;
+        let state_directory = self.state_directory.clone();
+        let session_id = request.session_id;
+        let (handle, opened) = spawn_session(
+            agent,
+            self.store.clone(),
+            self.clock.clone(),
+            session_id.clone(),
+            preflight.working_directory.into(),
+            SessionLaunch::Resume {
+                native_session_id: recoverable.native_session_id,
+            },
+            metadata,
+            state_directory,
+        );
+        let opened = tokio::time::timeout(CONTROL_TIMEOUT, opened).await;
+        let session = match opened {
+            Ok(Ok(Ok(session))) => session,
+            Ok(Ok(Err(error))) => {
+                self.store
+                    .set_lifecycle(&session_id, &AgentLifecycle::Failed, (self.clock)()?)?;
+                return Err(error);
+            }
             Ok(Err(_)) | Err(_) => {
                 let (reply, _) = oneshot::channel();
                 let _ = handle.commands.try_send(SessionCommand::Close { reply });
@@ -404,6 +466,7 @@ mod tests {
                 "discover_agents",
                 "preflight",
                 "open_session",
+                "resume_session",
                 "prompt",
                 "read_events",
                 "resolve_permission",

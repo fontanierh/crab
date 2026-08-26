@@ -11,6 +11,8 @@ view.
 - Unknown schema versions fail closed with `StorageUnavailable`.
 - A process cannot survive a Crab restart. Reopening marks `Starting`, `Ready`, `Busy`, or
   `Stopping` sessions and their unfinished prompts as `Failed`; their native events remain readable.
+  An explicit [native resume](agent-session-resume.md) may reconnect a failed session without
+  changing either identity or replaying Crab bootstrap context.
 
 ## Durable invariants
 
@@ -21,7 +23,8 @@ view.
 - ACP v2 steering contributes to the active run; queued prompts wait for an `idle` state update.
 - Permission requests and the automatically selected strongest allow response are audit records,
   never human-gated work.
-- Configured stdio MCP declarations are attached to every `session/new`. Crab injects canonical
-  state/workspace paths and session identity; draft ACP v2 must advertise `session.mcp.stdio`.
+- Configured stdio MCP declarations are attached to every `session/new` and `session/resume`. Crab
+  injects canonical state/workspace paths and session identity; draft ACP v2 must advertise
+  `session.mcp.stdio`.
 - Closing sends the native `session/close` request. Dropping a host tears down every remaining ACP
   process group through the official SDK transport guard.

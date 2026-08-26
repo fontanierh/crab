@@ -126,6 +126,12 @@ boxology::contract! {
         pub metadata_json: String,
     }
 
+    /// Reconnect one failed durable Crab session to the same native ACP session. Agent identity,
+    /// working directory, metadata and native session identity come only from durable host state.
+    pub struct ResumeSessionRequest {
+        pub session_id: String,
+    }
+
     pub struct AgentSession {
         /// Crab's durable identifier, independent from any agent-specific identifier format.
         pub session_id: String,
@@ -273,6 +279,7 @@ boxology::contract! {
         UnknownPermission,
         InvalidCursor,
         InvalidNativePayload,
+        SessionResumeUnavailable,
         TransportFailed,
         StorageUnavailable,
     }
@@ -288,6 +295,12 @@ boxology::contract! {
     /// Spawn an ACP process, negotiate the protocol, and open a new native ACP session.
     #[capability]
     pub async fn open_session(request: OpenSessionRequest) -> Result<AgentSession, AgentHostError>;
+
+    /// Resume one failed durable session through native ACP. This re-runs authority checks,
+    /// reconnects configured MCP servers and verifies required session policy. It never sends the
+    /// original bootstrap prompt or retries prompts that were active when the process failed.
+    #[capability]
+    pub async fn resume_session(request: ResumeSessionRequest) -> Result<AgentSession, AgentHostError>;
 
     /// Submit input without waiting for work to finish. `Queue` is portable. `Steer` uses the ACP
     /// v2 prompt lifecycle or a negotiated extension and fails rather than silently becoming queue.

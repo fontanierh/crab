@@ -54,7 +54,10 @@ interrupt as a separate explicit action.
   semantics—not service-specific behavior. WhatsApp is the first intended first-party package.
 - Tests target useful contract and composition behavior. There is no percentage coverage gate.
 - `agent-host` runs real ACP v1/v2 subprocesses with mandatory authority preflight, durable
-  prompts/events/permissions, queue/steer/cancel, and native process-group shutdown. Its
+  prompts/events/permissions, queue/steer/cancel, explicit native resume, and process-group
+  shutdown. Recovery preserves both session IDs and the event cursor while revalidating authority,
+  MCP tools and required policy; it never replays bootstrap or owns compaction. See the
+  [resume flow](docs/agent-session-resume.md). Its
   [state contract](docs/agent-host-storage.md) is schema-versioned from day one; the
   [rendered flow](docs/agent-host-flow.png) shows the process boundary.
 - `native-channel` is a durable Boxology consumer of `agent-host`: it binds one UI to one session,
