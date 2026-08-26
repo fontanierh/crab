@@ -83,6 +83,13 @@ boxology::contract! {
         pub registered_at_ms: u64,
     }
 
+    /// Non-secret durable registrations ordered by bridge identity.
+    pub struct BridgeCatalog {
+        pub bridges: Vec<BridgeRecord>,
+    }
+
+    pub struct ListBridgesRequest {}
+
     pub struct BridgeReference {
         pub bridge_id: String,
     }
@@ -242,6 +249,10 @@ boxology::contract! {
     /// Register a package-defined bridge under generic Crab supervision.
     #[capability]
     pub async fn register_bridge(request: BridgeSpec) -> Result<BridgeRecord, BridgeHostError>;
+
+    /// List durable registrations without package configuration or credential material.
+    #[capability]
+    pub async fn list_bridges(request: ListBridgesRequest) -> Result<BridgeCatalog, BridgeHostError>;
 
     /// Install a new immutable generation; ingress mode changes only through this operation.
     #[capability]
