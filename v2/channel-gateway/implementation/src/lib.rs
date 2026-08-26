@@ -5,9 +5,10 @@ pub use contract::*;
 use std::path::Path;
 
 use boxology_contract::{CallContext, ErasedCallError};
-use boxology_import_agent_host::{OpenSessionRequest, SessionReference};
+use boxology_import_agent_host::{OpenSessionRequest, ResumeSessionRequest, SessionReference};
 use boxology_import_native_channel::{
-    BindChannelRequest, BindingReference, LocateBindingRequest, ReplaceSessionRequest,
+    BindChannelRequest, BindingReference, LocateBindingRequest, RecoverSessionRequest,
+    ReplaceSessionRequest,
 };
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -114,6 +115,42 @@ impl ChannelGateway {
                     binding,
                     ChannelAttachmentDisposition::ReusedLiveSession,
                 ));
+            }
+
+            if binding.native_channel_json == desired_channel_json {
+                match self
+                    .agent_host
+                    .resume_session(
+                        context.clone(),
+                        ResumeSessionRequest {
+                            session_id: binding.session_id.clone(),
+                        },
+                    )
+                    .await
+                {
+                    Ok(session) if session.session_id == binding.session_id => {
+                        let recovered = self
+                            .native_channel
+                            .recover_session(
+                                context.clone(),
+                                RecoverSessionRequest {
+                                    binding_id: binding.binding_id,
+                                    expected_session_id: binding.session_id,
+                                },
+                            )
+                            .await
+                            .map_err(map_channel_error)?;
+                        return Ok(attachment(
+                            recovered,
+                            ChannelAttachmentDisposition::ResumedUnavailableSession,
+                        ));
+                    }
+                    Ok(_) => return Err(ChannelGatewayError::AgentUnavailable),
+                    Err(error)
+                        if has_domain_tag(&error, "SessionResumeUnavailable")
+                            || has_domain_tag(&error, "UnknownSession") => {}
+                    Err(error) => return Err(map_agent_error(error)),
+                }
             }
 
             let session_id = self.open_session(context.clone(), &request).await?;

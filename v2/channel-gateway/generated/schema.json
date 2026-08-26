@@ -4,8 +4,9 @@
     {
       "deprecation": null,
       "docs": [
-        " Attach idempotently. A matching live binding is reused; only an unavailable physical ACP",
-        " session may be replaced. A changed request never replaces a live session implicitly."
+        " Attach idempotently. A matching live binding is reused. An unavailable session is resumed",
+        " before explicit unsupported/missing recovery falls back to replacement. A changed request",
+        " never replaces a live session implicitly."
       ],
       "error": "ChannelGatewayError",
       "id": "channel-gateway.attach_channel",
@@ -25,9 +26,9 @@
   "provenance": {
     "generator": "boxology-generator",
     "generator_version": "0.1.1",
-    "semantic_digest": "sha256:6a9ce1fdefbac34313c01c8c7122cd39b731efb0b6c770fc10dbab4019d68a48"
+    "semantic_digest": "sha256:fb0331b22140be96282ab8c655a516a25c9eecad0b8f861e5b7777349ea9335e"
   },
-  "revision": "sha256:260a8030aa670231a0d76f7c05e1324a8758bbe88d21fa86b77a61fba3c8c91d",
+  "revision": "sha256:4e2b5ed12d994a0cc20c15039aae7c8aac334c99f7a560823c1458648429d418",
   "schema_format": 1,
   "types": [
     {
@@ -47,6 +48,11 @@
           "deprecation": null,
           "docs": [],
           "name": "ReusedLiveSession"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "ResumedUnavailableSession"
         },
         {
           "deprecation": null,

@@ -119,10 +119,13 @@ never opens runtime state directly. See the [operator flow](bridge-operations.md
 | Persisted state | Startup action |
 |---|---|
 | Matching live binding | Reuse its session; never start a duplicate process |
-| Matching unavailable binding | Open one ACP session and atomically replace session + adapter metadata |
+| Matching unavailable binding | Resume the exact ACP session and recover the binding without changing IDs or delivery cursors |
+| Resume explicitly unsupported / native session missing | Open one ACP session and atomically replace session + adapter metadata |
+| Resume authority, storage or transport failure | Fail closed; never hide the fault behind replacement |
 | Binding created before route CAS | Find it by channel/adapter identity, recover it, then register the route |
 | No binding | Open one ACP session, bind it, then register the route |
 | Changed intent with a live session | Fail with an attachment conflict; never replace live work implicitly |
+| Changed intent with an unavailable session | Open one ACP session and atomically replace session + adapter metadata |
 
 Agent-owned compaction is not resumed or reconstructed. Durable trigger IDs still deduplicate
 retries, and each configured lane is drained serially until SIGINT/SIGTERM stops workers and closes

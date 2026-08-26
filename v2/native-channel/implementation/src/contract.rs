@@ -131,6 +131,13 @@ boxology::contract! {
         pub reason: String,
     }
 
+    /// Reattach a failed binding after its exact ACP session was resumed. Unlike replacement this
+    /// preserves session identity plus publication and reconciliation cursors.
+    pub struct RecoverSessionRequest {
+        pub binding_id: String,
+        pub expected_session_id: String,
+    }
+
     pub struct BindingReference {
         pub binding_id: String,
     }
@@ -211,6 +218,10 @@ boxology::contract! {
     /// Atomically bind a fresh ACP session after explicit close/reopen by the caller.
     #[capability]
     pub async fn replace_session(request: ReplaceSessionRequest) -> Result<ChannelBinding, NativeChannelError>;
+
+    /// Mark one failed binding attached after proving its unchanged ACP session is available.
+    #[capability]
+    pub async fn recover_session(request: RecoverSessionRequest) -> Result<ChannelBinding, NativeChannelError>;
 
     #[capability]
     pub async fn channel_status(request: BindingReference) -> Result<ChannelStatus, NativeChannelError>;

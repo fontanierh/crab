@@ -118,6 +118,25 @@
     },
     {
       "deprecation": null,
+      "docs": [
+        " Mark one failed binding attached after proving its unchanged ACP session is available."
+      ],
+      "error": "NativeChannelError",
+      "id": "native-channel.recover_session",
+      "idempotency": "none",
+      "input": {
+        "name": "request",
+        "type": "RecoverSessionRequest"
+      },
+      "max_exposure": "code_only",
+      "name": "recover_session",
+      "output": {
+        "type": "ChannelBinding"
+      },
+      "shape": "unary"
+    },
+    {
+      "deprecation": null,
       "docs": [],
       "error": "NativeChannelError",
       "id": "native-channel.channel_status",
@@ -194,9 +213,9 @@
   "provenance": {
     "generator": "boxology-generator",
     "generator_version": "0.1.1",
-    "semantic_digest": "sha256:1c06701a18b35378bb47478f271515d1e65a74d11c043be6d7d5b97e02d6e599"
+    "semantic_digest": "sha256:d5dd7a6c8092fbf4e21132cf6f2869231d6e0ae22ee82e4b00dee4e763aa6484"
   },
-  "revision": "sha256:2788474d5e325e82972fdd03b8296b794267bcd3342e6e1e2a01c25ef15fc6cd",
+  "revision": "sha256:afe38948c3efd58720cd6b994c492070fde7c68e22165f56a7655935482cfa7e",
   "schema_format": 1,
   "types": [
     {
@@ -746,6 +765,29 @@
       ],
       "kind": "struct",
       "name": "ReplaceSessionRequest"
+    },
+    {
+      "deprecation": null,
+      "docs": [
+        " Reattach a failed binding after its exact ACP session was resumed. Unlike replacement this",
+        " preserves session identity plus publication and reconciliation cursors."
+      ],
+      "fields": [
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "binding_id",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "expected_session_id",
+          "type": "String"
+        }
+      ],
+      "kind": "struct",
+      "name": "RecoverSessionRequest"
     },
     {
       "deprecation": null,
