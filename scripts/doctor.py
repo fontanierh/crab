@@ -195,6 +195,86 @@ def collect_checks(
         for name in ("rustc", "cargo", "rustfmt", "clippy"):
             checks.append(Check(name, "info", f"blocked until exact toolchain {pin} is installed"))
 
+    try:
+        v2_pin = pinned_toolchain(root / "v2")
+    except WorkflowError as error:
+        checks.append(
+            Check(
+                "v2-rust-toolchain",
+                "failed",
+                str(error),
+                "restore v2/rust-toolchain.toml and retry",
+            )
+        )
+        v2_pin = None
+    v2_installed = False
+    if rustup_available and v2_pin is not None:
+        returncode, output = _run_check(runner, root, ["rustup", "toolchain", "list"])
+        v2_installed = returncode == 0 and any(
+            line.split()[0] == v2_pin or line.split()[0].startswith(f"{v2_pin}-")
+            for line in output.splitlines()
+            if line.split()
+        )
+    if v2_installed and v2_pin is not None:
+        checks.append(
+            Check("v2-rust-toolchain", "passed", f"exact pin {v2_pin} is installed")
+        )
+        returncode, output = _run_check(runner, root, ["rustc", f"+{v2_pin}", "-V"])
+        version = parse_version(output, "rustc")
+        checks.append(
+            Check(
+                "v2-rustc",
+                "passed" if returncode == 0 and version == v2_pin else "failed",
+                output or "could not resolve pinned v2 rustc",
+                None
+                if returncode == 0 and version == v2_pin
+                else f"rustup toolchain install {v2_pin} --profile minimal --component rustfmt --component clippy",
+            )
+        )
+        component_code, component_output = _run_check(
+            runner,
+            root,
+            ["rustup", "component", "list", "--toolchain", v2_pin, "--installed"],
+        )
+        installed_components = (
+            set(component_output.splitlines()) if component_code == 0 else set()
+        )
+        for component in ("rustfmt", "clippy"):
+            present = any(line.startswith(f"{component}-") for line in installed_components)
+            checks.append(
+                Check(
+                    f"v2-{component}",
+                    "passed" if present else "failed",
+                    "installed for pinned v2 toolchain"
+                    if present
+                    else f"missing for {v2_pin}",
+                    None
+                    if present
+                    else f"rustup component add {component} --toolchain {v2_pin}",
+                )
+            )
+    elif v2_pin is not None:
+        remediation = (
+            f"rustup toolchain install {v2_pin} --profile minimal "
+            "--component rustfmt --component clippy"
+        )
+        checks.append(
+            Check(
+                "v2-rust-toolchain",
+                "failed",
+                f"exact pin {v2_pin} is not installed",
+                remediation,
+            )
+        )
+        for name in ("rustc", "rustfmt", "clippy"):
+            checks.append(
+                Check(
+                    f"v2-{name}",
+                    "info",
+                    f"blocked until exact v2 toolchain {v2_pin} is installed",
+                )
+            )
+
     if which("cargo") and which("cargo-llvm-cov"):
         returncode, output = _run_check(
             runner, root, ["cargo-llvm-cov", "llvm-cov", "--version"]
@@ -248,7 +328,7 @@ def collect_checks(
         )
 
     for executable, purpose in (
-        ("node", "Node runtime used to install or change jscpd"),
+        ("node", "Node runtime for selected v2 bridge tests and jscpd installation"),
         ("npm", f"npm installer for pinned jscpd@{JSCPD_VERSION}"),
     ):
         location = which(executable)

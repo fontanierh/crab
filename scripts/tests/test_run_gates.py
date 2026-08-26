@@ -262,9 +262,11 @@ class OrchestratorTests(unittest.TestCase):
         root = Path("/fixture/repo")
         specs = quality_specs(root, "worktree", "base")
         self.assertEqual(tuple(item.name for item in specs), QUALITY_GATE_NAMES)
-        tests = next(item for item in specs if item.name == "tests")
-        self.assertIn("cargo_target.py", " ".join(tests.command))
-        self.assertIn("cargo test --workspace", " ".join(tests.command))
+        for gate in specs:
+            rendered = " ".join(gate.command)
+            self.assertIn("workspace_gate.py", rendered)
+            self.assertIn("--root-workspace", rendered)
+            self.assertIn("--v2-workspace", rendered)
 
     def test_test_failure_propagates_to_quality_result(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -469,7 +471,8 @@ class OrchestratorTests(unittest.TestCase):
         self.assertIn("check: run fmt", rendered)
         self.assertIn("check: run clippy", rendered)
         self.assertIn("check: run tests", rendered)
-        self.assertIn("--workspace", rendered)
+        self.assertIn("--root-workspace", rendered)
+        self.assertIn("--v2-workspace", rendered)
         self.assertNotIn("check: skip", rendered)
 
     def test_injected_diff_failure_runs_full_workspace_in_dry_and_real_modes(self) -> None:
@@ -509,8 +512,32 @@ class OrchestratorTests(unittest.TestCase):
         self.assertIn("check: fallback:", rendered)
         self.assertEqual([item.name for item in executed], ["fmt", "clippy", "tests"])
         self.assertTrue(all(item.skip_reason is None for item in executed))
-        self.assertIn("--workspace", executed[1].command)
-        self.assertIn("--workspace", executed[2].command)
+        self.assertIn("--root-workspace", executed[1].command)
+        self.assertIn("--v2-workspace", executed[1].command)
+        self.assertIn("--root-workspace", executed[2].command)
+        self.assertIn("--v2-workspace", executed[2].command)
+
+    def test_v2_only_change_selects_v2_without_rebuilding_v1(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            base = init_repo(root)
+            write(root / "v2/runtime/src/lib.rs", "pub fn changed() {}\n")
+            stdout = io.StringIO()
+            with contextlib.redirect_stdout(stdout):
+                code = run_gates_main(
+                    [
+                        "--root",
+                        str(root),
+                        "check",
+                        "--base-sha",
+                        base,
+                        "--dry-run",
+                    ]
+                )
+            rendered = stdout.getvalue()
+        self.assertEqual(code, 0)
+        self.assertIn("--v2-workspace", rendered)
+        self.assertNotIn("--root-workspace", rendered)
 
     def test_resolved_clean_baseline_still_skips_changed_scope_checks(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

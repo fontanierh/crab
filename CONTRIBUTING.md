@@ -13,13 +13,14 @@ make check
 make quality
 ```
 
-`make quality` runs the full-workspace format, Clippy, and test checks. All three must pass before
-opening a PR.
+`make quality` runs format, Clippy, and tests across Crab v1, Crab v2, and first-party v2 bridges.
+All three grouped gates must pass before opening a PR.
 
 ## Prerequisites
 
-- **Rust 1.93.0** via [rustup](https://rustup.rs/), including rustfmt and Clippy
+- **Rust 1.93.0 and 1.97.1** via [rustup](https://rustup.rs/), including rustfmt and Clippy
 - **Python 3.11+**
+- **Node.js 20+** for first-party v2 bridge tests
 - Optional diagnostics: **cargo-llvm-cov 0.6.21**, **jscpd 4.0.5**, and **ripgrep**
 
 `make doctor` checks exact versions and prints remediation without installing anything.

@@ -29,12 +29,18 @@ def fake_runner_factory(
     def runner(command, cwd):
         key = tuple(command)
         if key == ("rustup", "toolchain", "list"):
-            output = f"{pin}-fixture-host\n" if installed else "stable-fixture-host\n"
+            output = (
+                f"{pin}-fixture-host\n1.97.1-fixture-host\n"
+                if installed
+                else "stable-fixture-host\n"
+            )
             return completed(key, output)
         if key == ("python3", "--version"):
             return completed(key, "Python 3.11.9\n")
         if key == ("rustc", f"+{pin}", "-V"):
             return completed(key, f"rustc {pin} (fixture)\n")
+        if key == ("rustc", "+1.97.1", "-V"):
+            return completed(key, "rustc 1.97.1 (fixture)\n")
         if key[:4] == ("rustup", "component", "list", "--toolchain"):
             return completed(
                 key,
@@ -101,6 +107,21 @@ class DoctorTests(unittest.TestCase):
         check = next(item for item in checks if item.name == "rust-toolchain")
         self.assertEqual(check.status, "failed")
         self.assertIn("rustup toolchain install 1.93.0", check.remediation or "")
+
+    def test_v2_toolchain_pin_and_components_are_required(self) -> None:
+        root = Path(__file__).resolve().parents[2]
+        checks = collect_checks(
+            root,
+            environ={},
+            runner=fake_runner_factory("1.93.0"),
+            which=all_tools,
+        )
+        by_name = {check.name: check for check in checks}
+        self.assertEqual(by_name["v2-rust-toolchain"].status, "passed")
+        self.assertIn("1.97.1", by_name["v2-rust-toolchain"].detail)
+        self.assertEqual(by_name["v2-rustc"].status, "passed")
+        self.assertEqual(by_name["v2-rustfmt"].status, "passed")
+        self.assertEqual(by_name["v2-clippy"].status, "passed")
 
     def test_jscpd_skew_is_optional_with_install_guidance(self) -> None:
         root = Path(__file__).resolve().parents[2]

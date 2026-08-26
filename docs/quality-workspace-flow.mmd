@@ -1,0 +1,28 @@
+%%{init: {"theme": "base", "themeVariables": {"fontFamily": "ui-sans-serif, system-ui, sans-serif", "primaryTextColor": "#172033", "lineColor": "#64748b", "edgeLabelBackground": "#ffffff"}, "flowchart": {"curve": "basis", "nodeSpacing": 44, "rankSpacing": 58}}}%%
+flowchart LR
+    PATHS["Git changed paths"]
+    SELECT["conservative selector"]
+    V1["Crab v1<br/>changed crates + dependents"]
+    V2["Crab v2<br/>complete small workspace"]
+    BRIDGES["first-party bridges<br/>Node tests"]
+    GATES["3 grouped gates<br/>format · Clippy · tests"]
+    STATUS["one exact-tree attestation"]
+
+    PATHS --> SELECT
+    SELECT -->|"v1"| V1 --> GATES
+    SELECT -->|"v2"| V2 --> GATES
+    V2 --> BRIDGES --> GATES
+    SELECT -->|"workflow / uncertain"| V1
+    SELECT -->|"workflow / uncertain"| V2
+    GATES --> STATUS
+
+    classDef input fill:#f8fafc,stroke:#64748b,stroke-width:1.5px,color:#172033;
+    classDef select fill:#fee2e2,stroke:#dc2626,stroke-width:2px,color:#7f1d1d;
+    classDef workspace fill:#dbeafe,stroke:#2563eb,stroke-width:2px,color:#172554;
+    classDef gate fill:#ede9fe,stroke:#7c3aed,stroke-width:2px,color:#2e1065;
+    classDef pass fill:#dcfce7,stroke:#16a34a,stroke-width:2px,color:#14532d;
+    class PATHS input;
+    class SELECT select;
+    class V1,V2,BRIDGES workspace;
+    class GATES gate;
+    class STATUS pass;

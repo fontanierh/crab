@@ -20,6 +20,7 @@ from scripts.workflow_common import (
     coverage_target_environment,
     repository_root,
     shell_join,
+    validate_local_directory,
 )
 
 
@@ -28,6 +29,7 @@ def parse_args(arguments: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("mode", choices=("build", "coverage"))
     parser.add_argument("--root", type=Path, help=argparse.SUPPRESS)
+    parser.add_argument("--working-directory", type=Path, default=Path("."))
     parser.add_argument("--dry-run", action="store_true")
     if "--" not in raw_arguments:
         parser.error("a command is required after --")
@@ -44,6 +46,9 @@ def main(arguments: list[str] | None = None) -> int:
     args = parse_args(arguments)
     try:
         root = args.root.resolve() if args.root else repository_root(Path(__file__).resolve().parent)
+        working_directory = validate_local_directory(
+            root, args.working_directory, create=False
+        )
         if args.mode == "coverage":
             environment = coverage_target_environment(
                 root, os.environ, create=not args.dry_run
@@ -72,7 +77,9 @@ def main(arguments: list[str] | None = None) -> int:
         return 0
 
     try:
-        result = subprocess.run(args.command, cwd=root, env=environment, check=False)
+        result = subprocess.run(
+            args.command, cwd=working_directory, env=environment, check=False
+        )
     except KeyboardInterrupt:
         print("cargo-target: interrupted", file=sys.stderr)
         return 1

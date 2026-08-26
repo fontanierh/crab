@@ -82,6 +82,30 @@ class CargoTargetTests(unittest.TestCase):
             self.assertEqual(code, 0)
             self.assertTrue(namespace.is_dir())
 
+    def test_real_run_uses_a_validated_nested_workspace_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "repo"
+            init_repo(root)
+            (root / "v2").mkdir()
+            script = "import pathlib; pathlib.Path('cwd-marker').write_text('v2')"
+            with patch.dict(os.environ, self.environment(), clear=True):
+                code = main(
+                    [
+                        "--root",
+                        str(root),
+                        "build",
+                        "--working-directory",
+                        "v2",
+                        "--",
+                        "python3",
+                        "-c",
+                        script,
+                    ]
+                )
+            self.assertEqual(code, 0)
+            self.assertTrue((root / "v2" / "cwd-marker").is_file())
+            self.assertFalse((root / "cwd-marker").exists())
+
     def test_missing_separator_is_a_usage_error(self) -> None:
         with self.assertRaises(SystemExit) as raised:
             parse_args(["build", "/usr/bin/true"])

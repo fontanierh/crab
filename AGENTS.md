@@ -57,13 +57,12 @@ Project operating rules for all human and AI contributors.
 
 ## 6. CI Gates (Must All Pass)
 
-`make quality` runs exactly these three blocking gates in order. CI uses the same checks over the
-conservatively selected changed scope:
+`make quality` runs exactly these three blocking gates in order across Crab v1 and v2. CI uses the
+same checks over the conservatively selected workspace scope:
 
-1. `fmt` — `cargo fmt --all -- --check`.
-2. `clippy` — repository lint policy; rustc warnings and correctness/suspicious/performance are
-   denied, while style/complexity remain visible.
-3. `tests` — full workspace suite in the normal configuration.
+1. `fmt` — both Rust workspaces.
+2. `clippy` — v1's ordered repository lint policy plus strict v2 workspace Clippy.
+3. `tests` — both Rust workspace suites plus first-party v2 bridge tests.
 
 Coverage, duplication, public-API analysis, and workflow-tool tests remain available as explicit
 diagnostics. They are not required on every product-code change.
@@ -204,15 +203,17 @@ worktree; gates never rely on an artifact persisting after the command finishes.
 
 ### Required local prerequisites
 
-- Exact Rust `1.93.0` toolchain with rustfmt and Clippy installed via `rust-toolchain.toml`.
+- Exact Rust `1.93.0` and v2 Rust `1.97.1` toolchains with rustfmt and Clippy installed through
+  their respective `rust-toolchain.toml` files.
 - Python 3.11 or newer (stdlib-only workflow tooling).
+- Node.js 20 or newer when v2 first-party bridge tests are selected.
 - Optional coverage diagnostics: `cargo-llvm-cov` 0.6.21 and `llvm-tools-preview`.
 - Optional duplication diagnostics: `jscpd` 4.0.5 (Node.js/npm only for installation).
 - Optional public-API diagnostics: ripgrep (`rg`).
 
 ### CI behavior
 
-- CI uses one job with the exact toolchain pin and changed-scope format, Clippy, and tests.
+- CI uses one job with exact per-workspace toolchain pins and changed-scope format, Clippy, and tests.
 - Immediately after checkout, a Git-only classifier provides an explicit docs-only skip before
   toolchain/cache/package setup.
 - Pull requests use the PR base SHA. Pushes use the non-zero event `before` SHA or first parent;
