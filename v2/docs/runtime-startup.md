@@ -45,10 +45,25 @@ adapter currently canonicalizes the shorthand `opus` to that account-offered Opu
 exact value makes a future rewrite fail closed. The package pin and resolved model are separate
 things.
 
-The example deliberately uses `/usr/bin/false` for `authorityProbe`, so copying it cannot weaken
-the mandatory host preflight. Replace that command with the deployment's audited probe and replace
-the working directory. Claude authentication remains owned by the native Claude login; no token is
-stored in this JSON.
+The preset uses Crab's shell-free `crab-v2-claude-authority-probe`. On macOS it actively checks the
+exact adapter version, non-root bypass eligibility, `launchctl`'s `sandboxed = no` result, writes in
+both the user home and temporary directory, and a TCP connection to Anthropic. The host separately
+checks the configured working directory and `sudo -n id -u`; ACP then confirms the session mode and
+model. Any failed layer stops startup.
+
+![Claude full-authority preflight](claude-authority-flow.png)
+
+Build the release probe before starting the preset, then replace only the working directory. Keep
+the configuration beside the committed example or replace the probe path with its deployed
+location. The first-party probe currently requires macOS; other platforms must supply an equally
+strict agent-specific probe. Claude authentication remains owned by the native Claude login; no
+token is stored in JSON.
+
+```sh
+cargo build --release -p agent-host-implementation \
+  --bin crab-v2-claude-authority-probe
+cp runtime/runtime.claude-opus.example.json runtime/runtime.json
+```
 
 ```sh
 cargo run -p crab-v2-runtime --bin crab-v2 -- \

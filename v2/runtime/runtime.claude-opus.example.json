@@ -13,7 +13,7 @@
       },
       "protocol": "v1",
       "authorityProbe": {
-        "executable": "/usr/bin/false",
+        "executable": "../target/release/crab-v2-claude-authority-probe",
         "arguments": [],
         "environmentFrom": []
       }
