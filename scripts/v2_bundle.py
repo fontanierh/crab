@@ -8,14 +8,19 @@ import hashlib
 import json
 import os
 import platform
+import plistlib
 import posixpath
+import re
 import shutil
 import stat
 import subprocess
 import sys
 import tempfile
+import time
+from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import Any, Sequence
+from typing import Any, Callable, Iterator, Mapping, Protocol, Sequence
 
 
 SCHEMA_VERSION = 1
@@ -33,10 +38,48 @@ RUNTIME_BINARIES = (
 )
 PUBLIC_HELP_BINARIES = RUNTIME_BINARIES[:-1]
 MANIFEST_NAME = "bundle-manifest.json"
+SERVICE_SCHEMA_VERSION = 1
+SERVICE_LABEL = "com.crab.v2.runtime"
+SERVICE_LINKS = ("bin", "agents", "bridges", "libexec")
+DEFAULT_READINESS_TIMEOUT_SECONDS = 30.0
 
 
 class BundleError(RuntimeError):
     """A safe bundle build or verification failure."""
+
+
+@dataclass(frozen=True)
+class ServicePaths:
+    """One owner-private Crab v2 installation."""
+
+    root: Path
+    releases: Path
+    current: Path
+    config: Path
+    state: Path
+    logs: Path
+    deployment: Path
+    lock: Path
+    launch_agent: Path
+
+
+@dataclass(frozen=True)
+class LaunchdState:
+    """The observable state of the one Crab v2 launchd job."""
+
+    loaded: bool
+    running: bool
+    pid: int | None
+
+
+class LaunchdController(Protocol):
+    """Small launchd boundary so deployment can be tested without a live service."""
+
+    def inspect(self) -> LaunchdState: ...
+
+    def stop(self) -> None: ...
+
+    def start(self, launch_agent: Path) -> None: ...
 
 
 def run(
@@ -330,6 +373,7 @@ def parse_manifest(root: Path) -> dict[str, Any]:
         not isinstance(source["repository"], str)
         or not isinstance(source["commit"], str)
         or len(source["commit"]) != 40
+        or not re.fullmatch(r"[0-9a-f]{40}", source["commit"])
         or not isinstance(source["dirty"], bool)
     ):
         raise BundleError("manifest source values are invalid")
@@ -341,6 +385,10 @@ def parse_manifest(root: Path) -> dict[str, Any]:
     )
     if not all(isinstance(value, str) and value for value in platform_value.values()):
         raise BundleError("manifest platform values are invalid")
+    if not all(
+        re.fullmatch(r"[A-Za-z0-9_.-]+", value) for value in platform_value.values()
+    ):
+        raise BundleError("manifest platform values are unsafe")
     if not all(isinstance(value, str) and value for value in tools.values()):
         raise BundleError("manifest tool values are invalid")
     if not isinstance(manifest["files"], list):
@@ -466,6 +514,720 @@ def build_bundle(root: Path, output: Path | None, *, allow_dirty: bool) -> Path:
     return destination
 
 
+class SystemLaunchd:
+    """The fixed per-user launchd service used by Crab v2."""
+
+    def __init__(self, *, uid: int | None = None, label: str = SERVICE_LABEL) -> None:
+        self.uid = os.getuid() if uid is None else uid
+        self.label = label
+        self.target = f"gui/{self.uid}/{self.label}"
+        self.domain = f"gui/{self.uid}"
+
+    def inspect(self) -> LaunchdState:
+        try:
+            result = subprocess.run(
+                ("launchctl", "print", self.target),
+                check=False,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+        except OSError as error:
+            raise BundleError(f"could not inspect {self.label}: {error}") from error
+        if result.returncode != 0:
+            detail = f"{result.stdout}\n{result.stderr}".lower()
+            if "could not find service" in detail or "service not found" in detail:
+                return LaunchdState(loaded=False, running=False, pid=None)
+            raise BundleError(f"could not inspect {self.label}: launchctl failed")
+        state: str | None = None
+        pid: int | None = None
+        for line in result.stdout.splitlines():
+            key, separator, value = line.strip().partition(" = ")
+            if not separator:
+                continue
+            if key == "state":
+                state = value
+            elif key == "pid":
+                try:
+                    pid = int(value)
+                except ValueError:
+                    pid = None
+        return LaunchdState(loaded=True, running=state == "running", pid=pid)
+
+    def stop(self) -> None:
+        if not self.inspect().loaded:
+            return
+        run(("launchctl", "bootout", self.target), cwd=Path.home(), capture=True)
+
+    def start(self, launch_agent: Path) -> None:
+        run(
+            ("launchctl", "bootstrap", self.domain, str(launch_agent)),
+            cwd=Path.home(),
+            capture=True,
+        )
+
+
+def require_macos() -> None:
+    if platform.system() != "Darwin":
+        raise BundleError("Crab v2 launchd deployment requires macOS")
+
+
+def service_paths(root: Path, *, launch_agents: Path | None = None) -> ServicePaths:
+    raw = root.expanduser()
+    if not raw.is_absolute():
+        raise BundleError("service root must be an absolute path")
+    if raw.exists() and raw.is_symlink():
+        raise BundleError("service root must not be a symlink")
+    resolved = raw.resolve()
+    if resolved in {Path("/"), Path.home().resolve()}:
+        raise BundleError("service root is too broad")
+    launch_directory = (
+        launch_agents.expanduser().resolve()
+        if launch_agents is not None
+        else Path.home() / "Library" / "LaunchAgents"
+    )
+    return ServicePaths(
+        root=resolved,
+        releases=resolved / "releases",
+        current=resolved / "current",
+        config=resolved / "config" / "runtime.json",
+        state=resolved / "state",
+        logs=resolved / "logs",
+        deployment=resolved / "deployment.json",
+        lock=resolved / "deploy.lock",
+        launch_agent=launch_directory / f"{SERVICE_LABEL}.plist",
+    )
+
+
+def require_owned_directory(path: Path) -> None:
+    path.mkdir(parents=True, exist_ok=True, mode=0o700)
+    details = path.lstat()
+    if not stat.S_ISDIR(details.st_mode) or stat.S_ISLNK(details.st_mode):
+        raise BundleError(f"service path is not a real directory: {path}")
+    if details.st_uid != os.getuid():
+        raise BundleError(f"service path is not owned by the current user: {path}")
+    if stat.S_IMODE(details.st_mode) & 0o077:
+        path.chmod(0o700)
+
+
+def prepare_service_directories(paths: ServicePaths) -> None:
+    for path in (
+        paths.root,
+        paths.releases,
+        paths.config.parent,
+        paths.state,
+        paths.logs,
+    ):
+        require_owned_directory(path)
+    paths.launch_agent.parent.mkdir(parents=True, exist_ok=True)
+
+
+@contextmanager
+def deployment_lock(path: Path) -> Iterator[None]:
+    try:
+        import fcntl
+    except ImportError as error:
+        raise BundleError("Crab v2 deployment locking requires macOS") from error
+    try:
+        descriptor = os.open(path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    except OSError as error:
+        raise BundleError(f"could not open deployment lock: {error}") from error
+    try:
+        os.fchmod(descriptor, 0o600)
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as error:
+            raise BundleError("another Crab v2 deployment is in progress") from error
+        yield
+    finally:
+        os.close(descriptor)
+
+
+def atomic_bytes(path: Path, content: bytes, *, mode: int) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary_raw = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
+    )
+    temporary = Path(temporary_raw)
+    try:
+        os.fchmod(descriptor, mode)
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    except BaseException:
+        try:
+            os.close(descriptor)
+        except OSError:
+            pass
+        temporary.unlink(missing_ok=True)
+        raise
+
+
+def atomic_json(path: Path, value: Any, *, mode: int = 0o600) -> None:
+    atomic_bytes(
+        path,
+        (json.dumps(value, indent=2, sort_keys=True) + "\n").encode(),
+        mode=mode,
+    )
+
+
+def atomic_symlink(path: Path, target: str) -> None:
+    temporary = path.parent / f".{path.name}.{os.getpid()}.tmp"
+    temporary.unlink(missing_ok=True)
+    try:
+        os.symlink(target, temporary)
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def snapshot_regular_file(path: Path, label: str) -> tuple[bytes, int] | None:
+    if not path.exists() and not path.is_symlink():
+        return None
+    if path.is_symlink() or not stat.S_ISREG(path.lstat().st_mode):
+        raise BundleError(f"{label} must be a regular file")
+    try:
+        return path.read_bytes(), stat.S_IMODE(path.stat().st_mode)
+    except OSError as error:
+        raise BundleError(f"could not snapshot {label}") from error
+
+
+def restore_snapshot(path: Path, snapshot: tuple[bytes, int] | None) -> None:
+    if snapshot is None:
+        path.unlink(missing_ok=True)
+    else:
+        atomic_bytes(path, snapshot[0], mode=snapshot[1])
+
+
+def host_matches_manifest(manifest: Mapping[str, Any]) -> bool:
+    wanted = manifest["platform"]
+    aliases = {"aarch64": "arm64", "amd64": "x86_64"}
+    host_machine = aliases.get(platform.machine().lower(), platform.machine().lower())
+    bundle_machine = aliases.get(str(wanted["machine"]).lower(), str(wanted["machine"]).lower())
+    return str(wanted["system"]).lower() == platform.system().lower() and (
+        bundle_machine == host_machine
+    )
+
+
+def release_name(manifest: Mapping[str, Any]) -> str:
+    source = manifest["source"]
+    wanted = manifest["platform"]
+    system = str(wanted["system"]).lower()
+    machine = str(wanted["machine"]).lower()
+    aliases = {"aarch64": "arm64", "amd64": "x86_64"}
+    return f"{source['commit']}-{system}-{aliases.get(machine, machine)}"
+
+
+def install_release(bundle: Path, paths: ServicePaths) -> tuple[Path, dict[str, Any]]:
+    bundle = bundle.expanduser().resolve()
+    manifest = verify_bundle(bundle)
+    if manifest["source"]["dirty"]:
+        raise BundleError("dirty development bundles cannot be deployed")
+    if not host_matches_manifest(manifest):
+        raise BundleError("bundle platform does not match this host")
+    release = paths.releases / release_name(manifest)
+    if release.exists() or release.is_symlink():
+        if release.is_symlink():
+            raise BundleError(f"installed release must not be a symlink: {release}")
+        existing = verify_bundle(release)
+        if existing != manifest:
+            raise BundleError(f"installed release does not match its bundle: {release}")
+        return release, manifest
+    staging = Path(tempfile.mkdtemp(prefix=".release-", dir=paths.releases))
+    try:
+        shutil.rmtree(staging)
+        shutil.copytree(bundle, staging, symlinks=True)
+        copied = verify_bundle(staging)
+        if copied != manifest:
+            raise BundleError("copied release manifest changed")
+        staging.rename(release)
+    except BaseException:
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
+    return release, manifest
+
+
+def load_json_object(path: Path, label: str) -> dict[str, Any]:
+    try:
+        if path.is_symlink() or not stat.S_ISREG(path.lstat().st_mode):
+            raise BundleError(f"{label} must be a regular file")
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except BundleError:
+        raise
+    except (OSError, UnicodeError, json.JSONDecodeError) as error:
+        raise BundleError(f"{label} is unavailable or invalid") from error
+    if not isinstance(value, dict):
+        raise BundleError(f"{label} must contain a JSON object")
+    return value
+
+
+def materialize_config(
+    release: Path,
+    paths: ServicePaths,
+    workspace: Path | None,
+) -> bool:
+    if paths.config.exists() or paths.config.is_symlink():
+        config = load_json_object(paths.config, "runtime config")
+        if workspace is not None:
+            wanted = workspace.expanduser().resolve()
+            configured = {
+                Path(channel["workingDirectory"]).expanduser().resolve()
+                for channel in config.get("channels", [])
+                if isinstance(channel, dict)
+                and isinstance(channel.get("workingDirectory"), str)
+            }
+            if configured != {wanted}:
+                raise BundleError("--workspace does not match the existing runtime config")
+        return False
+    if workspace is None:
+        raise BundleError("first deployment requires --workspace")
+    workspace = workspace.expanduser().resolve()
+    if not workspace.is_dir():
+        raise BundleError(f"workspace is not an existing directory: {workspace}")
+    example = load_json_object(
+        release / "config" / "runtime.bundle.example.json", "bundle runtime config"
+    )
+    channels = example.get("channels")
+    if not isinstance(channels, list) or not channels:
+        raise BundleError("bundle runtime config does not define a channel")
+    replaced = 0
+    for channel in channels:
+        if not isinstance(channel, dict):
+            raise BundleError("bundle runtime config contains an invalid channel")
+        if channel.get("workingDirectory") == "/absolute/path/to/agent-workspace":
+            channel["workingDirectory"] = str(workspace)
+            replaced += 1
+    if replaced == 0:
+        raise BundleError("bundle runtime config has no workspace placeholder")
+    atomic_json(paths.config, example)
+    return True
+
+
+def environment_names(config: Mapping[str, Any]) -> set[str]:
+    names: set[str] = set()
+
+    def add(value: Any, label: str) -> None:
+        if value is None:
+            return
+        if not isinstance(value, list) or not all(
+            isinstance(item, str)
+            and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", item)
+            for item in value
+        ):
+            raise BundleError(f"{label} environmentFrom is invalid")
+        names.update(value)
+
+    agents = config.get("agents")
+    bridges = config.get("bridges", [])
+    if not isinstance(agents, list) or not agents or not isinstance(bridges, list):
+        raise BundleError("runtime config agents or bridges are invalid")
+    for index, agent in enumerate(agents):
+        if not isinstance(agent, dict):
+            raise BundleError("runtime config contains an invalid agent")
+        add(agent.get("environmentFrom"), f"agent {index}")
+        probe = agent.get("authorityProbe")
+        if isinstance(probe, dict):
+            add(probe.get("environmentFrom"), f"agent {index} authority probe")
+        servers = agent.get("sessionMcpServers", [])
+        if not isinstance(servers, list):
+            raise BundleError(f"agent {index} sessionMcpServers is invalid")
+        for server_index, server in enumerate(servers):
+            if not isinstance(server, dict):
+                raise BundleError(f"agent {index} has an invalid MCP server")
+            add(
+                server.get("environmentFrom"),
+                f"agent {index} MCP server {server_index}",
+            )
+    for index, bridge in enumerate(bridges):
+        if not isinstance(bridge, dict):
+            raise BundleError("runtime config contains an invalid bridge")
+        add(bridge.get("environmentFrom"), f"bridge {index}")
+    return names
+
+
+def load_launch_agent(path: Path) -> dict[str, Any]:
+    if not path.exists() and not path.is_symlink():
+        raise BundleError("Crab v2 launch agent is unavailable")
+    if path.is_symlink():
+        raise BundleError("existing Crab v2 launch agent must not be a symlink")
+    try:
+        with path.open("rb") as handle:
+            plist = plistlib.load(handle)
+    except (OSError, plistlib.InvalidFileException) as error:
+        raise BundleError("existing Crab v2 launch agent is invalid") from error
+    if not isinstance(plist, dict):
+        raise BundleError("existing Crab v2 launch agent is invalid")
+    return plist
+
+
+def existing_launch_environment(path: Path) -> dict[str, str]:
+    if not path.exists() and not path.is_symlink():
+        return {}
+    plist = load_launch_agent(path)
+    environment = plist.get("EnvironmentVariables", {})
+    if not isinstance(environment, dict) or not all(
+        isinstance(key, str) and isinstance(value, str)
+        for key, value in environment.items()
+    ):
+        raise BundleError("existing Crab v2 launch environment is invalid")
+    return environment
+
+
+def deployment_environment(
+    names: set[str],
+    current: Mapping[str, str],
+    previous: Mapping[str, str],
+) -> dict[str, str]:
+    environment: dict[str, str] = {}
+    missing: list[str] = []
+    for name in sorted(names):
+        if name in current:
+            environment[name] = current[name]
+        elif name in previous:
+            environment[name] = previous[name]
+        else:
+            missing.append(name)
+    if missing:
+        raise BundleError(
+            "required runtime environment is unavailable: " + ", ".join(missing)
+        )
+    return environment
+
+
+def require_runtime_node(environment: Mapping[str, str]) -> None:
+    path = environment.get("PATH")
+    if path is None:
+        raise BundleError("runtime config must import PATH for the bundled Node agent")
+    executable = shutil.which("node", path=path)
+    if executable is None:
+        raise BundleError("runtime PATH does not provide Node.js")
+    try:
+        result = subprocess.run(
+            (executable, "--version"),
+            check=False,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env={"PATH": path},
+        )
+    except OSError as error:
+        raise BundleError(f"could not inspect runtime Node.js: {error}") from error
+    version = result.stdout.strip()
+    try:
+        major = int(version.removeprefix("v").split(".", 1)[0])
+    except ValueError as error:
+        raise BundleError("runtime Node.js version is invalid") from error
+    if result.returncode != 0 or major < MINIMUM_NODE_MAJOR:
+        raise BundleError(f"runtime requires Node.js {MINIMUM_NODE_MAJOR}+")
+
+
+def launch_agent_payload(
+    paths: ServicePaths, environment: Mapping[str, str]
+) -> dict[str, Any]:
+    return {
+        "Label": SERVICE_LABEL,
+        "ProgramArguments": [
+            str(paths.root / "bin" / "crab-v2"),
+            "--config",
+            str(paths.config),
+            "--state-dir",
+            str(paths.state),
+        ],
+        "WorkingDirectory": str(paths.root),
+        "RunAtLoad": True,
+        "KeepAlive": True,
+        "ProcessType": "Background",
+        "StandardOutPath": str(paths.logs / "runtime.stdout.log"),
+        "StandardErrorPath": str(paths.logs / "runtime.stderr.log"),
+        "EnvironmentVariables": dict(sorted(environment.items())),
+    }
+
+
+def write_launch_agent(paths: ServicePaths, environment: Mapping[str, str]) -> None:
+    content = plistlib.dumps(
+        launch_agent_payload(paths, environment),
+        fmt=plistlib.FMT_XML,
+        sort_keys=True,
+    )
+    atomic_bytes(paths.launch_agent, content, mode=0o600)
+
+
+def current_target(paths: ServicePaths) -> str | None:
+    if paths.current.is_symlink():
+        target = os.readlink(paths.current)
+        relative = PurePosixPath(target)
+        if (
+            relative.is_absolute()
+            or len(relative.parts) != 2
+            or relative.parts[0] != "releases"
+            or relative.as_posix() != target
+        ):
+            raise BundleError("current release symlink is not canonical")
+        resolved = (paths.current.parent / target).resolve()
+        try:
+            resolved.relative_to(paths.releases)
+        except ValueError as error:
+            raise BundleError("current release symlink escapes the release directory") from error
+        return target
+    if paths.current.exists():
+        raise BundleError("current release path must be a symlink")
+    return None
+
+
+def runtime_processes() -> list[int]:
+    output = run(("ps", "-axo", "pid=,comm="), cwd=Path.home(), capture=True).stdout
+    processes: list[int] = []
+    for line in output.splitlines():
+        pid_raw, separator, command = line.strip().partition(" ")
+        if not separator or Path(command.strip()).name != "crab-v2":
+            continue
+        try:
+            processes.append(int(pid_raw))
+        except ValueError:
+            continue
+    return sorted(processes)
+
+
+def ensure_stable_links(paths: ServicePaths) -> list[Path]:
+    created: list[Path] = []
+    try:
+        for name in SERVICE_LINKS:
+            path = paths.root / name
+            wanted = f"current/{name}"
+            if path.is_symlink() and os.readlink(path) == wanted:
+                continue
+            if path.exists() or path.is_symlink():
+                raise BundleError(f"stable service path is not managed by Crab: {path}")
+            atomic_symlink(path, wanted)
+            created.append(path)
+    except BaseException:
+        for path in created:
+            path.unlink(missing_ok=True)
+        raise
+    return created
+
+
+def production_readiness(
+    paths: ServicePaths,
+    launchd: LaunchdController,
+    *,
+    timeout_seconds: float,
+) -> int:
+    deadline = time.monotonic() + timeout_seconds
+    last_error = "runtime did not start"
+    while True:
+        state = launchd.inspect()
+        if state.running and state.pid is not None:
+            try:
+                processes = runtime_processes()
+                if processes != [state.pid]:
+                    raise BundleError(
+                        "expected one launchd-owned crab-v2 process, found "
+                        + ", ".join(str(pid) for pid in processes)
+                    )
+                verify_bundle(paths.current)
+                run(
+                    (
+                        str(paths.root / "bin" / "crab-v2-bridge"),
+                        "--state-dir",
+                        str(paths.state),
+                        "list",
+                    ),
+                    cwd=paths.root,
+                    capture=True,
+                )
+                return state.pid
+            except BundleError as error:
+                last_error = str(error)
+        elif state.loaded:
+            last_error = "launchd job is loaded but not running"
+        if time.monotonic() >= deadline:
+            raise BundleError(f"runtime readiness failed: {last_error}")
+        time.sleep(0.2)
+
+
+ReadinessProbe = Callable[[ServicePaths, LaunchdController, float], int]
+
+
+def deploy_service(
+    bundle: Path,
+    root: Path,
+    *,
+    workspace: Path | None,
+    launchd: LaunchdController,
+    launch_agents: Path | None = None,
+    environ: Mapping[str, str] = os.environ,
+    timeout_seconds: float = DEFAULT_READINESS_TIMEOUT_SECONDS,
+    readiness: ReadinessProbe = lambda paths, launchd, timeout: production_readiness(
+        paths, launchd, timeout_seconds=timeout
+    ),
+) -> dict[str, Any]:
+    paths = service_paths(root, launch_agents=launch_agents)
+    prepare_service_directories(paths)
+    with deployment_lock(paths.lock):
+        release, manifest = install_release(bundle, paths)
+        old_target = current_target(paths)
+        if old_target is not None:
+            verify_bundle(paths.current)
+        old_plist = snapshot_regular_file(paths.launch_agent, "Crab v2 launch agent")
+        old_deployment = snapshot_regular_file(
+            paths.deployment, "Crab v2 deployment record"
+        )
+        was_loaded = launchd.inspect().loaded
+        if was_loaded and (old_target is None or old_plist is None):
+            raise BundleError(
+                "loaded Crab v2 launchd job has no complete managed deployment"
+            )
+        created_config = False
+        created_links: list[Path] = []
+        try:
+            created_config = materialize_config(release, paths, workspace)
+            config = load_json_object(paths.config, "runtime config")
+            environment = deployment_environment(
+                environment_names(config),
+                environ,
+                existing_launch_environment(paths.launch_agent),
+            )
+            require_runtime_node(environment)
+            created_links = ensure_stable_links(paths)
+        except BaseException:
+            if created_config:
+                paths.config.unlink(missing_ok=True)
+            raise
+        new_target = release.relative_to(paths.root).as_posix()
+        try:
+            launchd.stop()
+            atomic_symlink(paths.current, new_target)
+            write_launch_agent(paths, environment)
+            launchd.start(paths.launch_agent)
+            pid = readiness(paths, launchd, timeout_seconds)
+            result = {
+                "schemaVersion": SERVICE_SCHEMA_VERSION,
+                "label": SERVICE_LABEL,
+                "release": new_target,
+                "sourceCommit": manifest["source"]["commit"],
+                "pid": pid,
+            }
+            atomic_json(paths.deployment, result)
+        except BaseException as deployment_error:
+            rollback_error: BaseException | None = None
+            try:
+                launchd.stop()
+                if old_target is None:
+                    paths.current.unlink(missing_ok=True)
+                else:
+                    atomic_symlink(paths.current, old_target)
+                restore_snapshot(paths.launch_agent, old_plist)
+                restore_snapshot(paths.deployment, old_deployment)
+                if created_config:
+                    paths.config.unlink(missing_ok=True)
+                if old_target is None:
+                    for path in created_links:
+                        path.unlink(missing_ok=True)
+                if was_loaded and old_target is not None and old_plist is not None:
+                    launchd.start(paths.launch_agent)
+                    readiness(paths, launchd, timeout_seconds)
+            except BaseException as error:
+                rollback_error = error
+            if rollback_error is not None:
+                raise BundleError(
+                    f"deployment failed ({deployment_error}); rollback failed ({rollback_error})"
+                ) from deployment_error
+            if isinstance(deployment_error, BundleError):
+                raise deployment_error
+            raise BundleError(f"deployment failed: {deployment_error}") from deployment_error
+        return result
+
+
+def service_status(
+    root: Path,
+    *,
+    launchd: LaunchdController,
+    launch_agents: Path | None = None,
+    processes: Callable[[], list[int]] = runtime_processes,
+) -> dict[str, Any]:
+    paths = service_paths(root, launch_agents=launch_agents)
+    errors: list[str] = []
+    target: str | None = None
+    commit: str | None = None
+    bundle_verified = False
+    try:
+        target = current_target(paths)
+        if target is None:
+            raise BundleError("no current release")
+        manifest = verify_bundle(paths.current)
+        commit = manifest["source"]["commit"]
+        bundle_verified = True
+        for name in SERVICE_LINKS:
+            path = paths.root / name
+            if not path.is_symlink() or os.readlink(path) != f"current/{name}":
+                raise BundleError(f"stable {name} link is invalid")
+        launch_agent = load_launch_agent(paths.launch_agent)
+        environment = existing_launch_environment(paths.launch_agent)
+        config = load_json_object(paths.config, "runtime config")
+        if set(environment) != environment_names(config):
+            raise BundleError("launch environment does not match the runtime config")
+        if launch_agent != launch_agent_payload(paths, environment):
+            raise BundleError("Crab v2 launch agent does not match the managed service")
+        deployment = require_exact_keys(
+            load_json_object(paths.deployment, "deployment record"),
+            {"schemaVersion", "label", "release", "sourceCommit", "pid"},
+            "deployment record",
+        )
+        if (
+            deployment["schemaVersion"] != SERVICE_SCHEMA_VERSION
+            or deployment["label"] != SERVICE_LABEL
+            or deployment["release"] != target
+            or deployment["sourceCommit"] != commit
+        ):
+            raise BundleError("deployment record does not match the current release")
+    except (BundleError, OSError) as error:
+        errors.append(str(error))
+    state = launchd.inspect()
+    process_ids: list[int] = []
+    try:
+        process_ids = processes()
+        if state.running and state.pid is not None and process_ids != [state.pid]:
+            raise BundleError("runtime process set does not match the launchd-owned pid")
+    except BundleError as error:
+        errors.append(str(error))
+    ipc_ready = False
+    if state.running and state.pid is not None and bundle_verified:
+        try:
+            run(
+                (
+                    str(paths.root / "bin" / "crab-v2-bridge"),
+                    "--state-dir",
+                    str(paths.state),
+                    "list",
+                ),
+                cwd=paths.root,
+                capture=True,
+            )
+            ipc_ready = True
+        except BundleError as error:
+            errors.append(str(error))
+    elif not state.running:
+        errors.append("launchd job is not running")
+    return {
+        "schemaVersion": SERVICE_SCHEMA_VERSION,
+        "label": SERVICE_LABEL,
+        "root": str(paths.root),
+        "release": target,
+        "sourceCommit": commit,
+        "bundleVerified": bundle_verified,
+        "launchdLoaded": state.loaded,
+        "launchdRunning": state.running,
+        "pid": state.pid,
+        "processCount": len(process_ids),
+        "ipcReady": ipc_ready,
+        "healthy": not errors and ipc_ready,
+        "errors": errors,
+    }
+
+
 def parser() -> argparse.ArgumentParser:
     command = argparse.ArgumentParser(description=__doc__)
     subcommands = command.add_subparsers(dest="command", required=True)
@@ -478,6 +1240,30 @@ def parser() -> argparse.ArgumentParser:
     )
     verify = subcommands.add_parser("verify", help="verify one existing bundle offline")
     verify.add_argument("bundle", type=Path)
+    deploy = subcommands.add_parser(
+        "deploy", help="atomically install, supervise, and verify a runtime bundle"
+    )
+    deploy.add_argument("bundle", type=Path)
+    deploy.add_argument(
+        "--root", type=Path, default=Path.home() / ".crab-v2", help="service root"
+    )
+    deploy.add_argument(
+        "--workspace",
+        type=Path,
+        help="agent workspace; required only for the first deployment",
+    )
+    deploy.add_argument(
+        "--timeout",
+        type=float,
+        default=DEFAULT_READINESS_TIMEOUT_SECONDS,
+        help="readiness and rollback timeout in seconds",
+    )
+    status = subcommands.add_parser(
+        "status", help="verify the installed release, launchd job, and local IPC"
+    )
+    status.add_argument(
+        "--root", type=Path, default=Path.home() / ".crab-v2", help="service root"
+    )
     return command
 
 
@@ -490,11 +1276,32 @@ def main(arguments: Sequence[str] | None = None) -> int:
                 "v2-bundle: verified "
                 f"{len(manifest['files'])} entries from {manifest['source']['commit'][:12]}"
             )
-        else:
+        elif options.command == "build":
             output = build_bundle(
                 repository_root(), options.output, allow_dirty=options.allow_dirty
             )
             print(f"v2-bundle: built and verified {output}")
+        elif options.command == "deploy":
+            require_macos()
+            if options.timeout <= 0:
+                raise BundleError("--timeout must be positive")
+            result = deploy_service(
+                options.bundle,
+                options.root,
+                workspace=options.workspace,
+                launchd=SystemLaunchd(),
+                timeout_seconds=options.timeout,
+            )
+            print(
+                "v2-bundle: deployed "
+                f"{result['sourceCommit'][:12]} as pid {result['pid']}"
+            )
+        else:
+            require_macos()
+            result = service_status(options.root, launchd=SystemLaunchd())
+            print(json.dumps(result, indent=2, sort_keys=True))
+            if not result["healthy"]:
+                return 1
     except BundleError as error:
         print(f"v2-bundle: {error}", file=sys.stderr)
         return 2

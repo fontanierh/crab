@@ -1,0 +1,44 @@
+flowchart TB
+    BUNDLE["New offline bundle"] --> VERIFY["Verify manifest<br/>clean commit + host platform"]
+    VERIFY --> COPY["Copy + re-verify<br/>releases/&lt;commit-platform&gt;"]
+    COPY --> PREFLIGHT["Preflight durable config<br/>Node 22+ + declared environment"]
+    PREFLIGHT --> STOP["Graceful launchd stop<br/>com.crab.v2.runtime"]
+    STOP --> FLIP["Atomic current symlink flip"]
+    FLIP --> START["Bootstrap one owner-only LaunchAgent"]
+    START --> READY{"All readiness facts true?"}
+
+    READY -->|yes| RECORD["Commit deployment.json"]
+    RECORD --> LIVE["One current verified release"]
+
+    READY -->|no| HALT["Stop failed release"]
+    HALT --> RESTORE["Restore prior symlink<br/>plist + provenance"]
+    RESTORE --> RESTART["Restart + verify prior release"]
+
+    subgraph DURABLE["Never replaced by a release"]
+        CONFIG["config/runtime.json"]
+        STATE["state/"]
+        LOGS["logs/"]
+    end
+    PREFLIGHT --- CONFIG
+    START --- STATE
+    START --- LOGS
+
+    subgraph PROOF["Readiness proof"]
+        HASH["Bundle hashes valid"]
+        PID["Exactly one launchd-owned PID"]
+        IPC["Authenticated local IPC responds"]
+    end
+    HASH --> READY
+    PID --> READY
+    IPC --> READY
+
+    classDef input fill:#eef2ff,stroke:#4f46e5,color:#111827;
+    classDef action fill:#ecfeff,stroke:#0891b2,color:#111827;
+    classDef durable fill:#f8fafc,stroke:#64748b,color:#111827;
+    classDef success fill:#ecfdf5,stroke:#059669,color:#111827;
+    classDef rollback fill:#fff7ed,stroke:#ea580c,color:#111827;
+    class BUNDLE input;
+    class VERIFY,COPY,PREFLIGHT,STOP,FLIP,START action;
+    class CONFIG,STATE,LOGS,HASH,PID,IPC durable;
+    class RECORD,LIVE success;
+    class HALT,RESTORE,RESTART rollback;

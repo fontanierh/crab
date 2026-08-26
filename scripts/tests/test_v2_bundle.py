@@ -5,12 +5,18 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
+from scripts import v2_bundle as bundle_tool
 from scripts.v2_bundle import (
     MANIFEST_NAME,
     RUNTIME_BINARIES,
     BundleError,
+    LaunchdState,
+    deploy_service,
     select_output,
+    service_paths,
+    service_status,
     verify_bundle,
     write_manifest,
 )
@@ -35,6 +41,72 @@ def fixture_bundle(parent: Path) -> Path:
         rustc="rustc 1.97.1",
     )
     return bundle
+
+
+def deployable_bundle(parent: Path, commit: str, *, token: bool = False) -> Path:
+    bundle = parent / f"bundle-{commit[0]}"
+    for directory in ("bin", "agents", "bridges", "libexec", "config"):
+        (bundle / directory).mkdir(parents=True)
+    (bundle / "bin" / "crab-v2").write_text("runtime\n", encoding="utf-8")
+    bridge = bundle / "bin" / "crab-v2-bridge"
+    bridge.write_text("#!/bin/sh\nprintf '[]\\n'\n", encoding="utf-8")
+    bridge.chmod(0o755)
+    environment = ["PATH", "CRAB_TOKEN"] if token else ["PATH"]
+    config = {
+        "schema": 1,
+        "agents": [
+            {
+                "agentId": "test",
+                "environmentFrom": environment,
+                "authorityProbe": {"environmentFrom": []},
+                "sessionMcpServers": [{"environmentFrom": []}],
+            }
+        ],
+        "channels": [
+            {
+                "channelId": "primary",
+                "workingDirectory": "/absolute/path/to/agent-workspace",
+            }
+        ],
+        "bridges": [{"environmentFrom": []}],
+    }
+    (bundle / "config" / "runtime.bundle.example.json").write_text(
+        json.dumps(config), encoding="utf-8"
+    )
+    write_manifest(
+        bundle,
+        source={**SOURCE, "commit": commit},
+        node="v22.0.0",
+        npm="11.0.0",
+        rustc="rustc 1.97.1",
+    )
+    return bundle
+
+
+class FakeLaunchd:
+    def __init__(self) -> None:
+        self.loaded = False
+        self.pid = 7000
+        self.starts = 0
+        self.stops = 0
+
+    def inspect(self) -> LaunchdState:
+        return LaunchdState(self.loaded, self.loaded, self.pid if self.loaded else None)
+
+    def stop(self) -> None:
+        self.stops += 1
+        self.loaded = False
+
+    def start(self, launch_agent: Path) -> None:
+        self.assert_launch_agent(launch_agent)
+        self.starts += 1
+        self.pid += 1
+        self.loaded = True
+
+    @staticmethod
+    def assert_launch_agent(path: Path) -> None:
+        if not path.is_file():
+            raise AssertionError("launch agent was not written before bootstrap")
 
 
 class BundleVerifierTests(unittest.TestCase):
@@ -104,6 +176,279 @@ class BundleVerifierTests(unittest.TestCase):
                 )
                 with self.assertRaises(BundleError):
                     verify_bundle(bundle)
+
+
+class ServiceDeploymentTests(unittest.TestCase):
+    @staticmethod
+    def ready(_paths: object, launchd: FakeLaunchd, _timeout: float) -> int:
+        state = launchd.inspect()
+        if state.pid is None:
+            raise BundleError("not running")
+        return state.pid
+
+    @mock.patch("scripts.v2_bundle.require_runtime_node")
+    def test_first_install_creates_one_verified_supervised_layout(
+        self, _node: mock.Mock
+    ) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            parent = Path(raw)
+            bundle = deployable_bundle(parent, "a" * 40)
+            root = parent / "service"
+            workspace = parent / "workspace"
+            workspace.mkdir()
+            launch_agents = parent / "LaunchAgents"
+            launchd = FakeLaunchd()
+
+            result = deploy_service(
+                bundle,
+                root,
+                workspace=workspace,
+                launchd=launchd,
+                launch_agents=launch_agents,
+                environ={"PATH": "/runtime/bin"},
+                readiness=self.ready,
+            )
+
+            paths = service_paths(root, launch_agents=launch_agents)
+            self.assertEqual(result["sourceCommit"], "a" * 40)
+            self.assertEqual(result["pid"], launchd.pid)
+            self.assertEqual(os.readlink(paths.current), result["release"])
+            self.assertEqual(verify_bundle(paths.current)["source"]["commit"], "a" * 40)
+            for name in ("bin", "agents", "bridges", "libexec"):
+                self.assertEqual(os.readlink(root / name), f"current/{name}")
+            config = json.loads(paths.config.read_text())
+            self.assertEqual(
+                config["channels"][0]["workingDirectory"], str(workspace.resolve())
+            )
+            self.assertEqual(paths.config.stat().st_mode & 0o777, 0o600)
+            self.assertEqual(paths.launch_agent.stat().st_mode & 0o777, 0o600)
+
+            import plistlib
+
+            with paths.launch_agent.open("rb") as handle:
+                launch_agent = plistlib.load(handle)
+            self.assertEqual(launch_agent["Label"], "com.crab.v2.runtime")
+            self.assertEqual(
+                launch_agent["ProgramArguments"][0],
+                str(root.resolve() / "bin" / "crab-v2"),
+            )
+            self.assertEqual(
+                launch_agent["EnvironmentVariables"], {"PATH": "/runtime/bin"}
+            )
+            self.assertEqual(json.loads(paths.deployment.read_text()), result)
+
+            status = service_status(
+                root,
+                launchd=launchd,
+                launch_agents=launch_agents,
+                processes=lambda: [launchd.pid],
+            )
+            self.assertTrue(status["healthy"])
+            self.assertTrue(status["ipcReady"])
+            self.assertNotIn("EnvironmentVariables", json.dumps(status))
+
+    @mock.patch("scripts.v2_bundle.require_runtime_node")
+    def test_update_preserves_unavailable_credential_environment(
+        self, _node: mock.Mock
+    ) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            parent = Path(raw)
+            first = deployable_bundle(parent, "a" * 40, token=True)
+            second = deployable_bundle(parent, "b" * 40, token=True)
+            root = parent / "service"
+            workspace = parent / "workspace"
+            workspace.mkdir()
+            launch_agents = parent / "LaunchAgents"
+            launchd = FakeLaunchd()
+            arguments = {
+                "root": root,
+                "launchd": launchd,
+                "launch_agents": launch_agents,
+                "readiness": self.ready,
+            }
+            deploy_service(
+                first,
+                workspace=workspace,
+                environ={"PATH": "/first/bin", "CRAB_TOKEN": "keep-me"},
+                **arguments,
+            )
+            deploy_service(
+                second,
+                workspace=None,
+                environ={"PATH": "/second/bin"},
+                **arguments,
+            )
+
+            paths = service_paths(root, launch_agents=launch_agents)
+            import plistlib
+
+            with paths.launch_agent.open("rb") as handle:
+                environment = plistlib.load(handle)["EnvironmentVariables"]
+            self.assertEqual(
+                environment, {"PATH": "/second/bin", "CRAB_TOKEN": "keep-me"}
+            )
+            self.assertEqual(verify_bundle(paths.current)["source"]["commit"], "b" * 40)
+
+    @mock.patch("scripts.v2_bundle.require_runtime_node")
+    def test_failed_update_rolls_back_release_plist_and_process(
+        self, _node: mock.Mock
+    ) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            parent = Path(raw)
+            first = deployable_bundle(parent, "a" * 40)
+            second = deployable_bundle(parent, "b" * 40)
+            root = parent / "service"
+            workspace = parent / "workspace"
+            workspace.mkdir()
+            launch_agents = parent / "LaunchAgents"
+            launchd = FakeLaunchd()
+            deploy_service(
+                first,
+                root,
+                workspace=workspace,
+                launchd=launchd,
+                launch_agents=launch_agents,
+                environ={"PATH": "/runtime/bin"},
+                readiness=self.ready,
+            )
+            paths = service_paths(root, launch_agents=launch_agents)
+            old_target = os.readlink(paths.current)
+            old_plist = paths.launch_agent.read_bytes()
+
+            def fail_new_release(
+                probe_paths: object, controller: FakeLaunchd, _timeout: float
+            ) -> int:
+                assert hasattr(probe_paths, "current")
+                if "b" * 40 in os.readlink(probe_paths.current):
+                    raise BundleError("new release is not ready")
+                return self.ready(probe_paths, controller, _timeout)
+
+            with self.assertRaisesRegex(BundleError, "new release is not ready"):
+                deploy_service(
+                    second,
+                    root,
+                    workspace=None,
+                    launchd=launchd,
+                    launch_agents=launch_agents,
+                    environ={"PATH": "/runtime/bin"},
+                    readiness=fail_new_release,
+                )
+
+            self.assertEqual(os.readlink(paths.current), old_target)
+            self.assertEqual(paths.launch_agent.read_bytes(), old_plist)
+            self.assertTrue(launchd.inspect().running)
+            self.assertEqual(verify_bundle(paths.current)["source"]["commit"], "a" * 40)
+            self.assertEqual(
+                json.loads(paths.deployment.read_text())["sourceCommit"], "a" * 40
+            )
+
+    @mock.patch("scripts.v2_bundle.require_runtime_node")
+    def test_failed_first_install_leaves_no_active_release_or_config(
+        self, _node: mock.Mock
+    ) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            parent = Path(raw)
+            bundle = deployable_bundle(parent, "a" * 40)
+            root = parent / "service"
+            workspace = parent / "workspace"
+            workspace.mkdir()
+            launchd = FakeLaunchd()
+
+            def fail(
+                _paths: object, _launchd: FakeLaunchd, _timeout: float
+            ) -> int:
+                raise BundleError("not ready")
+
+            with self.assertRaisesRegex(BundleError, "not ready"):
+                deploy_service(
+                    bundle,
+                    root,
+                    workspace=workspace,
+                    launchd=launchd,
+                    launch_agents=parent / "LaunchAgents",
+                    environ={"PATH": "/runtime/bin"},
+                    readiness=fail,
+                )
+            paths = service_paths(root, launch_agents=parent / "LaunchAgents")
+            self.assertFalse(paths.current.exists())
+            self.assertFalse(paths.config.exists())
+            self.assertFalse(paths.launch_agent.exists())
+            self.assertFalse(launchd.inspect().loaded)
+
+    @mock.patch("scripts.v2_bundle.require_runtime_node")
+    def test_preflight_failure_removes_new_config_without_stopping_launchd(
+        self, _node: mock.Mock
+    ) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            parent = Path(raw)
+            bundle = deployable_bundle(parent, "a" * 40, token=True)
+            root = parent / "service"
+            workspace = parent / "workspace"
+            workspace.mkdir()
+            launchd = FakeLaunchd()
+            with self.assertRaisesRegex(BundleError, "CRAB_TOKEN"):
+                deploy_service(
+                    bundle,
+                    root,
+                    workspace=workspace,
+                    launchd=launchd,
+                    launch_agents=parent / "LaunchAgents",
+                    environ={"PATH": "/runtime/bin"},
+                    readiness=self.ready,
+                )
+            paths = service_paths(root, launch_agents=parent / "LaunchAgents")
+            self.assertFalse(paths.config.exists())
+            self.assertEqual(launchd.stops, 0)
+
+    @mock.patch("scripts.v2_bundle.require_runtime_node")
+    def test_provenance_write_failure_rolls_back_the_first_install(
+        self, _node: mock.Mock
+    ) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            parent = Path(raw)
+            bundle = deployable_bundle(parent, "a" * 40)
+            root = parent / "service"
+            workspace = parent / "workspace"
+            workspace.mkdir()
+            launchd = FakeLaunchd()
+            original = bundle_tool.atomic_json
+
+            def fail_provenance(path: Path, value: object, *, mode: int = 0o600) -> None:
+                if path.name == "deployment.json":
+                    raise BundleError("provenance unavailable")
+                original(path, value, mode=mode)
+
+            with mock.patch("scripts.v2_bundle.atomic_json", side_effect=fail_provenance):
+                with self.assertRaisesRegex(BundleError, "provenance unavailable"):
+                    deploy_service(
+                        bundle,
+                        root,
+                        workspace=workspace,
+                        launchd=launchd,
+                        launch_agents=parent / "LaunchAgents",
+                        environ={"PATH": "/runtime/bin"},
+                        readiness=self.ready,
+                    )
+            paths = service_paths(root, launch_agents=parent / "LaunchAgents")
+            self.assertFalse(paths.current.exists())
+            self.assertFalse(paths.config.exists())
+            self.assertFalse(paths.deployment.exists())
+            self.assertFalse(paths.launch_agent.exists())
+            self.assertFalse(launchd.inspect().loaded)
+
+    def test_service_root_rejects_relative_home_and_symlink_paths(self) -> None:
+        with self.assertRaises(BundleError):
+            service_paths(Path("relative"))
+        with self.assertRaises(BundleError):
+            service_paths(Path.home())
+        with tempfile.TemporaryDirectory() as raw:
+            parent = Path(raw)
+            target = parent / "target"
+            target.mkdir()
+            link = parent / "link"
+            link.symlink_to(target)
+            with self.assertRaises(BundleError):
+                service_paths(link)
 
 
 class BundleBuildPolicyTests(unittest.TestCase):
