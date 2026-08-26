@@ -26,8 +26,9 @@ The T3 Crab provider starts one lightweight `crab-v2-acp-channel` process per T3
 speaks standard ACP over stdio, but only attaches to the single long-running Crab runtime over a
 versioned local IPC transport. It must never launch or own the underlying ACP agent.
 
-The authenticated local Boxology transport and ACP stdio facade are implemented. The remaining
-integration is T3 provider wiring.
+The complete attach slice is implemented. Crab supplies the authenticated local Boxology transport
+and ACP stdio facade; the Crab fork of T3 ships a built-in provider across web, desktop and mobile.
+The compatibility point is `fontanierh/t3code@82f517c`.
 
 ![ACP stdio facade flow](acp-channel-facade-flow.png)
 
@@ -57,6 +58,9 @@ key. Interrupt remains the standard `session/cancel` action.
 Queue and steer must be separate UI actions or an explicit composer mode. Interrupt remains a
 separate action. The proxy may rewrite transport-local request and session IDs, but it must retain
 every native agent update needed to render thoughts, plans, tools, terminals, diffs, usage and
-compaction. Credentials never cross this seam.
+compaction.
 
-T3 provider work remains tracked in [Crab #206](https://github.com/fontanierh/crab/issues/206).
+Crab owns the underlying agent and its tool authority. The facade rejects client-supplied MCP
+servers, the T3 provider sends `mcpServers: []`, and T3's per-thread MCP bearer credential never
+crosses the attach seam. [Crab #206](https://github.com/fontanierh/crab/issues/206) records the
+delivered vertical slice.

@@ -642,10 +642,12 @@ fn stable_internal_error() -> agent_client_protocol::Error {
 
 #[cfg(test)]
 mod tests {
+    use std::path::{Path, PathBuf};
+
     use agent_client_protocol::schema::v1::StopReason;
     use serde_json::json;
 
-    use super::{input_mode, stop_reason, turn_id};
+    use super::{input_mode, stop_reason, supported_workspace, turn_id};
     use native_channel_contract::ChannelInputMode;
 
     #[test]
@@ -678,5 +680,18 @@ mod tests {
             Some(StopReason::Cancelled)
         );
         assert_eq!(stop_reason(&json!({"result": {}})), None);
+    }
+
+    #[test]
+    fn facade_keeps_workspace_and_tool_authority_inside_crab() {
+        let workspace = Path::new("/tmp/crab-workspace");
+        assert!(supported_workspace(workspace, &[], 0));
+        assert!(!supported_workspace(workspace, &[], 1));
+        assert!(!supported_workspace(
+            workspace,
+            &[PathBuf::from("/tmp/another-workspace")],
+            0,
+        ));
+        assert!(!supported_workspace(Path::new("relative"), &[], 0));
     }
 }
