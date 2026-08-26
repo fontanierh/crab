@@ -11,7 +11,7 @@ v2/
 ├── native-channel/   one channel ↔ one ACP session, with the full native view
 ├── bridge-host/      supervised external integrations, auth and selected delivery
 ├── sub-agent-host/   supervised ACP subprocesses with bidirectional live interaction
-├── trigger-inbox/    durable at-least-once ingress used by bridges, cron and self-work
+├── trigger-inbox/    transactional SQLite ingress used by bridges, cron and self-work
 └── runtime/          thin composition; no domain policy
 ```
 
@@ -47,7 +47,9 @@ interrupt as a separate explicit action.
 - Bridges are packages the agent may add. Crab owns supervision, auth state, health and delivery
   semantics—not service-specific behavior. WhatsApp is the first intended first-party package.
 - Tests target useful contract and composition behavior. There is no percentage coverage gate.
-- Implementations in this draft return an explicit `DraftOnly` error; they do not fake a runtime.
+- `trigger-inbox` is implemented with durable deduplication, FIFO leases and restart recovery.
+  Its [storage contract](docs/trigger-inbox-storage.md) is schema-versioned from day one.
+- The remaining box implementations return an explicit `DraftOnly` error; they do not fake a runtime.
 - For a native UI, start by testing an off-the-shelf ACP client; build on reusable ACP components
   only if that cannot attach cleanly. See [the UI landscape](docs/acp-native-ui.md).
 
@@ -68,3 +70,7 @@ fixes. Regenerate or check with the matching CLI:
 cargo install boxology-cli --git https://github.com/fontanierh/boxology \
   --rev 4dd00888445c6506704a3e3f69932a3c4bc32efa --locked
 ```
+
+A vertical slice that changes a box, its composition and the platform lockfile still triggers the
+known single-owner limitation tracked in
+[Boxology #712](https://github.com/fontanierh/boxology/issues/712); every executable check passes.

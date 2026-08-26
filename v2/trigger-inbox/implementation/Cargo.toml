@@ -9,3 +9,11 @@ boxology = { workspace = true }
 boxology-contract = { workspace = true }
 boxology-runtime = { workspace = true }
 boxology_generated_contract = { package = "trigger-inbox-contract", version = "=0.0.0", path = "../generated/contract" }
+rusqlite = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+tokio = { workspace = true }

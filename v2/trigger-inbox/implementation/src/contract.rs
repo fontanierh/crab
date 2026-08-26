@@ -122,8 +122,12 @@ boxology::contract! {
     #[error]
     pub enum TriggerInboxError {
         DraftOnly,
+        InvalidSource,
         InvalidTarget,
         InvalidLane,
+        InvalidPayload,
+        InvalidClaim,
+        InvalidLease,
         DuplicateKeyConflict,
         UnknownTrigger,
         LeaseMismatch,

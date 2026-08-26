@@ -13,12 +13,32 @@ static __BOXOLOGY_CONTRACT_DESCRIPTOR: ::std::sync::LazyLock<
                 None,
             ),
             ::boxology_contract::VariantDescriptor::new(
+                "InvalidSource",
+                ::boxology_contract::VariantPayload::Unit,
+                None,
+            ),
+            ::boxology_contract::VariantDescriptor::new(
                 "InvalidTarget",
                 ::boxology_contract::VariantPayload::Unit,
                 None,
             ),
             ::boxology_contract::VariantDescriptor::new(
                 "InvalidLane",
+                ::boxology_contract::VariantPayload::Unit,
+                None,
+            ),
+            ::boxology_contract::VariantDescriptor::new(
+                "InvalidPayload",
+                ::boxology_contract::VariantPayload::Unit,
+                None,
+            ),
+            ::boxology_contract::VariantDescriptor::new(
+                "InvalidClaim",
+                ::boxology_contract::VariantPayload::Unit,
+                None,
+            ),
+            ::boxology_contract::VariantDescriptor::new(
+                "InvalidLease",
                 ::boxology_contract::VariantPayload::Unit,
                 None,
             ),
@@ -978,7 +998,7 @@ static __BOXOLOGY_CONTRACT_DESCRIPTOR: ::std::sync::LazyLock<
             box_id,
             [capability_0, capability_1, capability_2, capability_3, capability_4],
             ::boxology_contract::ContractRevision::new(
-                    "sha256:cf4e1ccf9c1e2bc983df92b107852ac2e34f4818795056514f99a1eecee2a0b2",
+                    "sha256:74f11818843afc1884367a6c23e0654c80cc22a10a580f1ad43bc1d94988ac61",
                 )
                 .expect("generated contract revision is non-empty"),
         )
@@ -1844,12 +1864,32 @@ static TRIGGER_INBOX_ERROR_DESCRIPTOR: LazyLock<TypeDescriptor> = LazyLock::new(
                 None,
             ),
             ::boxology_contract::VariantDescriptor::new(
+                "InvalidSource",
+                ::boxology_contract::VariantPayload::Unit,
+                None,
+            ),
+            ::boxology_contract::VariantDescriptor::new(
                 "InvalidTarget",
                 ::boxology_contract::VariantPayload::Unit,
                 None,
             ),
             ::boxology_contract::VariantDescriptor::new(
                 "InvalidLane",
+                ::boxology_contract::VariantPayload::Unit,
+                None,
+            ),
+            ::boxology_contract::VariantDescriptor::new(
+                "InvalidPayload",
+                ::boxology_contract::VariantPayload::Unit,
+                None,
+            ),
+            ::boxology_contract::VariantDescriptor::new(
+                "InvalidClaim",
+                ::boxology_contract::VariantPayload::Unit,
+                None,
+            ),
+            ::boxology_contract::VariantDescriptor::new(
+                "InvalidLease",
                 ::boxology_contract::VariantPayload::Unit,
                 None,
             ),
@@ -3888,8 +3928,12 @@ impl ::boxology_contract::ContractType for TriggerReceipt {
 pub enum TriggerInboxError {
     #[default]
     DraftOnly,
+    InvalidSource,
     InvalidTarget,
     InvalidLane,
+    InvalidPayload,
+    InvalidClaim,
+    InvalidLease,
     DuplicateKeyConflict,
     UnknownTrigger,
     LeaseMismatch,
@@ -3908,11 +3952,23 @@ impl ::boxology_contract::ContractType for TriggerInboxError {
     > {
         let (tag, payload) = match self {
             Self::DraftOnly => ("DraftOnly".into(), ::boxology_contract::SlotValue::Null),
+            Self::InvalidSource => {
+                ("InvalidSource".into(), ::boxology_contract::SlotValue::Null)
+            }
             Self::InvalidTarget => {
                 ("InvalidTarget".into(), ::boxology_contract::SlotValue::Null)
             }
             Self::InvalidLane => {
                 ("InvalidLane".into(), ::boxology_contract::SlotValue::Null)
+            }
+            Self::InvalidPayload => {
+                ("InvalidPayload".into(), ::boxology_contract::SlotValue::Null)
+            }
+            Self::InvalidClaim => {
+                ("InvalidClaim".into(), ::boxology_contract::SlotValue::Null)
+            }
+            Self::InvalidLease => {
+                ("InvalidLease".into(), ::boxology_contract::SlotValue::Null)
             }
             Self::DuplicateKeyConflict => {
                 ("DuplicateKeyConflict".into(), ::boxology_contract::SlotValue::Null)
@@ -3965,6 +4021,17 @@ impl ::boxology_contract::ContractType for TriggerInboxError {
                         .under(::boxology_contract::PathSegment::Variant(tag.into())),
                 )
             }
+            "InvalidSource" if matches!(
+                payload, ::boxology_contract::SlotValue::Null
+            ) => Ok(Self::InvalidSource),
+            "InvalidSource" => {
+                Err(
+                    ::boxology_contract::DecodeError::new(
+                            ::boxology_contract::DecodeErrorKind::UnexpectedPayload,
+                        )
+                        .under(::boxology_contract::PathSegment::Variant(tag.into())),
+                )
+            }
             "InvalidTarget" if matches!(
                 payload, ::boxology_contract::SlotValue::Null
             ) => Ok(Self::InvalidTarget),
@@ -3980,6 +4047,39 @@ impl ::boxology_contract::ContractType for TriggerInboxError {
                 Ok(Self::InvalidLane)
             }
             "InvalidLane" => {
+                Err(
+                    ::boxology_contract::DecodeError::new(
+                            ::boxology_contract::DecodeErrorKind::UnexpectedPayload,
+                        )
+                        .under(::boxology_contract::PathSegment::Variant(tag.into())),
+                )
+            }
+            "InvalidPayload" if matches!(
+                payload, ::boxology_contract::SlotValue::Null
+            ) => Ok(Self::InvalidPayload),
+            "InvalidPayload" => {
+                Err(
+                    ::boxology_contract::DecodeError::new(
+                            ::boxology_contract::DecodeErrorKind::UnexpectedPayload,
+                        )
+                        .under(::boxology_contract::PathSegment::Variant(tag.into())),
+                )
+            }
+            "InvalidClaim" if matches!(payload, ::boxology_contract::SlotValue::Null) => {
+                Ok(Self::InvalidClaim)
+            }
+            "InvalidClaim" => {
+                Err(
+                    ::boxology_contract::DecodeError::new(
+                            ::boxology_contract::DecodeErrorKind::UnexpectedPayload,
+                        )
+                        .under(::boxology_contract::PathSegment::Variant(tag.into())),
+                )
+            }
+            "InvalidLease" if matches!(payload, ::boxology_contract::SlotValue::Null) => {
+                Ok(Self::InvalidLease)
+            }
+            "InvalidLease" => {
                 Err(
                     ::boxology_contract::DecodeError::new(
                             ::boxology_contract::DecodeErrorKind::UnexpectedPayload,
@@ -4099,8 +4199,12 @@ impl ::boxology_contract::ContractError for TriggerInboxError {
     fn error_tag(&self) -> &str {
         match self {
             Self::DraftOnly => "DraftOnly",
+            Self::InvalidSource => "InvalidSource",
             Self::InvalidTarget => "InvalidTarget",
             Self::InvalidLane => "InvalidLane",
+            Self::InvalidPayload => "InvalidPayload",
+            Self::InvalidClaim => "InvalidClaim",
+            Self::InvalidLease => "InvalidLease",
             Self::DuplicateKeyConflict => "DuplicateKeyConflict",
             Self::UnknownTrigger => "UnknownTrigger",
             Self::LeaseMismatch => "LeaseMismatch",
@@ -4657,8 +4761,8 @@ pub mod test_support {
 #[rustfmt::skip]
 #[doc(hidden)]
 pub const __BOXOLOGY_SEMANTIC_DIGEST: [u8; 32] = [
-    179, 79, 52, 76, 178, 209, 100, 86, 252, 177, 124, 124, 146, 240, 203, 129, 99, 200,
-    242, 253, 13, 24, 129, 160, 217, 200, 55, 96, 3, 17, 86, 110,
+    238, 54, 105, 134, 169, 183, 202, 234, 9, 214, 60, 52, 21, 105, 112, 212, 76, 60,
+    221, 151, 91, 73, 156, 214, 51, 54, 176, 122, 44, 160, 185, 225,
 ];
 #[rustfmt::skip]
 #[doc(hidden)]
