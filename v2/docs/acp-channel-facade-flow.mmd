@@ -1,0 +1,30 @@
+%%{init: {"theme": "base", "themeVariables": {"fontFamily": "ui-sans-serif, system-ui, sans-serif", "primaryTextColor": "#172033", "lineColor": "#64748b", "edgeLabelBackground": "#ffffff"}, "flowchart": {"curve": "basis", "nodeSpacing": 42, "rankSpacing": 54}}}%%
+flowchart LR
+    T3["T3 Code<br/>ACP v1 client"]
+    FACADE["crab-v2-acp-channel<br/>attach only · never owns agent"]
+    IPC["owner-only local IPC<br/>token stays on host"]
+    CHANNEL["durable native channel<br/>binding · ordered event log"]
+    AGENT["Crab-owned ACP agent<br/>single long-running session"]
+
+    T3 -->|"initialize · auth · new/load"| FACADE
+    FACADE -->|"attach/reuse"| IPC
+    IPC --> CHANNEL --> AGENT
+    T3 -->|"prompt: queue or steer"| FACADE
+    FACADE -->|"accept_turn"| IPC
+    AGENT -->|"complete native ACP stream"| CHANNEL
+    CHANNEL -->|"replay"| FACADE
+    FACADE -->|"session/update + stop reason"| T3
+    T3 -->|"session/cancel"| FACADE
+    FACADE -->|"interrupt_and_drain"| IPC
+    T3 -. "stdio disconnect: session stays live" .-> AGENT
+
+    classDef client fill:#f8fafc,stroke:#64748b,stroke-width:1.5px,color:#172033;
+    classDef facade fill:#dbeafe,stroke:#2563eb,stroke-width:2px,color:#172554;
+    classDef guard fill:#fee2e2,stroke:#dc2626,stroke-width:2px,color:#7f1d1d;
+    classDef durable fill:#dcfce7,stroke:#16a34a,stroke-width:2px,color:#14532d;
+    classDef agent fill:#ede9fe,stroke:#7c3aed,stroke-width:2px,color:#2e1065;
+    class T3 client;
+    class FACADE facade;
+    class IPC guard;
+    class CHANNEL durable;
+    class AGENT agent;

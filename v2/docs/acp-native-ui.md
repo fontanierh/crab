@@ -26,8 +26,10 @@ The T3 Crab provider starts one lightweight `crab-v2-acp-channel` process per T3
 speaks standard ACP over stdio, but only attaches to the single long-running Crab runtime over a
 versioned local IPC transport. It must never launch or own the underlying ACP agent.
 
-The authenticated local Boxology transport is implemented. The remaining integration is the thin
-ACP stdio facade and T3 provider wiring.
+The authenticated local Boxology transport and ACP stdio facade are implemented. The remaining
+integration is T3 provider wiring.
+
+![ACP stdio facade flow](acp-channel-facade-flow.png)
 
 | T3 / ACP operation | Crab operation |
 |---|---|
@@ -37,9 +39,24 @@ ACP stdio facade and T3 provider wiring.
 | `session/cancel` | `interrupt_and_drain` |
 | `session/update` | Lossless ordered native-channel replay with facade session IDs |
 
+T3 launches:
+
+```text
+crab-v2-acp-channel
+├── --state-dir <Crab state>
+├── --agent <configured agent ID>
+├── --adapter t3code
+└── --bootstrap-file <optional prompt>
+```
+
+The facade advertises the `crab-local` ACP authentication method; the actual credential remains the
+owner-only IPC token loaded inside the process. Prompts default to queue mode. The T3 provider can
+set `_meta.crab.inputMode` to `queue` or `steer`, and `_meta.crab.turnId` to a durable idempotency
+key. Interrupt remains the standard `session/cancel` action.
+
 Queue and steer must be separate UI actions or an explicit composer mode. Interrupt remains a
 separate action. The proxy may rewrite transport-local request and session IDs, but it must retain
 every native agent update needed to render thoughts, plans, tools, terminals, diffs, usage and
 compaction. Credentials never cross this seam.
 
-Implementation is tracked in [Crab #206](https://github.com/fontanierh/crab/issues/206).
+T3 provider work remains tracked in [Crab #206](https://github.com/fontanierh/crab/issues/206).
