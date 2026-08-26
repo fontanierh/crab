@@ -24,9 +24,11 @@ boxology = { git = "https://github.com/fontanierh/boxology", rev = "4dd00888445c
 boxology-contract = { git = "https://github.com/fontanierh/boxology", rev = "4dd00888445c6506704a3e3f69932a3c4bc32efa" }
 boxology-manifest = { git = "https://github.com/fontanierh/boxology", rev = "4dd00888445c6506704a3e3f69932a3c4bc32efa" }
 boxology-runtime = { git = "https://github.com/fontanierh/boxology", rev = "4dd00888445c6506704a3e3f69932a3c4bc32efa" }
+agent-client-protocol = { version = "=2.0.0", features = ["unstable_protocol_v2"] }
+async-trait = "0.1.89"
 rusqlite = { version = "0.40.2", features = ["bundled"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "=1.0.150"
 tempfile = "3.27.0"
-tokio = { version = "1.53.0", features = ["macros", "rt-multi-thread"] }
+tokio = { version = "1.53.0", features = ["fs", "macros", "process", "rt-multi-thread", "sync", "time"] }
 uuid = { version = "1.25.0", features = ["v4"] }

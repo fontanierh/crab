@@ -146,7 +146,8 @@ boxology::contract! {
         /// Stable caller key used to deduplicate a retried turn.
         pub client_turn_id: String,
         pub mode: AgentInputMode,
-        /// Exact ACP prompt payload encoded as JSON. Crab must not narrow multimodal ACP content.
+        /// Exact JSON array carried in ACP's `prompt` field. Crab must not narrow multimodal ACP
+        /// content blocks.
         pub native_prompt_json: String,
     }
 
@@ -182,6 +183,12 @@ boxology::contract! {
         Other,
     }
 
+    /// Which side emitted the preserved JSON-RPC message.
+    pub enum AcpEventDirection {
+        ClientToAgent,
+        AgentToClient,
+    }
+
     /// One lossless event from the ACP connection, ordered within a Crab session.
     pub struct AcpEvent {
         pub session_id: String,
@@ -189,7 +196,9 @@ boxology::contract! {
         pub sequence: u64,
         pub observed_at_ms: u64,
         pub kind: AcpEventKind,
-        /// The complete ACP JSON-RPC message. Channels render this, including tool activity.
+        pub direction: AcpEventDirection,
+        /// The complete ACP JSON-RPC message. `crab/*` lifecycle notifications are the only
+        /// Crab-authored extension; every native ACP message remains byte-for-byte intact.
         pub native_event_json: String,
     }
 
@@ -246,18 +255,24 @@ boxology::contract! {
 
     #[error]
     pub enum AgentHostError {
-        /// This contract draft intentionally has no live backend yet.
+        /// Retained so older draft consumers decode cleanly; the live host never returns it.
         DraftOnly,
+        InvalidConfiguration,
         UnknownAgent,
         PreflightFailed,
         AuthorityUnavailable,
         ProtocolNegotiationFailed,
         UnsupportedProtocolProfile,
         UnknownSession,
+        SessionClosed,
         SteeringUnavailable,
+        DuplicateTurnConflict,
+        UnknownRun,
+        UnknownPermission,
         InvalidCursor,
         InvalidNativePayload,
         TransportFailed,
+        StorageUnavailable,
     }
 
     /// Discover configured ACP agents; no Claude-specific type is permitted at this boundary.
@@ -281,7 +296,8 @@ boxology::contract! {
     #[capability]
     pub async fn read_events(request: ReadEventsRequest) -> Result<EventPage, AgentHostError>;
 
-    /// Resolve an ACP permission request with the mandatory unrestricted decision.
+    /// Return the automatic unrestricted resolution already sent by the host. The supplied ID and
+    /// native request must match the durable record; callers never gate the agent on human input.
     #[capability]
     pub async fn resolve_permission(request: PermissionRequest) -> Result<PermissionResolution, AgentHostError>;
 

@@ -100,7 +100,8 @@
     {
       "deprecation": null,
       "docs": [
-        " Resolve an ACP permission request with the mandatory unrestricted decision."
+        " Return the automatic unrestricted resolution already sent by the host. The supplied ID and",
+        " native request must match the durable record; callers never gate the agent on human input."
       ],
       "error": "AgentHostError",
       "id": "agent-host.resolve_permission",
@@ -174,9 +175,9 @@
   "provenance": {
     "generator": "boxology-generator",
     "generator_version": "0.1.1",
-    "semantic_digest": "sha256:e1b6d77032ec3570d639efdbcfb35a99bd10698cf0349d117d2828c868177e0c"
+    "semantic_digest": "sha256:91da88219cfbf0bbf3769eedababbb8074cfab12c987ec4b3ebcba8294d8fa83"
   },
-  "revision": "sha256:3908bb9783b1e97b28d45b80475216536f3d95b3e8572cc745fb7eb597bfed6c",
+  "revision": "sha256:3c8c419cb08579a976cd3eb26083da2b8a114c2a7d6beece21a3cec37679c366",
   "schema_format": 1,
   "types": [
     {
@@ -717,7 +718,8 @@
         {
           "deprecation": null,
           "docs": [
-            " Exact ACP prompt payload encoded as JSON. Crab must not narrow multimodal ACP content."
+            " Exact JSON array carried in ACP's `prompt` field. Crab must not narrow multimodal ACP",
+            " content blocks."
           ],
           "name": "native_prompt_json",
           "type": "String"
@@ -863,6 +865,26 @@
     {
       "deprecation": null,
       "docs": [
+        " Which side emitted the preserved JSON-RPC message."
+      ],
+      "kind": "enum",
+      "name": "AcpEventDirection",
+      "variants": [
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "ClientToAgent"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "AgentToClient"
+        }
+      ]
+    },
+    {
+      "deprecation": null,
+      "docs": [
         " One lossless event from the ACP connection, ordered within a Crab session."
       ],
       "fields": [
@@ -898,8 +920,15 @@
         },
         {
           "deprecation": null,
+          "docs": [],
+          "name": "direction",
+          "type": "AcpEventDirection"
+        },
+        {
+          "deprecation": null,
           "docs": [
-            " The complete ACP JSON-RPC message. Channels render this, including tool activity."
+            " The complete ACP JSON-RPC message. `crab/*` lifecycle notifications are the only",
+            " Crab-authored extension; every native ACP message remains byte-for-byte intact."
           ],
           "name": "native_event_json",
           "type": "String"
@@ -1124,9 +1153,15 @@
         {
           "deprecation": null,
           "docs": [
-            " This contract draft intentionally has no live backend yet."
+            " Retained so older draft consumers decode cleanly; the live host never returns it."
           ],
           "name": "DraftOnly",
+          "payload": "unit"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "InvalidConfiguration",
           "payload": "unit"
         },
         {
@@ -1168,7 +1203,31 @@
         {
           "deprecation": null,
           "docs": [],
+          "name": "SessionClosed",
+          "payload": "unit"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
           "name": "SteeringUnavailable",
+          "payload": "unit"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "DuplicateTurnConflict",
+          "payload": "unit"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "UnknownRun",
+          "payload": "unit"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "UnknownPermission",
           "payload": "unit"
         },
         {
@@ -1187,6 +1246,12 @@
           "deprecation": null,
           "docs": [],
           "name": "TransportFailed",
+          "payload": "unit"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "StorageUnavailable",
           "payload": "unit"
         }
       ]

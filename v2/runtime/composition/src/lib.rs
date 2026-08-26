@@ -8,7 +8,7 @@
 
 use std::{path::Path, sync::Arc};
 
-use agent_host_implementation::{AgentHostDraft, generated as agent_host};
+use agent_host_implementation::{AgentHost, AgentHostError, generated as agent_host};
 use boxology_contract::ExposureLevel;
 use boxology_runtime::{
     AssemblyErrors, Composition, CompositionBuilder, test_support::StubTransport,
@@ -24,10 +24,16 @@ pub struct DraftRuntime {
     pub composition: Composition,
     /// Lets contract tests inspect and dispatch the exposed generated capabilities.
     pub in_process: Arc<StubTransport>,
+    agent_host: agent_host_contract::AgentHostHandle,
     trigger_inbox: trigger_inbox_contract::TriggerInboxHandle,
 }
 
 impl DraftRuntime {
+    /// Returns the ordinary typed handle for the implemented ACP agent host.
+    pub fn agent_host(&self) -> &agent_host_contract::AgentHostHandle {
+        &self.agent_host
+    }
+
     /// Returns the ordinary typed handle for the implemented trigger inbox.
     pub fn trigger_inbox(&self) -> &trigger_inbox_contract::TriggerInboxHandle {
         &self.trigger_inbox
@@ -37,6 +43,8 @@ impl DraftRuntime {
 /// Failures while assembling the partially implemented v2 runtime.
 #[derive(Debug)]
 pub enum RuntimeStartError {
+    /// The concrete ACP agent host could not start.
+    AgentHost(AgentHostError),
     /// The concrete trigger store could not start.
     TriggerInbox(TriggerInboxError),
     /// Boxology rejected the composition graph.
@@ -51,23 +59,29 @@ impl From<AssemblyErrors> for RuntimeStartError {
 
 /// Assemble all v2 boxes through generated Boxology adapters.
 pub fn start_draft() -> Result<DraftRuntime, RuntimeStartError> {
+    let agent_host = AgentHost::open_in_memory(Vec::new()).map_err(RuntimeStartError::AgentHost)?;
     let trigger_store = TriggerInbox::open_in_memory().map_err(RuntimeStartError::TriggerInbox)?;
-    assemble_draft(trigger_store)
+    assemble_draft(agent_host, trigger_store)
 }
 
 /// Assemble the draft graph with a durable trigger inbox at `path`.
 pub fn start_draft_with_trigger_store(
     path: impl AsRef<Path>,
 ) -> Result<DraftRuntime, RuntimeStartError> {
+    let agent_host = AgentHost::open_in_memory(Vec::new()).map_err(RuntimeStartError::AgentHost)?;
     let trigger_store = TriggerInbox::open(path).map_err(RuntimeStartError::TriggerInbox)?;
-    assemble_draft(trigger_store)
+    assemble_draft(agent_host, trigger_store)
 }
 
-fn assemble_draft(trigger_store: TriggerInbox) -> Result<DraftRuntime, RuntimeStartError> {
+fn assemble_draft(
+    agent_host_box: AgentHost,
+    trigger_store: TriggerInbox,
+) -> Result<DraftRuntime, RuntimeStartError> {
     let in_process = Arc::new(StubTransport::new());
     let mut builder = CompositionBuilder::new();
 
-    let agent_host = agent_host::register(&mut builder, AgentHostDraft);
+    let agent_host = agent_host::register(&mut builder, agent_host_box);
+    let agent_host_handle = builder.handle::<agent_host_contract::AgentHostHandle>(&agent_host);
     builder.expose_all(&agent_host, in_process.clone(), ExposureLevel::CodeOnly);
 
     let native_channel = native_channel::register(&mut builder, NativeChannelDraft);
@@ -92,6 +106,7 @@ fn assemble_draft(trigger_store: TriggerInbox) -> Result<DraftRuntime, RuntimeSt
     Ok(DraftRuntime {
         composition,
         in_process,
+        agent_host: agent_host_handle,
         trigger_inbox,
     })
 }

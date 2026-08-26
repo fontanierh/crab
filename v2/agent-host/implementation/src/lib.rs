@@ -1,19 +1,178 @@
+mod actor;
+mod authority;
+mod config;
 mod contract;
+mod store;
+
+pub use authority::{AuthorityVerifier, SystemAuthorityVerifier};
+pub use config::{AgentProtocol, AuthorityProbeConfig, ConfiguredAgent};
 pub use contract::*;
 
-/// Placeholder boundary implementation. It is deliberately unusable until an ACP runtime is
-/// supplied; returning fabricated sessions or authority attestations would make the draft unsafe.
-pub struct AgentHostDraft;
+use std::{
+    collections::{BTreeMap, HashMap},
+    path::Path,
+    sync::Arc,
+    time::{Duration, SystemTime, UNIX_EPOCH},
+};
+
+use actor::{SessionCommand, SessionHandle, spawn_session};
+use authority::SharedAuthorityVerifier;
+use serde_json::{Map, Value};
+use store::AgentStore;
+use tokio::sync::{RwLock, oneshot};
+use uuid::Uuid;
+
+const CONTROL_TIMEOUT: Duration = Duration::from_secs(30);
+
+pub(crate) type Clock = Arc<dyn Fn() -> Result<u64, AgentHostError> + Send + Sync>;
+
+/// Durable ACP subprocess host. Every live session owns one actor and one child process.
+pub struct AgentHost {
+    agents: Arc<BTreeMap<String, Arc<ConfiguredAgent>>>,
+    store: Arc<AgentStore>,
+    authority: SharedAuthorityVerifier,
+    sessions: Arc<RwLock<HashMap<String, SessionHandle>>>,
+    clock: Clock,
+}
+
+impl AgentHost {
+    /// Open a file-backed host using the production authority verifier.
+    pub fn open(
+        path: impl AsRef<Path>,
+        agents: Vec<ConfiguredAgent>,
+    ) -> Result<Self, AgentHostError> {
+        Self::with_store(
+            AgentStore::open(path)?,
+            agents,
+            Arc::new(SystemAuthorityVerifier),
+        )
+    }
+
+    /// Open an in-memory host using the production authority verifier.
+    pub fn open_in_memory(agents: Vec<ConfiguredAgent>) -> Result<Self, AgentHostError> {
+        Self::with_store(
+            AgentStore::open_in_memory()?,
+            agents,
+            Arc::new(SystemAuthorityVerifier),
+        )
+    }
+
+    /// Open a file-backed host with an injected external authority boundary.
+    ///
+    /// Production callers should use [`Self::open`]. This seam exists for deterministic tests and
+    /// deployments whose authority checks are owned by a separate privileged service.
+    pub fn open_with_authority_verifier(
+        path: impl AsRef<Path>,
+        agents: Vec<ConfiguredAgent>,
+        authority: Arc<dyn AuthorityVerifier>,
+    ) -> Result<Self, AgentHostError> {
+        Self::with_store(AgentStore::open(path)?, agents, authority)
+    }
+
+    /// Open an in-memory host with an injected external authority boundary.
+    pub fn open_in_memory_with_authority_verifier(
+        agents: Vec<ConfiguredAgent>,
+        authority: Arc<dyn AuthorityVerifier>,
+    ) -> Result<Self, AgentHostError> {
+        Self::with_store(AgentStore::open_in_memory()?, agents, authority)
+    }
+
+    fn with_store(
+        store: AgentStore,
+        agents: Vec<ConfiguredAgent>,
+        authority: SharedAuthorityVerifier,
+    ) -> Result<Self, AgentHostError> {
+        let mut configured = BTreeMap::new();
+        for agent in agents {
+            agent.validate()?;
+            let agent_id = agent.agent_id.clone();
+            if configured.insert(agent_id, Arc::new(agent)).is_some() {
+                return Err(AgentHostError::InvalidConfiguration);
+            }
+        }
+        Ok(Self {
+            agents: Arc::new(configured),
+            store: Arc::new(store),
+            authority,
+            sessions: Arc::new(RwLock::new(HashMap::new())),
+            clock: Arc::new(system_time_ms),
+        })
+    }
+
+    /// Cooperatively close every live session. Dropping the returned future is safe because
+    /// dropping the host also disconnects the ACP transports and kills their process groups.
+    pub async fn shutdown(&self) {
+        let handles = {
+            let mut sessions = self.sessions.write().await;
+            sessions
+                .drain()
+                .map(|(_, handle)| handle)
+                .collect::<Vec<_>>()
+        };
+        for handle in handles {
+            let (reply, response) = oneshot::channel();
+            if handle
+                .commands
+                .send(SessionCommand::Close { reply })
+                .await
+                .is_ok()
+            {
+                let _ = tokio::time::timeout(CONTROL_TIMEOUT, response).await;
+            }
+        }
+    }
+
+    async fn run_preflight(
+        &self,
+        agent_id: &str,
+        working_directory: &str,
+    ) -> Result<PreflightReport, AgentHostError> {
+        let agent = self
+            .agents
+            .get(agent_id)
+            .ok_or(AgentHostError::UnknownAgent)?;
+        let canonical = tokio::fs::canonicalize(working_directory)
+            .await
+            .map_err(|_| AgentHostError::PreflightFailed)?;
+        if !canonical.is_absolute() {
+            return Err(AgentHostError::PreflightFailed);
+        }
+        let now_ms = (self.clock)()?;
+        let authority = self.authority.verify(agent, &canonical, now_ms).await?;
+        Ok(PreflightReport {
+            agent_id: agent_id.to_owned(),
+            working_directory: canonical.to_string_lossy().into_owned(),
+            authority,
+        })
+    }
+
+    async fn live_session(&self, session_id: &str) -> Result<SessionHandle, AgentHostError> {
+        self.sessions
+            .read()
+            .await
+            .get(session_id)
+            .cloned()
+            .ok_or_else(|| match self.store.status(session_id) {
+                Ok(_) => AgentHostError::SessionClosed,
+                Err(error) => error,
+            })
+    }
+}
 
 #[boxology::implementation]
-impl AgentHostDraft {
+impl AgentHost {
     pub async fn discover_agents(
         &self,
         context: boxology::CallContext,
         request: DiscoverAgentsRequest,
     ) -> Result<AgentCatalog, AgentHostError> {
         let _ = (context, request);
-        Err(AgentHostError::DraftOnly)
+        let mut agents = Vec::with_capacity(self.agents.len());
+        for configured in self.agents.values() {
+            let lifecycle = self.store.lifecycle_for_agent(&configured.agent_id)?;
+            agents.push(configured.descriptor(lifecycle));
+        }
+        Ok(AgentCatalog { agents })
     }
 
     pub async fn preflight(
@@ -21,8 +180,9 @@ impl AgentHostDraft {
         context: boxology::CallContext,
         request: PreflightRequest,
     ) -> Result<PreflightReport, AgentHostError> {
-        let _ = (context, request);
-        Err(AgentHostError::DraftOnly)
+        let _ = context;
+        self.run_preflight(&request.agent_id, &request.working_directory)
+            .await
     }
 
     pub async fn open_session(
@@ -30,8 +190,51 @@ impl AgentHostDraft {
         context: boxology::CallContext,
         request: OpenSessionRequest,
     ) -> Result<AgentSession, AgentHostError> {
-        let _ = (context, request);
-        Err(AgentHostError::DraftOnly)
+        let _ = context;
+        let metadata = serde_json::from_str::<Map<String, Value>>(&request.metadata_json)
+            .map_err(|_| AgentHostError::InvalidNativePayload)?;
+        let agent = self
+            .agents
+            .get(&request.agent_id)
+            .cloned()
+            .ok_or(AgentHostError::UnknownAgent)?;
+        let preflight = self
+            .run_preflight(&request.agent_id, &request.working_directory)
+            .await?;
+        let session_id = format!("session_{}", Uuid::new_v4());
+        let now_ms = (self.clock)()?;
+        self.store.create_starting_session(
+            &session_id,
+            &request.agent_id,
+            &preflight.working_directory,
+            &request.metadata_json,
+            &agent.protocol.profile(),
+            &preflight.authority,
+            now_ms,
+        )?;
+        let (handle, opened) = spawn_session(
+            agent,
+            self.store.clone(),
+            self.clock.clone(),
+            session_id.clone(),
+            preflight.working_directory.into(),
+            request.bootstrap_prompt,
+            metadata,
+        );
+        let opened = tokio::time::timeout(CONTROL_TIMEOUT, opened).await;
+        let session = match opened {
+            Ok(Ok(Ok(session))) => session,
+            Ok(Ok(Err(error))) => return Err(error),
+            Ok(Err(_)) | Err(_) => {
+                let (reply, _) = oneshot::channel();
+                let _ = handle.commands.try_send(SessionCommand::Close { reply });
+                self.store
+                    .set_lifecycle(&session_id, &AgentLifecycle::Failed, (self.clock)()?)?;
+                return Err(AgentHostError::TransportFailed);
+            }
+        };
+        self.sessions.write().await.insert(session_id, handle);
+        Ok(session)
     }
 
     pub async fn prompt(
@@ -39,8 +242,18 @@ impl AgentHostDraft {
         context: boxology::CallContext,
         request: PromptRequest,
     ) -> Result<PromptAccepted, AgentHostError> {
-        let _ = (context, request);
-        Err(AgentHostError::DraftOnly)
+        let _ = context;
+        let handle = self.live_session(&request.session_id).await?;
+        let (reply, response) = oneshot::channel();
+        handle
+            .commands
+            .send(SessionCommand::Prompt { request, reply })
+            .await
+            .map_err(|_| AgentHostError::SessionClosed)?;
+        tokio::time::timeout(CONTROL_TIMEOUT, response)
+            .await
+            .map_err(|_| AgentHostError::TransportFailed)?
+            .map_err(|_| AgentHostError::SessionClosed)?
     }
 
     pub async fn read_events(
@@ -48,8 +261,9 @@ impl AgentHostDraft {
         context: boxology::CallContext,
         request: ReadEventsRequest,
     ) -> Result<EventPage, AgentHostError> {
-        let _ = (context, request);
-        Err(AgentHostError::DraftOnly)
+        let _ = context;
+        self.store
+            .read_events(&request.session_id, request.after_sequence, request.limit)
     }
 
     pub async fn resolve_permission(
@@ -57,8 +271,12 @@ impl AgentHostDraft {
         context: boxology::CallContext,
         request: PermissionRequest,
     ) -> Result<PermissionResolution, AgentHostError> {
-        let _ = (context, request);
-        Err(AgentHostError::DraftOnly)
+        let _ = context;
+        self.store.permission_resolution(
+            &request.session_id,
+            &request.request_id,
+            &request.native_request_json,
+        )
     }
 
     pub async fn session_status(
@@ -66,8 +284,8 @@ impl AgentHostDraft {
         context: boxology::CallContext,
         request: SessionReference,
     ) -> Result<SessionStatus, AgentHostError> {
-        let _ = (context, request);
-        Err(AgentHostError::DraftOnly)
+        let _ = context;
+        self.store.status(&request.session_id)
     }
 
     pub async fn cancel_run(
@@ -75,8 +293,21 @@ impl AgentHostDraft {
         context: boxology::CallContext,
         request: RunReference,
     ) -> Result<OperationReceipt, AgentHostError> {
-        let _ = (context, request);
-        Err(AgentHostError::DraftOnly)
+        let _ = context;
+        let handle = self.live_session(&request.session_id).await?;
+        let (reply, response) = oneshot::channel();
+        handle
+            .commands
+            .send(SessionCommand::Cancel {
+                run_id: request.run_id,
+                reply,
+            })
+            .await
+            .map_err(|_| AgentHostError::SessionClosed)?;
+        tokio::time::timeout(CONTROL_TIMEOUT, response)
+            .await
+            .map_err(|_| AgentHostError::TransportFailed)?
+            .map_err(|_| AgentHostError::SessionClosed)?
     }
 
     pub async fn close_session(
@@ -84,9 +315,39 @@ impl AgentHostDraft {
         context: boxology::CallContext,
         request: SessionReference,
     ) -> Result<OperationReceipt, AgentHostError> {
-        let _ = (context, request);
-        Err(AgentHostError::DraftOnly)
+        let _ = context;
+        let handle = self.live_session(&request.session_id).await?;
+        let (reply, response) = oneshot::channel();
+        handle
+            .commands
+            .send(SessionCommand::Close { reply })
+            .await
+            .map_err(|_| AgentHostError::SessionClosed)?;
+        let result = tokio::time::timeout(CONTROL_TIMEOUT, response)
+            .await
+            .map_err(|_| AgentHostError::TransportFailed)?
+            .map_err(|_| AgentHostError::SessionClosed)?;
+        self.sessions.write().await.remove(&request.session_id);
+        result
     }
+}
+
+impl Drop for AgentHost {
+    fn drop(&mut self) {
+        if let Ok(sessions) = self.sessions.try_read() {
+            for handle in sessions.values() {
+                let (reply, _) = oneshot::channel();
+                let _ = handle.commands.try_send(SessionCommand::Close { reply });
+            }
+        }
+    }
+}
+
+fn system_time_ms() -> Result<u64, AgentHostError> {
+    let duration = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|_| AgentHostError::StorageUnavailable)?;
+    u64::try_from(duration.as_millis()).map_err(|_| AgentHostError::StorageUnavailable)
 }
 
 pub mod generated {
@@ -97,10 +358,10 @@ pub mod generated {
 mod tests {
     use boxology_contract::CapabilityId;
 
-    use super::{AgentHostDraft, AgentHostError, generated};
+    use super::{AgentHost, AgentHostError, generated};
 
     #[test]
-    fn draft_fails_closed_and_declares_the_complete_host_surface() {
+    fn live_host_declares_the_complete_surface_and_rejects_duplicate_configuration() {
         let capabilities = generated::implementation_descriptor()
             .contract()
             .capabilities()
@@ -111,7 +372,6 @@ mod tests {
             .iter()
             .map(|capability| capability.name().as_str())
             .collect::<Vec<_>>();
-
         assert_eq!(
             names,
             [
@@ -126,8 +386,8 @@ mod tests {
                 "close_session",
             ]
         );
-
-        let _ = AgentHostDraft;
-        assert_eq!(AgentHostError::DraftOnly, AgentHostError::DraftOnly);
+        let host = AgentHost::open_in_memory(Vec::new()).expect("empty catalog is valid");
+        drop(host);
+        assert_eq!(AgentHostError::UnknownAgent, AgentHostError::UnknownAgent);
     }
 }
