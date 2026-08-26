@@ -51,10 +51,14 @@ interrupt as a separate explicit action.
   prompts/events/permissions, queue/steer/cancel, and native process-group shutdown. Its
   [state contract](docs/agent-host-storage.md) is schema-versioned from day one; the
   [rendered flow](docs/agent-host-flow.png) shows the process boundary.
+- `native-channel` is a durable Boxology consumer of `agent-host`: it binds one UI to one session,
+  routes queue/steer and explicit interrupt, replays the complete bidirectional ACP stream, and
+  confirms adapter publication in order. See its [state contract](docs/native-channel-storage.md)
+  and [rendered flow](docs/native-channel-flow.png).
 - `trigger-inbox` is implemented with durable deduplication, FIFO leases and restart recovery.
   Its [storage contract](docs/trigger-inbox-storage.md) is schema-versioned from day one.
-- The remaining channel, bridge, and sub-agent boxes return an explicit `DraftOnly` error; they do
-  not fake a runtime.
+- The remaining bridge and sub-agent boxes return an explicit `DraftOnly` error; they do not fake a
+  runtime.
 - For a native UI, start by testing an off-the-shelf ACP client; build on reusable ACP components
   only if that cannot attach cleanly. See [the UI landscape](docs/acp-native-ui.md).
 

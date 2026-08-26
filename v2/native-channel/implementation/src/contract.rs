@@ -31,6 +31,8 @@ boxology::contract! {
         pub adapter_id: String,
         pub session_id: String,
         pub lifecycle: ChannelLifecycle,
+        /// Adapter-specific destination metadata, retained losslessly as JSON.
+        pub native_channel_json: String,
         /// Last ACP sequence durably published to the adapter.
         pub published_sequence: u64,
     }
@@ -45,12 +47,21 @@ boxology::contract! {
         pub native_prompt_json: String,
     }
 
+    pub enum ChannelTurnDisposition {
+        StartedForegroundWork,
+        ContributedToActiveWork,
+        QueuedForTurnBoundary,
+    }
+
     pub struct AcceptedTurn {
         pub binding_id: String,
         pub session_id: String,
         pub client_turn_id: String,
         pub accepted_at_ms: u64,
         pub mode: ChannelInputMode,
+        /// The durable run selected by `agent-host`.
+        pub run_id: String,
+        pub disposition: ChannelTurnDisposition,
     }
 
     /// The hint is useful for rendering; no event may be dropped because its hint is unknown.
@@ -70,6 +81,12 @@ boxology::contract! {
         Other,
     }
 
+    pub enum NativeEventDirection {
+        ClientToAgent,
+        AgentToClient,
+        Other,
+    }
+
     /// Channels receive the complete ordered ACP stream rather than assistant-text projections.
     pub struct NativeChannelEvent {
         pub binding_id: String,
@@ -78,6 +95,7 @@ boxology::contract! {
         pub sequence: u64,
         pub observed_at_ms: u64,
         pub kind: NativeEventKind,
+        pub direction: Option<NativeEventDirection>,
         /// Exact native ACP JSON-RPC message, including intermediate and tool events.
         pub native_event_json: String,
     }
@@ -132,6 +150,10 @@ boxology::contract! {
 
     pub struct ChannelStatus {
         pub binding: ChannelBinding,
+        /// Latest sequence currently readable from `agent-host`.
+        pub available_sequence: u64,
+        /// Accepted turn-boundary inputs that have not started yet.
+        pub pending_input_count: u64,
         pub last_error: Option<String>,
         pub updated_at_ms: u64,
     }
@@ -152,7 +174,9 @@ boxology::contract! {
         SteeringUnavailable,
         NothingToInterrupt,
         InvalidNativePayload,
+        SessionUnavailable,
         AdapterUnavailable,
+        StorageUnavailable,
     }
 
     /// Bind one native interface to one already-open ACP session.
@@ -167,7 +191,8 @@ boxology::contract! {
     #[capability]
     pub async fn interrupt_and_drain(request: InterruptRequest) -> Result<InterruptReceipt, NativeChannelError>;
 
-    /// Publish every ACP event in order; assistant text is not a privileged special case.
+    /// Confirm adapter publication of the next authoritative ACP event. The supplied event must
+    /// exactly match `agent-host`; arbitrary or out-of-order events are rejected.
     #[capability]
     pub async fn publish_native_event(request: NativeChannelEvent) -> Result<PublishReceipt, NativeChannelError>;
 

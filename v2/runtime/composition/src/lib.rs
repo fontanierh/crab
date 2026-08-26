@@ -14,7 +14,9 @@ use boxology_runtime::{
     AssemblyErrors, Composition, CompositionBuilder, test_support::StubTransport,
 };
 use bridge_host_implementation::{BridgeHostDraft, generated as bridge_host};
-use native_channel_implementation::{NativeChannelDraft, generated as native_channel};
+use native_channel_implementation::{
+    NativeChannelError, NativeChannelState, generated as native_channel,
+};
 use sub_agent_host_implementation::{SubAgentHostDraft, generated as sub_agent_host};
 use trigger_inbox_implementation::{TriggerInbox, TriggerInboxError, generated as trigger_inbox};
 
@@ -25,6 +27,7 @@ pub struct DraftRuntime {
     /// Lets contract tests inspect and dispatch the exposed generated capabilities.
     pub in_process: Arc<StubTransport>,
     agent_host: agent_host_contract::AgentHostHandle,
+    native_channel: native_channel_contract::NativeChannelHandle,
     trigger_inbox: trigger_inbox_contract::TriggerInboxHandle,
 }
 
@@ -32,6 +35,11 @@ impl DraftRuntime {
     /// Returns the ordinary typed handle for the implemented ACP agent host.
     pub fn agent_host(&self) -> &agent_host_contract::AgentHostHandle {
         &self.agent_host
+    }
+
+    /// Returns the ordinary typed handle for the implemented native-channel router.
+    pub fn native_channel(&self) -> &native_channel_contract::NativeChannelHandle {
+        &self.native_channel
     }
 
     /// Returns the ordinary typed handle for the implemented trigger inbox.
@@ -45,6 +53,8 @@ impl DraftRuntime {
 pub enum RuntimeStartError {
     /// The concrete ACP agent host could not start.
     AgentHost(AgentHostError),
+    /// The concrete native-channel state could not start.
+    NativeChannel(NativeChannelError),
     /// The concrete trigger store could not start.
     TriggerInbox(TriggerInboxError),
     /// Boxology rejected the composition graph.
@@ -60,8 +70,10 @@ impl From<AssemblyErrors> for RuntimeStartError {
 /// Assemble all v2 boxes through generated Boxology adapters.
 pub fn start_draft() -> Result<DraftRuntime, RuntimeStartError> {
     let agent_host = AgentHost::open_in_memory(Vec::new()).map_err(RuntimeStartError::AgentHost)?;
+    let native_channel =
+        NativeChannelState::open_in_memory().map_err(RuntimeStartError::NativeChannel)?;
     let trigger_store = TriggerInbox::open_in_memory().map_err(RuntimeStartError::TriggerInbox)?;
-    assemble_draft(agent_host, trigger_store)
+    assemble_draft(agent_host, native_channel, trigger_store)
 }
 
 /// Assemble the draft graph with a durable trigger inbox at `path`.
@@ -69,12 +81,15 @@ pub fn start_draft_with_trigger_store(
     path: impl AsRef<Path>,
 ) -> Result<DraftRuntime, RuntimeStartError> {
     let agent_host = AgentHost::open_in_memory(Vec::new()).map_err(RuntimeStartError::AgentHost)?;
+    let native_channel =
+        NativeChannelState::open_in_memory().map_err(RuntimeStartError::NativeChannel)?;
     let trigger_store = TriggerInbox::open(path).map_err(RuntimeStartError::TriggerInbox)?;
-    assemble_draft(agent_host, trigger_store)
+    assemble_draft(agent_host, native_channel, trigger_store)
 }
 
 fn assemble_draft(
     agent_host_box: AgentHost,
+    native_channel_state: NativeChannelState,
     trigger_store: TriggerInbox,
 ) -> Result<DraftRuntime, RuntimeStartError> {
     let in_process = Arc::new(StubTransport::new());
@@ -84,7 +99,12 @@ fn assemble_draft(
     let agent_host_handle = builder.handle::<agent_host_contract::AgentHostHandle>(&agent_host);
     builder.expose_all(&agent_host, in_process.clone(), ExposureLevel::CodeOnly);
 
-    let native_channel = native_channel::register(&mut builder, NativeChannelDraft);
+    let native_channel = native_channel::register(&mut builder, move |imports| {
+        native_channel_state.connect(imports.agent_host)
+    });
+    builder.connect(&native_channel, &agent_host);
+    let native_channel_handle =
+        builder.handle::<native_channel_contract::NativeChannelHandle>(&native_channel);
     builder.expose_all(&native_channel, in_process.clone(), ExposureLevel::CodeOnly);
 
     let bridge_host = bridge_host::register(&mut builder, BridgeHostDraft);
@@ -107,6 +127,7 @@ fn assemble_draft(
         composition,
         in_process,
         agent_host: agent_host_handle,
+        native_channel: native_channel_handle,
         trigger_inbox,
     })
 }

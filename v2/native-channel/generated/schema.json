@@ -61,7 +61,8 @@
     {
       "deprecation": null,
       "docs": [
-        " Publish every ACP event in order; assistant text is not a privileged special case."
+        " Confirm adapter publication of the next authoritative ACP event. The supplied event must",
+        " exactly match `agent-host`; arbitrary or out-of-order events are rejected."
       ],
       "error": "NativeChannelError",
       "id": "native-channel.publish_native_event",
@@ -153,9 +154,9 @@
   "provenance": {
     "generator": "boxology-generator",
     "generator_version": "0.1.1",
-    "semantic_digest": "sha256:eb2e2cfabec5707c9128f05a579ee73abc7134dec35a6c98a2458e6d40009d57"
+    "semantic_digest": "sha256:ecf248cd1973ac894dd7c6ceed04db42f7d6f20f5d2fe8ed1132daa002fe65e8"
   },
-  "revision": "sha256:ca71989d914aa685c738c180d5f35b9a467fa186ac0c6e73a2273c9c3731df22",
+  "revision": "sha256:4395f8de32429f96d57bc2b1eab16b96d415b649a5cc1a189a20bbd091251bfd",
   "schema_format": 1,
   "types": [
     {
@@ -285,6 +286,14 @@
         {
           "deprecation": null,
           "docs": [
+            " Adapter-specific destination metadata, retained losslessly as JSON."
+          ],
+          "name": "native_channel_json",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [
             " Last ACP sequence durably published to the adapter."
           ],
           "name": "published_sequence",
@@ -339,6 +348,29 @@
     {
       "deprecation": null,
       "docs": [],
+      "kind": "enum",
+      "name": "ChannelTurnDisposition",
+      "variants": [
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "StartedForegroundWork"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "ContributedToActiveWork"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "QueuedForTurnBoundary"
+        }
+      ]
+    },
+    {
+      "deprecation": null,
+      "docs": [],
       "fields": [
         {
           "deprecation": null,
@@ -369,6 +401,20 @@
           "docs": [],
           "name": "mode",
           "type": "ChannelInputMode"
+        },
+        {
+          "deprecation": null,
+          "docs": [
+            " The durable run selected by `agent-host`."
+          ],
+          "name": "run_id",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "disposition",
+          "type": "ChannelTurnDisposition"
         }
       ],
       "kind": "struct",
@@ -451,6 +497,29 @@
     },
     {
       "deprecation": null,
+      "docs": [],
+      "kind": "enum",
+      "name": "NativeEventDirection",
+      "variants": [
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "ClientToAgent"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "AgentToClient"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "Other"
+        }
+      ]
+    },
+    {
+      "deprecation": null,
       "docs": [
         " Channels receive the complete ordered ACP stream rather than assistant-text projections."
       ],
@@ -490,6 +559,12 @@
           "docs": [],
           "name": "kind",
           "type": "NativeEventKind"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "direction",
+          "type": "Option<NativeEventDirection>"
         },
         {
           "deprecation": null,
@@ -716,6 +791,22 @@
         },
         {
           "deprecation": null,
+          "docs": [
+            " Latest sequence currently readable from `agent-host`."
+          ],
+          "name": "available_sequence",
+          "type": "u64"
+        },
+        {
+          "deprecation": null,
+          "docs": [
+            " Accepted turn-boundary inputs that have not started yet."
+          ],
+          "name": "pending_input_count",
+          "type": "u64"
+        },
+        {
+          "deprecation": null,
           "docs": [],
           "name": "last_error",
           "type": "Option<String>"
@@ -813,7 +904,19 @@
         {
           "deprecation": null,
           "docs": [],
+          "name": "SessionUnavailable",
+          "payload": "unit"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
           "name": "AdapterUnavailable",
+          "payload": "unit"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "StorageUnavailable",
           "payload": "unit"
         }
       ]

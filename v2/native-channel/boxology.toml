@@ -3,6 +3,10 @@ id = "native-channel"
 kind = "box"
 owned = ["boxology.toml", "implementation/**"]
 
+[[imports]]
+package = "agent-host"
+contract = "agent-host"
+
 [quality]
 commands = [
     "cargo check -p native-channel-contract --all-features",

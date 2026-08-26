@@ -53,7 +53,17 @@ static __BOXOLOGY_CONTRACT_DESCRIPTOR: ::std::sync::LazyLock<
                 None,
             ),
             ::boxology_contract::VariantDescriptor::new(
+                "SessionUnavailable",
+                ::boxology_contract::VariantPayload::Unit,
+                None,
+            ),
+            ::boxology_contract::VariantDescriptor::new(
                 "AdapterUnavailable",
+                ::boxology_contract::VariantPayload::Unit,
+                None,
+            ),
+            ::boxology_contract::VariantDescriptor::new(
+                "StorageUnavailable",
                 ::boxology_contract::VariantPayload::Unit,
                 None,
             ),
@@ -139,6 +149,11 @@ static __BOXOLOGY_CONTRACT_DESCRIPTOR: ::std::sync::LazyLock<
                             ),
                         ])
                         .expect("generated enum descriptor is valid"),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
+                    "native_channel_json",
+                    ::boxology_contract::TypeDescriptor::string(),
                     None,
                 ),
                 ::boxology_contract::FieldDescriptor::new(
@@ -231,6 +246,33 @@ static __BOXOLOGY_CONTRACT_DESCRIPTOR: ::std::sync::LazyLock<
                             ),
                             ::boxology_contract::VariantDescriptor::new(
                                 "Steer",
+                                ::boxology_contract::VariantPayload::Unit,
+                                None,
+                            ),
+                        ])
+                        .expect("generated enum descriptor is valid"),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
+                    "run_id",
+                    ::boxology_contract::TypeDescriptor::string(),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
+                    "disposition",
+                    ::boxology_contract::TypeDescriptor::enumeration([
+                            ::boxology_contract::VariantDescriptor::new(
+                                "StartedForegroundWork",
+                                ::boxology_contract::VariantPayload::Unit,
+                                None,
+                            ),
+                            ::boxology_contract::VariantDescriptor::new(
+                                "ContributedToActiveWork",
+                                ::boxology_contract::VariantPayload::Unit,
+                                None,
+                            ),
+                            ::boxology_contract::VariantDescriptor::new(
+                                "QueuedForTurnBoundary",
                                 ::boxology_contract::VariantPayload::Unit,
                                 None,
                             ),
@@ -412,6 +454,31 @@ static __BOXOLOGY_CONTRACT_DESCRIPTOR: ::std::sync::LazyLock<
                     None,
                 ),
                 ::boxology_contract::FieldDescriptor::new(
+                    "direction",
+                    ::boxology_contract::TypeDescriptor::optional(
+                            ::boxology_contract::TypeDescriptor::enumeration([
+                                    ::boxology_contract::VariantDescriptor::new(
+                                        "ClientToAgent",
+                                        ::boxology_contract::VariantPayload::Unit,
+                                        None,
+                                    ),
+                                    ::boxology_contract::VariantDescriptor::new(
+                                        "AgentToClient",
+                                        ::boxology_contract::VariantPayload::Unit,
+                                        None,
+                                    ),
+                                    ::boxology_contract::VariantDescriptor::new(
+                                        "Other",
+                                        ::boxology_contract::VariantPayload::Unit,
+                                        None,
+                                    ),
+                                ])
+                                .expect("generated enum descriptor is valid"),
+                        )
+                        .expect("generated optional descriptor is valid"),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
                     "native_event_json",
                     ::boxology_contract::TypeDescriptor::string(),
                     None,
@@ -577,6 +644,31 @@ static __BOXOLOGY_CONTRACT_DESCRIPTOR: ::std::sync::LazyLock<
                                         None,
                                     ),
                                     ::boxology_contract::FieldDescriptor::new(
+                                        "direction",
+                                        ::boxology_contract::TypeDescriptor::optional(
+                                                ::boxology_contract::TypeDescriptor::enumeration([
+                                                        ::boxology_contract::VariantDescriptor::new(
+                                                            "ClientToAgent",
+                                                            ::boxology_contract::VariantPayload::Unit,
+                                                            None,
+                                                        ),
+                                                        ::boxology_contract::VariantDescriptor::new(
+                                                            "AgentToClient",
+                                                            ::boxology_contract::VariantPayload::Unit,
+                                                            None,
+                                                        ),
+                                                        ::boxology_contract::VariantDescriptor::new(
+                                                            "Other",
+                                                            ::boxology_contract::VariantPayload::Unit,
+                                                            None,
+                                                        ),
+                                                    ])
+                                                    .expect("generated enum descriptor is valid"),
+                                            )
+                                            .expect("generated optional descriptor is valid"),
+                                        None,
+                                    ),
+                                    ::boxology_contract::FieldDescriptor::new(
                                         "native_event_json",
                                         ::boxology_contract::TypeDescriptor::string(),
                                         None,
@@ -688,6 +780,11 @@ static __BOXOLOGY_CONTRACT_DESCRIPTOR: ::std::sync::LazyLock<
                     None,
                 ),
                 ::boxology_contract::FieldDescriptor::new(
+                    "native_channel_json",
+                    ::boxology_contract::TypeDescriptor::string(),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
                     "published_sequence",
                     ::boxology_contract::TypeDescriptor::u64(),
                     None,
@@ -771,12 +868,27 @@ static __BOXOLOGY_CONTRACT_DESCRIPTOR: ::std::sync::LazyLock<
                                 None,
                             ),
                             ::boxology_contract::FieldDescriptor::new(
+                                "native_channel_json",
+                                ::boxology_contract::TypeDescriptor::string(),
+                                None,
+                            ),
+                            ::boxology_contract::FieldDescriptor::new(
                                 "published_sequence",
                                 ::boxology_contract::TypeDescriptor::u64(),
                                 None,
                             ),
                         ])
                         .expect("generated struct descriptor is valid"),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
+                    "available_sequence",
+                    ::boxology_contract::TypeDescriptor::u64(),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
+                    "pending_input_count",
+                    ::boxology_contract::TypeDescriptor::u64(),
                     None,
                 ),
                 ::boxology_contract::FieldDescriptor::new(
@@ -846,7 +958,7 @@ static __BOXOLOGY_CONTRACT_DESCRIPTOR: ::std::sync::LazyLock<
                 capability_7,
             ],
             ::boxology_contract::ContractRevision::new(
-                    "sha256:ca71989d914aa685c738c180d5f35b9a467fa186ac0c6e73a2273c9c3731df22",
+                    "sha256:4395f8de32429f96d57bc2b1eab16b96d415b649a5cc1a189a20bbd091251bfd",
                 )
                 .expect("generated contract revision is non-empty"),
         )
@@ -1014,6 +1126,11 @@ impl NativeChannelHandle {
                     None,
                 ),
                 ::boxology_contract::FieldDescriptor::new(
+                    "native_channel_json",
+                    TypeDescriptor::string(),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
                     "published_sequence",
                     TypeDescriptor::u64(),
                     None,
@@ -1074,6 +1191,33 @@ impl NativeChannelHandle {
                             ),
                             ::boxology_contract::VariantDescriptor::new(
                                 "Steer",
+                                ::boxology_contract::VariantPayload::Unit,
+                                None,
+                            ),
+                        ])
+                        .expect("generated enum descriptor is valid"),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
+                    "run_id",
+                    TypeDescriptor::string(),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
+                    "disposition",
+                    TypeDescriptor::enumeration([
+                            ::boxology_contract::VariantDescriptor::new(
+                                "StartedForegroundWork",
+                                ::boxology_contract::VariantPayload::Unit,
+                                None,
+                            ),
+                            ::boxology_contract::VariantDescriptor::new(
+                                "ContributedToActiveWork",
+                                ::boxology_contract::VariantPayload::Unit,
+                                None,
+                            ),
+                            ::boxology_contract::VariantDescriptor::new(
+                                "QueuedForTurnBoundary",
                                 ::boxology_contract::VariantPayload::Unit,
                                 None,
                             ),
@@ -1302,6 +1446,31 @@ impl NativeChannelHandle {
                                         None,
                                     ),
                                     ::boxology_contract::FieldDescriptor::new(
+                                        "direction",
+                                        TypeDescriptor::optional(
+                                                TypeDescriptor::enumeration([
+                                                        ::boxology_contract::VariantDescriptor::new(
+                                                            "ClientToAgent",
+                                                            ::boxology_contract::VariantPayload::Unit,
+                                                            None,
+                                                        ),
+                                                        ::boxology_contract::VariantDescriptor::new(
+                                                            "AgentToClient",
+                                                            ::boxology_contract::VariantPayload::Unit,
+                                                            None,
+                                                        ),
+                                                        ::boxology_contract::VariantDescriptor::new(
+                                                            "Other",
+                                                            ::boxology_contract::VariantPayload::Unit,
+                                                            None,
+                                                        ),
+                                                    ])
+                                                    .expect("generated enum descriptor is valid"),
+                                            )
+                                            .expect("generated optional descriptor is valid"),
+                                        None,
+                                    ),
+                                    ::boxology_contract::FieldDescriptor::new(
                                         "native_event_json",
                                         TypeDescriptor::string(),
                                         None,
@@ -1401,6 +1570,11 @@ impl NativeChannelHandle {
                     None,
                 ),
                 ::boxology_contract::FieldDescriptor::new(
+                    "native_channel_json",
+                    TypeDescriptor::string(),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
                     "published_sequence",
                     TypeDescriptor::u64(),
                     None,
@@ -1487,12 +1661,27 @@ impl NativeChannelHandle {
                                 None,
                             ),
                             ::boxology_contract::FieldDescriptor::new(
+                                "native_channel_json",
+                                TypeDescriptor::string(),
+                                None,
+                            ),
+                            ::boxology_contract::FieldDescriptor::new(
                                 "published_sequence",
                                 TypeDescriptor::u64(),
                                 None,
                             ),
                         ])
                         .expect("generated struct descriptor is valid"),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
+                    "available_sequence",
+                    TypeDescriptor::u64(),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
+                    "pending_input_count",
+                    TypeDescriptor::u64(),
                     None,
                 ),
                 ::boxology_contract::FieldDescriptor::new(
@@ -1669,7 +1858,17 @@ static NATIVE_CHANNEL_ERROR_DESCRIPTOR: LazyLock<TypeDescriptor> = LazyLock::new
                 None,
             ),
             ::boxology_contract::VariantDescriptor::new(
+                "SessionUnavailable",
+                ::boxology_contract::VariantPayload::Unit,
+                None,
+            ),
+            ::boxology_contract::VariantDescriptor::new(
                 "AdapterUnavailable",
+                ::boxology_contract::VariantPayload::Unit,
+                None,
+            ),
+            ::boxology_contract::VariantDescriptor::new(
+                "StorageUnavailable",
                 ::boxology_contract::VariantPayload::Unit,
                 None,
             ),
@@ -2067,6 +2266,8 @@ pub struct ChannelBinding {
     pub adapter_id: ::std::string::String,
     pub session_id: ::std::string::String,
     pub lifecycle: ChannelLifecycle,
+    /// Adapter-specific destination metadata, retained losslessly as JSON.
+    pub native_channel_json: ::std::string::String,
     /// Last ACP sequence durably published to the adapter.
     pub published_sequence: u64,
 }
@@ -2125,6 +2326,20 @@ impl ::boxology_contract::ContractType for ChannelBinding {
             fields.push(("lifecycle".into(), value));
         }
         if let Some(value) = ::boxology_contract::ContractType::encode_field(
+                &self.native_channel_json,
+            )
+            .map_err(|error| {
+                error
+                    .under(
+                        ::boxology_contract::PathSegment::Field(
+                            "native_channel_json".into(),
+                        ),
+                    )
+            })?
+        {
+            fields.push(("native_channel_json".into(), value));
+        }
+        if let Some(value) = ::boxology_contract::ContractType::encode_field(
                 &self.published_sequence,
             )
             .map_err(|error| {
@@ -2154,7 +2369,7 @@ impl ::boxology_contract::ContractType for ChannelBinding {
         for (field, _) in fields.entries() {
             match field {
                 "binding_id" | "channel_id" | "adapter_id" | "session_id" | "lifecycle"
-                | "published_sequence" => {}
+                | "native_channel_json" | "published_sequence" => {}
                 _ => {
                     return Err(
                         ::boxology_contract::DecodeError::new(
@@ -2211,6 +2426,17 @@ impl ::boxology_contract::ContractType for ChannelBinding {
                     error
                         .under(
                             ::boxology_contract::PathSegment::Field("lifecycle".into()),
+                        )
+                })?,
+            native_channel_json: <::std::string::String as ::boxology_contract::ContractType>::decode_field(
+                    fields.get("native_channel_json"),
+                )
+                .map_err(|error| {
+                    error
+                        .under(
+                            ::boxology_contract::PathSegment::Field(
+                                "native_channel_json".into(),
+                            ),
                         )
                 })?,
             published_sequence: <u64 as ::boxology_contract::ContractType>::decode_field(
@@ -2384,12 +2610,138 @@ impl ::boxology_contract::ContractType for ChannelTurn {
 }
 #[rustfmt::skip]
 #[derive(Debug, Clone, PartialEq, Default)]
+pub enum ChannelTurnDisposition {
+    #[default]
+    StartedForegroundWork,
+    ContributedToActiveWork,
+    QueuedForTurnBoundary,
+    Unknown { tag: ::std::string::String, payload: ::boxology_contract::OpaquePayload },
+}
+#[rustfmt::skip]
+impl ::boxology_contract::ContractType for ChannelTurnDisposition {
+    fn encode_value(
+        &self,
+    ) -> ::core::result::Result<
+        ::boxology_contract::ContractValue,
+        ::boxology_contract::EncodeError,
+    > {
+        let (tag, payload) = match self {
+            Self::StartedForegroundWork => {
+                ("StartedForegroundWork".into(), ::boxology_contract::SlotValue::Null)
+            }
+            Self::ContributedToActiveWork => {
+                ("ContributedToActiveWork".into(), ::boxology_contract::SlotValue::Null)
+            }
+            Self::QueuedForTurnBoundary => {
+                ("QueuedForTurnBoundary".into(), ::boxology_contract::SlotValue::Null)
+            }
+            Self::Unknown { tag, payload } => {
+                (
+                    tag.clone(),
+                    ::boxology_contract::SlotValue::Value(
+                        ::boxology_contract::ContractValue::opaque(payload.forward()),
+                    ),
+                )
+            }
+        };
+        Ok(::boxology_contract::ContractValue::enum_value(tag, payload))
+    }
+    fn decode_value(
+        value: &::boxology_contract::ContractValue,
+    ) -> ::core::result::Result<Self, ::boxology_contract::DecodeError> {
+        let ::boxology_contract::ValueRef::Enum { tag, payload } = value.view() else {
+            return Err(
+                ::boxology_contract::DecodeError::new(
+                    ::boxology_contract::DecodeErrorKind::KindMismatch,
+                ),
+            );
+        };
+        match tag {
+            "StartedForegroundWork" if matches!(
+                payload, ::boxology_contract::SlotValue::Null
+            ) => Ok(Self::StartedForegroundWork),
+            "StartedForegroundWork" => {
+                Err(
+                    ::boxology_contract::DecodeError::new(
+                            ::boxology_contract::DecodeErrorKind::UnexpectedPayload,
+                        )
+                        .under(::boxology_contract::PathSegment::Variant(tag.into())),
+                )
+            }
+            "ContributedToActiveWork" if matches!(
+                payload, ::boxology_contract::SlotValue::Null
+            ) => Ok(Self::ContributedToActiveWork),
+            "ContributedToActiveWork" => {
+                Err(
+                    ::boxology_contract::DecodeError::new(
+                            ::boxology_contract::DecodeErrorKind::UnexpectedPayload,
+                        )
+                        .under(::boxology_contract::PathSegment::Variant(tag.into())),
+                )
+            }
+            "QueuedForTurnBoundary" if matches!(
+                payload, ::boxology_contract::SlotValue::Null
+            ) => Ok(Self::QueuedForTurnBoundary),
+            "QueuedForTurnBoundary" => {
+                Err(
+                    ::boxology_contract::DecodeError::new(
+                            ::boxology_contract::DecodeErrorKind::UnexpectedPayload,
+                        )
+                        .under(::boxology_contract::PathSegment::Variant(tag.into())),
+                )
+            }
+            _ => {
+                match payload {
+                    ::boxology_contract::SlotValue::Value(value) => {
+                        match value.view() {
+                            ::boxology_contract::ValueRef::Opaque(payload) => {
+                                Ok(Self::Unknown {
+                                    tag: tag.into(),
+                                    payload: payload.forward(),
+                                })
+                            }
+                            _ => {
+                                Err(
+                                    ::boxology_contract::DecodeError::new(
+                                            ::boxology_contract::DecodeErrorKind::UnknownVariant(
+                                                tag.into(),
+                                            ),
+                                        )
+                                        .under(
+                                            ::boxology_contract::PathSegment::Variant(tag.into()),
+                                        ),
+                                )
+                            }
+                        }
+                    }
+                    _ => {
+                        Err(
+                            ::boxology_contract::DecodeError::new(
+                                    ::boxology_contract::DecodeErrorKind::UnknownVariant(
+                                        tag.into(),
+                                    ),
+                                )
+                                .under(
+                                    ::boxology_contract::PathSegment::Variant(tag.into()),
+                                ),
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+#[rustfmt::skip]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct AcceptedTurn {
     pub binding_id: ::std::string::String,
     pub session_id: ::std::string::String,
     pub client_turn_id: ::std::string::String,
     pub accepted_at_ms: u64,
     pub mode: ChannelInputMode,
+    /// The durable run selected by `agent-host`.
+    pub run_id: ::std::string::String,
+    pub disposition: ChannelTurnDisposition,
 }
 #[rustfmt::skip]
 impl ::boxology_contract::ContractType for AcceptedTurn {
@@ -2449,6 +2801,25 @@ impl ::boxology_contract::ContractType for AcceptedTurn {
         {
             fields.push(("mode".into(), value));
         }
+        if let Some(value) = ::boxology_contract::ContractType::encode_field(
+                &self.run_id,
+            )
+            .map_err(|error| {
+                error.under(::boxology_contract::PathSegment::Field("run_id".into()))
+            })?
+        {
+            fields.push(("run_id".into(), value));
+        }
+        if let Some(value) = ::boxology_contract::ContractType::encode_field(
+                &self.disposition,
+            )
+            .map_err(|error| {
+                error
+                    .under(::boxology_contract::PathSegment::Field("disposition".into()))
+            })?
+        {
+            fields.push(("disposition".into(), value));
+        }
         ::boxology_contract::ContractValue::object(fields)
             .map_err(|_| unreachable!("validated generated field identities are unique"))
     }
@@ -2465,7 +2836,7 @@ impl ::boxology_contract::ContractType for AcceptedTurn {
         for (field, _) in fields.entries() {
             match field {
                 "binding_id" | "session_id" | "client_turn_id" | "accepted_at_ms"
-                | "mode" => {}
+                | "mode" | "run_id" | "disposition" => {}
                 _ => {
                     return Err(
                         ::boxology_contract::DecodeError::new(
@@ -2524,6 +2895,21 @@ impl ::boxology_contract::ContractType for AcceptedTurn {
                 )
                 .map_err(|error| {
                     error.under(::boxology_contract::PathSegment::Field("mode".into()))
+                })?,
+            run_id: <::std::string::String as ::boxology_contract::ContractType>::decode_field(
+                    fields.get("run_id"),
+                )
+                .map_err(|error| {
+                    error.under(::boxology_contract::PathSegment::Field("run_id".into()))
+                })?,
+            disposition: <ChannelTurnDisposition as ::boxology_contract::ContractType>::decode_field(
+                    fields.get("disposition"),
+                )
+                .map_err(|error| {
+                    error
+                        .under(
+                            ::boxology_contract::PathSegment::Field("disposition".into()),
+                        )
                 })?,
         })
     }
@@ -2787,6 +3173,127 @@ impl ::boxology_contract::ContractType for NativeEventKind {
     }
 }
 #[rustfmt::skip]
+#[derive(Debug, Clone, PartialEq, Default)]
+pub enum NativeEventDirection {
+    #[default]
+    ClientToAgent,
+    AgentToClient,
+    Other,
+    Unknown { tag: ::std::string::String, payload: ::boxology_contract::OpaquePayload },
+}
+#[rustfmt::skip]
+impl ::boxology_contract::ContractType for NativeEventDirection {
+    fn encode_value(
+        &self,
+    ) -> ::core::result::Result<
+        ::boxology_contract::ContractValue,
+        ::boxology_contract::EncodeError,
+    > {
+        let (tag, payload) = match self {
+            Self::ClientToAgent => {
+                ("ClientToAgent".into(), ::boxology_contract::SlotValue::Null)
+            }
+            Self::AgentToClient => {
+                ("AgentToClient".into(), ::boxology_contract::SlotValue::Null)
+            }
+            Self::Other => ("Other".into(), ::boxology_contract::SlotValue::Null),
+            Self::Unknown { tag, payload } => {
+                (
+                    tag.clone(),
+                    ::boxology_contract::SlotValue::Value(
+                        ::boxology_contract::ContractValue::opaque(payload.forward()),
+                    ),
+                )
+            }
+        };
+        Ok(::boxology_contract::ContractValue::enum_value(tag, payload))
+    }
+    fn decode_value(
+        value: &::boxology_contract::ContractValue,
+    ) -> ::core::result::Result<Self, ::boxology_contract::DecodeError> {
+        let ::boxology_contract::ValueRef::Enum { tag, payload } = value.view() else {
+            return Err(
+                ::boxology_contract::DecodeError::new(
+                    ::boxology_contract::DecodeErrorKind::KindMismatch,
+                ),
+            );
+        };
+        match tag {
+            "ClientToAgent" if matches!(
+                payload, ::boxology_contract::SlotValue::Null
+            ) => Ok(Self::ClientToAgent),
+            "ClientToAgent" => {
+                Err(
+                    ::boxology_contract::DecodeError::new(
+                            ::boxology_contract::DecodeErrorKind::UnexpectedPayload,
+                        )
+                        .under(::boxology_contract::PathSegment::Variant(tag.into())),
+                )
+            }
+            "AgentToClient" if matches!(
+                payload, ::boxology_contract::SlotValue::Null
+            ) => Ok(Self::AgentToClient),
+            "AgentToClient" => {
+                Err(
+                    ::boxology_contract::DecodeError::new(
+                            ::boxology_contract::DecodeErrorKind::UnexpectedPayload,
+                        )
+                        .under(::boxology_contract::PathSegment::Variant(tag.into())),
+                )
+            }
+            "Other" if matches!(payload, ::boxology_contract::SlotValue::Null) => {
+                Ok(Self::Other)
+            }
+            "Other" => {
+                Err(
+                    ::boxology_contract::DecodeError::new(
+                            ::boxology_contract::DecodeErrorKind::UnexpectedPayload,
+                        )
+                        .under(::boxology_contract::PathSegment::Variant(tag.into())),
+                )
+            }
+            _ => {
+                match payload {
+                    ::boxology_contract::SlotValue::Value(value) => {
+                        match value.view() {
+                            ::boxology_contract::ValueRef::Opaque(payload) => {
+                                Ok(Self::Unknown {
+                                    tag: tag.into(),
+                                    payload: payload.forward(),
+                                })
+                            }
+                            _ => {
+                                Err(
+                                    ::boxology_contract::DecodeError::new(
+                                            ::boxology_contract::DecodeErrorKind::UnknownVariant(
+                                                tag.into(),
+                                            ),
+                                        )
+                                        .under(
+                                            ::boxology_contract::PathSegment::Variant(tag.into()),
+                                        ),
+                                )
+                            }
+                        }
+                    }
+                    _ => {
+                        Err(
+                            ::boxology_contract::DecodeError::new(
+                                    ::boxology_contract::DecodeErrorKind::UnknownVariant(
+                                        tag.into(),
+                                    ),
+                                )
+                                .under(
+                                    ::boxology_contract::PathSegment::Variant(tag.into()),
+                                ),
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+#[rustfmt::skip]
 /// Channels receive the complete ordered ACP stream rather than assistant-text projections.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct NativeChannelEvent {
@@ -2796,6 +3303,7 @@ pub struct NativeChannelEvent {
     pub sequence: u64,
     pub observed_at_ms: u64,
     pub kind: NativeEventKind,
+    pub direction: ::core::option::Option<NativeEventDirection>,
     /// Exact native ACP JSON-RPC message, including intermediate and tool events.
     pub native_event_json: ::std::string::String,
 }
@@ -2864,6 +3372,15 @@ impl ::boxology_contract::ContractType for NativeChannelEvent {
             fields.push(("kind".into(), value));
         }
         if let Some(value) = ::boxology_contract::ContractType::encode_field(
+                &self.direction,
+            )
+            .map_err(|error| {
+                error.under(::boxology_contract::PathSegment::Field("direction".into()))
+            })?
+        {
+            fields.push(("direction".into(), value));
+        }
+        if let Some(value) = ::boxology_contract::ContractType::encode_field(
                 &self.native_event_json,
             )
             .map_err(|error| {
@@ -2893,7 +3410,7 @@ impl ::boxology_contract::ContractType for NativeChannelEvent {
         for (field, _) in fields.entries() {
             match field {
                 "binding_id" | "session_id" | "run_id" | "sequence" | "observed_at_ms"
-                | "kind" | "native_event_json" => {}
+                | "kind" | "direction" | "native_event_json" => {}
                 _ => {
                     return Err(
                         ::boxology_contract::DecodeError::new(
@@ -2956,6 +3473,17 @@ impl ::boxology_contract::ContractType for NativeChannelEvent {
                 )
                 .map_err(|error| {
                     error.under(::boxology_contract::PathSegment::Field("kind".into()))
+                })?,
+            direction: <::core::option::Option<
+                NativeEventDirection,
+            > as ::boxology_contract::ContractType>::decode_field(
+                    fields.get("direction"),
+                )
+                .map_err(|error| {
+                    error
+                        .under(
+                            ::boxology_contract::PathSegment::Field("direction".into()),
+                        )
                 })?,
             native_event_json: <::std::string::String as ::boxology_contract::ContractType>::decode_field(
                     fields.get("native_event_json"),
@@ -3774,6 +4302,10 @@ impl ::boxology_contract::ContractType for InterruptReceipt {
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct ChannelStatus {
     pub binding: ChannelBinding,
+    /// Latest sequence currently readable from `agent-host`.
+    pub available_sequence: u64,
+    /// Accepted turn-boundary inputs that have not started yet.
+    pub pending_input_count: u64,
     pub last_error: ::core::option::Option<::std::string::String>,
     pub updated_at_ms: u64,
 }
@@ -3794,6 +4326,34 @@ impl ::boxology_contract::ContractType for ChannelStatus {
             })?
         {
             fields.push(("binding".into(), value));
+        }
+        if let Some(value) = ::boxology_contract::ContractType::encode_field(
+                &self.available_sequence,
+            )
+            .map_err(|error| {
+                error
+                    .under(
+                        ::boxology_contract::PathSegment::Field(
+                            "available_sequence".into(),
+                        ),
+                    )
+            })?
+        {
+            fields.push(("available_sequence".into(), value));
+        }
+        if let Some(value) = ::boxology_contract::ContractType::encode_field(
+                &self.pending_input_count,
+            )
+            .map_err(|error| {
+                error
+                    .under(
+                        ::boxology_contract::PathSegment::Field(
+                            "pending_input_count".into(),
+                        ),
+                    )
+            })?
+        {
+            fields.push(("pending_input_count".into(), value));
         }
         if let Some(value) = ::boxology_contract::ContractType::encode_field(
                 &self.last_error,
@@ -3831,7 +4391,8 @@ impl ::boxology_contract::ContractType for ChannelStatus {
         };
         for (field, _) in fields.entries() {
             match field {
-                "binding" | "last_error" | "updated_at_ms" => {}
+                "binding" | "available_sequence" | "pending_input_count" | "last_error"
+                | "updated_at_ms" => {}
                 _ => {
                     return Err(
                         ::boxology_contract::DecodeError::new(
@@ -3851,6 +4412,28 @@ impl ::boxology_contract::ContractType for ChannelStatus {
                 .map_err(|error| {
                     error
                         .under(::boxology_contract::PathSegment::Field("binding".into()))
+                })?,
+            available_sequence: <u64 as ::boxology_contract::ContractType>::decode_field(
+                    fields.get("available_sequence"),
+                )
+                .map_err(|error| {
+                    error
+                        .under(
+                            ::boxology_contract::PathSegment::Field(
+                                "available_sequence".into(),
+                            ),
+                        )
+                })?,
+            pending_input_count: <u64 as ::boxology_contract::ContractType>::decode_field(
+                    fields.get("pending_input_count"),
+                )
+                .map_err(|error| {
+                    error
+                        .under(
+                            ::boxology_contract::PathSegment::Field(
+                                "pending_input_count".into(),
+                            ),
+                        )
                 })?,
             last_error: <::core::option::Option<
                 ::std::string::String,
@@ -3978,7 +4561,9 @@ pub enum NativeChannelError {
     SteeringUnavailable,
     NothingToInterrupt,
     InvalidNativePayload,
+    SessionUnavailable,
     AdapterUnavailable,
+    StorageUnavailable,
     Unknown { tag: ::std::string::String, payload: ::boxology_contract::OpaquePayload },
 }
 #[rustfmt::skip]
@@ -4015,8 +4600,14 @@ impl ::boxology_contract::ContractType for NativeChannelError {
             Self::InvalidNativePayload => {
                 ("InvalidNativePayload".into(), ::boxology_contract::SlotValue::Null)
             }
+            Self::SessionUnavailable => {
+                ("SessionUnavailable".into(), ::boxology_contract::SlotValue::Null)
+            }
             Self::AdapterUnavailable => {
                 ("AdapterUnavailable".into(), ::boxology_contract::SlotValue::Null)
+            }
+            Self::StorageUnavailable => {
+                ("StorageUnavailable".into(), ::boxology_contract::SlotValue::Null)
             }
             Self::Unknown { tag, payload } => {
                 (
@@ -4139,10 +4730,32 @@ impl ::boxology_contract::ContractType for NativeChannelError {
                         .under(::boxology_contract::PathSegment::Variant(tag.into())),
                 )
             }
+            "SessionUnavailable" if matches!(
+                payload, ::boxology_contract::SlotValue::Null
+            ) => Ok(Self::SessionUnavailable),
+            "SessionUnavailable" => {
+                Err(
+                    ::boxology_contract::DecodeError::new(
+                            ::boxology_contract::DecodeErrorKind::UnexpectedPayload,
+                        )
+                        .under(::boxology_contract::PathSegment::Variant(tag.into())),
+                )
+            }
             "AdapterUnavailable" if matches!(
                 payload, ::boxology_contract::SlotValue::Null
             ) => Ok(Self::AdapterUnavailable),
             "AdapterUnavailable" => {
+                Err(
+                    ::boxology_contract::DecodeError::new(
+                            ::boxology_contract::DecodeErrorKind::UnexpectedPayload,
+                        )
+                        .under(::boxology_contract::PathSegment::Variant(tag.into())),
+                )
+            }
+            "StorageUnavailable" if matches!(
+                payload, ::boxology_contract::SlotValue::Null
+            ) => Ok(Self::StorageUnavailable),
+            "StorageUnavailable" => {
                 Err(
                     ::boxology_contract::DecodeError::new(
                             ::boxology_contract::DecodeErrorKind::UnexpectedPayload,
@@ -4204,7 +4817,9 @@ impl ::boxology_contract::ContractError for NativeChannelError {
             Self::SteeringUnavailable => "SteeringUnavailable",
             Self::NothingToInterrupt => "NothingToInterrupt",
             Self::InvalidNativePayload => "InvalidNativePayload",
+            Self::SessionUnavailable => "SessionUnavailable",
             Self::AdapterUnavailable => "AdapterUnavailable",
+            Self::StorageUnavailable => "StorageUnavailable",
             Self::Unknown { tag, .. } => tag,
         }
     }
@@ -4735,6 +5350,31 @@ pub mod test_support {
                                 None,
                             ),
                             ::boxology_contract::FieldDescriptor::new(
+                                "direction",
+                                TypeDescriptor::optional(
+                                        TypeDescriptor::enumeration([
+                                                ::boxology_contract::VariantDescriptor::new(
+                                                    "ClientToAgent",
+                                                    ::boxology_contract::VariantPayload::Unit,
+                                                    None,
+                                                ),
+                                                ::boxology_contract::VariantDescriptor::new(
+                                                    "AgentToClient",
+                                                    ::boxology_contract::VariantPayload::Unit,
+                                                    None,
+                                                ),
+                                                ::boxology_contract::VariantDescriptor::new(
+                                                    "Other",
+                                                    ::boxology_contract::VariantPayload::Unit,
+                                                    None,
+                                                ),
+                                            ])
+                                            .expect("generated enum descriptor is valid"),
+                                    )
+                                    .expect("generated optional descriptor is valid"),
+                                None,
+                            ),
+                            ::boxology_contract::FieldDescriptor::new(
                                 "native_event_json",
                                 TypeDescriptor::string(),
                                 None,
@@ -4966,8 +5606,8 @@ pub mod test_support {
 #[rustfmt::skip]
 #[doc(hidden)]
 pub const __BOXOLOGY_SEMANTIC_DIGEST: [u8; 32] = [
-    235, 46, 44, 250, 190, 197, 112, 124, 145, 40, 240, 90, 87, 158, 231, 58, 188, 113,
-    52, 222, 195, 90, 108, 152, 162, 69, 142, 109, 64, 0, 157, 87,
+    236, 242, 72, 205, 25, 115, 172, 137, 77, 215, 198, 206, 237, 4, 219, 66, 247, 214,
+    242, 15, 93, 47, 232, 237, 17, 50, 218, 160, 2, 254, 101, 232,
 ];
 #[rustfmt::skip]
 #[doc(hidden)]
