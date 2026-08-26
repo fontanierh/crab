@@ -23,6 +23,12 @@ operators never open Crab's databases or credential store.
 | `bridge-host.bridge_status` | `bridge-host` |
 | `bridge-host.suspend_bridge` | `bridge-host` |
 | `bridge-host.stop_bridge` | `bridge-host` |
+| `sub-agent-host.spawn` | `sub-agent-host` |
+| `sub-agent-host.send_to_child` | `sub-agent-host` |
+| `sub-agent-host.send_to_parent` | `sub-agent-host` |
+| `sub-agent-host.read_events` | `sub-agent-host` |
+| `sub-agent-host.status` | `sub-agent-host` |
+| `sub-agent-host.stop` | `sub-agent-host` |
 
 ## Boundary
 
@@ -39,4 +45,5 @@ operators never open Crab's databases or credential store.
 - The token is loaded from the state directory by the local client. It never appears in CLI
   arguments, output or trigger records.
 
-See [bridge operations](bridge-operations.md) for the typed operator workflow.
+See [bridge operations](bridge-operations.md) and
+[realtime sub-agent control](sub-agent-control.md) for the typed operator workflows.

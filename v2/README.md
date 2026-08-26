@@ -74,8 +74,10 @@ interrupt as a separate explicit action.
   [state contract](docs/bridge-host-storage.md) and [rendered flow](docs/bridge-host-flow.png).
 - `sub-agent-host` composes through the generated `agent-host` import, durably journals both
   message directions and the complete child ACP stream, and fails closed when requested context or
-  crash recovery cannot be honored. See its [state contract](docs/sub-agent-host-storage.md) and
-  [rendered flow](docs/sub-agent-host-flow.png).
+  crash recovery cannot be honored. `crab-v2-sub-agent` exposes spawn, bidirectional messaging,
+  cursor events, status and idempotent stop through the owner-only local IPC. See the
+  [control flow](docs/sub-agent-control.md), [state contract](docs/sub-agent-host-storage.md) and
+  [rendered host flow](docs/sub-agent-host-flow.png).
 - `trigger-inbox` is implemented with durable deduplication, FIFO leases and restart recovery.
   `crab-v2-trigger` exposes its enqueue capability through owner-only authenticated local IPC for
   cron, self-work and operator ingress. Its

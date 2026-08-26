@@ -124,6 +124,7 @@ class BundleBuildPolicyTests(unittest.TestCase):
                 "crab-v2",
                 "crab-v2-acp-channel",
                 "crab-v2-bridge",
+                "crab-v2-sub-agent",
                 "crab-v2-trigger",
                 "crab-v2-claude-authority-probe",
             ),
