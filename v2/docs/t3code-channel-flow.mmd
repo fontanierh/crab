@@ -1,0 +1,8 @@
+flowchart LR
+    subgraph T3["T3 Code"]
+        CLIENTS["web · desktop · mobile"] --> SERVER["server · Crab provider"]
+    end
+    SERVER -->|"ACP stdio"| PROXY["crab-v2-acp-channel<br/>attach proxy"]
+    PROXY -->|"versioned local IPC"| RUNTIME["single Crab runtime"]
+    RUNTIME --> CHANNEL["native-channel<br/>binding · replay · interrupt"]
+    CHANNEL --> HOST["agent-host<br/>ACP session owner"]
