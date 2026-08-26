@@ -8,8 +8,8 @@ use native_channel_implementation::{
     AcceptedTurn, BindChannelRequest, BindingReference, ChannelBinding, ChannelInputMode,
     ChannelLifecycle, ChannelReceipt, ChannelStatus, ChannelTurn, ChannelTurnDisposition,
     InterruptReceipt, InterruptRequest, LocateBindingRequest, NativeChannelError,
-    NativeChannelEvent, PublishReceipt, PublishedEventPage, ReplaceSessionRequest, ReplayRequest,
-    generated as native_channel,
+    NativeChannelEvent, PublishReceipt, PublishedEventPage, RecoverSessionRequest,
+    ReplaceSessionRequest, ReplayRequest, generated as native_channel,
 };
 use trigger_inbox_contract::{
     EnqueueTrigger, TriggerAttachment, TriggerMode, TriggerReference, TriggerSource, TriggerState,
@@ -117,6 +117,15 @@ impl FakeNativeChannel {
         &self,
         context: CallContext,
         request: ReplaceSessionRequest,
+    ) -> Result<ChannelBinding, NativeChannelError> {
+        let _ = (context, request);
+        Err(NativeChannelError::UnknownBinding)
+    }
+
+    async fn recover_session(
+        &self,
+        context: CallContext,
+        request: RecoverSessionRequest,
     ) -> Result<ChannelBinding, NativeChannelError> {
         let _ = (context, request);
         Err(NativeChannelError::UnknownBinding)

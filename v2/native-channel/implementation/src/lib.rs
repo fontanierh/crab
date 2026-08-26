@@ -348,6 +348,25 @@ impl NativeChannel {
         )
     }
 
+    pub async fn recover_session(
+        &self,
+        context: CallContext,
+        request: RecoverSessionRequest,
+    ) -> Result<ChannelBinding, NativeChannelError> {
+        let _operation = self.operations.lock().await;
+        let binding = self.store.binding(&request.binding_id)?;
+        if binding.session_id != request.expected_session_id {
+            return Err(NativeChannelError::SessionMismatch);
+        }
+        self.require_available_session(context, &request.expected_session_id)
+            .await?;
+        self.store.recover_session(
+            &request.binding_id,
+            &request.expected_session_id,
+            (self.clock)()?,
+        )
+    }
+
     pub async fn channel_status(
         &self,
         context: CallContext,
@@ -569,6 +588,7 @@ mod tests {
                 "publish_native_event",
                 "replay_native_events",
                 "replace_session",
+                "recover_session",
                 "channel_status",
                 "inspect_binding",
                 "find_binding",

@@ -1,9 +1,14 @@
 %%{init: {"theme": "base", "themeVariables": {"fontFamily": "ui-sans-serif, system-ui, sans-serif", "primaryTextColor": "#172033", "lineColor": "#64748b", "edgeLabelBackground": "#ffffff"}, "flowchart": {"curve": "basis", "nodeSpacing": 42, "rankSpacing": 58}}}%%
-flowchart LR
+flowchart TB
     REQUEST["attach intent<br/>agent · cwd · adapter metadata"]
     FIND{"binding state"}
     REUSE["reuse live session"]
     CONFLICT["reject changed live intent"]
+    SAME{"same attachment<br/>intent?"}
+    RESUME["resume exact ACP session"]
+    RECOVER["recover binding<br/>keep IDs + cursors"]
+    FALLBACK{"resume result"}
+    FAIL["fail closed"]
     OPEN["open exactly one ACP session"]
     REPLACE["atomic session + metadata replace"]
     BIND["create binding"]
@@ -11,8 +16,14 @@ flowchart LR
     REQUEST --> FIND
     FIND -->|"live + same"| REUSE
     FIND -->|"live + changed"| CONFLICT
-    FIND -->|"unavailable"| OPEN
+    FIND -->|"unavailable"| SAME
     FIND -->|"missing"| OPEN
+    SAME -->|"yes"| RESUME
+    SAME -->|"no"| OPEN
+    RESUME --> FALLBACK
+    FALLBACK -->|"resumed"| RECOVER
+    FALLBACK -->|"unsupported / missing"| OPEN
+    FALLBACK -->|"authority / storage / transport"| FAIL
     OPEN -->|"existing"| REPLACE
     OPEN -->|"new"| BIND
 
@@ -21,6 +32,6 @@ flowchart LR
     classDef runtime fill:#dbeafe,stroke:#2563eb,stroke-width:2px,color:#172554;
     classDef conflict fill:#fee2e2,stroke:#dc2626,stroke-width:2px,color:#7f1d1d;
     class REQUEST request;
-    class REUSE,REPLACE,BIND safe;
-    class FIND,OPEN runtime;
-    class CONFLICT conflict;
+    class REUSE,RECOVER,REPLACE,BIND safe;
+    class FIND,SAME,RESUME,FALLBACK,OPEN runtime;
+    class CONFLICT,FAIL conflict;

@@ -11,10 +11,12 @@ and sequence instead of copying it into a second event journal.
   `session_replacements` atomically.
 - WAL mode, foreign keys, a five-second busy timeout, and full synchronous writes are mandatory.
 - Unknown schema versions fail closed with `StorageUnavailable`.
-- ACP processes cannot survive a runtime restart. Reopening marks live bindings `Failed`; an
-  explicit `replace_session` attaches a fresh session while retaining channel identity. Startup
-  can inspect a binding without its dead session or find it by `(adapter_id, channel_id)` after a
-  crash between binding creation and route registration.
+- ACP processes cannot survive a runtime restart. Reopening marks live bindings `Failed` while
+  retaining their session and delivery cursors. Startup first asks `agent-host` to resume the exact
+  session, then `recover_session` reattaches the unchanged binding. Only explicit resume
+  unavailability permits `replace_session` to attach a fresh session. Startup can inspect a binding
+  without a live session or find it by `(adapter_id, channel_id)` after a crash between binding
+  creation and route registration.
 
 ## Durable invariants
 
@@ -30,3 +32,6 @@ and sequence instead of copying it into a second event journal.
   operator audit records.
 - Session replacement atomically installs the fresh session and adapter metadata while preserving
   the binding identity. A failed replacement leaves the previous binding untouched.
+- Same-session recovery requires the binding to be `Failed`, proves the expected session is live,
+  and atomically returns it to `Attached`. It preserves binding/session identity plus publication
+  and reconciliation cursors; exact retries are idempotent.

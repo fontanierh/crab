@@ -630,7 +630,9 @@ mod tests {
         InMemoryCredentialStore, PackageChallenge, PackageCredential, PackageCredentialValidation,
         PackageDelivery, PackageHealth, generated as bridge_host,
     };
-    use channel_gateway_contract::{AttachChannelRequest, ChannelAttachmentDisposition};
+    use channel_gateway_contract::{
+        AttachChannelRequest, ChannelAttachmentDisposition, ChannelGatewayError,
+    };
     use channel_gateway_implementation::{ChannelGateway, generated as channel_gateway};
     use native_channel_contract::{BindingReference, ChannelLifecycle};
     use native_channel_implementation::{NativeChannelState, generated as native_channel};
@@ -660,10 +662,20 @@ mod tests {
         RuntimeConfig, acp_channel::AcpChannelFacade, channel_ipc::ChannelIpcServer,
     };
 
+    #[derive(Clone, Copy, Default)]
+    enum FakeResumeMode {
+        Success,
+        #[default]
+        Unavailable,
+        AuthorityFailure,
+    }
+
     #[derive(Default)]
     struct FakeState {
         next_session: u64,
         live_sessions: HashSet<String>,
+        resume_mode: FakeResumeMode,
+        resume_attempts: Vec<String>,
         prompts: Vec<PromptRequest>,
         events: Vec<AcpEvent>,
         active_runs: HashMap<String, String>,
@@ -847,8 +859,29 @@ mod tests {
             context: CallContext,
             request: ResumeSessionRequest,
         ) -> Result<AgentSession, AgentHostError> {
-            let _ = (context, request);
-            Err(AgentHostError::SessionResumeUnavailable)
+            let _ = context;
+            let mut state = self.state.lock().expect("fake state lock");
+            state.resume_attempts.push(request.session_id.clone());
+            match state.resume_mode {
+                FakeResumeMode::Unavailable => Err(AgentHostError::SessionResumeUnavailable),
+                FakeResumeMode::AuthorityFailure => Err(AgentHostError::AuthorityUnavailable),
+                FakeResumeMode::Success => {
+                    state.live_sessions.insert(request.session_id.clone());
+                    Ok(AgentSession {
+                        session_id: request.session_id.clone(),
+                        native_session_id: format!("native-{}", request.session_id),
+                        agent_id: "fake".into(),
+                        negotiation: AcpNegotiation {
+                            protocol_version: 2,
+                            protocol_profile: AcpProtocolProfile::V2Draft,
+                            steering: SteeringSupport::AcpV2ConcurrentPrompt,
+                            compaction_reporting: CompactionReporting::DraftLifecycleUpdates,
+                            agent_capabilities_json: "{}".into(),
+                        },
+                        authority: authority(),
+                    })
+                }
+            }
         }
 
         async fn prompt(
@@ -1220,6 +1253,22 @@ mod tests {
         }
     }
 
+    fn primary_attachment(config: &RuntimeConfig) -> AttachChannelRequest {
+        let channel = &config.channels[0];
+        AttachChannelRequest {
+            channel_id: channel.channel_id.clone(),
+            adapter_id: channel.adapter_id.clone(),
+            agent_id: channel.agent_id.clone(),
+            working_directory: channel.working_directory.to_string_lossy().into_owned(),
+            bootstrap_prompt: config
+                .bootstrap_prompt(channel)
+                .expect("bootstrap resolves"),
+            session_metadata_json: session_metadata(channel).expect("metadata encodes"),
+            native_channel_json: serde_json::to_string(&channel.native_channel)
+                .expect("native channel encodes"),
+        }
+    }
+
     #[tokio::test]
     async fn restart_reuses_binding_and_replaces_only_the_acp_session() {
         let directory = tempfile::tempdir().expect("temporary directory");
@@ -1263,7 +1312,7 @@ mod tests {
         assert!(close_sessions(&first.agent_host, &first_sessions).await);
         drop(first);
 
-        let restarted = graph(directory.path(), state);
+        let restarted = graph(directory.path(), state.clone());
         let restarted_sessions = initialize_topology_with_handles(restarted.handles(), &config)
             .await
             .expect("restarted topology recovers");
@@ -1293,10 +1342,173 @@ mod tests {
         assert_eq!(binding.lifecycle, ChannelLifecycle::Attached);
         assert_eq!(binding.session_id, restarted_sessions[0]);
         assert_ne!(binding.session_id, first_sessions[0]);
+        assert!(
+            state
+                .lock()
+                .expect("fake state lock")
+                .resume_attempts
+                .is_empty(),
+            "changed intent must replace without resuming the old session"
+        );
         let native: serde_json::Value =
             serde_json::from_str(&binding.native_channel_json).expect("gateway envelope decodes");
         assert_eq!(native["adapter"]["title"], "Jim v2");
         assert!(close_sessions(&restarted.agent_host, &restarted_sessions).await);
+    }
+
+    #[tokio::test]
+    async fn matching_restart_resumes_the_existing_binding_and_session_identity() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let state = Arc::new(Mutex::new(FakeState::default()));
+        let config = config(directory.path().to_path_buf());
+        let first = graph(directory.path(), state.clone());
+        let first_sessions = initialize_topology_with_handles(first.handles(), &config)
+            .await
+            .expect("first topology starts");
+        let first_route = first
+            .turn_router
+            .resolve_route(
+                call_context(),
+                RouteReference {
+                    target_channel_id: "primary".into(),
+                },
+            )
+            .await
+            .expect("first route exists");
+        assert!(close_sessions(&first.agent_host, &first_sessions).await);
+        drop(first);
+        state.lock().expect("fake state lock").resume_mode = FakeResumeMode::Success;
+
+        let restarted = graph(directory.path(), state.clone());
+        let resumed = restarted
+            .channel_gateway
+            .attach_channel(call_context(), primary_attachment(&config))
+            .await
+            .expect("matching unavailable attachment resumes");
+        assert_eq!(
+            resumed.disposition,
+            ChannelAttachmentDisposition::ResumedUnavailableSession
+        );
+        assert_eq!(resumed.binding_id, first_route.binding_id);
+        assert_eq!(resumed.session_id, first_sessions[0]);
+        restarted
+            .agent_host
+            .session_status(
+                call_context(),
+                SessionReference {
+                    session_id: resumed.session_id.clone(),
+                },
+            )
+            .await
+            .expect("resumed fake session is ready");
+        restarted
+            .agent_host
+            .read_events(
+                call_context(),
+                ReadEventsRequest {
+                    session_id: resumed.session_id.clone(),
+                    after_sequence: 0,
+                    limit: 1_000,
+                },
+            )
+            .await
+            .expect("resumed fake events remain readable");
+        let stored_binding = restarted
+            .native_channel
+            .inspect_binding(
+                call_context(),
+                BindingReference {
+                    binding_id: resumed.binding_id.clone(),
+                },
+            )
+            .await
+            .expect("resumed binding remains stored");
+        assert_eq!(stored_binding.lifecycle, ChannelLifecycle::Attached);
+        assert_eq!(stored_binding.session_id, resumed.session_id);
+        assert_eq!(
+            state.lock().expect("fake state lock").resume_attempts,
+            first_sessions
+        );
+        restarted
+            .native_channel
+            .channel_status(
+                call_context(),
+                BindingReference {
+                    binding_id: resumed.binding_id.clone(),
+                },
+            )
+            .await
+            .expect("resumed binding is immediately live");
+        let restarted_sessions = initialize_topology_with_handles(restarted.handles(), &config)
+            .await
+            .expect("resumed topology initializes idempotently");
+        assert_eq!(restarted_sessions, first_sessions);
+        {
+            let state = state.lock().expect("fake state lock");
+            assert_eq!(state.next_session, 1, "resume must not open a replacement");
+            assert_eq!(state.resume_attempts, first_sessions);
+        }
+        assert!(close_sessions(&restarted.agent_host, &restarted_sessions).await);
+    }
+
+    #[tokio::test]
+    async fn matching_restart_falls_back_only_for_explicit_resume_unavailability() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let state = Arc::new(Mutex::new(FakeState::default()));
+        let config = config(directory.path().to_path_buf());
+        let first = graph(directory.path(), state.clone());
+        let first_sessions = initialize_topology_with_handles(first.handles(), &config)
+            .await
+            .expect("first topology starts");
+        assert!(close_sessions(&first.agent_host, &first_sessions).await);
+        drop(first);
+
+        let restarted = graph(directory.path(), state.clone());
+        let replaced = restarted
+            .channel_gateway
+            .attach_channel(call_context(), primary_attachment(&config))
+            .await
+            .expect("unsupported resume opens a replacement");
+        assert_eq!(
+            replaced.disposition,
+            ChannelAttachmentDisposition::ReplacedUnavailableSession
+        );
+        assert_ne!(replaced.session_id, first_sessions[0]);
+        {
+            let state = state.lock().expect("fake state lock");
+            assert_eq!(state.next_session, 2);
+            assert_eq!(state.resume_attempts, first_sessions);
+        }
+        assert!(close_sessions(&restarted.agent_host, &[replaced.session_id]).await);
+    }
+
+    #[tokio::test]
+    async fn matching_restart_does_not_replace_after_authority_failure() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let state = Arc::new(Mutex::new(FakeState::default()));
+        let config = config(directory.path().to_path_buf());
+        let first = graph(directory.path(), state.clone());
+        let first_sessions = initialize_topology_with_handles(first.handles(), &config)
+            .await
+            .expect("first topology starts");
+        assert!(close_sessions(&first.agent_host, &first_sessions).await);
+        drop(first);
+        state.lock().expect("fake state lock").resume_mode = FakeResumeMode::AuthorityFailure;
+
+        let restarted = graph(directory.path(), state.clone());
+        assert!(matches!(
+            restarted
+                .channel_gateway
+                .attach_channel(call_context(), primary_attachment(&config))
+                .await,
+            Err(CallError::Domain(ChannelGatewayError::AgentUnavailable))
+        ));
+        let state = state.lock().expect("fake state lock");
+        assert_eq!(
+            state.next_session, 1,
+            "hard failure must not open a replacement"
+        );
+        assert_eq!(state.resume_attempts, first_sessions);
     }
 
     #[tokio::test]

@@ -126,6 +126,11 @@ static __BOXOLOGY_CONTRACT_DESCRIPTOR: ::std::sync::LazyLock<
                                 None,
                             ),
                             ::boxology_contract::VariantDescriptor::new(
+                                "ResumedUnavailableSession",
+                                ::boxology_contract::VariantPayload::Unit,
+                                None,
+                            ),
+                            ::boxology_contract::VariantDescriptor::new(
                                 "ReplacedUnavailableSession",
                                 ::boxology_contract::VariantPayload::Unit,
                                 None,
@@ -146,7 +151,7 @@ static __BOXOLOGY_CONTRACT_DESCRIPTOR: ::std::sync::LazyLock<
             box_id,
             [capability],
             ::boxology_contract::ContractRevision::new(
-                    "sha256:260a8030aa670231a0d76f7c05e1324a8758bbe88d21fa86b77a61fba3c8c91d",
+                    "sha256:4e2b5ed12d994a0cc20c15039aae7c8aac334c99f7a560823c1458648429d418",
                 )
                 .expect("generated contract revision is non-empty"),
         )
@@ -245,6 +250,11 @@ impl ChannelGatewayHandle {
                                 None,
                             ),
                             ::boxology_contract::VariantDescriptor::new(
+                                "ResumedUnavailableSession",
+                                ::boxology_contract::VariantPayload::Unit,
+                                None,
+                            ),
+                            ::boxology_contract::VariantDescriptor::new(
                                 "ReplacedUnavailableSession",
                                 ::boxology_contract::VariantPayload::Unit,
                                 None,
@@ -329,6 +339,7 @@ pub enum ChannelAttachmentDisposition {
     #[default]
     Created,
     ReusedLiveSession,
+    ResumedUnavailableSession,
     ReplacedUnavailableSession,
     Unknown { tag: ::std::string::String, payload: ::boxology_contract::OpaquePayload },
 }
@@ -344,6 +355,12 @@ impl ::boxology_contract::ContractType for ChannelAttachmentDisposition {
             Self::Created => ("Created".into(), ::boxology_contract::SlotValue::Null),
             Self::ReusedLiveSession => {
                 ("ReusedLiveSession".into(), ::boxology_contract::SlotValue::Null)
+            }
+            Self::ResumedUnavailableSession => {
+                (
+                    "ResumedUnavailableSession".into(),
+                    ::boxology_contract::SlotValue::Null,
+                )
             }
             Self::ReplacedUnavailableSession => {
                 (
@@ -388,6 +405,17 @@ impl ::boxology_contract::ContractType for ChannelAttachmentDisposition {
                 payload, ::boxology_contract::SlotValue::Null
             ) => Ok(Self::ReusedLiveSession),
             "ReusedLiveSession" => {
+                Err(
+                    ::boxology_contract::DecodeError::new(
+                            ::boxology_contract::DecodeErrorKind::UnexpectedPayload,
+                        )
+                        .under(::boxology_contract::PathSegment::Variant(tag.into())),
+                )
+            }
+            "ResumedUnavailableSession" if matches!(
+                payload, ::boxology_contract::SlotValue::Null
+            ) => Ok(Self::ResumedUnavailableSession),
+            "ResumedUnavailableSession" => {
                 Err(
                     ::boxology_contract::DecodeError::new(
                             ::boxology_contract::DecodeErrorKind::UnexpectedPayload,
@@ -1141,8 +1169,8 @@ pub mod test_support {
 #[rustfmt::skip]
 #[doc(hidden)]
 pub const __BOXOLOGY_SEMANTIC_DIGEST: [u8; 32] = [
-    106, 156, 225, 253, 239, 186, 195, 67, 19, 192, 28, 140, 113, 34, 205, 57, 183, 49,
-    239, 176, 182, 199, 112, 252, 16, 219, 171, 64, 25, 214, 138, 72,
+    251, 3, 49, 178, 33, 64, 190, 150, 40, 42, 184, 198, 85, 165, 22, 162, 92, 158, 236,
+    173, 11, 143, 134, 30, 91, 119, 119, 52, 158, 169, 51, 94,
 ];
 #[rustfmt::skip]
 #[doc(hidden)]

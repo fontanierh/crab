@@ -483,6 +483,45 @@ impl ChannelStore {
         self.binding(binding_id)
     }
 
+    pub(crate) fn recover_session(
+        &self,
+        binding_id: &str,
+        expected_session_id: &str,
+        now_ms: u64,
+    ) -> Result<ChannelBinding, NativeChannelError> {
+        if binding_id.trim().is_empty() || expected_session_id.trim().is_empty() {
+            return Err(NativeChannelError::InvalidNativePayload);
+        }
+        let mut connection = self.lock()?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(storage_error)?;
+        let changed = transaction
+            .execute(
+                "UPDATE bindings
+                 SET lifecycle = 'Attached', last_error = NULL, updated_at_ms = ?3
+                 WHERE binding_id = ?1 AND session_id = ?2 AND lifecycle = 'Failed'",
+                params![binding_id, expected_session_id, db_i64(now_ms)?],
+            )
+            .map_err(storage_error)?;
+        if changed != 1 {
+            return match query_binding(&transaction, binding_id)? {
+                Some(binding)
+                    if binding.session_id == expected_session_id
+                        && matches!(binding.lifecycle, ChannelLifecycle::Attached) =>
+                {
+                    transaction.commit().map_err(storage_error)?;
+                    Ok(binding)
+                }
+                Some(_) => Err(NativeChannelError::SessionMismatch),
+                None => Err(NativeChannelError::UnknownBinding),
+            };
+        }
+        transaction.commit().map_err(storage_error)?;
+        drop(connection);
+        self.binding(binding_id)
+    }
+
     pub(crate) fn detach(
         &self,
         binding_id: &str,

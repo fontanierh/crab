@@ -17,7 +17,7 @@ use boxology_runtime::CompositionBuilder;
 use native_channel_contract::{
     BindChannelRequest, BindingReference, ChannelInputMode, ChannelTurn, ChannelTurnDisposition,
     InterruptRequest, LocateBindingRequest, NativeChannelError, NativeEventDirection,
-    ReplayRequest,
+    RecoverSessionRequest, ReplayRequest,
 };
 use native_channel_implementation::{NativeChannelState, generated as native_channel};
 
@@ -443,4 +443,124 @@ async fn native_channel_routes_replays_publishes_and_interrupts_through_import()
         )
         .await
         .expect("binding detaches");
+}
+
+#[tokio::test]
+async fn failed_binding_recovery_preserves_session_and_publication_cursors() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let database = directory.path().join("native.sqlite");
+    let fake_state = Arc::new(Mutex::new(FakeState::default()));
+    let (binding_id, published_sequence) = {
+        let channel_state = NativeChannelState::open(&database).expect("channel state opens");
+        let mut builder = CompositionBuilder::new();
+        let agent = agent_host::register(
+            &mut builder,
+            FakeAgentHost {
+                state: fake_state.clone(),
+            },
+        );
+        let channel = native_channel::register(&mut builder, move |imports| {
+            channel_state.connect(imports.agent_host)
+        });
+        builder.connect(&channel, &agent);
+        let handle = builder.handle::<native_channel_contract::NativeChannelHandle>(&channel);
+        let _composition = builder.start().expect("first graph starts");
+        let binding = handle
+            .bind_channel(
+                context(),
+                BindChannelRequest {
+                    channel_id: "native-recovery".into(),
+                    adapter_id: "test-ui".into(),
+                    session_id: "session-1".into(),
+                    native_channel_json: "{}".into(),
+                },
+            )
+            .await
+            .expect("session binds");
+        handle
+            .accept_turn(
+                context(),
+                turn(
+                    &binding.binding_id,
+                    "recovery-turn",
+                    ChannelInputMode::Queue,
+                    "hold",
+                ),
+            )
+            .await
+            .expect("turn creates an authoritative event");
+        let replay = handle
+            .replay_native_events(
+                context(),
+                ReplayRequest {
+                    binding_id: binding.binding_id.clone(),
+                    after_sequence: 0,
+                    limit: 100,
+                },
+            )
+            .await
+            .expect("event replays");
+        handle
+            .publish_native_event(context(), replay.events[0].clone())
+            .await
+            .expect("event publishes");
+        let status = handle
+            .channel_status(
+                context(),
+                BindingReference {
+                    binding_id: binding.binding_id.clone(),
+                },
+            )
+            .await
+            .expect("cursor reconciles");
+        (binding.binding_id, status.binding.published_sequence)
+    };
+
+    let channel_state = NativeChannelState::open(&database).expect("channel state reopens");
+    let mut builder = CompositionBuilder::new();
+    let agent = agent_host::register(&mut builder, FakeAgentHost { state: fake_state });
+    let channel = native_channel::register(&mut builder, move |imports| {
+        channel_state.connect(imports.agent_host)
+    });
+    builder.connect(&channel, &agent);
+    let handle = builder.handle::<native_channel_contract::NativeChannelHandle>(&channel);
+    let _composition = builder.start().expect("restarted graph starts");
+    let failed = handle
+        .inspect_binding(
+            context(),
+            BindingReference {
+                binding_id: binding_id.clone(),
+            },
+        )
+        .await
+        .expect("failed binding remains inspectable");
+    assert_eq!(
+        failed.lifecycle,
+        native_channel_contract::ChannelLifecycle::Failed
+    );
+    let recovered = handle
+        .recover_session(
+            context(),
+            RecoverSessionRequest {
+                binding_id: binding_id.clone(),
+                expected_session_id: "session-1".into(),
+            },
+        )
+        .await
+        .expect("same live session recovers binding");
+    assert_eq!(recovered.session_id, "session-1");
+    assert_eq!(recovered.published_sequence, published_sequence);
+    assert_eq!(
+        handle
+            .recover_session(
+                context(),
+                RecoverSessionRequest {
+                    binding_id,
+                    expected_session_id: "session-1".into(),
+                },
+            )
+            .await
+            .expect("recovery retry is idempotent"),
+        recovered
+    );
 }

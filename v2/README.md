@@ -62,11 +62,14 @@ interrupt as a separate explicit action.
   [rendered flow](docs/agent-host-flow.png) shows the process boundary.
 - `native-channel` is a durable Boxology consumer of `agent-host`: it binds one UI to one session,
   routes queue/steer and explicit interrupt, replays the complete bidirectional ACP stream, and
-  confirms adapter publication in order. See its [state contract](docs/native-channel-storage.md)
-  and [rendered flow](docs/native-channel-flow.png).
+  confirms adapter publication in order. Failed bindings can recover the exact resumed session
+  without changing identity or delivery cursors. See its
+  [state contract](docs/native-channel-storage.md) and [rendered flow](docs/native-channel-flow.png).
 - `channel-gateway` is the single lifecycle path for configured and dynamic UI attachment. It
-  reuses a matching live binding, replaces only unavailable physical sessions, and rejects changed
-  intent while a session is live. See the [rendered attach flow](docs/channel-gateway-flow.png).
+  reuses a matching live binding, resumes matching unavailable sessions before replacement, and
+  rejects changed intent while a session is live. Only explicit resume unavailability falls back
+  to replacement; hard recovery failures stay visible. See the
+  [rendered attach flow](docs/channel-gateway-flow.png).
 - `bridge-host` supervises agent-installed JSON-lines packages, brokers private file-backed
   credentials, actively probes health and credential validity, and applies bounded restart
   backoff. Package-originated ingress is acknowledged only after the generated `trigger-inbox`

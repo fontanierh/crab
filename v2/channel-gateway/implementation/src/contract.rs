@@ -4,6 +4,7 @@ boxology::contract! {
     pub enum ChannelAttachmentDisposition {
         Created,
         ReusedLiveSession,
+        ResumedUnavailableSession,
         ReplacedUnavailableSession,
     }
 
@@ -40,8 +41,9 @@ boxology::contract! {
         StorageUnavailable,
     }
 
-    /// Attach idempotently. A matching live binding is reused; only an unavailable physical ACP
-    /// session may be replaced. A changed request never replaces a live session implicitly.
+    /// Attach idempotently. A matching live binding is reused. An unavailable session is resumed
+    /// before explicit unsupported/missing recovery falls back to replacement. A changed request
+    /// never replaces a live session implicitly.
     #[capability]
     pub async fn attach_channel(request: AttachChannelRequest) -> Result<ChannelAttachment, ChannelGatewayError>;
 }
