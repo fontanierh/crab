@@ -13,6 +13,7 @@ bridge-host-contract = { version = "=0.0.0", path = "../../bridge-host/generated
 bridge-host-implementation = { version = "=0.0.0", path = "../../bridge-host/implementation" }
 native-channel-contract = { version = "=0.0.0", path = "../../native-channel/generated/contract" }
 native-channel-implementation = { version = "=0.0.0", path = "../../native-channel/implementation" }
+sub-agent-host-contract = { version = "=0.0.0", path = "../../sub-agent-host/generated/contract" }
 sub-agent-host-implementation = { version = "=0.0.0", path = "../../sub-agent-host/implementation" }
 trigger-inbox-implementation = { version = "=0.0.0", path = "../../trigger-inbox/implementation" }
 trigger-inbox-contract = { version = "=0.0.0", path = "../../trigger-inbox/generated/contract" }
@@ -21,5 +22,6 @@ trigger-inbox-contract = { version = "=0.0.0", path = "../../trigger-inbox/gener
 async-trait = { workspace = true }
 boxology = { workspace = true }
 boxology-manifest = { workspace = true }
+serde_json = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true }

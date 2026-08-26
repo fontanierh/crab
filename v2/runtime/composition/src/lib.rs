@@ -20,7 +20,9 @@ use bridge_host_implementation::{
 use native_channel_implementation::{
     NativeChannelError, NativeChannelState, generated as native_channel,
 };
-use sub_agent_host_implementation::{SubAgentHostDraft, generated as sub_agent_host};
+use sub_agent_host_implementation::{
+    SubAgentHostError, SubAgentHostState, generated as sub_agent_host,
+};
 use trigger_inbox_implementation::{TriggerInbox, TriggerInboxError, generated as trigger_inbox};
 
 /// A started draft graph and its in-process binding.
@@ -32,6 +34,7 @@ pub struct DraftRuntime {
     agent_host: agent_host_contract::AgentHostHandle,
     bridge_host: bridge_host_contract::BridgeHostHandle,
     native_channel: native_channel_contract::NativeChannelHandle,
+    sub_agent_host: sub_agent_host_contract::SubAgentHostHandle,
     trigger_inbox: trigger_inbox_contract::TriggerInboxHandle,
 }
 
@@ -51,6 +54,11 @@ impl DraftRuntime {
         &self.native_channel
     }
 
+    /// Returns the ordinary typed handle for Crab-owned ACP sub-agent orchestration.
+    pub fn sub_agent_host(&self) -> &sub_agent_host_contract::SubAgentHostHandle {
+        &self.sub_agent_host
+    }
+
     /// Returns the ordinary typed handle for the implemented trigger inbox.
     pub fn trigger_inbox(&self) -> &trigger_inbox_contract::TriggerInboxHandle {
         &self.trigger_inbox
@@ -68,6 +76,8 @@ pub enum RuntimeStartError {
     CredentialStore(CredentialStoreError),
     /// The concrete native-channel state could not start.
     NativeChannel(NativeChannelError),
+    /// The concrete sub-agent-host state could not start.
+    SubAgentHost(SubAgentHostError),
     /// The concrete trigger store could not start.
     TriggerInbox(TriggerInboxError),
     /// The durable state directory could not be created.
@@ -88,12 +98,15 @@ pub fn start_draft() -> Result<DraftRuntime, RuntimeStartError> {
     let bridge_host = BridgeHostState::open_in_memory().map_err(RuntimeStartError::BridgeHost)?;
     let native_channel =
         NativeChannelState::open_in_memory().map_err(RuntimeStartError::NativeChannel)?;
+    let sub_agent_host =
+        SubAgentHostState::open_in_memory().map_err(RuntimeStartError::SubAgentHost)?;
     let trigger_store = TriggerInbox::open_in_memory().map_err(RuntimeStartError::TriggerInbox)?;
     assemble_draft(
         agent_host,
         bridge_host,
         Arc::new(InMemoryCredentialStore::default()),
         native_channel,
+        sub_agent_host,
         trigger_store,
     )
 }
@@ -106,12 +119,15 @@ pub fn start_draft_with_trigger_store(
     let bridge_host = BridgeHostState::open_in_memory().map_err(RuntimeStartError::BridgeHost)?;
     let native_channel =
         NativeChannelState::open_in_memory().map_err(RuntimeStartError::NativeChannel)?;
+    let sub_agent_host =
+        SubAgentHostState::open_in_memory().map_err(RuntimeStartError::SubAgentHost)?;
     let trigger_store = TriggerInbox::open(path).map_err(RuntimeStartError::TriggerInbox)?;
     assemble_draft(
         agent_host,
         bridge_host,
         Arc::new(InMemoryCredentialStore::default()),
         native_channel,
+        sub_agent_host,
         trigger_store,
     )
 }
@@ -137,6 +153,8 @@ pub fn start_draft_with_state_directory(
         .map_err(RuntimeStartError::CredentialStore)?;
     let native_channel = NativeChannelState::open(path.join("native-channel.sqlite"))
         .map_err(RuntimeStartError::NativeChannel)?;
+    let sub_agent_host = SubAgentHostState::open(path.join("sub-agent-host.sqlite"))
+        .map_err(RuntimeStartError::SubAgentHost)?;
     let trigger_store = TriggerInbox::open(path.join("trigger-inbox.sqlite"))
         .map_err(RuntimeStartError::TriggerInbox)?;
     assemble_draft(
@@ -144,6 +162,7 @@ pub fn start_draft_with_state_directory(
         bridge_host,
         Arc::new(credentials),
         native_channel,
+        sub_agent_host,
         trigger_store,
     )
 }
@@ -153,6 +172,7 @@ fn assemble_draft(
     bridge_host_state: BridgeHostState,
     credential_store: Arc<dyn CredentialStore>,
     native_channel_state: NativeChannelState,
+    sub_agent_host_state: SubAgentHostState,
     trigger_store: TriggerInbox,
 ) -> Result<DraftRuntime, RuntimeStartError> {
     let in_process = Arc::new(StubTransport::new());
@@ -170,7 +190,12 @@ fn assemble_draft(
         builder.handle::<native_channel_contract::NativeChannelHandle>(&native_channel);
     builder.expose_all(&native_channel, in_process.clone(), ExposureLevel::CodeOnly);
 
-    let sub_agent_host = sub_agent_host::register(&mut builder, SubAgentHostDraft);
+    let sub_agent_host = sub_agent_host::register(&mut builder, move |imports| {
+        sub_agent_host_state.connect(imports.agent_host)
+    });
+    builder.connect(&sub_agent_host, &agent_host);
+    let sub_agent_host_handle =
+        builder.handle::<sub_agent_host_contract::SubAgentHostHandle>(&sub_agent_host);
     builder.expose_all(&sub_agent_host, in_process.clone(), ExposureLevel::CodeOnly);
 
     let trigger_inbox_box = trigger_inbox::register(&mut builder, trigger_store);
@@ -200,6 +225,7 @@ fn assemble_draft(
         agent_host: agent_host_handle,
         bridge_host: bridge_host_handle,
         native_channel: native_channel_handle,
+        sub_agent_host: sub_agent_host_handle,
         trigger_inbox,
     })
 }
@@ -282,6 +308,7 @@ mod tests {
             "agent-host.sqlite",
             "bridge-host.sqlite",
             "native-channel.sqlite",
+            "sub-agent-host.sqlite",
             "trigger-inbox.sqlite",
         ] {
             assert!(state.join(expected).is_file(), "missing {expected}");

@@ -39,9 +39,10 @@ interrupt as a separate explicit action.
   `compact` operation because ACP does not define one.
 - ACP v2 draft makes `session/prompt` non-blocking and allows new input during active work. ACP v1
   can queue portably; true steering requires an advertised agent extension.
-- Crab owns sub-agents as separately supervised ACP subprocesses. They support both fresh and
-  inherited parent context, report whether inheritance used native ACP fork or a portable visible
-  snapshot, and exchange durable non-blocking messages in both directions.
+- Crab owns sub-agents as separately supervised ACP subprocesses. Fresh sessions and inherited
+  visible-history snapshots work now; the contract reserves truthful native ACP fork reporting.
+  Parent and child exchange durable non-blocking queue, steer or interrupt messages in both
+  directions.
 - Agents run only after a fail-closed preflight proves permission bypass, no sandbox, unrestricted
   filesystem/network access and working passwordless `sudo`.
 - Bridges are packages the agent may add. Crab owns supervision, auth state, health and delivery
@@ -60,9 +61,12 @@ interrupt as a separate explicit action.
   backoff. Package-originated ingress is acknowledged only after the generated `trigger-inbox`
   import commits it; selected outbound delivery is durable and idempotent. See its
   [state contract](docs/bridge-host-storage.md) and [rendered flow](docs/bridge-host-flow.png).
+- `sub-agent-host` composes through the generated `agent-host` import, durably journals both
+  message directions and the complete child ACP stream, and fails closed when requested context or
+  crash recovery cannot be honored. See its [state contract](docs/sub-agent-host-storage.md) and
+  [rendered flow](docs/sub-agent-host-flow.png).
 - `trigger-inbox` is implemented with durable deduplication, FIFO leases and restart recovery.
   Its [storage contract](docs/trigger-inbox-storage.md) is schema-versioned from day one.
-- Only `sub-agent-host` remains draft-only; it does not fake a runtime.
 - For a native UI, start by testing an off-the-shelf ACP client; build on reusable ACP components
   only if that cannot attach cleanly. See [the UI landscape](docs/acp-native-ui.md).
 

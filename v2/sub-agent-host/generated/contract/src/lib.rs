@@ -43,6 +43,11 @@ static __BOXOLOGY_CONTRACT_DESCRIPTOR: ::std::sync::LazyLock<
                 None,
             ),
             ::boxology_contract::VariantDescriptor::new(
+                "CrashRestartUnavailable",
+                ::boxology_contract::VariantPayload::Unit,
+                None,
+            ),
+            ::boxology_contract::VariantDescriptor::new(
                 "SteeringUnavailable",
                 ::boxology_contract::VariantPayload::Unit,
                 None,
@@ -64,6 +69,11 @@ static __BOXOLOGY_CONTRACT_DESCRIPTOR: ::std::sync::LazyLock<
             ),
             ::boxology_contract::VariantDescriptor::new(
                 "TransportFailed",
+                ::boxology_contract::VariantPayload::Unit,
+                None,
+            ),
+            ::boxology_contract::VariantDescriptor::new(
+                "StorageUnavailable",
                 ::boxology_contract::VariantPayload::Unit,
                 None,
             ),
@@ -801,7 +811,7 @@ static __BOXOLOGY_CONTRACT_DESCRIPTOR: ::std::sync::LazyLock<
                 capability_5,
             ],
             ::boxology_contract::ContractRevision::new(
-                    "sha256:6b8edaf052515bbb18102b568d1bb863246053fbc657e9b2ba55db1dcdee7b99",
+                    "sha256:b84c9a4aeda0ad8fccc475b9dae08972f7b9b4a447609f21d2bda599b0704618",
                 )
                 .expect("generated contract revision is non-empty"),
         )
@@ -1572,6 +1582,11 @@ static SUB_AGENT_HOST_ERROR_DESCRIPTOR: LazyLock<TypeDescriptor> = LazyLock::new
                 None,
             ),
             ::boxology_contract::VariantDescriptor::new(
+                "CrashRestartUnavailable",
+                ::boxology_contract::VariantPayload::Unit,
+                None,
+            ),
+            ::boxology_contract::VariantDescriptor::new(
                 "SteeringUnavailable",
                 ::boxology_contract::VariantPayload::Unit,
                 None,
@@ -1593,6 +1608,11 @@ static SUB_AGENT_HOST_ERROR_DESCRIPTOR: LazyLock<TypeDescriptor> = LazyLock::new
             ),
             ::boxology_contract::VariantDescriptor::new(
                 "TransportFailed",
+                ::boxology_contract::VariantPayload::Unit,
+                None,
+            ),
+            ::boxology_contract::VariantDescriptor::new(
+                "StorageUnavailable",
                 ::boxology_contract::VariantPayload::Unit,
                 None,
             ),
@@ -2573,7 +2593,7 @@ pub struct SubAgentRecord {
     pub context_mode: SubAgentContextMode,
     pub context_realization: ContextRealization,
     pub context_through_sequence: ::core::option::Option<u64>,
-    /// Opaque OS process identity for diagnostics; never used as authorization.
+    /// Opaque identity of the separately supervised agent-host session/process boundary.
     pub process_identity: ::std::string::String,
     pub started_at_ms: u64,
 }
@@ -4249,11 +4269,13 @@ pub enum SubAgentHostError {
     InvalidContextBoundary,
     NativeForkUnavailable,
     PortableSnapshotForbidden,
+    CrashRestartUnavailable,
     SteeringUnavailable,
     AuthorityUnavailable,
     ProtocolNegotiationFailed,
     InvalidNativePayload,
     TransportFailed,
+    StorageUnavailable,
     Unknown { tag: ::std::string::String, payload: ::boxology_contract::OpaquePayload },
 }
 #[rustfmt::skip]
@@ -4287,6 +4309,9 @@ impl ::boxology_contract::ContractType for SubAgentHostError {
                     ::boxology_contract::SlotValue::Null,
                 )
             }
+            Self::CrashRestartUnavailable => {
+                ("CrashRestartUnavailable".into(), ::boxology_contract::SlotValue::Null)
+            }
             Self::SteeringUnavailable => {
                 ("SteeringUnavailable".into(), ::boxology_contract::SlotValue::Null)
             }
@@ -4304,6 +4329,9 @@ impl ::boxology_contract::ContractType for SubAgentHostError {
             }
             Self::TransportFailed => {
                 ("TransportFailed".into(), ::boxology_contract::SlotValue::Null)
+            }
+            Self::StorageUnavailable => {
+                ("StorageUnavailable".into(), ::boxology_contract::SlotValue::Null)
             }
             Self::Unknown { tag, payload } => {
                 (
@@ -4404,6 +4432,17 @@ impl ::boxology_contract::ContractType for SubAgentHostError {
                         .under(::boxology_contract::PathSegment::Variant(tag.into())),
                 )
             }
+            "CrashRestartUnavailable" if matches!(
+                payload, ::boxology_contract::SlotValue::Null
+            ) => Ok(Self::CrashRestartUnavailable),
+            "CrashRestartUnavailable" => {
+                Err(
+                    ::boxology_contract::DecodeError::new(
+                            ::boxology_contract::DecodeErrorKind::UnexpectedPayload,
+                        )
+                        .under(::boxology_contract::PathSegment::Variant(tag.into())),
+                )
+            }
             "SteeringUnavailable" if matches!(
                 payload, ::boxology_contract::SlotValue::Null
             ) => Ok(Self::SteeringUnavailable),
@@ -4452,6 +4491,17 @@ impl ::boxology_contract::ContractType for SubAgentHostError {
                 payload, ::boxology_contract::SlotValue::Null
             ) => Ok(Self::TransportFailed),
             "TransportFailed" => {
+                Err(
+                    ::boxology_contract::DecodeError::new(
+                            ::boxology_contract::DecodeErrorKind::UnexpectedPayload,
+                        )
+                        .under(::boxology_contract::PathSegment::Variant(tag.into())),
+                )
+            }
+            "StorageUnavailable" if matches!(
+                payload, ::boxology_contract::SlotValue::Null
+            ) => Ok(Self::StorageUnavailable),
+            "StorageUnavailable" => {
                 Err(
                     ::boxology_contract::DecodeError::new(
                             ::boxology_contract::DecodeErrorKind::UnexpectedPayload,
@@ -4511,11 +4561,13 @@ impl ::boxology_contract::ContractError for SubAgentHostError {
             Self::InvalidContextBoundary => "InvalidContextBoundary",
             Self::NativeForkUnavailable => "NativeForkUnavailable",
             Self::PortableSnapshotForbidden => "PortableSnapshotForbidden",
+            Self::CrashRestartUnavailable => "CrashRestartUnavailable",
             Self::SteeringUnavailable => "SteeringUnavailable",
             Self::AuthorityUnavailable => "AuthorityUnavailable",
             Self::ProtocolNegotiationFailed => "ProtocolNegotiationFailed",
             Self::InvalidNativePayload => "InvalidNativePayload",
             Self::TransportFailed => "TransportFailed",
+            Self::StorageUnavailable => "StorageUnavailable",
             Self::Unknown { tag, .. } => tag,
         }
     }
@@ -5102,8 +5154,8 @@ pub mod test_support {
 #[rustfmt::skip]
 #[doc(hidden)]
 pub const __BOXOLOGY_SEMANTIC_DIGEST: [u8; 32] = [
-    25, 193, 104, 255, 62, 5, 71, 72, 28, 183, 128, 166, 28, 167, 30, 164, 22, 220, 155,
-    156, 229, 88, 41, 193, 20, 99, 149, 218, 253, 241, 177, 229,
+    60, 70, 154, 56, 92, 125, 3, 132, 100, 48, 135, 176, 116, 33, 114, 240, 197, 98, 188,
+    210, 29, 4, 117, 78, 184, 127, 239, 95, 110, 18, 177, 96,
 ];
 #[rustfmt::skip]
 #[doc(hidden)]
