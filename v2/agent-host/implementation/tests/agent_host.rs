@@ -7,7 +7,8 @@ use agent_host_implementation::{
     CRAB_SUB_AGENT_ID_ENV, CRAB_WORKING_DIRECTORY_ENV, ConfiguredAgent, ConfiguredMcpServer,
     DiscoverAgentsRequest, FilesystemAuthority, NetworkAuthority, OpenSessionRequest,
     PermissionAuthority, PermissionRequest, PreflightRequest, PromptDisposition, PromptRequest,
-    ReadEventsRequest, RootAuthority, RunReference, SandboxAuthority, SessionReference, generated,
+    ReadEventsRequest, ResumeSessionRequest, RootAuthority, RunReference, SandboxAuthority,
+    SessionReference, generated,
 };
 use async_trait::async_trait;
 use boxology_contract::{CallContext, Caller, CancelToken, TraceContext};
@@ -296,6 +297,265 @@ async fn wait_for_lifecycle(host: &AgentHost, session_id: &str, expected: AgentL
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
     panic!("session never reached {expected:?}");
+}
+
+async fn wait_for_event(host: &AgentHost, session_id: &str, needle: &str) {
+    for _ in 0..200 {
+        let events = host
+            .read_events(
+                context(),
+                ReadEventsRequest {
+                    session_id: session_id.into(),
+                    after_sequence: 0,
+                    limit: 1_000,
+                },
+            )
+            .await
+            .expect("session events are readable");
+        if events
+            .events
+            .iter()
+            .any(|event| event.native_event_json.contains(needle))
+        {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    panic!("session never emitted {needle}");
+}
+
+#[tokio::test]
+async fn failed_v1_and_v2_sessions_resume_native_identity_without_bootstrap_replay() {
+    for protocol in [AgentProtocol::V1, AgentProtocol::V2] {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let database = directory.path().join("agent-host.sqlite");
+        let agent = configured_agent_with_mcp(protocol);
+        let agent_id = agent.agent_id.clone();
+        let host = AgentHost::open_with_authority_verifier(
+            &database,
+            vec![agent.clone()],
+            Arc::new(FixtureAuthority),
+        )
+        .expect("host opens");
+        let session = host
+            .open_session(
+                context(),
+                OpenSessionRequest {
+                    agent_id,
+                    working_directory: directory.path().to_string_lossy().into_owned(),
+                    bootstrap_prompt: Some("bootstrap-once".into()),
+                    metadata_json: r#"{"marker":"durable"}"#.into(),
+                },
+            )
+            .await
+            .expect("session opens");
+        wait_for_event(&host, &session.session_id, "bootstrap-once").await;
+        wait_for_lifecycle(&host, &session.session_id, AgentLifecycle::Ready).await;
+
+        host.prompt(
+            context(),
+            prompt(
+                &session.session_id,
+                "crash-turn",
+                AgentInputMode::Queue,
+                "crash",
+            ),
+        )
+        .await
+        .expect("crashing prompt is accepted first");
+        wait_for_lifecycle(&host, &session.session_id, AgentLifecycle::Failed).await;
+        let failed_events = host
+            .read_events(
+                context(),
+                ReadEventsRequest {
+                    session_id: session.session_id.clone(),
+                    after_sequence: 0,
+                    limit: 1_000,
+                },
+            )
+            .await
+            .expect("failed session events remain readable");
+        let failed_cursor = failed_events.next_sequence;
+        drop(host);
+
+        let resumed_host = AgentHost::open_with_authority_verifier(
+            &database,
+            vec![agent],
+            Arc::new(FixtureAuthority),
+        )
+        .expect("host reopens");
+        let resumed = resumed_host
+            .resume_session(
+                context(),
+                ResumeSessionRequest {
+                    session_id: session.session_id.clone(),
+                },
+            )
+            .await
+            .expect("native ACP session resumes");
+        assert_eq!(resumed.session_id, session.session_id);
+        assert_eq!(resumed.native_session_id, session.native_session_id);
+
+        let recovery_events = resumed_host
+            .read_events(
+                context(),
+                ReadEventsRequest {
+                    session_id: session.session_id.clone(),
+                    after_sequence: failed_cursor,
+                    limit: 1_000,
+                },
+            )
+            .await
+            .expect("recovery events are readable");
+        assert!(recovery_events.caught_up);
+        assert!(
+            recovery_events
+                .events
+                .windows(2)
+                .all(|pair| pair[1].sequence == pair[0].sequence + 1)
+        );
+        let resume_request = recovery_events
+            .events
+            .iter()
+            .filter(|event| event.direction == AcpEventDirection::ClientToAgent)
+            .filter_map(|event| serde_json::from_str::<Value>(&event.native_event_json).ok())
+            .find(|event| event["method"] == "session/resume")
+            .expect("native resume request is preserved");
+        assert_eq!(
+            resume_request["params"]["sessionId"],
+            session.native_session_id
+        );
+        assert_eq!(resume_request["params"]["_meta"]["marker"], "durable");
+        assert_eq!(
+            resume_request["params"]["mcpServers"][0]["name"],
+            "crab-sub-agents"
+        );
+        assert!(!recovery_events.events.iter().any(|event| {
+            event.native_event_json.contains("session/new")
+                || event.native_event_json.contains("bootstrap-once")
+        }));
+
+        assert_eq!(
+            resumed_host
+                .resume_session(
+                    context(),
+                    ResumeSessionRequest {
+                        session_id: session.session_id.clone(),
+                    },
+                )
+                .await,
+            Err(AgentHostError::SessionResumeUnavailable)
+        );
+        resumed_host
+            .prompt(
+                context(),
+                prompt(
+                    &session.session_id,
+                    "after-resume",
+                    AgentInputMode::Queue,
+                    "after-resume",
+                ),
+            )
+            .await
+            .expect("resumed session accepts new work");
+        wait_for_event(&resumed_host, &session.session_id, "echo:after-resume").await;
+        resumed_host
+            .close_session(
+                context(),
+                SessionReference {
+                    session_id: session.session_id.clone(),
+                },
+            )
+            .await
+            .expect("resumed session closes");
+        assert_eq!(
+            resumed_host
+                .resume_session(
+                    context(),
+                    ResumeSessionRequest {
+                        session_id: session.session_id,
+                    },
+                )
+                .await,
+            Err(AgentHostError::SessionResumeUnavailable)
+        );
+    }
+}
+
+#[tokio::test]
+async fn v1_resume_fails_closed_when_the_restarted_agent_withholds_support() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let database = directory.path().join("agent-host.sqlite");
+    let agent = configured_agent(AgentProtocol::V1);
+    let host =
+        AgentHost::open_with_authority_verifier(&database, vec![agent], Arc::new(FixtureAuthority))
+            .expect("host opens");
+    let session = open_fixture(&host, AgentProtocol::V1, directory.path()).await;
+    host.prompt(
+        context(),
+        prompt(
+            &session.session_id,
+            "crash-unsupported",
+            AgentInputMode::Queue,
+            "crash",
+        ),
+    )
+    .await
+    .expect("crashing prompt is accepted");
+    wait_for_lifecycle(&host, &session.session_id, AgentLifecycle::Failed).await;
+    drop(host);
+
+    let mut unsupported = configured_agent(AgentProtocol::V1);
+    unsupported
+        .environment
+        .insert("ACP_FIXTURE_HIDE_RESUME".into(), "1".into());
+    let restarted = AgentHost::open_with_authority_verifier(
+        &database,
+        vec![unsupported],
+        Arc::new(FixtureAuthority),
+    )
+    .expect("host reopens");
+    assert_eq!(
+        restarted
+            .resume_session(
+                context(),
+                ResumeSessionRequest {
+                    session_id: session.session_id.clone(),
+                },
+            )
+            .await,
+        Err(AgentHostError::SessionResumeUnavailable)
+    );
+    wait_for_lifecycle(&restarted, &session.session_id, AgentLifecycle::Failed).await;
+    assert_eq!(
+        restarted
+            .resume_session(
+                context(),
+                ResumeSessionRequest {
+                    session_id: "missing".into(),
+                },
+            )
+            .await,
+        Err(AgentHostError::UnknownSession)
+    );
+    drop(restarted);
+
+    let supported = AgentHost::open_with_authority_verifier(
+        &database,
+        vec![configured_agent(AgentProtocol::V1)],
+        Arc::new(FixtureAuthority),
+    )
+    .expect("host reopens with resume support restored");
+    supported
+        .resume_session(
+            context(),
+            ResumeSessionRequest {
+                session_id: session.session_id,
+            },
+        )
+        .await
+        .expect("failed capability negotiation remains recoverable");
+    supported.shutdown().await;
 }
 
 #[tokio::test]

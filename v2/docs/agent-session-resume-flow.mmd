@@ -1,0 +1,47 @@
+%%{init: {"theme": "base", "themeVariables": {"fontFamily": "ui-sans-serif, system-ui, sans-serif", "primaryTextColor": "#172033", "lineColor": "#64748b", "edgeLabelBackground": "#ffffff"}, "flowchart": {"curve": "basis", "nodeSpacing": 42, "rankSpacing": 58}}}%%
+flowchart LR
+    FAILED[("Failed durable session<br/>Crab ID · native ACP ID<br/>cwd · metadata · event cursor")]
+    ELIGIBLE{"Failed + same<br/>agent/profile?"}
+    PREFLIGHT{"Authority preflight<br/>no sandbox · yolo · sudo"}
+    PROCESS["Fresh ACP process<br/>initialize + current MCP tools"]
+    PROFILE{"Resume support<br/>v1 advertised · v2 baseline"}
+    RESUME["session/resume<br/>same native ID · no replay"]
+    POLICY{"Required options<br/>re-applied + verified"}
+    READY[("Ready durable session<br/>same Crab ID<br/>continuous event cursor")]
+    REJECT["Fail closed<br/>unknown · live · stopped<br/>unsupported · policy drift"]
+    ABSENT["Never replayed<br/>bootstrap · failed prompts<br/>compaction / rotation"]
+
+    subgraph ELIGIBILITY["Durable eligibility"]
+        direction TB
+        FAILED --> ELIGIBLE
+        ELIGIBLE -->|"yes"| PREFLIGHT
+    end
+    subgraph RECONNECT["Native ACP reconnect"]
+        direction TB
+        PROCESS --> PROFILE
+        PROFILE -->|"supported"| RESUME
+        ABSENT -. "host does not own" .-> RESUME
+    end
+    subgraph COMMIT["Policy commit"]
+        direction TB
+        POLICY -->|"exact"| READY
+    end
+
+    PREFLIGHT -->|"verified"| PROCESS
+    RESUME --> POLICY
+    ELIGIBLE -->|"no"| REJECT
+    PREFLIGHT -->|"failed"| REJECT
+    PROFILE -->|"missing"| REJECT
+    POLICY -->|"changed / missing"| REJECT
+
+    classDef durable fill:#dcfce7,stroke:#16a34a,stroke-width:2px,color:#14532d;
+    classDef gate fill:#fef3c7,stroke:#d97706,stroke-width:2px,color:#78350f;
+    classDef runtime fill:#dbeafe,stroke:#2563eb,stroke-width:2px,color:#172554;
+    classDef reject fill:#fee2e2,stroke:#dc2626,stroke-width:2px,color:#7f1d1d;
+    classDef absent fill:#f8fafc,stroke:#64748b,stroke-width:1.5px,color:#334155;
+
+    class FAILED,READY durable;
+    class ELIGIBLE,PREFLIGHT,PROFILE,POLICY gate;
+    class PROCESS,RESUME runtime;
+    class REJECT reject;
+    class ABSENT absent;

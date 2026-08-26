@@ -36,6 +36,20 @@ pub(crate) enum SessionCommand {
     },
 }
 
+pub(crate) enum SessionLaunch {
+    New { bootstrap_prompt: Option<String> },
+    Resume { native_session_id: String },
+}
+
+impl SessionLaunch {
+    fn bootstrap_prompt(&self) -> Option<String> {
+        match self {
+            Self::New { bootstrap_prompt } => bootstrap_prompt.clone(),
+            Self::Resume { .. } => None,
+        }
+    }
+}
+
 #[derive(Clone)]
 pub(crate) struct SessionHandle {
     pub(crate) commands: mpsc::Sender<SessionCommand>,
@@ -73,7 +87,7 @@ pub(crate) fn spawn_session(
     clock: Clock,
     session_id: String,
     working_directory: PathBuf,
-    bootstrap_prompt: Option<String>,
+    launch: SessionLaunch,
     metadata: Map<String, Value>,
     state_directory: Option<PathBuf>,
 ) -> (
@@ -94,7 +108,7 @@ pub(crate) fn spawn_session(
                     clock.clone(),
                     session_id.clone(),
                     working_directory,
-                    bootstrap_prompt,
+                    launch,
                     metadata,
                     state_directory,
                     command_rx,
@@ -109,7 +123,7 @@ pub(crate) fn spawn_session(
                     clock.clone(),
                     session_id.clone(),
                     working_directory,
-                    bootstrap_prompt,
+                    launch,
                     metadata,
                     state_directory,
                     command_rx,
@@ -138,7 +152,7 @@ async fn run_v1_session(
     clock: Clock,
     session_id: String,
     working_directory: PathBuf,
-    bootstrap_prompt: Option<String>,
+    launch: SessionLaunch,
     metadata: Map<String, Value>,
     state_directory: Option<PathBuf>,
     command_rx: mpsc::Receiver<SessionCommand>,
@@ -189,6 +203,7 @@ async fn run_v1_session(
                 &agent.session_options,
                 &agent.session_mcp_servers,
                 state_directory.as_deref(),
+                &launch,
             )
             .await;
             let session = match initialized {
@@ -205,7 +220,7 @@ async fn run_v1_session(
                 clock,
                 session_id,
                 session.native_session_id,
-                bootstrap_prompt,
+                launch.bootstrap_prompt(),
                 command_rx,
                 signal_rx,
                 signal_tx,
@@ -224,7 +239,7 @@ async fn run_v2_session(
     clock: Clock,
     session_id: String,
     working_directory: PathBuf,
-    bootstrap_prompt: Option<String>,
+    launch: SessionLaunch,
     metadata: Map<String, Value>,
     state_directory: Option<PathBuf>,
     command_rx: mpsc::Receiver<SessionCommand>,
@@ -284,6 +299,7 @@ async fn run_v2_session(
                 &agent.session_options,
                 &agent.session_mcp_servers,
                 state_directory.as_deref(),
+                &launch,
             )
             .await;
             let session = match initialized {
@@ -300,7 +316,7 @@ async fn run_v2_session(
                 clock,
                 session_id,
                 session.native_session_id,
-                bootstrap_prompt,
+                launch.bootstrap_prompt(),
                 command_rx,
                 signal_rx,
                 signal_tx,
@@ -345,6 +361,7 @@ async fn initialize_v1(
     session_options: &BTreeMap<String, String>,
     mcp_servers: &[ConfiguredMcpServer],
     state_directory: Option<&std::path::Path>,
+    launch: &SessionLaunch,
 ) -> Result<AgentSession, AgentHostError> {
     let response = connection
         .send_request(v1::InitializeRequest::new(ProtocolVersion::V1).client_info(
@@ -364,22 +381,48 @@ async fn initialize_v1(
         &working_directory,
         &metadata,
     )?;
-    let new_session = connection
-        .send_request(
-            v1::NewSessionRequest::new(working_directory)
-                .mcp_servers(mcp_servers)
-                .meta(nonempty(metadata)),
-        )
-        .block_task()
-        .await
-        .map_err(|_| AgentHostError::TransportFailed)?;
-    apply_v1_session_options(connection, &new_session.session_id, session_options).await?;
+    let native_session_id = match launch {
+        SessionLaunch::New { .. } => {
+            connection
+                .send_request(
+                    v1::NewSessionRequest::new(working_directory)
+                        .mcp_servers(mcp_servers)
+                        .meta(nonempty(metadata)),
+                )
+                .block_task()
+                .await
+                .map_err(|_| AgentHostError::TransportFailed)?
+                .session_id
+        }
+        SessionLaunch::Resume { native_session_id } => {
+            if response
+                .agent_capabilities
+                .session_capabilities
+                .resume
+                .is_none()
+            {
+                return Err(AgentHostError::SessionResumeUnavailable);
+            }
+            let native_session_id = v1::SessionId::new(native_session_id.clone());
+            connection
+                .send_request(
+                    v1::ResumeSessionRequest::new(native_session_id.clone(), working_directory)
+                        .mcp_servers(mcp_servers)
+                        .meta(nonempty(metadata)),
+                )
+                .block_task()
+                .await
+                .map_err(|_| AgentHostError::TransportFailed)?;
+            native_session_id
+        }
+    };
+    apply_v1_session_options(connection, &native_session_id, session_options).await?;
     let capabilities = serde_json::to_string(&response.agent_capabilities)
         .map_err(|_| AgentHostError::ProtocolNegotiationFailed)?;
     let now_ms = clock()?;
     store.set_ready(
         session_id,
-        &new_session.session_id.to_string(),
+        &native_session_id.to_string(),
         &AcpNegotiation {
             protocol_version: 1,
             protocol_profile: crate::AcpProtocolProfile::V1Stable,
@@ -403,6 +446,7 @@ async fn initialize_v2(
     session_options: &BTreeMap<String, String>,
     mcp_servers: &[ConfiguredMcpServer],
     state_directory: Option<&std::path::Path>,
+    launch: &SessionLaunch,
 ) -> Result<AgentSession, AgentHostError> {
     let response = connection
         .send_request(v2::InitializeRequest::new(
@@ -434,22 +478,46 @@ async fn initialize_v2(
         &working_directory,
         &metadata,
     )?;
-    let new_session = connection
-        .send_request(
-            v2::NewSessionRequest::new(working_directory)
-                .mcp_servers(mcp_servers)
-                .meta(nonempty(metadata)),
-        )
-        .block_task()
-        .await
-        .map_err(|_| AgentHostError::TransportFailed)?;
-    apply_v2_session_options(connection, &new_session.session_id, session_options).await?;
+    let native_session_id = match launch {
+        SessionLaunch::New { .. } => {
+            connection
+                .send_request(
+                    v2::NewSessionRequest::new(working_directory)
+                        .mcp_servers(mcp_servers)
+                        .meta(nonempty(metadata)),
+                )
+                .block_task()
+                .await
+                .map_err(|_| AgentHostError::TransportFailed)?
+                .session_id
+        }
+        SessionLaunch::Resume { native_session_id } => {
+            if response.capabilities.session.is_none() {
+                return Err(AgentHostError::SessionResumeUnavailable);
+            }
+            let native_session_id = v2::SessionId::new(native_session_id.clone());
+            connection
+                .send_request(
+                    v2::ResumeSessionRequest::new(
+                        native_session_id.clone(),
+                        v2::AbsolutePath::new(working_directory),
+                    )
+                    .mcp_servers(mcp_servers)
+                    .meta(nonempty(metadata)),
+                )
+                .block_task()
+                .await
+                .map_err(|_| AgentHostError::TransportFailed)?;
+            native_session_id
+        }
+    };
+    apply_v2_session_options(connection, &native_session_id, session_options).await?;
     let capabilities = serde_json::to_string(&response.capabilities)
         .map_err(|_| AgentHostError::ProtocolNegotiationFailed)?;
     let now_ms = clock()?;
     store.set_ready(
         session_id,
-        &new_session.session_id.to_string(),
+        &native_session_id.to_string(),
         &AcpNegotiation {
             protocol_version: 2,
             protocol_profile: crate::AcpProtocolProfile::V2Draft,

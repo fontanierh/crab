@@ -18,6 +18,14 @@ pub(crate) struct AgentStore {
     connection: Mutex<Connection>,
 }
 
+pub(crate) struct RecoverableSession {
+    pub(crate) native_session_id: String,
+    pub(crate) agent_id: String,
+    pub(crate) working_directory: String,
+    pub(crate) metadata_json: String,
+    pub(crate) protocol_profile: AcpProtocolProfile,
+}
+
 impl AgentStore {
     pub(crate) fn open(path: impl AsRef<Path>) -> Result<Self, AgentHostError> {
         Self::initialize(Connection::open(path).map_err(storage_error)?)
@@ -188,6 +196,70 @@ impl AgentStore {
                     })
                 },
             )
+    }
+
+    pub(crate) fn recoverable_session(
+        &self,
+        session_id: &str,
+    ) -> Result<RecoverableSession, AgentHostError> {
+        let connection = self.lock()?;
+        let row = connection
+            .query_row(
+                "SELECT native_session_id, agent_id, working_directory, metadata_json,
+                        protocol_profile, lifecycle
+                 FROM sessions WHERE session_id = ?1",
+                params![session_id],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, String>(4)?,
+                        row.get::<_, String>(5)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(storage_error)?
+            .ok_or(AgentHostError::UnknownSession)?;
+        if row.5 != "Failed" || row.0.trim().is_empty() {
+            return Err(AgentHostError::SessionResumeUnavailable);
+        }
+        Ok(RecoverableSession {
+            native_session_id: row.0,
+            agent_id: row.1,
+            working_directory: row.2,
+            metadata_json: row.3,
+            protocol_profile: parse_protocol_profile(&row.4)?,
+        })
+    }
+
+    pub(crate) fn prepare_resume(
+        &self,
+        session_id: &str,
+        authority: &AuthorityAttestation,
+        now_ms: u64,
+    ) -> Result<(), AgentHostError> {
+        let connection = self.lock()?;
+        let changed = connection
+            .execute(
+                "UPDATE sessions
+                 SET lifecycle = 'Starting', authority_verified_at_ms = ?2,
+                     authority_evidence_json = ?3, active_run_id = NULL, updated_at_ms = ?4
+                 WHERE session_id = ?1 AND lifecycle = 'Failed' AND native_session_id <> ''",
+                params![
+                    session_id,
+                    db_i64(authority.verified_at_ms)?,
+                    authority.evidence_json,
+                    db_i64(now_ms)?,
+                ],
+            )
+            .map_err(storage_error)?;
+        if changed != 1 {
+            return Err(AgentHostError::SessionResumeUnavailable);
+        }
+        Ok(())
     }
 
     pub(crate) fn lifecycle_for_agent(

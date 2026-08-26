@@ -40,8 +40,9 @@ impl FixtureAgent {
         match method {
             Some("initialize") => self.initialize(&message)?,
             Some("session/new") => self.new_session(&message)?,
+            Some("session/resume") => self.resume_session(&message)?,
             Some("session/set_config_option") => self.set_config_option(&message)?,
-            Some("session/prompt") => self.prompt(&message)?,
+            Some("session/prompt") => return self.prompt(&message),
             Some("session/cancel") => self.cancel()?,
             Some("session/close") => {
                 self.respond(&message, json!({}))?;
@@ -61,12 +62,19 @@ impl FixtureAgent {
 
     fn initialize(&self, request: &Value) -> io::Result<()> {
         let result = match self.protocol {
-            Protocol::V1 => json!({
-                "protocolVersion": 1,
-                "agentCapabilities": {},
-                "authMethods": [],
-                "agentInfo": { "name": "crab-fixture", "version": "1" }
-            }),
+            Protocol::V1 => {
+                let capabilities = if std::env::var_os("ACP_FIXTURE_HIDE_RESUME").is_some() {
+                    json!({})
+                } else {
+                    json!({ "sessionCapabilities": { "resume": {} } })
+                };
+                json!({
+                    "protocolVersion": 1,
+                    "agentCapabilities": capabilities,
+                    "authMethods": [],
+                    "agentInfo": { "name": "crab-fixture", "version": "1" }
+                })
+            }
             Protocol::V2 => {
                 let capabilities = if std::env::var_os("ACP_FIXTURE_HIDE_STDIO_MCP").is_some() {
                     json!({})
@@ -89,6 +97,18 @@ impl FixtureAgent {
             request,
             json!({
                 "sessionId": self.session_id,
+                "configOptions": self.config_options()
+            }),
+        )
+    }
+
+    fn resume_session(&mut self, request: &Value) -> io::Result<()> {
+        if request.pointer("/params/sessionId") != Some(&json!(self.session_id)) {
+            return self.respond_error(request, -32602, "unknown session");
+        }
+        self.respond(
+            request,
+            json!({
                 "configOptions": self.config_options()
             }),
         )
@@ -144,7 +164,7 @@ impl FixtureAgent {
             .collect()
     }
 
-    fn prompt(&mut self, request: &Value) -> io::Result<()> {
+    fn prompt(&mut self, request: &Value) -> io::Result<bool> {
         let text = request
             .pointer("/params/prompt")
             .and_then(Value::as_array)
@@ -153,6 +173,9 @@ impl FixtureAgent {
             .and_then(Value::as_str)
             .unwrap_or_default()
             .to_owned();
+        if text == "crash" {
+            return Ok(false);
+        }
         match self.protocol {
             Protocol::V1 => {
                 if text == "hold" || text == "permission" {
@@ -182,7 +205,7 @@ impl FixtureAgent {
                 }
             }
         }
-        Ok(())
+        Ok(true)
     }
 
     fn cancel(&mut self) -> io::Result<()> {

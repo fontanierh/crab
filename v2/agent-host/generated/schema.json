@@ -61,6 +61,27 @@
     {
       "deprecation": null,
       "docs": [
+        " Resume one failed durable session through native ACP. This re-runs authority checks,",
+        " reconnects configured MCP servers and verifies required session policy. It never sends the",
+        " original bootstrap prompt or retries prompts that were active when the process failed."
+      ],
+      "error": "AgentHostError",
+      "id": "agent-host.resume_session",
+      "idempotency": "none",
+      "input": {
+        "name": "request",
+        "type": "ResumeSessionRequest"
+      },
+      "max_exposure": "code_only",
+      "name": "resume_session",
+      "output": {
+        "type": "AgentSession"
+      },
+      "shape": "unary"
+    },
+    {
+      "deprecation": null,
+      "docs": [
         " Submit input without waiting for work to finish. `Queue` is portable. `Steer` uses the ACP",
         " v2 prompt lifecycle or a negotiated extension and fails rather than silently becoming queue."
       ],
@@ -175,9 +196,9 @@
   "provenance": {
     "generator": "boxology-generator",
     "generator_version": "0.1.1",
-    "semantic_digest": "sha256:1e9beca1ed6b217d3ec282d31c5124009a1bf168782ae727838e82e70bb2878e"
+    "semantic_digest": "sha256:eb481d8aab749b2a44fa337a87fc7e42ff5e0675908e385cfbf1934a648f7e9a"
   },
-  "revision": "sha256:95e518c5ca4645fef7105b27adfce20c8a3c834d22021b5933d08c52470ab2fd",
+  "revision": "sha256:5d37728e0b3bc383aa50c7785417912552b9390ed2a384e9212424eb4eb4feeb",
   "schema_format": 1,
   "types": [
     {
@@ -634,6 +655,23 @@
       ],
       "kind": "struct",
       "name": "OpenSessionRequest"
+    },
+    {
+      "deprecation": null,
+      "docs": [
+        " Reconnect one failed durable Crab session to the same native ACP session. Agent identity,",
+        " working directory, metadata and native session identity come only from durable host state."
+      ],
+      "fields": [
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "session_id",
+          "type": "String"
+        }
+      ],
+      "kind": "struct",
+      "name": "ResumeSessionRequest"
     },
     {
       "deprecation": null,
@@ -1248,6 +1286,12 @@
           "deprecation": null,
           "docs": [],
           "name": "InvalidNativePayload",
+          "payload": "unit"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "SessionResumeUnavailable",
           "payload": "unit"
         },
         {

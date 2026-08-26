@@ -12,8 +12,8 @@ use agent_host_implementation::{
     CompactionReporting, DiscoverAgentsRequest, EventPage, FilesystemAuthority, NetworkAuthority,
     OpenSessionRequest, OperationReceipt, PermissionAuthority, PermissionRequest,
     PermissionResolution, PreflightReport, PreflightRequest, PromptAccepted, PromptDisposition,
-    PromptRequest, ReadEventsRequest, RootAuthority, RunReference, SandboxAuthority,
-    SessionReference, SessionStatus, SteeringSupport, generated as agent_host,
+    PromptRequest, ReadEventsRequest, ResumeSessionRequest, RootAuthority, RunReference,
+    SandboxAuthority, SessionReference, SessionStatus, SteeringSupport, generated as agent_host,
 };
 use boxology_contract::{CallContext, Caller, CancelToken, TraceContext};
 use boxology_runtime::CompositionBuilder;
@@ -124,6 +124,15 @@ impl FakeAgentHost {
             },
             authority: authority(),
         })
+    }
+
+    async fn resume_session(
+        &self,
+        context: CallContext,
+        request: ResumeSessionRequest,
+    ) -> Result<AgentSession, AgentHostError> {
+        let _ = (context, request);
+        Err(AgentHostError::SessionResumeUnavailable)
     }
 
     async fn prompt(
