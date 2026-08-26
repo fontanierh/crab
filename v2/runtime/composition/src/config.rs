@@ -599,4 +599,48 @@ mod tests {
                 .join("../../target/release/crab-v2-claude-authority-probe")
         );
     }
+
+    #[test]
+    fn bundle_preset_uses_only_bundle_relative_runtime_commands() {
+        let runtime = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+        let config = RuntimeConfig::load(runtime.join("runtime.bundle.example.json"))
+            .expect("committed bundle preset loads");
+        let agent = &config.agents[0];
+        assert_eq!(
+            agent.executable,
+            runtime.join("../agents/claude/node_modules/.bin/claude-agent-acp")
+        );
+        assert_eq!(agent.arguments, Vec::<String>::new());
+        assert_eq!(agent.protocol, super::ProtocolConfig::V1);
+        assert_eq!(
+            agent.session_options.get("mode").map(String::as_str),
+            Some("bypassPermissions")
+        );
+        assert_eq!(
+            agent.session_options.get("model").map(String::as_str),
+            Some("opus[1m]")
+        );
+        assert_eq!(
+            agent.authority_probe.executable,
+            runtime.join("../bin/crab-v2-claude-authority-probe")
+        );
+        assert_eq!(
+            agent.authority_probe.arguments,
+            [
+                "--adapter-relative-to-probe",
+                "../agents/claude/node_modules/.bin/claude-agent-acp"
+            ]
+        );
+        let bridge = &config.bridges[0];
+        assert_eq!(
+            bridge.executable,
+            runtime.join("../bridges/whatsapp/src/index.js")
+        );
+        assert_eq!(
+            bridge.working_directory,
+            runtime.join("../bridges/whatsapp")
+        );
+        assert_eq!(bridge.ingress_mode, super::BridgeIngressConfig::Queue);
+        assert!(bridge.desired_running);
+    }
 }

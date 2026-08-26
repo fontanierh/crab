@@ -1,0 +1,69 @@
+{
+  "schema": 1,
+  "agents": [
+    {
+      "agentId": "claude-opus",
+      "displayName": "Claude Opus 5",
+      "executable": "../agents/claude/node_modules/.bin/claude-agent-acp",
+      "arguments": [],
+      "environmentFrom": ["PATH"],
+      "sessionOptions": {
+        "mode": "bypassPermissions",
+        "model": "opus[1m]"
+      },
+      "protocol": "v1",
+      "authorityProbe": {
+        "executable": "../bin/crab-v2-claude-authority-probe",
+        "arguments": [
+          "--adapter-relative-to-probe",
+          "../agents/claude/node_modules/.bin/claude-agent-acp"
+        ],
+        "environmentFrom": []
+      }
+    }
+  ],
+  "channels": [
+    {
+      "channelId": "primary",
+      "adapterId": "native-ui",
+      "agentId": "claude-opus",
+      "workingDirectory": "/absolute/path/to/agent-workspace",
+      "nativeChannel": { "title": "Claude Opus 5" },
+      "sessionMetadata": {},
+      "lane": "primary"
+    }
+  ],
+  "lanes": [
+    {
+      "lane": "primary",
+      "workerId": "crab-v2-primary",
+      "batchLimit": 16,
+      "leaseDurationMs": 30000,
+      "retryDelayMs": 1000,
+      "maxAttempts": 3,
+      "pollIntervalMs": 100
+    }
+  ],
+  "bridges": [
+    {
+      "bridgeId": "whatsapp",
+      "packageId": "crab.whatsapp",
+      "displayName": "WhatsApp",
+      "executable": "../bridges/whatsapp/src/index.js",
+      "arguments": [],
+      "environmentFrom": ["PATH"],
+      "workingDirectory": "../bridges/whatsapp",
+      "configuration": {
+        "targetChannelId": "primary",
+        "browserName": "Crab"
+      },
+      "authenticationMethods": ["qrCode", "phoneCode"],
+      "ingressMode": "queue",
+      "desiredRunning": true,
+      "healthIntervalMs": 5000,
+      "credentialValidationIntervalMs": 3600000,
+      "restartLimit": 5,
+      "restartWindowMs": 300000
+    }
+  ]
+}

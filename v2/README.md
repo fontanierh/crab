@@ -88,6 +88,10 @@ interrupt as a separate explicit action.
   bindings/routes, exposes an owner-only authenticated local Boxology endpoint, and continuously
   drains every configured trigger lane. See the [startup contract](docs/runtime-startup.md) and
   [local transport contract](docs/channel-ipc.md).
+- `make v2-bundle` builds the complete locked release closure, vendors the Claude ACP adapter and
+  WhatsApp production dependencies, verifies every entry, and publishes atomically. The resulting
+  directory needs no Rust, npm, `npx`, install, or package fetch at runtime. See the
+  [rendered bundle flow](docs/runtime-bundle-flow.png) and [release recipe](docs/runtime-bundle.md).
 - The first native UI ships in the Crab fork of T3 Code. Its built-in provider runs across web,
   desktop and mobile; `crab-v2-acp-channel` attaches each T3 thread to the single Crab-owned runtime
   without transferring session or tool authority. See the
@@ -101,6 +105,12 @@ cargo build --workspace
 cargo test --workspace
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 boxology check --base origin/main
+```
+
+Build the clean-machine runtime artifact from a clean commit:
+
+```sh
+make v2-bundle
 ```
 
 Crab v2 pins Boxology's complete runtime and CLI toolchain to current `main` revision `4dd0088`.
