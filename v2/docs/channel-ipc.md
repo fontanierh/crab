@@ -1,8 +1,8 @@
 # Local capability IPC
 
 The long-running Crab runtime exposes selected generated Boxology capabilities through one local
-Unix socket. UI adapters attach to Crab without inheriting agent ownership; trigger producers
-enqueue durably without opening or writing the inbox database.
+Unix socket. UI adapters attach without inheriting agent ownership; trigger producers and bridge
+operators never open Crab's databases or credential store.
 
 ![Authenticated local channel flow](channel-ipc-flow.png)
 
@@ -14,6 +14,15 @@ enqueue durably without opening or writing the inbox database.
 | `native-channel.channel_status` | `native-channel` |
 | `native-channel.replay_native_events` | `native-channel` |
 | `trigger-inbox.enqueue` | `trigger-inbox` |
+| `bridge-host.list_bridges` | `bridge-host` |
+| `bridge-host.reconcile_bridge` | `bridge-host` |
+| `bridge-host.begin_authentication` | `bridge-host` |
+| `bridge-host.submit_authentication` | `bridge-host` |
+| `bridge-host.validate_credentials` | `bridge-host` |
+| `bridge-host.invalidate_credentials` | `bridge-host` |
+| `bridge-host.bridge_status` | `bridge-host` |
+| `bridge-host.suspend_bridge` | `bridge-host` |
+| `bridge-host.stop_bridge` | `bridge-host` |
 
 ## Boundary
 
@@ -23,9 +32,11 @@ enqueue durably without opening or writing the inbox database.
 - Each request is one bounded JSON line with protocol version, request ID, authentication,
   qualified capability and canonical Boxology JSON input. Unknown fields and capabilities fail
   closed.
-- Responses preserve Boxology domain-error tags and canonical contract output. Private producer
-  diagnostics and credentials are not forwarded.
+- Responses preserve Boxology domain-error tags and canonical contract output. The bridge CLI
+  exposes auth presentations but never credential handles or material.
 - Client disconnect only closes that transport connection. Session replacement and shutdown remain
   explicit Crab operations.
 - The token is loaded from the state directory by the local client. It never appears in CLI
   arguments, output or trigger records.
+
+See [bridge operations](bridge-operations.md) for the typed operator workflow.

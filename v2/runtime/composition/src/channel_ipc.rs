@@ -1,4 +1,4 @@
-//! Owner-only local transport for native-channel and trigger-inbox Boxology capabilities.
+//! Owner-only local transport for selected generated Boxology capabilities.
 
 use std::{
     collections::HashSet,
@@ -15,6 +15,11 @@ use boxology_contract::{
     CallContext, CallError, Caller, CancelToken, CapabilityDescriptor, ContractDescriptor,
     ContractError, ContractType, DecodeRole, TraceContext,
     json::{self, Limits},
+};
+use bridge_host_contract::{
+    AuthenticationChallenge, BeginAuthenticationRequest, BridgeCatalog, BridgeHostHandle,
+    BridgeReceipt, BridgeReference, BridgeStatus, CredentialStatus, ListBridgesRequest,
+    ReconcileBridgeRequest, SubmitAuthenticationRequest,
 };
 use channel_gateway_contract::{AttachChannelRequest, ChannelAttachment, ChannelGatewayHandle};
 use native_channel_contract::{
@@ -42,9 +47,18 @@ const TOKEN_FILE: &str = "channel-ipc.token";
 const ATTACH: &str = "channel-gateway.attach_channel";
 const ACCEPT_TURN: &str = "native-channel.accept_turn";
 const INTERRUPT: &str = "native-channel.interrupt_and_drain";
-const STATUS: &str = "native-channel.channel_status";
+const CHANNEL_STATUS: &str = "native-channel.channel_status";
 const REPLAY: &str = "native-channel.replay_native_events";
 const ENQUEUE_TRIGGER: &str = "trigger-inbox.enqueue";
+const LIST_BRIDGES: &str = "bridge-host.list_bridges";
+const RECONCILE_BRIDGE: &str = "bridge-host.reconcile_bridge";
+const BEGIN_AUTHENTICATION: &str = "bridge-host.begin_authentication";
+const SUBMIT_AUTHENTICATION: &str = "bridge-host.submit_authentication";
+const VALIDATE_CREDENTIALS: &str = "bridge-host.validate_credentials";
+const INVALIDATE_CREDENTIALS: &str = "bridge-host.invalidate_credentials";
+const BRIDGE_STATUS: &str = "bridge-host.bridge_status";
+const STOP_BRIDGE: &str = "bridge-host.stop_bridge";
+const SUSPEND_BRIDGE: &str = "bridge-host.suspend_bridge";
 
 /// Stable filesystem endpoints for Crab's local capability transport.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -228,7 +242,7 @@ impl ChannelIpcClient {
         request: BindingReference,
     ) -> Result<ChannelStatus, ChannelIpcClientError> {
         self.invoke(
-            STATUS,
+            CHANNEL_STATUS,
             native_channel_contract::contract_descriptor(),
             request,
         )
@@ -256,6 +270,120 @@ impl ChannelIpcClient {
         self.invoke(
             ENQUEUE_TRIGGER,
             trigger_inbox_contract::contract_descriptor(),
+            request,
+        )
+        .await
+    }
+
+    /// List non-secret durable bridge registrations.
+    pub async fn list_bridges(&self) -> Result<BridgeCatalog, ChannelIpcClientError> {
+        self.invoke(
+            LIST_BRIDGES,
+            bridge_host_contract::contract_descriptor(),
+            ListBridgesRequest {},
+        )
+        .await
+    }
+
+    /// Converge one bridge toward its desired state with generation control.
+    pub async fn reconcile_bridge(
+        &self,
+        request: ReconcileBridgeRequest,
+    ) -> Result<BridgeStatus, ChannelIpcClientError> {
+        self.invoke(
+            RECONCILE_BRIDGE,
+            bridge_host_contract::contract_descriptor(),
+            request,
+        )
+        .await
+    }
+
+    /// Begin a package-owned QR, phone-code or other authentication flow.
+    pub async fn begin_bridge_authentication(
+        &self,
+        request: BeginAuthenticationRequest,
+    ) -> Result<AuthenticationChallenge, ChannelIpcClientError> {
+        self.invoke(
+            BEGIN_AUTHENTICATION,
+            bridge_host_contract::contract_descriptor(),
+            request,
+        )
+        .await
+    }
+
+    /// Submit an ephemeral response to an active authentication challenge.
+    pub async fn submit_bridge_authentication(
+        &self,
+        request: SubmitAuthenticationRequest,
+    ) -> Result<CredentialStatus, ChannelIpcClientError> {
+        self.invoke(
+            SUBMIT_AUTHENTICATION,
+            bridge_host_contract::contract_descriptor(),
+            request,
+        )
+        .await
+    }
+
+    /// Actively validate the credential already held by Crab's credential store.
+    pub async fn validate_bridge_credentials(
+        &self,
+        request: BridgeReference,
+    ) -> Result<CredentialStatus, ChannelIpcClientError> {
+        self.invoke(
+            VALIDATE_CREDENTIALS,
+            bridge_host_contract::contract_descriptor(),
+            request,
+        )
+        .await
+    }
+
+    /// Invalidate stored bridge credentials through the owning capability.
+    pub async fn invalidate_bridge_credentials(
+        &self,
+        request: BridgeReference,
+    ) -> Result<BridgeReceipt, ChannelIpcClientError> {
+        self.invoke(
+            INVALIDATE_CREDENTIALS,
+            bridge_host_contract::contract_descriptor(),
+            request,
+        )
+        .await
+    }
+
+    /// Inspect truthful bridge lifecycle and health.
+    pub async fn bridge_status(
+        &self,
+        request: BridgeReference,
+    ) -> Result<BridgeStatus, ChannelIpcClientError> {
+        self.invoke(
+            BRIDGE_STATUS,
+            bridge_host_contract::contract_descriptor(),
+            request,
+        )
+        .await
+    }
+
+    /// Durably disable and stop one bridge.
+    pub async fn stop_bridge(
+        &self,
+        request: BridgeReference,
+    ) -> Result<BridgeReceipt, ChannelIpcClientError> {
+        self.invoke(
+            STOP_BRIDGE,
+            bridge_host_contract::contract_descriptor(),
+            request,
+        )
+        .await
+    }
+
+    /// Stop the live package while preserving its desired state.
+    pub async fn suspend_bridge(
+        &self,
+        request: BridgeReference,
+    ) -> Result<BridgeStatus, ChannelIpcClientError> {
+        self.invoke(
+            SUSPEND_BRIDGE,
+            bridge_host_contract::contract_descriptor(),
             request,
         )
         .await
@@ -339,11 +467,20 @@ pub(crate) struct ChannelIpcServer {
     task: Option<JoinHandle<io::Result<()>>>,
 }
 
+#[derive(Clone)]
+struct IpcCapabilities {
+    channel_gateway: ChannelGatewayHandle,
+    native_channel: NativeChannelHandle,
+    bridge_host: BridgeHostHandle,
+    trigger_inbox: TriggerInboxHandle,
+}
+
 impl ChannelIpcServer {
     pub(crate) async fn start(
         paths: ChannelIpcPaths,
         channel_gateway: ChannelGatewayHandle,
         native_channel: NativeChannelHandle,
+        bridge_host: BridgeHostHandle,
         trigger_inbox: TriggerInboxHandle,
     ) -> Result<Self, ChannelIpcStartupError> {
         let authentication = load_or_create_token(&paths.token)?;
@@ -356,14 +493,18 @@ impl ChannelIpcServer {
         let socket_path = paths.socket.clone();
         let server_socket = socket_path.clone();
         let server_sessions = attached_sessions.clone();
+        let capabilities = IpcCapabilities {
+            channel_gateway,
+            native_channel,
+            bridge_host,
+            trigger_inbox,
+        };
         let task = tokio::spawn(async move {
             let result = serve(
                 listener,
                 receiver,
                 authentication,
-                channel_gateway,
-                native_channel,
-                trigger_inbox,
+                capabilities,
                 server_sessions,
             )
             .await;
@@ -481,9 +622,7 @@ async fn serve(
     listener: UnixListener,
     mut shutdown: watch::Receiver<bool>,
     authentication: String,
-    channel_gateway: ChannelGatewayHandle,
-    native_channel: NativeChannelHandle,
-    trigger_inbox: TriggerInboxHandle,
+    capabilities: IpcCapabilities,
     attached_sessions: Arc<Mutex<HashSet<String>>>,
 ) -> io::Result<()> {
     let mut connections = JoinSet::new();
@@ -499,9 +638,7 @@ async fn serve(
                 connections.spawn(handle_connection(
                     stream,
                     authentication.clone(),
-                    channel_gateway.clone(),
-                    native_channel.clone(),
-                    trigger_inbox.clone(),
+                    capabilities.clone(),
                     attached_sessions.clone(),
                 ));
             }
@@ -516,9 +653,7 @@ async fn serve(
 async fn handle_connection(
     stream: UnixStream,
     authentication: String,
-    channel_gateway: ChannelGatewayHandle,
-    native_channel: NativeChannelHandle,
-    trigger_inbox: TriggerInboxHandle,
+    capabilities: IpcCapabilities,
     attached_sessions: Arc<Mutex<HashSet<String>>>,
 ) {
     let (reader, mut writer) = stream.into_split();
@@ -537,14 +672,7 @@ async fn handle_connection(
     } else if !constant_time_equal(request.authentication.as_bytes(), authentication.as_bytes()) {
         wire_failure("authentication", "Unauthorized")
     } else {
-        dispatch(
-            request,
-            channel_gateway,
-            native_channel,
-            trigger_inbox,
-            attached_sessions,
-        )
-        .await
+        dispatch(request, capabilities, attached_sessions).await
     };
     let response = WireResponse::new(request_id, outcome);
     let Ok(mut bytes) = serde_json::to_vec(&response) else {
@@ -567,11 +695,15 @@ async fn handle_connection(
 
 async fn dispatch(
     request: WireRequest,
-    channel_gateway: ChannelGatewayHandle,
-    native_channel: NativeChannelHandle,
-    trigger_inbox: TriggerInboxHandle,
+    capabilities: IpcCapabilities,
     attached_sessions: Arc<Mutex<HashSet<String>>>,
 ) -> WireOutcome {
+    let IpcCapabilities {
+        channel_gateway,
+        native_channel,
+        bridge_host,
+        trigger_inbox,
+    } = capabilities;
     match request.capability.as_str() {
         ATTACH => {
             let Some(capability) =
@@ -607,10 +739,10 @@ async fn dispatch(
             )
             .await
         }
-        STATUS => {
+        CHANNEL_STATUS => {
             invoke_native::<BindingReference, ChannelStatus, _, _>(
                 &request.input,
-                STATUS,
+                CHANNEL_STATUS,
                 |input| native_channel.channel_status(call_context(), input),
             )
             .await
@@ -639,7 +771,99 @@ async fn dispatch(
                 Err(error) => wire_call_error(error),
             }
         }
+        LIST_BRIDGES => {
+            invoke_bridge::<ListBridgesRequest, BridgeCatalog, _, _>(
+                &request.input,
+                LIST_BRIDGES,
+                |input| bridge_host.list_bridges(call_context(), input),
+            )
+            .await
+        }
+        RECONCILE_BRIDGE => {
+            invoke_bridge::<ReconcileBridgeRequest, BridgeStatus, _, _>(
+                &request.input,
+                RECONCILE_BRIDGE,
+                |input| bridge_host.reconcile_bridge(call_context(), input),
+            )
+            .await
+        }
+        BEGIN_AUTHENTICATION => {
+            invoke_bridge::<BeginAuthenticationRequest, AuthenticationChallenge, _, _>(
+                &request.input,
+                BEGIN_AUTHENTICATION,
+                |input| bridge_host.begin_authentication(call_context(), input),
+            )
+            .await
+        }
+        SUBMIT_AUTHENTICATION => {
+            invoke_bridge::<SubmitAuthenticationRequest, CredentialStatus, _, _>(
+                &request.input,
+                SUBMIT_AUTHENTICATION,
+                |input| bridge_host.submit_authentication(call_context(), input),
+            )
+            .await
+        }
+        VALIDATE_CREDENTIALS => {
+            invoke_bridge::<BridgeReference, CredentialStatus, _, _>(
+                &request.input,
+                VALIDATE_CREDENTIALS,
+                |input| bridge_host.validate_credentials(call_context(), input),
+            )
+            .await
+        }
+        INVALIDATE_CREDENTIALS => {
+            invoke_bridge::<BridgeReference, BridgeReceipt, _, _>(
+                &request.input,
+                INVALIDATE_CREDENTIALS,
+                |input| bridge_host.invalidate_credentials(call_context(), input),
+            )
+            .await
+        }
+        BRIDGE_STATUS => {
+            invoke_bridge::<BridgeReference, BridgeStatus, _, _>(
+                &request.input,
+                BRIDGE_STATUS,
+                |input| bridge_host.bridge_status(call_context(), input),
+            )
+            .await
+        }
+        STOP_BRIDGE => {
+            invoke_bridge::<BridgeReference, BridgeReceipt, _, _>(
+                &request.input,
+                STOP_BRIDGE,
+                |input| bridge_host.stop_bridge(call_context(), input),
+            )
+            .await
+        }
+        SUSPEND_BRIDGE => {
+            invoke_bridge::<BridgeReference, BridgeStatus, _, _>(
+                &request.input,
+                SUSPEND_BRIDGE,
+                |input| bridge_host.suspend_bridge(call_context(), input),
+            )
+            .await
+        }
         _ => wire_failure("protocol", "UnknownCapability"),
+    }
+}
+
+async fn invoke_bridge<I, O, F, Fut>(input: &RawValue, name: &str, invoke: F) -> WireOutcome
+where
+    I: ContractType,
+    O: ContractType,
+    F: FnOnce(I) -> Fut,
+    Fut: Future<Output = Result<O, CallError<bridge_host_contract::BridgeHostError>>>,
+{
+    let Some(capability) = capability(bridge_host_contract::contract_descriptor(), name) else {
+        return wire_failure("internal", "MissingDescriptor");
+    };
+    let input = match decode_input::<I>(input, capability) {
+        Ok(input) => input,
+        Err(error) => return error,
+    };
+    match invoke(input).await {
+        Ok(output) => encode_output(output, capability),
+        Err(error) => wire_call_error(error),
     }
 }
 
@@ -725,7 +949,7 @@ fn capability<'a>(
 
 fn call_context() -> CallContext {
     CallContext::new(
-        Caller::System("crab-v2-channel-ipc"),
+        Caller::System("crab-v2-local-ipc"),
         None,
         CancelToken::new(),
         TraceContext::empty(),

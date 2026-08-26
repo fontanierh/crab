@@ -95,6 +95,7 @@ impl ConfiguredRuntime {
             paths,
             runtime.channel_gateway().clone(),
             runtime.native_channel().clone(),
+            runtime.bridge_host().clone(),
             runtime.trigger_inbox().clone(),
         )
         .await
@@ -615,7 +616,11 @@ mod tests {
     };
     use boxology_contract::{CallContext, CallError};
     use boxology_runtime::{Composition, CompositionBuilder};
-    use bridge_host_contract::ListBridgesRequest;
+    use bridge_host_contract::{
+        AuthenticationMethod as ContractAuthenticationMethod, BeginAuthenticationRequest,
+        BridgeLifecycle, BridgeReference, CredentialLifecycle, ListBridgesRequest,
+        ReconcileBridgeRequest, SubmitAuthenticationRequest,
+    };
     use bridge_host_implementation::{
         AuthenticationMethod, BridgeCredentialSink, BridgeHostState, BridgeInboundSink,
         BridgeOutbound, BridgePackage, BridgePackageError, BridgePackageFactory, BridgeSpec,
@@ -640,10 +645,10 @@ mod tests {
         initialize_topology_with_handles, session_metadata, spawn_lane_worker, suspend_bridges,
     };
     use crate::{
-        AcpChannelOptions, AgentConfig, BridgeConfig, BridgeIngressConfig, ChannelConfig,
-        ChannelIpcClient, ChannelIpcClientError, ChannelIpcPaths, ChannelIpcStartupError,
-        CommandConfig, LaneConfig, ProtocolConfig, RuntimeConfig, acp_channel::AcpChannelFacade,
-        channel_ipc::ChannelIpcServer,
+        AcpChannelOptions, AgentConfig, BridgeAuthenticationConfig, BridgeConfig,
+        BridgeIngressConfig, ChannelConfig, ChannelIpcClient, ChannelIpcClientError,
+        ChannelIpcPaths, ChannelIpcStartupError, CommandConfig, LaneConfig, ProtocolConfig,
+        RuntimeConfig, acp_channel::AcpChannelFacade, channel_ipc::ChannelIpcServer,
     };
 
     #[derive(Default)]
@@ -673,53 +678,78 @@ mod tests {
     impl BridgePackage for FakeBridgePackage {
         async fn health(
             &self,
-            _credential_json: Option<&str>,
+            credential_json: Option<&str>,
         ) -> Result<PackageHealth, BridgePackageError> {
             Ok(PackageHealth {
                 process_alive: true,
                 service_connected: true,
                 can_receive: true,
                 can_send: true,
-                credential_valid: true,
+                credential_valid: credential_json.is_some(),
                 detail_json: "{}".into(),
             })
         }
 
         async fn begin_authentication(
             &self,
-            _method: Option<&AuthenticationMethod>,
-            _context_json: &str,
+            method: Option<&AuthenticationMethod>,
+            context_json: &str,
         ) -> Result<PackageChallenge, BridgePackageError> {
-            Err(BridgePackageError::ProtocolFailed)
+            assert!(
+                serde_json::from_str::<serde_json::Value>(context_json)
+                    .is_ok_and(|value| value.is_object())
+            );
+            Ok(PackageChallenge {
+                method: method.cloned().unwrap_or(AuthenticationMethod::QrCode),
+                expires_at_ms: None,
+                presentation_json: r#"{"kind":"fixture","code":"1234-5678"}"#.into(),
+            })
         }
 
         async fn submit_authentication(
             &self,
-            _challenge_id: &str,
-            _response_json: &str,
+            challenge_id: &str,
+            response_json: &str,
         ) -> Result<PackageCredential, BridgePackageError> {
-            Err(BridgePackageError::ProtocolFailed)
+            assert!(!challenge_id.is_empty());
+            assert!(
+                serde_json::from_str::<serde_json::Value>(response_json)
+                    .is_ok_and(|value| value.is_object())
+            );
+            Ok(PackageCredential {
+                secret_json: r#"{"fixtureSecret":"never-cross-ipc"}"#.into(),
+                expires_at_ms: None,
+                account_hint: Some("fixture-account".into()),
+                detail_json: r#"{"paired":true}"#.into(),
+            })
         }
 
         async fn validate_credentials(
             &self,
-            _credential_json: &str,
+            credential_json: &str,
         ) -> Result<PackageCredentialValidation, BridgePackageError> {
-            Err(BridgePackageError::ProtocolFailed)
+            Ok(PackageCredentialValidation {
+                valid: credential_json.contains("never-cross-ipc"),
+                expires_at_ms: None,
+                account_hint: Some("fixture-account".into()),
+                detail_json: r#"{"validated":true}"#.into(),
+            })
         }
 
         async fn credential_committed(
             &self,
-            _credential_json: &str,
+            credential_json: &str,
         ) -> Result<(), BridgePackageError> {
-            Err(BridgePackageError::ProtocolFailed)
+            assert!(credential_json.contains("never-cross-ipc"));
+            Ok(())
         }
 
         async fn invalidate_credentials(
             &self,
-            _credential_json: &str,
+            credential_json: &str,
         ) -> Result<(), BridgePackageError> {
-            Err(BridgePackageError::ProtocolFailed)
+            assert!(credential_json.contains("never-cross-ipc"));
+            Ok(())
         }
 
         async fn deliver(
@@ -1250,6 +1280,7 @@ mod tests {
             paths.clone(),
             graph.channel_gateway.clone(),
             graph.native_channel.clone(),
+            graph.bridge_host.clone(),
             graph.trigger_inbox.clone(),
         )
         .await
@@ -1259,6 +1290,7 @@ mod tests {
                 paths.clone(),
                 graph.channel_gateway.clone(),
                 graph.native_channel.clone(),
+                graph.bridge_host.clone(),
                 graph.trigger_inbox.clone(),
             )
             .await,
@@ -1335,6 +1367,7 @@ mod tests {
             paths.clone(),
             graph.channel_gateway.clone(),
             graph.native_channel.clone(),
+            graph.bridge_host.clone(),
             graph.trigger_inbox.clone(),
         )
         .await
@@ -1357,6 +1390,116 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn authenticated_ipc_operates_bridge_auth_health_and_recovery_without_state_access() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let state = Arc::new(Mutex::new(FakeState::default()));
+        let graph = graph(directory.path(), state);
+        let mut config = config(directory.path().to_path_buf());
+        let mut bridge = bridge_config(directory.path().to_path_buf());
+        bridge.authentication_methods = vec![BridgeAuthenticationConfig::PhoneCode];
+        config.bridges.push(bridge);
+        initialize_bridges(&graph.bridge_host, &config)
+            .await
+            .expect("configured bridge starts");
+        let paths = ChannelIpcPaths::for_state_directory(directory.path()).expect("paths resolve");
+        let mut server = ChannelIpcServer::start(
+            paths,
+            graph.channel_gateway.clone(),
+            graph.native_channel.clone(),
+            graph.bridge_host.clone(),
+            graph.trigger_inbox.clone(),
+        )
+        .await
+        .expect("IPC starts");
+        let client =
+            ChannelIpcClient::from_state_directory(directory.path()).expect("client opens");
+
+        let catalog = client.list_bridges().await.expect("catalog crosses IPC");
+        assert_eq!(catalog.bridges.len(), 1);
+        assert_eq!(catalog.bridges[0].bridge_id, "whatsapp");
+        let status = client
+            .bridge_status(BridgeReference {
+                bridge_id: "whatsapp".into(),
+            })
+            .await
+            .expect("status crosses IPC");
+        assert_eq!(status.generation, 1);
+        let challenge = client
+            .begin_bridge_authentication(BeginAuthenticationRequest {
+                bridge_id: "whatsapp".into(),
+                preferred_method: Some(ContractAuthenticationMethod::PhoneCode),
+                context_json: r#"{"phoneNumber":"+33600000000"}"#.into(),
+            })
+            .await
+            .expect("authentication challenge crosses IPC");
+        assert_eq!(challenge.method, ContractAuthenticationMethod::PhoneCode);
+        assert!(challenge.presentation_json.contains("1234-5678"));
+        let credential = client
+            .submit_bridge_authentication(SubmitAuthenticationRequest {
+                bridge_id: "whatsapp".into(),
+                challenge_id: challenge.challenge_id,
+                response_json: "{}".into(),
+            })
+            .await
+            .expect("authentication submission crosses IPC");
+        assert_eq!(credential.lifecycle, CredentialLifecycle::Valid);
+        assert!(credential.credential_handle.is_some());
+        assert!(!format!("{credential:?}").contains("never-cross-ipc"));
+        let validated = client
+            .validate_bridge_credentials(BridgeReference {
+                bridge_id: "whatsapp".into(),
+            })
+            .await
+            .expect("credential validation crosses IPC");
+        assert_eq!(validated.lifecycle, CredentialLifecycle::Valid);
+        let reconciled = client
+            .reconcile_bridge(ReconcileBridgeRequest {
+                bridge_id: "whatsapp".into(),
+                expected_generation: 1,
+                desired_running: true,
+            })
+            .await
+            .expect("reconcile crosses IPC");
+        assert_eq!(reconciled.lifecycle, BridgeLifecycle::Healthy);
+        assert!(
+            client
+                .invalidate_bridge_credentials(BridgeReference {
+                    bridge_id: "whatsapp".into(),
+                })
+                .await
+                .expect("credential invalidation crosses IPC")
+                .accepted
+        );
+        assert!(matches!(
+            client
+                .bridge_status(BridgeReference {
+                    bridge_id: "missing".into(),
+                })
+                .await,
+            Err(ChannelIpcClientError::Remote { kind, code })
+                if kind == "domain" && code == "UnknownBridge"
+        ));
+        let suspended = client
+            .suspend_bridge(BridgeReference {
+                bridge_id: "whatsapp".into(),
+            })
+            .await
+            .expect("bridge suspension crosses IPC");
+        assert_eq!(suspended.lifecycle, BridgeLifecycle::Stopped);
+        assert!(
+            client
+                .stop_bridge(BridgeReference {
+                    bridge_id: "whatsapp".into(),
+                })
+                .await
+                .expect("durable stop crosses IPC")
+                .accepted
+        );
+
+        server.shutdown().await.expect("IPC shuts down");
+    }
+
+    #[tokio::test]
     async fn acp_facade_streams_cancels_and_reloads_through_real_local_ipc() {
         let directory = tempfile::tempdir().expect("temporary directory");
         let state = Arc::new(Mutex::new(FakeState::default()));
@@ -1366,6 +1509,7 @@ mod tests {
             paths,
             graph.channel_gateway.clone(),
             graph.native_channel.clone(),
+            graph.bridge_host.clone(),
             graph.trigger_inbox.clone(),
         )
         .await
@@ -1584,6 +1728,7 @@ mod tests {
             paths,
             graph.channel_gateway.clone(),
             graph.native_channel.clone(),
+            graph.bridge_host.clone(),
             graph.trigger_inbox.clone(),
         )
         .await
