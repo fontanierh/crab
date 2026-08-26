@@ -1,0 +1,16 @@
+flowchart LR
+    C["runtime JSON<br/>sessionOptions"] --> L["launch pinned<br/>ACP adapter"]
+    L --> N["initialize +<br/>session/new"]
+    N --> S["set each option<br/>in stable order"]
+    S --> V{"returned effective<br/>value is exact?"}
+    V -->|yes| M{"more options?"}
+    M -->|yes| S
+    M -->|no| R["session Ready"]
+    V -->|unsupported,<br/>missing or rewritten| F["session Failed"]
+
+    classDef input fill:#e8f1ff,stroke:#2260a8,color:#12243a;
+    classDef good fill:#e8f8ee,stroke:#237a47,color:#153723;
+    classDef bad fill:#fdebec,stroke:#b43a43,color:#4d171b;
+    class C,L,N,S,V,M input;
+    class R good;
+    class F bad;

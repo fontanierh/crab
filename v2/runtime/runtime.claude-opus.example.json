@@ -1,0 +1,45 @@
+{
+  "schema": 1,
+  "agents": [
+    {
+      "agentId": "claude-opus",
+      "displayName": "Claude Opus 5",
+      "executable": "npx",
+      "arguments": ["--yes", "@agentclientprotocol/claude-agent-acp@0.70.0"],
+      "environmentFrom": ["PATH"],
+      "sessionOptions": {
+        "mode": "bypassPermissions",
+        "model": "opus[1m]"
+      },
+      "protocol": "v1",
+      "authorityProbe": {
+        "executable": "/usr/bin/false",
+        "arguments": [],
+        "environmentFrom": []
+      }
+    }
+  ],
+  "channels": [
+    {
+      "channelId": "primary",
+      "adapterId": "native-ui",
+      "agentId": "claude-opus",
+      "workingDirectory": "/absolute/path/to/agent-workspace",
+      "nativeChannel": { "title": "Claude Opus 5" },
+      "sessionMetadata": {},
+      "lane": "primary"
+    }
+  ],
+  "lanes": [
+    {
+      "lane": "primary",
+      "workerId": "crab-v2-primary",
+      "batchLimit": 16,
+      "leaseDurationMs": 30000,
+      "retryDelayMs": 1000,
+      "maxAttempts": 3,
+      "pollIntervalMs": 100
+    }
+  ],
+  "bridges": []
+}

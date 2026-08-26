@@ -7,6 +7,10 @@
       "executable": "/absolute/path/to/acp-agent",
       "arguments": ["--acp", "--no-sandbox", "--yolo"],
       "environmentFrom": ["AGENT_API_TOKEN"],
+      "sessionOptions": {
+        "mode": "agent-specific-unrestricted-mode",
+        "model": "agent-specific-model-id"
+      },
       "protocol": "v2",
       "authorityProbe": {
         "executable": "/absolute/path/to/authority-probe",
