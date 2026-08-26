@@ -1,0 +1,26 @@
+[workspace]
+resolver = "3"
+members = [
+    "agent-host/generated/contract",
+    "agent-host/implementation",
+    "bridge-host/generated/contract",
+    "bridge-host/implementation",
+    "native-channel/generated/contract",
+    "native-channel/implementation",
+    "runtime/composition",
+    "sub-agent-host/generated/contract",
+    "sub-agent-host/implementation",
+    "trigger-inbox/generated/contract",
+    "trigger-inbox/implementation",
+]
+
+[workspace.package]
+edition = "2024"
+
+[workspace.dependencies]
+# Keep the Boxology runtime closure on one reviewed revision. This includes the post-0.1.1
+# optional-field semantics and truthful generator-provenance fixes.
+boxology = { git = "https://github.com/fontanierh/boxology", rev = "4dd00888445c6506704a3e3f69932a3c4bc32efa" }
+boxology-contract = { git = "https://github.com/fontanierh/boxology", rev = "4dd00888445c6506704a3e3f69932a3c4bc32efa" }
+boxology-manifest = { git = "https://github.com/fontanierh/boxology", rev = "4dd00888445c6506704a3e3f69932a3c4bc32efa" }
+boxology-runtime = { git = "https://github.com/fontanierh/boxology", rev = "4dd00888445c6506704a3e3f69932a3c4bc32efa" }

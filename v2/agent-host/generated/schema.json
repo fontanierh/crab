@@ -1,0 +1,1195 @@
+{
+  "box_id": "agent-host",
+  "capabilities": [
+    {
+      "deprecation": null,
+      "docs": [
+        " Discover configured ACP agents; no Claude-specific type is permitted at this boundary."
+      ],
+      "error": "AgentHostError",
+      "id": "agent-host.discover_agents",
+      "idempotency": "none",
+      "input": {
+        "name": "request",
+        "type": "DiscoverAgentsRequest"
+      },
+      "max_exposure": "code_only",
+      "name": "discover_agents",
+      "output": {
+        "type": "AgentCatalog"
+      },
+      "shape": "unary"
+    },
+    {
+      "deprecation": null,
+      "docs": [
+        " Fail closed unless every mandatory authority probe succeeds in this working directory."
+      ],
+      "error": "AgentHostError",
+      "id": "agent-host.preflight",
+      "idempotency": "none",
+      "input": {
+        "name": "request",
+        "type": "PreflightRequest"
+      },
+      "max_exposure": "code_only",
+      "name": "preflight",
+      "output": {
+        "type": "PreflightReport"
+      },
+      "shape": "unary"
+    },
+    {
+      "deprecation": null,
+      "docs": [
+        " Spawn an ACP process, negotiate the protocol, and open a new native ACP session."
+      ],
+      "error": "AgentHostError",
+      "id": "agent-host.open_session",
+      "idempotency": "none",
+      "input": {
+        "name": "request",
+        "type": "OpenSessionRequest"
+      },
+      "max_exposure": "code_only",
+      "name": "open_session",
+      "output": {
+        "type": "AgentSession"
+      },
+      "shape": "unary"
+    },
+    {
+      "deprecation": null,
+      "docs": [
+        " Submit input without waiting for work to finish. `Queue` is portable. `Steer` uses the ACP",
+        " v2 prompt lifecycle or a negotiated extension and fails rather than silently becoming queue."
+      ],
+      "error": "AgentHostError",
+      "id": "agent-host.prompt",
+      "idempotency": "none",
+      "input": {
+        "name": "request",
+        "type": "PromptRequest"
+      },
+      "max_exposure": "code_only",
+      "name": "prompt",
+      "output": {
+        "type": "PromptAccepted"
+      },
+      "shape": "unary"
+    },
+    {
+      "deprecation": null,
+      "docs": [
+        " Pull a lossless ordered page from Crab's durable copy of the native ACP event stream."
+      ],
+      "error": "AgentHostError",
+      "id": "agent-host.read_events",
+      "idempotency": "none",
+      "input": {
+        "name": "request",
+        "type": "ReadEventsRequest"
+      },
+      "max_exposure": "code_only",
+      "name": "read_events",
+      "output": {
+        "type": "EventPage"
+      },
+      "shape": "unary"
+    },
+    {
+      "deprecation": null,
+      "docs": [
+        " Resolve an ACP permission request with the mandatory unrestricted decision."
+      ],
+      "error": "AgentHostError",
+      "id": "agent-host.resolve_permission",
+      "idempotency": "none",
+      "input": {
+        "name": "request",
+        "type": "PermissionRequest"
+      },
+      "max_exposure": "code_only",
+      "name": "resolve_permission",
+      "output": {
+        "type": "PermissionResolution"
+      },
+      "shape": "unary"
+    },
+    {
+      "deprecation": null,
+      "docs": [],
+      "error": "AgentHostError",
+      "id": "agent-host.session_status",
+      "idempotency": "none",
+      "input": {
+        "name": "request",
+        "type": "SessionReference"
+      },
+      "max_exposure": "code_only",
+      "name": "session_status",
+      "output": {
+        "type": "SessionStatus"
+      },
+      "shape": "unary"
+    },
+    {
+      "deprecation": null,
+      "docs": [],
+      "error": "AgentHostError",
+      "id": "agent-host.cancel_run",
+      "idempotency": "none",
+      "input": {
+        "name": "request",
+        "type": "RunReference"
+      },
+      "max_exposure": "code_only",
+      "name": "cancel_run",
+      "output": {
+        "type": "OperationReceipt"
+      },
+      "shape": "unary"
+    },
+    {
+      "deprecation": null,
+      "docs": [
+        " Close the native session. There is intentionally no `compact` capability: ACP's current",
+        " compaction proposal reports agent-owned compaction; it does not transfer control to Crab."
+      ],
+      "error": "AgentHostError",
+      "id": "agent-host.close_session",
+      "idempotency": "none",
+      "input": {
+        "name": "request",
+        "type": "SessionReference"
+      },
+      "max_exposure": "code_only",
+      "name": "close_session",
+      "output": {
+        "type": "OperationReceipt"
+      },
+      "shape": "unary"
+    }
+  ],
+  "provenance": {
+    "generator": "boxology-generator",
+    "generator_version": "0.1.1",
+    "semantic_digest": "sha256:e1b6d77032ec3570d639efdbcfb35a99bd10698cf0349d117d2828c868177e0c"
+  },
+  "revision": "sha256:3908bb9783b1e97b28d45b80475216536f3d95b3e8572cc745fb7eb597bfed6c",
+  "schema_format": 1,
+  "types": [
+    {
+      "deprecation": null,
+      "docs": [
+        " Coarse lifecycle information for operators. ACP remains the source of detailed state."
+      ],
+      "kind": "enum",
+      "name": "AgentLifecycle",
+      "variants": [
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "Discovered"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "Starting"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "Ready"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "Busy"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "Stopping"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "Stopped"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "Failed"
+        }
+      ]
+    },
+    {
+      "deprecation": null,
+      "docs": [
+        " Crab v2 has exactly one acceptable sandbox policy: none."
+      ],
+      "kind": "enum",
+      "name": "SandboxAuthority",
+      "variants": [
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "DisabledAndVerified"
+        }
+      ]
+    },
+    {
+      "deprecation": null,
+      "docs": [
+        " Permission prompts must be bypassed or automatically granted at the strongest level."
+      ],
+      "kind": "enum",
+      "name": "PermissionAuthority",
+      "variants": [
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "YoloAndVerified"
+        }
+      ]
+    },
+    {
+      "deprecation": null,
+      "docs": [
+        " The agent receives ordinary host filesystem access, not a projected workspace."
+      ],
+      "kind": "enum",
+      "name": "FilesystemAuthority",
+      "variants": [
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "UnrestrictedAndVerified"
+        }
+      ]
+    },
+    {
+      "deprecation": null,
+      "docs": [
+        " The agent receives host networking without an allowlist or proxy sandbox."
+      ],
+      "kind": "enum",
+      "name": "NetworkAuthority",
+      "variants": [
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "UnrestrictedAndVerified"
+        }
+      ]
+    },
+    {
+      "deprecation": null,
+      "docs": [
+        " The process may stay unprivileged, but every session must prove non-interactive root access.",
+        " This accommodates agents such as Claude Code that reject yolo mode when launched as EUID 0."
+      ],
+      "kind": "enum",
+      "name": "RootAuthority",
+      "variants": [
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "PasswordlessSudoAndVerified"
+        }
+      ]
+    },
+    {
+      "deprecation": null,
+      "docs": [
+        " Evidence that launch may proceed. Missing evidence is a hard failure, never a downgrade."
+      ],
+      "fields": [
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "sandbox",
+          "type": "SandboxAuthority"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "permissions",
+          "type": "PermissionAuthority"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "filesystem",
+          "type": "FilesystemAuthority"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "network",
+          "type": "NetworkAuthority"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "root",
+          "type": "RootAuthority"
+        },
+        {
+          "deprecation": null,
+          "docs": [
+            " Unix time in milliseconds at which the host performed the checks."
+          ],
+          "name": "verified_at_ms",
+          "type": "u64"
+        },
+        {
+          "deprecation": null,
+          "docs": [
+            " Opaque, non-secret audit data such as probe versions and exit codes."
+          ],
+          "name": "evidence_json",
+          "type": "String"
+        }
+      ],
+      "kind": "struct",
+      "name": "AuthorityAttestation"
+    },
+    {
+      "deprecation": null,
+      "docs": [
+        " An ACP-capable executable known to Crab. Arguments are explicit because yolo flags differ."
+      ],
+      "fields": [
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "agent_id",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "display_name",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "executable",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "arguments",
+          "type": "Vec<String>"
+        },
+        {
+          "deprecation": null,
+          "docs": [
+            " Names only. Secret values remain in the host's credential provider."
+          ],
+          "name": "environment_names",
+          "type": "Vec<String>"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "lifecycle",
+          "type": "AgentLifecycle"
+        }
+      ],
+      "kind": "struct",
+      "name": "AgentDescriptor"
+    },
+    {
+      "deprecation": null,
+      "docs": [],
+      "fields": [
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "agents",
+          "type": "Vec<AgentDescriptor>"
+        }
+      ],
+      "kind": "struct",
+      "name": "AgentCatalog"
+    },
+    {
+      "deprecation": null,
+      "docs": [
+        " Explicit unit request keeps the unary Boxology capability evolvable."
+      ],
+      "fields": [],
+      "kind": "struct",
+      "name": "DiscoverAgentsRequest"
+    },
+    {
+      "deprecation": null,
+      "docs": [],
+      "fields": [
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "agent_id",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "working_directory",
+          "type": "String"
+        }
+      ],
+      "kind": "struct",
+      "name": "PreflightRequest"
+    },
+    {
+      "deprecation": null,
+      "docs": [],
+      "fields": [
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "agent_id",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "working_directory",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "authority",
+          "type": "AuthorityAttestation"
+        }
+      ],
+      "kind": "struct",
+      "name": "PreflightReport"
+    },
+    {
+      "deprecation": null,
+      "docs": [
+        " ACP v1 is stable. ACP v2 is deliberately usable behind negotiation because its prompt",
+        " lifecycle is the portable basis for non-blocking steering, but it remains a draft today."
+      ],
+      "kind": "enum",
+      "name": "AcpProtocolProfile",
+      "variants": [
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "V1Stable"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "V2Draft"
+        }
+      ]
+    },
+    {
+      "deprecation": null,
+      "docs": [
+        " What an input submitted while the session is already working can actually do."
+      ],
+      "kind": "enum",
+      "name": "SteeringSupport",
+      "variants": [
+        {
+          "deprecation": null,
+          "docs": [
+            " ACP v1 has no portable mid-work prompt contract. Crab accepts immediately and queues",
+            " the input for the next turn boundary instead of claiming it steered the active model."
+          ],
+          "name": "TurnBoundaryQueue"
+        },
+        {
+          "deprecation": null,
+          "docs": [
+            " ACP v2 acknowledges `session/prompt` immediately and lets it contribute to active work."
+          ],
+          "name": "AcpV2ConcurrentPrompt"
+        },
+        {
+          "deprecation": null,
+          "docs": [
+            " An agent-specific ACP extension provides equivalent semantics on another profile."
+          ],
+          "name": "AgentExtension"
+        }
+      ]
+    },
+    {
+      "deprecation": null,
+      "docs": [
+        " Compaction remains agent-owned. This only describes what the client can observe."
+      ],
+      "kind": "enum",
+      "name": "CompactionReporting",
+      "variants": [
+        {
+          "deprecation": null,
+          "docs": [
+            " Usage may change, but the agent exposes no portable compaction lifecycle event."
+          ],
+          "name": "OpaqueAgentManaged"
+        },
+        {
+          "deprecation": null,
+          "docs": [
+            " The draft ACP compaction updates and optional displayable summary are preserved."
+          ],
+          "name": "DraftLifecycleUpdates"
+        }
+      ]
+    },
+    {
+      "deprecation": null,
+      "docs": [
+        " ACP version and optional features negotiated during `initialize`."
+      ],
+      "fields": [
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "protocol_version",
+          "type": "u64"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "protocol_profile",
+          "type": "AcpProtocolProfile"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "steering",
+          "type": "SteeringSupport"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "compaction_reporting",
+          "type": "CompactionReporting"
+        },
+        {
+          "deprecation": null,
+          "docs": [
+            " Preserve capability evolution without forcing Crab to mirror every ACP revision."
+          ],
+          "name": "agent_capabilities_json",
+          "type": "String"
+        }
+      ],
+      "kind": "struct",
+      "name": "AcpNegotiation"
+    },
+    {
+      "deprecation": null,
+      "docs": [],
+      "fields": [
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "agent_id",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "working_directory",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [
+            " Crab may bootstrap identity/memory, but it does not own compaction or token arithmetic."
+          ],
+          "name": "bootstrap_prompt",
+          "type": "Option<String>"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "metadata_json",
+          "type": "String"
+        }
+      ],
+      "kind": "struct",
+      "name": "OpenSessionRequest"
+    },
+    {
+      "deprecation": null,
+      "docs": [],
+      "fields": [
+        {
+          "deprecation": null,
+          "docs": [
+            " Crab's durable identifier, independent from any agent-specific identifier format."
+          ],
+          "name": "session_id",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [
+            " The exact ACP session identifier returned by the agent."
+          ],
+          "name": "native_session_id",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "agent_id",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "negotiation",
+          "type": "AcpNegotiation"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "authority",
+          "type": "AuthorityAttestation"
+        }
+      ],
+      "kind": "struct",
+      "name": "AgentSession"
+    },
+    {
+      "deprecation": null,
+      "docs": [],
+      "kind": "enum",
+      "name": "AgentInputMode",
+      "variants": [
+        {
+          "deprecation": null,
+          "docs": [
+            " Accept durably and send only when the session is idle."
+          ],
+          "name": "Queue"
+        },
+        {
+          "deprecation": null,
+          "docs": [
+            " Contribute to active work. Fail if ACP v2 or an equivalent extension was not negotiated."
+          ],
+          "name": "Steer"
+        }
+      ]
+    },
+    {
+      "deprecation": null,
+      "docs": [],
+      "fields": [
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "session_id",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [
+            " Stable caller key used to deduplicate a retried turn."
+          ],
+          "name": "client_turn_id",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "mode",
+          "type": "AgentInputMode"
+        },
+        {
+          "deprecation": null,
+          "docs": [
+            " Exact ACP prompt payload encoded as JSON. Crab must not narrow multimodal ACP content."
+          ],
+          "name": "native_prompt_json",
+          "type": "String"
+        }
+      ],
+      "kind": "struct",
+      "name": "PromptRequest"
+    },
+    {
+      "deprecation": null,
+      "docs": [
+        " Submission is always non-blocking; this says when the agent can consume it."
+      ],
+      "kind": "enum",
+      "name": "PromptDisposition",
+      "variants": [
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "StartedForegroundWork"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "ContributedToActiveWork"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "QueuedForTurnBoundary"
+        }
+      ]
+    },
+    {
+      "deprecation": null,
+      "docs": [],
+      "fields": [
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "session_id",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "run_id",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "accepted_at_ms",
+          "type": "u64"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "disposition",
+          "type": "PromptDisposition"
+        }
+      ],
+      "kind": "struct",
+      "name": "PromptAccepted"
+    },
+    {
+      "deprecation": null,
+      "docs": [
+        " A hint for indexing and UI filtering. `native_event_json` is always authoritative."
+      ],
+      "kind": "enum",
+      "name": "AcpEventKind",
+      "variants": [
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "Message"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "Thought"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "Plan"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "ToolCall"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "ToolResult"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "Terminal"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "FileDiff"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "PermissionRequest"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "Usage"
+        },
+        {
+          "deprecation": null,
+          "docs": [
+            " Draft ACP `compaction_update` and `compaction_summary_chunk`, when advertised."
+          ],
+          "name": "Compaction"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "SessionState"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "RunFinished"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "Other"
+        }
+      ]
+    },
+    {
+      "deprecation": null,
+      "docs": [
+        " One lossless event from the ACP connection, ordered within a Crab session."
+      ],
+      "fields": [
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "session_id",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "run_id",
+          "type": "Option<String>"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "sequence",
+          "type": "u64"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "observed_at_ms",
+          "type": "u64"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "kind",
+          "type": "AcpEventKind"
+        },
+        {
+          "deprecation": null,
+          "docs": [
+            " The complete ACP JSON-RPC message. Channels render this, including tool activity."
+          ],
+          "name": "native_event_json",
+          "type": "String"
+        }
+      ],
+      "kind": "struct",
+      "name": "AcpEvent"
+    },
+    {
+      "deprecation": null,
+      "docs": [],
+      "fields": [
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "session_id",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [
+            " Exclusive cursor; zero reads from the first retained event."
+          ],
+          "name": "after_sequence",
+          "type": "u64"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "limit",
+          "type": "u64"
+        }
+      ],
+      "kind": "struct",
+      "name": "ReadEventsRequest"
+    },
+    {
+      "deprecation": null,
+      "docs": [],
+      "fields": [
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "events",
+          "type": "Vec<AcpEvent>"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "next_sequence",
+          "type": "u64"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "caught_up",
+          "type": "bool"
+        }
+      ],
+      "kind": "struct",
+      "name": "EventPage"
+    },
+    {
+      "deprecation": null,
+      "docs": [
+        " ACP permission requests are recorded for visibility, then resolved without human gating."
+      ],
+      "fields": [
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "session_id",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "request_id",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "native_request_json",
+          "type": "String"
+        }
+      ],
+      "kind": "struct",
+      "name": "PermissionRequest"
+    },
+    {
+      "deprecation": null,
+      "docs": [],
+      "kind": "enum",
+      "name": "PermissionDecision",
+      "variants": [
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "AllowUnrestricted"
+        }
+      ]
+    },
+    {
+      "deprecation": null,
+      "docs": [],
+      "fields": [
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "request_id",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "decision",
+          "type": "PermissionDecision"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "native_response_json",
+          "type": "String"
+        }
+      ],
+      "kind": "struct",
+      "name": "PermissionResolution"
+    },
+    {
+      "deprecation": null,
+      "docs": [],
+      "fields": [
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "session_id",
+          "type": "String"
+        }
+      ],
+      "kind": "struct",
+      "name": "SessionReference"
+    },
+    {
+      "deprecation": null,
+      "docs": [],
+      "fields": [
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "session_id",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "run_id",
+          "type": "String"
+        }
+      ],
+      "kind": "struct",
+      "name": "RunReference"
+    },
+    {
+      "deprecation": null,
+      "docs": [],
+      "fields": [
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "session_id",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "lifecycle",
+          "type": "AgentLifecycle"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "last_sequence",
+          "type": "u64"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "active_run_id",
+          "type": "Option<String>"
+        }
+      ],
+      "kind": "struct",
+      "name": "SessionStatus"
+    },
+    {
+      "deprecation": null,
+      "docs": [],
+      "fields": [
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "accepted",
+          "type": "bool"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "recorded_at_ms",
+          "type": "u64"
+        }
+      ],
+      "kind": "struct",
+      "name": "OperationReceipt"
+    },
+    {
+      "deprecation": null,
+      "docs": [],
+      "kind": "error",
+      "name": "AgentHostError",
+      "variants": [
+        {
+          "deprecation": null,
+          "docs": [
+            " This contract draft intentionally has no live backend yet."
+          ],
+          "name": "DraftOnly",
+          "payload": "unit"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "UnknownAgent",
+          "payload": "unit"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "PreflightFailed",
+          "payload": "unit"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "AuthorityUnavailable",
+          "payload": "unit"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "ProtocolNegotiationFailed",
+          "payload": "unit"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "UnsupportedProtocolProfile",
+          "payload": "unit"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "UnknownSession",
+          "payload": "unit"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "SteeringUnavailable",
+          "payload": "unit"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "InvalidCursor",
+          "payload": "unit"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "InvalidNativePayload",
+          "payload": "unit"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "TransportFailed",
+          "payload": "unit"
+        }
+      ]
+    }
+  ]
+}

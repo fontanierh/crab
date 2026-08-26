@@ -1,0 +1,822 @@
+{
+  "box_id": "native-channel",
+  "capabilities": [
+    {
+      "deprecation": null,
+      "docs": [
+        " Bind one native interface to one already-open ACP session."
+      ],
+      "error": "NativeChannelError",
+      "id": "native-channel.bind_channel",
+      "idempotency": "none",
+      "input": {
+        "name": "request",
+        "type": "BindChannelRequest"
+      },
+      "max_exposure": "code_only",
+      "name": "bind_channel",
+      "output": {
+        "type": "ChannelBinding"
+      },
+      "shape": "unary"
+    },
+    {
+      "deprecation": null,
+      "docs": [
+        " Route a native user turn without translating it into bridge semantics."
+      ],
+      "error": "NativeChannelError",
+      "id": "native-channel.accept_turn",
+      "idempotency": "none",
+      "input": {
+        "name": "request",
+        "type": "ChannelTurn"
+      },
+      "max_exposure": "code_only",
+      "name": "accept_turn",
+      "output": {
+        "type": "AcceptedTurn"
+      },
+      "shape": "unary"
+    },
+    {
+      "deprecation": null,
+      "docs": [
+        " Cancel current thinking/tool execution cooperatively and immediately drain accepted input."
+      ],
+      "error": "NativeChannelError",
+      "id": "native-channel.interrupt_and_drain",
+      "idempotency": "none",
+      "input": {
+        "name": "request",
+        "type": "InterruptRequest"
+      },
+      "max_exposure": "code_only",
+      "name": "interrupt_and_drain",
+      "output": {
+        "type": "InterruptReceipt"
+      },
+      "shape": "unary"
+    },
+    {
+      "deprecation": null,
+      "docs": [
+        " Publish every ACP event in order; assistant text is not a privileged special case."
+      ],
+      "error": "NativeChannelError",
+      "id": "native-channel.publish_native_event",
+      "idempotency": "none",
+      "input": {
+        "name": "request",
+        "type": "NativeChannelEvent"
+      },
+      "max_exposure": "code_only",
+      "name": "publish_native_event",
+      "output": {
+        "type": "PublishReceipt"
+      },
+      "shape": "unary"
+    },
+    {
+      "deprecation": null,
+      "docs": [
+        " Replay the durable native view after an adapter disconnect or client reconnect."
+      ],
+      "error": "NativeChannelError",
+      "id": "native-channel.replay_native_events",
+      "idempotency": "none",
+      "input": {
+        "name": "request",
+        "type": "ReplayRequest"
+      },
+      "max_exposure": "code_only",
+      "name": "replay_native_events",
+      "output": {
+        "type": "PublishedEventPage"
+      },
+      "shape": "unary"
+    },
+    {
+      "deprecation": null,
+      "docs": [
+        " Atomically bind a fresh ACP session after explicit close/reopen by the caller."
+      ],
+      "error": "NativeChannelError",
+      "id": "native-channel.replace_session",
+      "idempotency": "none",
+      "input": {
+        "name": "request",
+        "type": "ReplaceSessionRequest"
+      },
+      "max_exposure": "code_only",
+      "name": "replace_session",
+      "output": {
+        "type": "ChannelBinding"
+      },
+      "shape": "unary"
+    },
+    {
+      "deprecation": null,
+      "docs": [],
+      "error": "NativeChannelError",
+      "id": "native-channel.channel_status",
+      "idempotency": "none",
+      "input": {
+        "name": "request",
+        "type": "BindingReference"
+      },
+      "max_exposure": "code_only",
+      "name": "channel_status",
+      "output": {
+        "type": "ChannelStatus"
+      },
+      "shape": "unary"
+    },
+    {
+      "deprecation": null,
+      "docs": [],
+      "error": "NativeChannelError",
+      "id": "native-channel.unbind_channel",
+      "idempotency": "none",
+      "input": {
+        "name": "request",
+        "type": "BindingReference"
+      },
+      "max_exposure": "code_only",
+      "name": "unbind_channel",
+      "output": {
+        "type": "ChannelReceipt"
+      },
+      "shape": "unary"
+    }
+  ],
+  "provenance": {
+    "generator": "boxology-generator",
+    "generator_version": "0.1.1",
+    "semantic_digest": "sha256:eb2e2cfabec5707c9128f05a579ee73abc7134dec35a6c98a2458e6d40009d57"
+  },
+  "revision": "sha256:ca71989d914aa685c738c180d5f35b9a467fa186ac0c6e73a2273c9c3731df22",
+  "schema_format": 1,
+  "types": [
+    {
+      "deprecation": null,
+      "docs": [],
+      "kind": "enum",
+      "name": "ChannelLifecycle",
+      "variants": [
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "Binding"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "Attached"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "Replaying"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "Detached"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "Failed"
+        }
+      ]
+    },
+    {
+      "deprecation": null,
+      "docs": [
+        " Native channels select delivery per turn. Interrupt is a separate explicit action so a",
+        " normal message can never accidentally cancel thinking or a tool call."
+      ],
+      "kind": "enum",
+      "name": "ChannelInputMode",
+      "variants": [
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "Queue"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "Steer"
+        }
+      ]
+    },
+    {
+      "deprecation": null,
+      "docs": [
+        " Creates the invariant `channel_id -> session_id` for the lifetime of this binding."
+      ],
+      "fields": [
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "channel_id",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "adapter_id",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "session_id",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [
+            " Adapter-specific destination metadata, retained losslessly as JSON."
+          ],
+          "name": "native_channel_json",
+          "type": "String"
+        }
+      ],
+      "kind": "struct",
+      "name": "BindChannelRequest"
+    },
+    {
+      "deprecation": null,
+      "docs": [],
+      "fields": [
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "binding_id",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "channel_id",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "adapter_id",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "session_id",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "lifecycle",
+          "type": "ChannelLifecycle"
+        },
+        {
+          "deprecation": null,
+          "docs": [
+            " Last ACP sequence durably published to the adapter."
+          ],
+          "name": "published_sequence",
+          "type": "u64"
+        }
+      ],
+      "kind": "struct",
+      "name": "ChannelBinding"
+    },
+    {
+      "deprecation": null,
+      "docs": [
+        " A user turn from the native interface, destined for exactly the bound ACP session."
+      ],
+      "fields": [
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "binding_id",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "client_turn_id",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "received_at_ms",
+          "type": "u64"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "mode",
+          "type": "ChannelInputMode"
+        },
+        {
+          "deprecation": null,
+          "docs": [
+            " Exact ACP-compatible prompt JSON, including attachments and other rich content."
+          ],
+          "name": "native_prompt_json",
+          "type": "String"
+        }
+      ],
+      "kind": "struct",
+      "name": "ChannelTurn"
+    },
+    {
+      "deprecation": null,
+      "docs": [],
+      "fields": [
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "binding_id",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "session_id",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "client_turn_id",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "accepted_at_ms",
+          "type": "u64"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "mode",
+          "type": "ChannelInputMode"
+        }
+      ],
+      "kind": "struct",
+      "name": "AcceptedTurn"
+    },
+    {
+      "deprecation": null,
+      "docs": [
+        " The hint is useful for rendering; no event may be dropped because its hint is unknown."
+      ],
+      "kind": "enum",
+      "name": "NativeEventKind",
+      "variants": [
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "Message"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "Thought"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "Plan"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "ToolCall"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "ToolResult"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "Terminal"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "FileDiff"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "PermissionRequest"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "Usage"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "Compaction"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "SessionState"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "RunFinished"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "Other"
+        }
+      ]
+    },
+    {
+      "deprecation": null,
+      "docs": [
+        " Channels receive the complete ordered ACP stream rather than assistant-text projections."
+      ],
+      "fields": [
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "binding_id",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "session_id",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "run_id",
+          "type": "Option<String>"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "sequence",
+          "type": "u64"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "observed_at_ms",
+          "type": "u64"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "kind",
+          "type": "NativeEventKind"
+        },
+        {
+          "deprecation": null,
+          "docs": [
+            " Exact native ACP JSON-RPC message, including intermediate and tool events."
+          ],
+          "name": "native_event_json",
+          "type": "String"
+        }
+      ],
+      "kind": "struct",
+      "name": "NativeChannelEvent"
+    },
+    {
+      "deprecation": null,
+      "docs": [],
+      "fields": [
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "binding_id",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "sequence",
+          "type": "u64"
+        },
+        {
+          "deprecation": null,
+          "docs": [
+            " Stable adapter receipt used to make crash retries idempotent."
+          ],
+          "name": "delivery_id",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "published_at_ms",
+          "type": "u64"
+        }
+      ],
+      "kind": "struct",
+      "name": "PublishReceipt"
+    },
+    {
+      "deprecation": null,
+      "docs": [],
+      "fields": [
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "binding_id",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "after_sequence",
+          "type": "u64"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "limit",
+          "type": "u64"
+        }
+      ],
+      "kind": "struct",
+      "name": "ReplayRequest"
+    },
+    {
+      "deprecation": null,
+      "docs": [],
+      "fields": [
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "events",
+          "type": "Vec<NativeChannelEvent>"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "next_sequence",
+          "type": "u64"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "caught_up",
+          "type": "bool"
+        }
+      ],
+      "kind": "struct",
+      "name": "PublishedEventPage"
+    },
+    {
+      "deprecation": null,
+      "docs": [
+        " A fresh session is an explicit user/operator operation, not Crab-owned compaction."
+      ],
+      "fields": [
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "binding_id",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "expected_session_id",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "fresh_session_id",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "reason",
+          "type": "String"
+        }
+      ],
+      "kind": "struct",
+      "name": "ReplaceSessionRequest"
+    },
+    {
+      "deprecation": null,
+      "docs": [],
+      "fields": [
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "binding_id",
+          "type": "String"
+        }
+      ],
+      "kind": "struct",
+      "name": "BindingReference"
+    },
+    {
+      "deprecation": null,
+      "docs": [
+        " Explicit cooperative interruption. The router cancels current ACP work, retains every",
+        " already accepted queue/steer input, then drains those inputs immediately in stable order."
+      ],
+      "fields": [
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "binding_id",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "expected_session_id",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "requested_at_ms",
+          "type": "u64"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "reason",
+          "type": "String"
+        }
+      ],
+      "kind": "struct",
+      "name": "InterruptRequest"
+    },
+    {
+      "deprecation": null,
+      "docs": [],
+      "fields": [
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "binding_id",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "session_id",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "cancel_requested_at_ms",
+          "type": "u64"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "pending_input_count",
+          "type": "u64"
+        }
+      ],
+      "kind": "struct",
+      "name": "InterruptReceipt"
+    },
+    {
+      "deprecation": null,
+      "docs": [],
+      "fields": [
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "binding",
+          "type": "ChannelBinding"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "last_error",
+          "type": "Option<String>"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "updated_at_ms",
+          "type": "u64"
+        }
+      ],
+      "kind": "struct",
+      "name": "ChannelStatus"
+    },
+    {
+      "deprecation": null,
+      "docs": [],
+      "fields": [
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "accepted",
+          "type": "bool"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "recorded_at_ms",
+          "type": "u64"
+        }
+      ],
+      "kind": "struct",
+      "name": "ChannelReceipt"
+    },
+    {
+      "deprecation": null,
+      "docs": [],
+      "kind": "error",
+      "name": "NativeChannelError",
+      "variants": [
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "DraftOnly",
+          "payload": "unit"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "AlreadyBound",
+          "payload": "unit"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "UnknownBinding",
+          "payload": "unit"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "SessionMismatch",
+          "payload": "unit"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "SequenceGap",
+          "payload": "unit"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "DuplicateTurnConflict",
+          "payload": "unit"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "SteeringUnavailable",
+          "payload": "unit"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "NothingToInterrupt",
+          "payload": "unit"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "InvalidNativePayload",
+          "payload": "unit"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "AdapterUnavailable",
+          "payload": "unit"
+        }
+      ]
+    }
+  ]
+}

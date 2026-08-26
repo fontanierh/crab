@@ -1,0 +1,17 @@
+[package]
+name = "crab-v2-runtime"
+version = "0.0.0"
+edition.workspace = true
+publish = false
+
+[dependencies]
+agent-host-implementation = { version = "=0.0.0", path = "../../agent-host/implementation" }
+boxology-contract = { workspace = true }
+boxology-runtime = { workspace = true, features = ["test-support"] }
+bridge-host-implementation = { version = "=0.0.0", path = "../../bridge-host/implementation" }
+native-channel-implementation = { version = "=0.0.0", path = "../../native-channel/implementation" }
+sub-agent-host-implementation = { version = "=0.0.0", path = "../../sub-agent-host/implementation" }
+trigger-inbox-implementation = { version = "=0.0.0", path = "../../trigger-inbox/implementation" }
+
+[dev-dependencies]
+boxology-manifest = { workspace = true }

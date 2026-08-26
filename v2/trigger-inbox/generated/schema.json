@@ -1,0 +1,680 @@
+{
+  "box_id": "trigger-inbox",
+  "capabilities": [
+    {
+      "deprecation": null,
+      "docs": [
+        " Durably enqueue before acknowledging the caller. Retries return the original record."
+      ],
+      "error": "TriggerInboxError",
+      "id": "trigger-inbox.enqueue",
+      "idempotency": "none",
+      "input": {
+        "name": "request",
+        "type": "EnqueueTrigger"
+      },
+      "max_exposure": "code_only",
+      "name": "enqueue",
+      "output": {
+        "type": "TriggerReceipt"
+      },
+      "shape": "unary"
+    },
+    {
+      "deprecation": null,
+      "docs": [
+        " Lease ready records in stable lane order; crashed leases become claimable again."
+      ],
+      "error": "TriggerInboxError",
+      "id": "trigger-inbox.claim",
+      "idempotency": "none",
+      "input": {
+        "name": "request",
+        "type": "ClaimTriggers"
+      },
+      "max_exposure": "code_only",
+      "name": "claim",
+      "output": {
+        "type": "TriggerBatch"
+      },
+      "shape": "unary"
+    },
+    {
+      "deprecation": null,
+      "docs": [],
+      "error": "TriggerInboxError",
+      "id": "trigger-inbox.extend_lease",
+      "idempotency": "none",
+      "input": {
+        "name": "request",
+        "type": "ExtendLease"
+      },
+      "max_exposure": "code_only",
+      "name": "extend_lease",
+      "output": {
+        "type": "TriggerLease"
+      },
+      "shape": "unary"
+    },
+    {
+      "deprecation": null,
+      "docs": [
+        " Settle only after the downstream turn is durably accepted or definitively rejected."
+      ],
+      "error": "TriggerInboxError",
+      "id": "trigger-inbox.settle",
+      "idempotency": "none",
+      "input": {
+        "name": "request",
+        "type": "SettleTrigger"
+      },
+      "max_exposure": "code_only",
+      "name": "settle",
+      "output": {
+        "type": "TriggerReceipt"
+      },
+      "shape": "unary"
+    },
+    {
+      "deprecation": null,
+      "docs": [],
+      "error": "TriggerInboxError",
+      "id": "trigger-inbox.inspect",
+      "idempotency": "none",
+      "input": {
+        "name": "request",
+        "type": "TriggerReference"
+      },
+      "max_exposure": "code_only",
+      "name": "inspect",
+      "output": {
+        "type": "TriggerRecord"
+      },
+      "shape": "unary"
+    }
+  ],
+  "provenance": {
+    "generator": "boxology-generator",
+    "generator_version": "0.1.1",
+    "semantic_digest": "sha256:b34f344cb2d16456fcb17c7c92f0cb8163c8f2fd0d1881a0d9c837600311566e"
+  },
+  "revision": "sha256:cf4e1ccf9c1e2bc983df92b107852ac2e34f4818795056514f99a1eecee2a0b2",
+  "schema_format": 1,
+  "types": [
+    {
+      "deprecation": null,
+      "docs": [],
+      "kind": "enum",
+      "name": "TriggerSource",
+      "variants": [
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "Bridge"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "Scheduler"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "SelfWork"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "Operator"
+        }
+      ]
+    },
+    {
+      "deprecation": null,
+      "docs": [],
+      "kind": "enum",
+      "name": "TriggerMode",
+      "variants": [
+        {
+          "deprecation": null,
+          "docs": [
+            " Wait for idle and preserve lane FIFO order."
+          ],
+          "name": "Queue"
+        },
+        {
+          "deprecation": null,
+          "docs": [
+            " Contribute to active work when the target negotiated support; never interrupt."
+          ],
+          "name": "Steer"
+        },
+        {
+          "deprecation": null,
+          "docs": [
+            " Cooperatively cancel current work, then drain accepted lane input immediately."
+          ],
+          "name": "InterruptAndSteer"
+        }
+      ]
+    },
+    {
+      "deprecation": null,
+      "docs": [],
+      "kind": "enum",
+      "name": "TriggerState",
+      "variants": [
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "Pending"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "Leased"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "Completed"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "RetryScheduled"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "DeadLettered"
+        }
+      ]
+    },
+    {
+      "deprecation": null,
+      "docs": [],
+      "kind": "enum",
+      "name": "SettlementOutcome",
+      "variants": [
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "Completed"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "Retry"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "DeadLetter"
+        }
+      ]
+    },
+    {
+      "deprecation": null,
+      "docs": [],
+      "fields": [
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "media_type",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "name",
+          "type": "Option<String>"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "content_handle",
+          "type": "String"
+        }
+      ],
+      "kind": "struct",
+      "name": "TriggerAttachment"
+    },
+    {
+      "deprecation": null,
+      "docs": [
+        " Caller-supplied envelope. The source ID plus deduplication key identifies one logical event."
+      ],
+      "fields": [
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "source",
+          "type": "TriggerSource"
+        },
+        {
+          "deprecation": null,
+          "docs": [
+            " Bridge ID, schedule ID, agent ID or operator identity."
+          ],
+          "name": "source_id",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "deduplication_key",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [
+            " Channel/session router key. It does not imply the source itself is a channel."
+          ],
+          "name": "target_channel_id",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "lane",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "mode",
+          "type": "TriggerMode"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "not_before_ms",
+          "type": "u64"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "message_json",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "attachments",
+          "type": "Vec<TriggerAttachment>"
+        }
+      ],
+      "kind": "struct",
+      "name": "EnqueueTrigger"
+    },
+    {
+      "deprecation": null,
+      "docs": [],
+      "fields": [
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "trigger_id",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "source",
+          "type": "TriggerSource"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "source_id",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "deduplication_key",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "target_channel_id",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "lane",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "mode",
+          "type": "TriggerMode"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "state",
+          "type": "TriggerState"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "enqueued_at_ms",
+          "type": "u64"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "not_before_ms",
+          "type": "u64"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "message_json",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "attachments",
+          "type": "Vec<TriggerAttachment>"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "attempt",
+          "type": "u64"
+        }
+      ],
+      "kind": "struct",
+      "name": "TriggerRecord"
+    },
+    {
+      "deprecation": null,
+      "docs": [],
+      "fields": [
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "worker_id",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "lane",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "limit",
+          "type": "u64"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "lease_duration_ms",
+          "type": "u64"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "now_ms",
+          "type": "u64"
+        }
+      ],
+      "kind": "struct",
+      "name": "ClaimTriggers"
+    },
+    {
+      "deprecation": null,
+      "docs": [
+        " A lease makes delivery at-least-once. Expiry returns unfinished work to the pending queue."
+      ],
+      "fields": [
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "trigger",
+          "type": "TriggerRecord"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "lease_token",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "worker_id",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "leased_at_ms",
+          "type": "u64"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "expires_at_ms",
+          "type": "u64"
+        }
+      ],
+      "kind": "struct",
+      "name": "TriggerLease"
+    },
+    {
+      "deprecation": null,
+      "docs": [],
+      "fields": [
+        {
+          "deprecation": null,
+          "docs": [
+            " Records are ordered by lane sequence; callers must process each lane serially."
+          ],
+          "name": "leases",
+          "type": "Vec<TriggerLease>"
+        }
+      ],
+      "kind": "struct",
+      "name": "TriggerBatch"
+    },
+    {
+      "deprecation": null,
+      "docs": [],
+      "fields": [
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "trigger_id",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "lease_token",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "extend_by_ms",
+          "type": "u64"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "now_ms",
+          "type": "u64"
+        }
+      ],
+      "kind": "struct",
+      "name": "ExtendLease"
+    },
+    {
+      "deprecation": null,
+      "docs": [],
+      "fields": [
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "trigger_id",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "lease_token",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "outcome",
+          "type": "SettlementOutcome"
+        },
+        {
+          "deprecation": null,
+          "docs": [
+            " Populated for retry/dead-letter diagnostics; never interpreted as agent input."
+          ],
+          "name": "detail",
+          "type": "Option<String>"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "retry_not_before_ms",
+          "type": "Option<u64>"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "settled_at_ms",
+          "type": "u64"
+        }
+      ],
+      "kind": "struct",
+      "name": "SettleTrigger"
+    },
+    {
+      "deprecation": null,
+      "docs": [],
+      "fields": [
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "trigger_id",
+          "type": "String"
+        }
+      ],
+      "kind": "struct",
+      "name": "TriggerReference"
+    },
+    {
+      "deprecation": null,
+      "docs": [],
+      "fields": [
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "trigger_id",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "state",
+          "type": "TriggerState"
+        },
+        {
+          "deprecation": null,
+          "docs": [
+            " True when this enqueue returned an existing record for the same idempotency key."
+          ],
+          "name": "deduplicated",
+          "type": "bool"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "recorded_at_ms",
+          "type": "u64"
+        }
+      ],
+      "kind": "struct",
+      "name": "TriggerReceipt"
+    },
+    {
+      "deprecation": null,
+      "docs": [],
+      "kind": "error",
+      "name": "TriggerInboxError",
+      "variants": [
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "DraftOnly",
+          "payload": "unit"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "InvalidTarget",
+          "payload": "unit"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "InvalidLane",
+          "payload": "unit"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "DuplicateKeyConflict",
+          "payload": "unit"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "UnknownTrigger",
+          "payload": "unit"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "LeaseMismatch",
+          "payload": "unit"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "LeaseExpired",
+          "payload": "unit"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "InvalidSettlement",
+          "payload": "unit"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "StorageUnavailable",
+          "payload": "unit"
+        }
+      ]
+    }
+  ]
+}

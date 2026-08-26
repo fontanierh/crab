@@ -1,0 +1,832 @@
+{
+  "box_id": "sub-agent-host",
+  "capabilities": [
+    {
+      "deprecation": null,
+      "docs": [
+        " Return after the subprocess and child session are accepted; child work continues in the",
+        " background and is observed through `read_events`."
+      ],
+      "error": "SubAgentHostError",
+      "id": "sub-agent-host.spawn",
+      "idempotency": "none",
+      "input": {
+        "name": "request",
+        "type": "SpawnSubAgentRequest"
+      },
+      "max_exposure": "code_only",
+      "name": "spawn",
+      "output": {
+        "type": "SubAgentRecord"
+      },
+      "shape": "unary"
+    },
+    {
+      "deprecation": null,
+      "docs": [
+        " Durable parent-to-child delivery. `Steer` never silently degrades to `Queue`."
+      ],
+      "error": "SubAgentHostError",
+      "id": "sub-agent-host.send_to_child",
+      "idempotency": "none",
+      "input": {
+        "name": "request",
+        "type": "SendToChildRequest"
+      },
+      "max_exposure": "code_only",
+      "name": "send_to_child",
+      "output": {
+        "type": "InteractionReceipt"
+      },
+      "shape": "unary"
+    },
+    {
+      "deprecation": null,
+      "docs": [
+        " Durable child-to-parent delivery, suitable for progress or final results while both run."
+      ],
+      "error": "SubAgentHostError",
+      "id": "sub-agent-host.send_to_parent",
+      "idempotency": "none",
+      "input": {
+        "name": "request",
+        "type": "SendToParentRequest"
+      },
+      "max_exposure": "code_only",
+      "name": "send_to_parent",
+      "output": {
+        "type": "InteractionReceipt"
+      },
+      "shape": "unary"
+    },
+    {
+      "deprecation": null,
+      "docs": [],
+      "error": "SubAgentHostError",
+      "id": "sub-agent-host.read_events",
+      "idempotency": "none",
+      "input": {
+        "name": "request",
+        "type": "ReadSubAgentEventsRequest"
+      },
+      "max_exposure": "code_only",
+      "name": "read_events",
+      "output": {
+        "type": "SubAgentEventPage"
+      },
+      "shape": "unary"
+    },
+    {
+      "deprecation": null,
+      "docs": [],
+      "error": "SubAgentHostError",
+      "id": "sub-agent-host.status",
+      "idempotency": "none",
+      "input": {
+        "name": "request",
+        "type": "SubAgentReference"
+      },
+      "max_exposure": "code_only",
+      "name": "status",
+      "output": {
+        "type": "SubAgentStatus"
+      },
+      "shape": "unary"
+    },
+    {
+      "deprecation": null,
+      "docs": [
+        " Cooperatively cancel the child session, then terminate its harness after graceful timeout."
+      ],
+      "error": "SubAgentHostError",
+      "id": "sub-agent-host.stop",
+      "idempotency": "none",
+      "input": {
+        "name": "request",
+        "type": "StopSubAgentRequest"
+      },
+      "max_exposure": "code_only",
+      "name": "stop",
+      "output": {
+        "type": "SubAgentReceipt"
+      },
+      "shape": "unary"
+    }
+  ],
+  "provenance": {
+    "generator": "boxology-generator",
+    "generator_version": "0.1.1",
+    "semantic_digest": "sha256:19c168ff3e0547481cb780a61ca71ea416dc9b9ce55829c1146395dafdf1b1e5"
+  },
+  "revision": "sha256:6b8edaf052515bbb18102b568d1bb863246053fbc657e9b2ba55db1dcdee7b99",
+  "schema_format": 1,
+  "types": [
+    {
+      "deprecation": null,
+      "docs": [],
+      "kind": "enum",
+      "name": "SubAgentLifecycle",
+      "variants": [
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "Starting"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "Running"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "Idle"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "Stopping"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "Completed"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "Failed"
+        }
+      ]
+    },
+    {
+      "deprecation": null,
+      "docs": [
+        " The two portable context contracts Crab promises to callers."
+      ],
+      "kind": "enum",
+      "name": "SubAgentContextMode",
+      "variants": [
+        {
+          "deprecation": null,
+          "docs": [
+            " Start an independent ACP session with only the explicit child bootstrap/task input."
+          ],
+          "name": "Fresh"
+        },
+        {
+          "deprecation": null,
+          "docs": [
+            " Seed the child from a stable point in the parent conversation."
+          ],
+          "name": "InheritParent"
+        }
+      ]
+    },
+    {
+      "deprecation": null,
+      "docs": [
+        " Records how `InheritParent` was actually honored; callers never have to guess fidelity."
+      ],
+      "kind": "enum",
+      "name": "ContextRealization",
+      "variants": [
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "FreshSession"
+        },
+        {
+          "deprecation": null,
+          "docs": [
+            " The agent negotiated draft ACP `session/fork`, preserving opaque native context."
+          ],
+          "name": "NativeAcpFork"
+        },
+        {
+          "deprecation": null,
+          "docs": [
+            " Crab replayed its durable user-visible snapshot; hidden provider state is not claimed."
+          ],
+          "name": "PortableSnapshot"
+        }
+      ]
+    },
+    {
+      "deprecation": null,
+      "docs": [
+        " Message delivery is realtime and non-blocking even when model consumption must wait."
+      ],
+      "kind": "enum",
+      "name": "SubAgentInputMode",
+      "variants": [
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "Queue"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "Steer"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "InterruptAndSteer"
+        }
+      ]
+    },
+    {
+      "deprecation": null,
+      "docs": [],
+      "kind": "enum",
+      "name": "InputDisposition",
+      "variants": [
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "StartedForegroundWork"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "ContributedToActiveWork"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "QueuedForTurnBoundary"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "CancelRequestedThenQueued"
+        }
+      ]
+    },
+    {
+      "deprecation": null,
+      "docs": [
+        " Starts exactly one separately supervised ACP harness subprocess."
+      ],
+      "fields": [
+        {
+          "deprecation": null,
+          "docs": [
+            " Stable idempotency key chosen by the parent."
+          ],
+          "name": "client_sub_agent_id",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "parent_session_id",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "agent_id",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "working_directory",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "context_mode",
+          "type": "SubAgentContextMode"
+        },
+        {
+          "deprecation": null,
+          "docs": [
+            " Immutable inclusive parent event boundary for inherited context."
+          ],
+          "name": "parent_context_through_sequence",
+          "type": "Option<u64>"
+        },
+        {
+          "deprecation": null,
+          "docs": [
+            " Permit a visible-history snapshot when native ACP session fork is unavailable."
+          ],
+          "name": "allow_portable_snapshot",
+          "type": "bool"
+        },
+        {
+          "deprecation": null,
+          "docs": [
+            " Exact ACP-compatible initial task content."
+          ],
+          "name": "native_task_prompt_json",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "metadata_json",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [
+            " Zero disables crash restart. Resume is allowed only when the ACP session can be restored."
+          ],
+          "name": "crash_restart_limit",
+          "type": "u64"
+        }
+      ],
+      "kind": "struct",
+      "name": "SpawnSubAgentRequest"
+    },
+    {
+      "deprecation": null,
+      "docs": [],
+      "fields": [
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "sub_agent_id",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "parent_session_id",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "child_session_id",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "native_child_session_id",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "agent_id",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "lifecycle",
+          "type": "SubAgentLifecycle"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "context_mode",
+          "type": "SubAgentContextMode"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "context_realization",
+          "type": "ContextRealization"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "context_through_sequence",
+          "type": "Option<u64>"
+        },
+        {
+          "deprecation": null,
+          "docs": [
+            " Opaque OS process identity for diagnostics; never used as authorization."
+          ],
+          "name": "process_identity",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "started_at_ms",
+          "type": "u64"
+        }
+      ],
+      "kind": "struct",
+      "name": "SubAgentRecord"
+    },
+    {
+      "deprecation": null,
+      "docs": [],
+      "fields": [
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "sub_agent_id",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "client_message_id",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "mode",
+          "type": "SubAgentInputMode"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "native_prompt_json",
+          "type": "String"
+        }
+      ],
+      "kind": "struct",
+      "name": "SendToChildRequest"
+    },
+    {
+      "deprecation": null,
+      "docs": [],
+      "fields": [
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "sub_agent_id",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "client_message_id",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "mode",
+          "type": "SubAgentInputMode"
+        },
+        {
+          "deprecation": null,
+          "docs": [
+            " Structured child result/progress, converted to an ACP-compatible parent input."
+          ],
+          "name": "message_json",
+          "type": "String"
+        }
+      ],
+      "kind": "struct",
+      "name": "SendToParentRequest"
+    },
+    {
+      "deprecation": null,
+      "docs": [],
+      "fields": [
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "sub_agent_id",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "client_message_id",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "disposition",
+          "type": "InputDisposition"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "accepted_at_ms",
+          "type": "u64"
+        }
+      ],
+      "kind": "struct",
+      "name": "InteractionReceipt"
+    },
+    {
+      "deprecation": null,
+      "docs": [],
+      "kind": "enum",
+      "name": "SubAgentEventKind",
+      "variants": [
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "Lifecycle"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "NativeAcp"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "ParentToChild"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "ChildToParent"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "Compaction"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "Failed"
+        }
+      ]
+    },
+    {
+      "deprecation": null,
+      "docs": [
+        " One durable event. Native ACP payloads are preserved so parent tooling can render tool",
+        " calls, thoughts, plans and intermediate output in realtime rather than waiting for a result."
+      ],
+      "fields": [
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "sub_agent_id",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "sequence",
+          "type": "u64"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "observed_at_ms",
+          "type": "u64"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "kind",
+          "type": "SubAgentEventKind"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "payload_json",
+          "type": "String"
+        }
+      ],
+      "kind": "struct",
+      "name": "SubAgentEvent"
+    },
+    {
+      "deprecation": null,
+      "docs": [],
+      "fields": [
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "sub_agent_id",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "after_sequence",
+          "type": "u64"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "limit",
+          "type": "u64"
+        }
+      ],
+      "kind": "struct",
+      "name": "ReadSubAgentEventsRequest"
+    },
+    {
+      "deprecation": null,
+      "docs": [],
+      "fields": [
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "events",
+          "type": "Vec<SubAgentEvent>"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "next_sequence",
+          "type": "u64"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "caught_up",
+          "type": "bool"
+        }
+      ],
+      "kind": "struct",
+      "name": "SubAgentEventPage"
+    },
+    {
+      "deprecation": null,
+      "docs": [],
+      "fields": [
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "sub_agent_id",
+          "type": "String"
+        }
+      ],
+      "kind": "struct",
+      "name": "SubAgentReference"
+    },
+    {
+      "deprecation": null,
+      "docs": [],
+      "fields": [
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "sub_agent_id",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "reason",
+          "type": "String"
+        }
+      ],
+      "kind": "struct",
+      "name": "StopSubAgentRequest"
+    },
+    {
+      "deprecation": null,
+      "docs": [],
+      "fields": [
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "record",
+          "type": "SubAgentRecord"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "last_sequence",
+          "type": "u64"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "pending_parent_to_child",
+          "type": "u64"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "pending_child_to_parent",
+          "type": "u64"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "restart_count",
+          "type": "u64"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "last_error",
+          "type": "Option<String>"
+        }
+      ],
+      "kind": "struct",
+      "name": "SubAgentStatus"
+    },
+    {
+      "deprecation": null,
+      "docs": [],
+      "fields": [
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "accepted",
+          "type": "bool"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "recorded_at_ms",
+          "type": "u64"
+        }
+      ],
+      "kind": "struct",
+      "name": "SubAgentReceipt"
+    },
+    {
+      "deprecation": null,
+      "docs": [],
+      "kind": "error",
+      "name": "SubAgentHostError",
+      "variants": [
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "DraftOnly",
+          "payload": "unit"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "DuplicateIdConflict",
+          "payload": "unit"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "UnknownParentSession",
+          "payload": "unit"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "UnknownSubAgent",
+          "payload": "unit"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "InvalidContextBoundary",
+          "payload": "unit"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "NativeForkUnavailable",
+          "payload": "unit"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "PortableSnapshotForbidden",
+          "payload": "unit"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "SteeringUnavailable",
+          "payload": "unit"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "AuthorityUnavailable",
+          "payload": "unit"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "ProtocolNegotiationFailed",
+          "payload": "unit"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "InvalidNativePayload",
+          "payload": "unit"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "TransportFailed",
+          "payload": "unit"
+        }
+      ]
+    }
+  ]
+}

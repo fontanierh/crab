@@ -1,0 +1,40 @@
+schema = 1
+id = "crab-v2-runtime"
+kind = "composition"
+owned = ["boxology.toml", "composition/**"]
+
+[quality]
+commands = ["cargo test -p crab-v2-runtime"]
+
+[[crates]]
+cargo_package = "crab-v2-runtime"
+path = "composition"
+role = "composition"
+
+[composition]
+boxes = ["agent-host", "native-channel", "bridge-host", "sub-agent-host", "trigger-inbox"]
+
+[[composition.bindings]]
+box = "agent-host"
+capability = "agent-host.*"
+transport = "in-process"
+
+[[composition.bindings]]
+box = "native-channel"
+capability = "native-channel.*"
+transport = "in-process"
+
+[[composition.bindings]]
+box = "bridge-host"
+capability = "bridge-host.*"
+transport = "in-process"
+
+[[composition.bindings]]
+box = "sub-agent-host"
+capability = "sub-agent-host.*"
+transport = "in-process"
+
+[[composition.bindings]]
+box = "trigger-inbox"
+capability = "trigger-inbox.*"
+transport = "in-process"
