@@ -5,6 +5,7 @@ flowchart TB
 
     BRIDGE["bridge-host"]
     TRIGGER["trigger-inbox"]
+    ROUTER["turn-router"]
     CHANNEL["native-channel"]
     AGENT["agent-host<br/>ACP"]
     SUBAGENT["sub-agent-host"]
@@ -21,7 +22,8 @@ flowchart TB
 
     EXTERNAL <-->|"selected messages"| BRIDGE
     BRIDGE -->|"queue · steer · interrupt<br/>fixed at registration"| TRIGGER
-    TRIGGER -->|"claimed turns"| CHANNEL
+    TRIGGER -->|"leased triggers"| ROUTER
+    ROUTER -->|"resolved + settled turns"| CHANNEL
     AUTH -. "fail-closed preflight" .-> AGENT
     AUTH -. "same authority" .-> SUBAGENT
 
@@ -29,6 +31,7 @@ flowchart TB
     classDef channel fill:#dbeafe,stroke:#2563eb,stroke-width:2px,color:#172554;
     classDef bridge fill:#dcfce7,stroke:#16a34a,stroke-width:2px,color:#14532d;
     classDef trigger fill:#ffedd5,stroke:#ea580c,stroke-width:2px,color:#7c2d12;
+    classDef router fill:#fef3c7,stroke:#d97706,stroke-width:2px,color:#78350f;
     classDef subagent fill:#fce7f3,stroke:#db2777,stroke-width:2px,color:#831843;
     classDef external fill:#f8fafc,stroke:#64748b,stroke-width:1.5px,color:#172033;
     classDef authority fill:#fee2e2,stroke:#dc2626,stroke-width:2px,color:#7f1d1d;
@@ -38,5 +41,6 @@ flowchart TB
     class CHANNEL channel;
     class BRIDGE bridge;
     class TRIGGER trigger;
+    class ROUTER router;
     class UI,EXTERNAL,CHILDREN external;
     class AUTH authority;

@@ -1,0 +1,34 @@
+schema = 1
+id = "turn-router"
+kind = "box"
+owned = ["boxology.toml", "implementation/**"]
+
+[[imports]]
+package = "trigger-inbox"
+contract = "trigger-inbox"
+
+[[imports]]
+package = "native-channel"
+contract = "native-channel"
+
+[quality]
+commands = [
+    "cargo check -p turn-router-contract --all-features",
+    "cargo test -p turn-router-implementation",
+]
+
+[[crates]]
+cargo_package = "turn-router-implementation"
+path = "implementation"
+role = "box-implementation"
+
+[[crates]]
+cargo_package = "turn-router-contract"
+path = "generated/contract"
+role = "box-contract"
+
+[[derived]]
+id = "contract"
+generator = "boxology-contract"
+inputs = ["boxology.toml", "implementation/src/**"]
+outputs = ["generated/contract/**", "generated/adapter/**", "generated/schema.json"]

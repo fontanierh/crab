@@ -1,0 +1,360 @@
+{
+  "box_id": "turn-router",
+  "capabilities": [
+    {
+      "deprecation": null,
+      "docs": [
+        " Register idempotently or replace with compare-and-swap generation control."
+      ],
+      "error": "TurnRouterError",
+      "id": "turn-router.put_route",
+      "idempotency": "none",
+      "input": {
+        "name": "request",
+        "type": "PutRouteRequest"
+      },
+      "max_exposure": "code_only",
+      "name": "put_route",
+      "output": {
+        "type": "ChannelRoute"
+      },
+      "shape": "unary"
+    },
+    {
+      "deprecation": null,
+      "docs": [],
+      "error": "TurnRouterError",
+      "id": "turn-router.resolve_route",
+      "idempotency": "none",
+      "input": {
+        "name": "request",
+        "type": "RouteReference"
+      },
+      "max_exposure": "code_only",
+      "name": "resolve_route",
+      "output": {
+        "type": "ChannelRoute"
+      },
+      "shape": "unary"
+    },
+    {
+      "deprecation": null,
+      "docs": [
+        " Claim and process one lane serially. Returns after ACP accepts each turn, never after model",
+        " completion. On a successful return, every claimed lease is completed, retried or",
+        " dead-lettered."
+      ],
+      "error": "TurnRouterError",
+      "id": "turn-router.drain_lane",
+      "idempotency": "none",
+      "input": {
+        "name": "request",
+        "type": "DrainLaneRequest"
+      },
+      "max_exposure": "code_only",
+      "name": "drain_lane",
+      "output": {
+        "type": "DrainLaneReport"
+      },
+      "shape": "unary"
+    }
+  ],
+  "provenance": {
+    "generator": "boxology-generator",
+    "generator_version": "0.1.1",
+    "semantic_digest": "sha256:da5261dc3646fd55c6d9fbff325a5b8b22bd55c0f50a98d7e16fdb3b23bf668a"
+  },
+  "revision": "sha256:76100f5c975b6430380a289c9faa4ec202e66d41d7603422fca0f61730b73bed",
+  "schema_format": 1,
+  "types": [
+    {
+      "deprecation": null,
+      "docs": [],
+      "fields": [
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "target_channel_id",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "lane",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "binding_id",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [
+            " Required only to replace an existing route. An exact retry is always idempotent."
+          ],
+          "name": "expected_generation",
+          "type": "Option<u64>"
+        }
+      ],
+      "kind": "struct",
+      "name": "PutRouteRequest"
+    },
+    {
+      "deprecation": null,
+      "docs": [],
+      "fields": [
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "target_channel_id",
+          "type": "String"
+        }
+      ],
+      "kind": "struct",
+      "name": "RouteReference"
+    },
+    {
+      "deprecation": null,
+      "docs": [],
+      "fields": [
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "target_channel_id",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "lane",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "binding_id",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "generation",
+          "type": "u64"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "updated_at_ms",
+          "type": "u64"
+        }
+      ],
+      "kind": "struct",
+      "name": "ChannelRoute"
+    },
+    {
+      "deprecation": null,
+      "docs": [],
+      "fields": [
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "worker_id",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "lane",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "limit",
+          "type": "u64"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "lease_duration_ms",
+          "type": "u64"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "retry_delay_ms",
+          "type": "u64"
+        },
+        {
+          "deprecation": null,
+          "docs": [
+            " A transient failure on this attempt is dead-lettered at or above this value."
+          ],
+          "name": "max_attempts",
+          "type": "u64"
+        }
+      ],
+      "kind": "struct",
+      "name": "DrainLaneRequest"
+    },
+    {
+      "deprecation": null,
+      "docs": [],
+      "kind": "enum",
+      "name": "RoutedTriggerOutcome",
+      "variants": [
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "Completed"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "RetryScheduled"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "DeadLettered"
+        }
+      ]
+    },
+    {
+      "deprecation": null,
+      "docs": [],
+      "fields": [
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "trigger_id",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "binding_id",
+          "type": "Option<String>"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "outcome",
+          "type": "RoutedTriggerOutcome"
+        },
+        {
+          "deprecation": null,
+          "docs": [
+            " Stable diagnostic tag only; trigger payloads and credentials never appear here."
+          ],
+          "name": "detail",
+          "type": "Option<String>"
+        }
+      ],
+      "kind": "struct",
+      "name": "RoutedTrigger"
+    },
+    {
+      "deprecation": null,
+      "docs": [],
+      "fields": [
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "lane",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "claimed",
+          "type": "u64"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "completed",
+          "type": "u64"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "retry_scheduled",
+          "type": "u64"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "dead_lettered",
+          "type": "u64"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "results",
+          "type": "Vec<RoutedTrigger>"
+        }
+      ],
+      "kind": "struct",
+      "name": "DrainLaneReport"
+    },
+    {
+      "deprecation": null,
+      "docs": [],
+      "kind": "error",
+      "name": "TurnRouterError",
+      "variants": [
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "InvalidRoute",
+          "payload": "unit"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "RouteConflict",
+          "payload": "unit"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "UnknownRoute",
+          "payload": "unit"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "InvalidDrain",
+          "payload": "unit"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "TriggerInboxUnavailable",
+          "payload": "unit"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "NativeChannelUnavailable",
+          "payload": "unit"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "InvalidTriggerPayload",
+          "payload": "unit"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "StorageUnavailable",
+          "payload": "unit"
+        }
+      ]
+    }
+  ]
+}

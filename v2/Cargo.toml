@@ -10,6 +10,8 @@ members = [
     "runtime/composition",
     "sub-agent-host/generated/contract",
     "sub-agent-host/implementation",
+    "turn-router/generated/contract",
+    "turn-router/implementation",
     "trigger-inbox/generated/contract",
     "trigger-inbox/implementation",
 ]
