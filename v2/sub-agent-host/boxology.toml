@@ -3,6 +3,10 @@ id = "sub-agent-host"
 kind = "box"
 owned = ["boxology.toml", "implementation/**"]
 
+[[imports]]
+package = "agent-host"
+contract = "agent-host"
+
 [quality]
 commands = [
     "cargo check -p sub-agent-host-contract --all-features",

@@ -1,0 +1,27 @@
+%%{init: {"theme": "base", "themeVariables": {"fontFamily": "ui-sans-serif, system-ui, sans-serif", "primaryTextColor": "#172033", "lineColor": "#64748b", "edgeLabelBackground": "#ffffff"}, "flowchart": {"curve": "basis", "nodeSpacing": 42, "rankSpacing": 58}}}%%
+flowchart TB
+    subgraph LIVE[" "]
+        direction LR
+        PARENT["Parent ACP session<br/>continues running"]
+        HOST["Sub-agent host<br/>fresh · inherit snapshot<br/>queue · steer · interrupt"]
+        IMPORT["Generated<br/>agent-host import"]
+        CHILD["Child ACP session<br/>separate harness process<br/>agent-owned compaction"]
+
+        PARENT -->|"fixed-cursor snapshot"| HOST
+        PARENT <-->|"duplex input"| HOST
+        HOST <-->|"open · input · cancel<br/>events · status · close"| IMPORT
+        IMPORT <-->|"ACP session"| CHILD
+    end
+    DB[("SQLite journal<br/>children · mailboxes · full ordered events")]
+    HOST <-->|"transactional state"| DB
+
+    classDef session fill:#f3e8ff,stroke:#9333ea,stroke-width:2px,color:#581c87;
+    classDef runtime fill:#dbeafe,stroke:#2563eb,stroke-width:2px,color:#172554;
+    classDef durable fill:#dcfce7,stroke:#16a34a,stroke-width:2px,color:#14532d;
+    classDef boundary fill:#f8fafc,stroke:#64748b,stroke-width:1.5px,color:#172033;
+
+    class PARENT,CHILD session;
+    class HOST runtime;
+    class DB durable;
+    class IMPORT boundary;
+    style LIVE fill:none,stroke:none;

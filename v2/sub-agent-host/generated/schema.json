@@ -116,9 +116,9 @@
   "provenance": {
     "generator": "boxology-generator",
     "generator_version": "0.1.1",
-    "semantic_digest": "sha256:19c168ff3e0547481cb780a61ca71ea416dc9b9ce55829c1146395dafdf1b1e5"
+    "semantic_digest": "sha256:3c469a385c7d0384643087b0742172f0c562bcd21d04754eb87fef5f6e12b160"
   },
-  "revision": "sha256:6b8edaf052515bbb18102b568d1bb863246053fbc657e9b2ba55db1dcdee7b99",
+  "revision": "sha256:b84c9a4aeda0ad8fccc475b9dae08972f7b9b4a447609f21d2bda599b0704618",
   "schema_format": 1,
   "types": [
     {
@@ -406,7 +406,7 @@
         {
           "deprecation": null,
           "docs": [
-            " Opaque OS process identity for diagnostics; never used as authorization."
+            " Opaque identity of the separately supervised agent-host session/process boundary."
           ],
           "name": "process_identity",
           "type": "String"
@@ -799,6 +799,12 @@
         {
           "deprecation": null,
           "docs": [],
+          "name": "CrashRestartUnavailable",
+          "payload": "unit"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
           "name": "SteeringUnavailable",
           "payload": "unit"
         },
@@ -824,6 +830,12 @@
           "deprecation": null,
           "docs": [],
           "name": "TransportFailed",
+          "payload": "unit"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "StorageUnavailable",
           "payload": "unit"
         }
       ]

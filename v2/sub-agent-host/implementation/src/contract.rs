@@ -72,7 +72,7 @@ boxology::contract! {
         pub context_mode: SubAgentContextMode,
         pub context_realization: ContextRealization,
         pub context_through_sequence: Option<u64>,
-        /// Opaque OS process identity for diagnostics; never used as authorization.
+        /// Opaque identity of the separately supervised agent-host session/process boundary.
         pub process_identity: String,
         pub started_at_ms: u64,
     }
@@ -162,11 +162,13 @@ boxology::contract! {
         InvalidContextBoundary,
         NativeForkUnavailable,
         PortableSnapshotForbidden,
+        CrashRestartUnavailable,
         SteeringUnavailable,
         AuthorityUnavailable,
         ProtocolNegotiationFailed,
         InvalidNativePayload,
         TransportFailed,
+        StorageUnavailable,
     }
 
     /// Return after the subprocess and child session are accepted; child work continues in the

@@ -9,3 +9,11 @@ boxology = { workspace = true }
 boxology-contract = { workspace = true }
 boxology-runtime = { workspace = true }
 boxology_generated_contract = { package = "sub-agent-host-contract", version = "=0.0.0", path = "../generated/contract" }
+boxology_import_agent_host = { package = "agent-host-contract", version = "=0.0.0", path = "../../agent-host/generated/contract" }
+rusqlite = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true, features = ["sync"] }
+uuid = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
