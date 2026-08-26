@@ -18,9 +18,9 @@ members = [
 edition = "2024"
 
 [workspace.dependencies]
-# This hand-managed non-HTTP workspace uses the published 0.1.1 closure. Initializer-generated
-# HTTP examples still require coherent Git pins because `boxology-http` is not published yet.
-boxology = "=0.1.1"
-boxology-contract = "=0.1.1"
-boxology-manifest = "=0.1.1"
-boxology-runtime = "=0.1.1"
+# Keep the Boxology runtime closure on one reviewed revision. This includes the post-0.1.1
+# optional-field semantics and truthful generator-provenance fixes.
+boxology = { git = "https://github.com/fontanierh/boxology", rev = "4dd00888445c6506704a3e3f69932a3c4bc32efa" }
+boxology-contract = { git = "https://github.com/fontanierh/boxology", rev = "4dd00888445c6506704a3e3f69932a3c4bc32efa" }
+boxology-manifest = { git = "https://github.com/fontanierh/boxology", rev = "4dd00888445c6506704a3e3f69932a3c4bc32efa" }
+boxology-runtime = { git = "https://github.com/fontanierh/boxology", rev = "4dd00888445c6506704a3e3f69932a3c4bc32efa" }

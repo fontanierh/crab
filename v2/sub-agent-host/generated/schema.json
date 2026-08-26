@@ -115,7 +115,7 @@
   ],
   "provenance": {
     "generator": "boxology-generator",
-    "generator_version": "0.0.0",
+    "generator_version": "0.1.1",
     "semantic_digest": "sha256:19c168ff3e0547481cb780a61ca71ea416dc9b9ce55829c1146395dafdf1b1e5"
   },
   "revision": "sha256:6b8edaf052515bbb18102b568d1bb863246053fbc657e9b2ba55db1dcdee7b99",

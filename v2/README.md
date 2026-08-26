@@ -60,7 +60,11 @@ cargo clippy --workspace --all-targets --all-features -- -D warnings
 boxology check --base origin/main
 ```
 
-Crab v2 uses Boxology's published exact `0.1.1` registry crates and tools; no local checkout or Git
-dependency is required because this workspace does not use `boxology-http`. This release fixes the
-generated-format stability, new nested-root classification and generated-contract bootstrap gaps
-found while preparing this draft.
+Crab v2 pins Boxology's complete runtime and CLI toolchain to current `main` revision `4dd0088`.
+This is the `0.1.1` release plus the optional-field wire-semantics and truthful generator-provenance
+fixes. Regenerate or check with the matching CLI:
+
+```sh
+cargo install boxology-cli --git https://github.com/fontanierh/boxology \
+  --rev 4dd00888445c6506704a3e3f69932a3c4bc32efa --locked
+```
