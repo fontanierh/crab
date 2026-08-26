@@ -12,6 +12,9 @@ bridge-host-implementation = { version = "=0.0.0", path = "../../bridge-host/imp
 native-channel-implementation = { version = "=0.0.0", path = "../../native-channel/implementation" }
 sub-agent-host-implementation = { version = "=0.0.0", path = "../../sub-agent-host/implementation" }
 trigger-inbox-implementation = { version = "=0.0.0", path = "../../trigger-inbox/implementation" }
+trigger-inbox-contract = { version = "=0.0.0", path = "../../trigger-inbox/generated/contract" }
 
 [dev-dependencies]
 boxology-manifest = { workspace = true }
+tempfile = { workspace = true }
+tokio = { workspace = true }

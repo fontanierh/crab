@@ -96,9 +96,9 @@
   "provenance": {
     "generator": "boxology-generator",
     "generator_version": "0.1.1",
-    "semantic_digest": "sha256:b34f344cb2d16456fcb17c7c92f0cb8163c8f2fd0d1881a0d9c837600311566e"
+    "semantic_digest": "sha256:ee366986a9b7caea09d63c34156970d44c3cdd975b499cd63336b07a2ca0b9e1"
   },
-  "revision": "sha256:cf4e1ccf9c1e2bc983df92b107852ac2e34f4818795056514f99a1eecee2a0b2",
+  "revision": "sha256:74f11818843afc1884367a6c23e0654c80cc22a10a580f1ad43bc1d94988ac61",
   "schema_format": 1,
   "types": [
     {
@@ -629,6 +629,12 @@
         {
           "deprecation": null,
           "docs": [],
+          "name": "InvalidSource",
+          "payload": "unit"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
           "name": "InvalidTarget",
           "payload": "unit"
         },
@@ -636,6 +642,24 @@
           "deprecation": null,
           "docs": [],
           "name": "InvalidLane",
+          "payload": "unit"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "InvalidPayload",
+          "payload": "unit"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "InvalidClaim",
+          "payload": "unit"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "InvalidLease",
           "payload": "unit"
         },
         {
