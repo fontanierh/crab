@@ -13,7 +13,10 @@ use boxology_contract::ExposureLevel;
 use boxology_runtime::{
     AssemblyErrors, Composition, CompositionBuilder, test_support::StubTransport,
 };
-use bridge_host_implementation::{BridgeHostDraft, generated as bridge_host};
+use bridge_host_implementation::{
+    BridgeHostError, BridgeHostState, CredentialStore, CredentialStoreError, FileCredentialStore,
+    InMemoryCredentialStore, ProcessBridgePackageFactory, generated as bridge_host,
+};
 use native_channel_implementation::{
     NativeChannelError, NativeChannelState, generated as native_channel,
 };
@@ -27,6 +30,7 @@ pub struct DraftRuntime {
     /// Lets contract tests inspect and dispatch the exposed generated capabilities.
     pub in_process: Arc<StubTransport>,
     agent_host: agent_host_contract::AgentHostHandle,
+    bridge_host: bridge_host_contract::BridgeHostHandle,
     native_channel: native_channel_contract::NativeChannelHandle,
     trigger_inbox: trigger_inbox_contract::TriggerInboxHandle,
 }
@@ -35,6 +39,11 @@ impl DraftRuntime {
     /// Returns the ordinary typed handle for the implemented ACP agent host.
     pub fn agent_host(&self) -> &agent_host_contract::AgentHostHandle {
         &self.agent_host
+    }
+
+    /// Returns the ordinary typed handle for the implemented bridge host.
+    pub fn bridge_host(&self) -> &bridge_host_contract::BridgeHostHandle {
+        &self.bridge_host
     }
 
     /// Returns the ordinary typed handle for the implemented native-channel router.
@@ -53,10 +62,16 @@ impl DraftRuntime {
 pub enum RuntimeStartError {
     /// The concrete ACP agent host could not start.
     AgentHost(AgentHostError),
+    /// The concrete bridge-host state could not start.
+    BridgeHost(BridgeHostError),
+    /// The private bridge credential provider could not start.
+    CredentialStore(CredentialStoreError),
     /// The concrete native-channel state could not start.
     NativeChannel(NativeChannelError),
     /// The concrete trigger store could not start.
     TriggerInbox(TriggerInboxError),
+    /// The durable state directory could not be created.
+    StateDirectory(std::io::Error),
     /// Boxology rejected the composition graph.
     Assembly(AssemblyErrors),
 }
@@ -70,10 +85,17 @@ impl From<AssemblyErrors> for RuntimeStartError {
 /// Assemble all v2 boxes through generated Boxology adapters.
 pub fn start_draft() -> Result<DraftRuntime, RuntimeStartError> {
     let agent_host = AgentHost::open_in_memory(Vec::new()).map_err(RuntimeStartError::AgentHost)?;
+    let bridge_host = BridgeHostState::open_in_memory().map_err(RuntimeStartError::BridgeHost)?;
     let native_channel =
         NativeChannelState::open_in_memory().map_err(RuntimeStartError::NativeChannel)?;
     let trigger_store = TriggerInbox::open_in_memory().map_err(RuntimeStartError::TriggerInbox)?;
-    assemble_draft(agent_host, native_channel, trigger_store)
+    assemble_draft(
+        agent_host,
+        bridge_host,
+        Arc::new(InMemoryCredentialStore::default()),
+        native_channel,
+        trigger_store,
+    )
 }
 
 /// Assemble the draft graph with a durable trigger inbox at `path`.
@@ -81,14 +103,55 @@ pub fn start_draft_with_trigger_store(
     path: impl AsRef<Path>,
 ) -> Result<DraftRuntime, RuntimeStartError> {
     let agent_host = AgentHost::open_in_memory(Vec::new()).map_err(RuntimeStartError::AgentHost)?;
+    let bridge_host = BridgeHostState::open_in_memory().map_err(RuntimeStartError::BridgeHost)?;
     let native_channel =
         NativeChannelState::open_in_memory().map_err(RuntimeStartError::NativeChannel)?;
     let trigger_store = TriggerInbox::open(path).map_err(RuntimeStartError::TriggerInbox)?;
-    assemble_draft(agent_host, native_channel, trigger_store)
+    assemble_draft(
+        agent_host,
+        bridge_host,
+        Arc::new(InMemoryCredentialStore::default()),
+        native_channel,
+        trigger_store,
+    )
+}
+
+/// Assemble every implemented box with durable state beneath one private runtime directory.
+pub fn start_draft_with_state_directory(
+    path: impl AsRef<Path>,
+) -> Result<DraftRuntime, RuntimeStartError> {
+    let path = path.as_ref();
+    std::fs::create_dir_all(path).map_err(RuntimeStartError::StateDirectory)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
+            .map_err(RuntimeStartError::StateDirectory)?;
+    }
+    let agent_host = AgentHost::open(path.join("agent-host.sqlite"), Vec::new())
+        .map_err(RuntimeStartError::AgentHost)?;
+    let bridge_host = BridgeHostState::open(path.join("bridge-host.sqlite"))
+        .map_err(RuntimeStartError::BridgeHost)?;
+    let credentials = FileCredentialStore::open(path.join("bridge-credentials"))
+        .map_err(RuntimeStartError::CredentialStore)?;
+    let native_channel = NativeChannelState::open(path.join("native-channel.sqlite"))
+        .map_err(RuntimeStartError::NativeChannel)?;
+    let trigger_store = TriggerInbox::open(path.join("trigger-inbox.sqlite"))
+        .map_err(RuntimeStartError::TriggerInbox)?;
+    assemble_draft(
+        agent_host,
+        bridge_host,
+        Arc::new(credentials),
+        native_channel,
+        trigger_store,
+    )
 }
 
 fn assemble_draft(
     agent_host_box: AgentHost,
+    bridge_host_state: BridgeHostState,
+    credential_store: Arc<dyn CredentialStore>,
     native_channel_state: NativeChannelState,
     trigger_store: TriggerInbox,
 ) -> Result<DraftRuntime, RuntimeStartError> {
@@ -107,9 +170,6 @@ fn assemble_draft(
         builder.handle::<native_channel_contract::NativeChannelHandle>(&native_channel);
     builder.expose_all(&native_channel, in_process.clone(), ExposureLevel::CodeOnly);
 
-    let bridge_host = bridge_host::register(&mut builder, BridgeHostDraft);
-    builder.expose_all(&bridge_host, in_process.clone(), ExposureLevel::CodeOnly);
-
     let sub_agent_host = sub_agent_host::register(&mut builder, SubAgentHostDraft);
     builder.expose_all(&sub_agent_host, in_process.clone(), ExposureLevel::CodeOnly);
 
@@ -122,11 +182,23 @@ fn assemble_draft(
         ExposureLevel::CodeOnly,
     );
 
+    let bridge_host = bridge_host::register(&mut builder, move |imports| {
+        bridge_host_state.connect(
+            imports.trigger_inbox,
+            Arc::new(ProcessBridgePackageFactory),
+            credential_store,
+        )
+    });
+    builder.connect(&bridge_host, &trigger_inbox_box);
+    let bridge_host_handle = builder.handle::<bridge_host_contract::BridgeHostHandle>(&bridge_host);
+    builder.expose_all(&bridge_host, in_process.clone(), ExposureLevel::CodeOnly);
+
     let composition = builder.start()?;
     Ok(DraftRuntime {
         composition,
         in_process,
         agent_host: agent_host_handle,
+        bridge_host: bridge_host_handle,
         native_channel: native_channel_handle,
         trigger_inbox,
     })
@@ -142,7 +214,7 @@ mod tests {
         EnqueueTrigger, TriggerMode, TriggerReference, TriggerSource, TriggerState,
     };
 
-    use super::{start_draft, start_draft_with_trigger_store};
+    use super::{start_draft, start_draft_with_state_directory, start_draft_with_trigger_store};
 
     const MANIFEST: &str = include_str!("../../boxology.toml");
 
@@ -199,6 +271,22 @@ mod tests {
                 .len(),
             5
         );
+    }
+
+    #[test]
+    fn durable_runtime_uses_one_explicit_state_layout() {
+        let directory = tempfile::tempdir().expect("temporary state directory is created");
+        let state = directory.path().join("runtime");
+        let _runtime = start_draft_with_state_directory(&state).expect("durable graph assembles");
+        for expected in [
+            "agent-host.sqlite",
+            "bridge-host.sqlite",
+            "native-channel.sqlite",
+            "trigger-inbox.sqlite",
+        ] {
+            assert!(state.join(expected).is_file(), "missing {expected}");
+        }
+        assert!(state.join("bridge-credentials").is_dir());
     }
 
     #[tokio::test]

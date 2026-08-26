@@ -3,6 +3,10 @@ id = "bridge-host"
 kind = "box"
 owned = ["boxology.toml", "implementation/**"]
 
+[[imports]]
+package = "trigger-inbox"
+contract = "trigger-inbox"
+
 [quality]
 commands = [
     "cargo check -p bridge-host-contract --all-features",

@@ -23,6 +23,25 @@
     {
       "deprecation": null,
       "docs": [
+        " Install a new immutable generation; ingress mode changes only through this operation."
+      ],
+      "error": "BridgeHostError",
+      "id": "bridge-host.replace_bridge",
+      "idempotency": "none",
+      "input": {
+        "name": "request",
+        "type": "ReplaceBridgeRequest"
+      },
+      "max_exposure": "code_only",
+      "name": "replace_bridge",
+      "output": {
+        "type": "BridgeRecord"
+      },
+      "shape": "unary"
+    },
+    {
+      "deprecation": null,
+      "docs": [
         " Converge observed lifecycle toward desired lifecycle using bounded recovery."
       ],
       "error": "BridgeHostError",
@@ -219,9 +238,9 @@
   "provenance": {
     "generator": "boxology-generator",
     "generator_version": "0.1.1",
-    "semantic_digest": "sha256:32e0cfd1d156fb762cead627fb4b974ba7eacdb735a3d3a9903362d55b48c7e2"
+    "semantic_digest": "sha256:bb5351ee8f6839e881180c82f291d70669f184485da93cce1ca5f7742ffc1ecb"
   },
-  "revision": "sha256:cc3bd806c52516b21d75b089ea17b9886ce47326763d678b1170b4dc0ae49dee",
+  "revision": "sha256:cee7259d119314b5e641eecea60d57f31b65cfb1d9ae9f1647e6de9ee7d2562f",
   "schema_format": 1,
   "types": [
     {
@@ -534,6 +553,12 @@
         {
           "deprecation": null,
           "docs": [],
+          "name": "display_name",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
           "name": "lifecycle",
           "type": "BridgeLifecycle"
         },
@@ -542,6 +567,12 @@
           "docs": [],
           "name": "ingress_mode",
           "type": "BridgeIngressMode"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "desired_running",
+          "type": "bool"
         },
         {
           "deprecation": null,
@@ -598,6 +629,28 @@
       ],
       "kind": "struct",
       "name": "ReconcileBridgeRequest"
+    },
+    {
+      "deprecation": null,
+      "docs": [
+        " Replace package/configuration/policy with compare-and-swap generation control."
+      ],
+      "fields": [
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "expected_generation",
+          "type": "u64"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "spec",
+          "type": "BridgeSpec"
+        }
+      ],
+      "kind": "struct",
+      "name": "ReplaceBridgeRequest"
     },
     {
       "deprecation": null,
@@ -984,6 +1037,26 @@
           "docs": [],
           "name": "attachment_handles",
           "type": "Vec<String>"
+        },
+        {
+          "deprecation": null,
+          "docs": [
+            " Durable trigger-inbox identity proving enqueue completed before acknowledgement."
+          ],
+          "name": "trigger_id",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "deduplicated",
+          "type": "bool"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "recorded_at_ms",
+          "type": "u64"
         }
       ],
       "kind": "struct",
@@ -1154,6 +1227,12 @@
         {
           "deprecation": null,
           "docs": [],
+          "name": "DuplicateBridgeConflict",
+          "payload": "unit"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
           "name": "GenerationConflict",
           "payload": "unit"
         },
@@ -1196,6 +1275,12 @@
         {
           "deprecation": null,
           "docs": [],
+          "name": "UnknownDelivery",
+          "payload": "unit"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
           "name": "DeliveryFailed",
           "payload": "unit"
         },
@@ -1203,6 +1288,12 @@
           "deprecation": null,
           "docs": [],
           "name": "PackageProtocolFailed",
+          "payload": "unit"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "StorageUnavailable",
           "payload": "unit"
         }
       ]
