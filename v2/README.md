@@ -83,11 +83,14 @@ interrupt as a separate explicit action.
   and send deliberately selected output without gaining credential-store access. See the
   [agent bridge boundary](docs/native-bridge-tools.md).
 - `sub-agent-host` composes through the generated `agent-host` import, durably journals both
-  message directions and the complete child ACP stream, and fails closed when requested context or
-  crash recovery cannot be honored. `crab-v2-sub-agent` exposes spawn, bidirectional messaging,
-  cursor events, status and idempotent stop through the owner-only local IPC. See the
+  message directions and the complete child ACP stream. After parents recover, eligible children
+  resume their exact native sessions within a durable restart budget; identities, journals and
+  cursors stay continuous, while every non-resumable child fails explicitly without replacement.
+  `crab-v2-sub-agent` exposes spawn, bidirectional messaging, cursor events, status and idempotent
+  stop through the owner-only local IPC. See the
   [control flow](docs/sub-agent-control.md), [state contract](docs/sub-agent-host-storage.md) and
-  [rendered host flow](docs/sub-agent-host-flow.png).
+  [rendered host flow](docs/sub-agent-host-flow.png) plus
+  [recovery flow](docs/sub-agent-recovery-flow.png).
 - Every configured ACP session can receive Crab's six native sub-agent tools through a first-party
   stdio MCP server. Parents and children share the toolset; child-to-parent delivery is enabled only
   when Crab injects child identity. See the [native tool boundary](docs/native-sub-agent-tools.md).

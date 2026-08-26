@@ -18,9 +18,10 @@ use agent_host_implementation::{
 use boxology_contract::{CallContext, Caller, CancelToken, TraceContext};
 use boxology_runtime::CompositionBuilder;
 use sub_agent_host_contract::{
-    ContextRealization, InputDisposition, ReadSubAgentEventsRequest, SendToChildRequest,
-    SendToParentRequest, SpawnSubAgentRequest, StopSubAgentRequest, SubAgentContextMode,
-    SubAgentEventKind, SubAgentHostError, SubAgentInputMode, SubAgentLifecycle, SubAgentReference,
+    ContextRealization, InputDisposition, ReadSubAgentEventsRequest, RecoverSubAgentsRequest,
+    SendToChildRequest, SendToParentRequest, SpawnSubAgentRequest, StopSubAgentRequest,
+    SubAgentContextMode, SubAgentEventKind, SubAgentHostError, SubAgentInputMode,
+    SubAgentLifecycle, SubAgentRecoveryDisposition, SubAgentReference,
 };
 use sub_agent_host_implementation::{SubAgentHostState, generated as sub_agent_host};
 
@@ -35,6 +36,16 @@ struct FakeState {
     opened: Vec<OpenSessionRequest>,
     next_child: u64,
     next_run: u64,
+    resume_mode: FakeResumeMode,
+    resume_attempts: Vec<String>,
+}
+
+#[derive(Clone, Copy)]
+enum FakeResumeMode {
+    Success,
+    Unavailable,
+    IdentityMismatch,
+    AuthorityFailure,
 }
 
 impl FakeState {
@@ -65,6 +76,8 @@ impl FakeState {
             opened: Vec::new(),
             next_child: 0,
             next_run: 0,
+            resume_mode: FakeResumeMode::Success,
+            resume_attempts: Vec::new(),
         }
     }
 }
@@ -131,8 +144,39 @@ impl FakeAgentHost {
         context: CallContext,
         request: ResumeSessionRequest,
     ) -> Result<AgentSession, AgentHostError> {
-        let _ = (context, request);
-        Err(AgentHostError::SessionResumeUnavailable)
+        let _ = context;
+        let mut state = self.state.lock().expect("fake state lock");
+        state.resume_attempts.push(request.session_id.clone());
+        let mode = state.resume_mode;
+        match mode {
+            FakeResumeMode::Unavailable => Err(AgentHostError::SessionResumeUnavailable),
+            FakeResumeMode::AuthorityFailure => Err(AgentHostError::AuthorityUnavailable),
+            FakeResumeMode::Success | FakeResumeMode::IdentityMismatch => {
+                let session = state
+                    .sessions
+                    .get_mut(&request.session_id)
+                    .ok_or(AgentHostError::UnknownSession)?;
+                session.lifecycle = AgentLifecycle::Ready;
+                session.active_run_id = None;
+                Ok(AgentSession {
+                    session_id: request.session_id.clone(),
+                    native_session_id: if matches!(mode, FakeResumeMode::IdentityMismatch) {
+                        "rewritten-native-session".into()
+                    } else {
+                        format!("native-{}", request.session_id)
+                    },
+                    agent_id: "fake-agent".into(),
+                    negotiation: AcpNegotiation {
+                        protocol_version: 2,
+                        protocol_profile: AcpProtocolProfile::V2Draft,
+                        steering: SteeringSupport::AcpV2ConcurrentPrompt,
+                        compaction_reporting: CompactionReporting::DraftLifecycleUpdates,
+                        agent_capabilities_json: "{}".into(),
+                    },
+                    authority: authority(),
+                })
+            }
+        }
     }
 
     async fn prompt(
@@ -575,7 +619,7 @@ async fn sub_agent_host_spawns_both_context_modes_and_routes_live_bidirectionall
 }
 
 #[tokio::test]
-async fn inherited_context_and_restart_policy_fail_closed() {
+async fn inherited_context_fails_closed_and_restart_policy_is_accepted() {
     let fake_state = Arc::new(Mutex::new(FakeState::with_parent()));
     let host_state = SubAgentHostState::open_in_memory().expect("sub-agent state opens");
     let mut builder = CompositionBuilder::new();
@@ -598,10 +642,371 @@ async fn inherited_context_and_restart_policy_fail_closed() {
 
     let mut restart = spawn_request("restart", SubAgentContextMode::Fresh);
     restart.crash_restart_limit = 1;
-    assert_eq!(
-        handle.spawn(context(), restart).await,
-        Err(boxology_contract::CallError::Domain(
-            SubAgentHostError::CrashRestartUnavailable
-        ))
+    let restart = handle
+        .spawn(context(), restart)
+        .await
+        .expect("bounded restart policy is accepted");
+    assert_eq!(restart.lifecycle, SubAgentLifecycle::Running);
+}
+
+#[tokio::test]
+async fn file_backed_recovery_preserves_identity_journal_cursor_and_budget() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let database = directory.path().join("sub-agents.sqlite");
+    let fake_state = Arc::new(Mutex::new(FakeState::with_parent()));
+    let (record, before_status) = {
+        let host_state = SubAgentHostState::open(&database).expect("sub-agent state opens");
+        let mut builder = CompositionBuilder::new();
+        let agent = agent_host::register(
+            &mut builder,
+            FakeAgentHost {
+                state: fake_state.clone(),
+            },
+        );
+        let host = sub_agent_host::register(&mut builder, move |imports| {
+            host_state.connect(imports.agent_host)
+        });
+        builder.connect(&host, &agent);
+        let handle = builder.handle::<sub_agent_host_contract::SubAgentHostHandle>(&host);
+        let _composition = builder.start().expect("first graph starts");
+        let mut request = spawn_request("recoverable", SubAgentContextMode::Fresh);
+        request.crash_restart_limit = 1;
+        let record = handle
+            .spawn(context(), request)
+            .await
+            .expect("recoverable child starts");
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                let page = handle
+                    .read_events(
+                        context(),
+                        ReadSubAgentEventsRequest {
+                            sub_agent_id: record.sub_agent_id.clone(),
+                            after_sequence: 0,
+                            limit: 100,
+                        },
+                    )
+                    .await
+                    .expect("events read before restart");
+                if page
+                    .events
+                    .iter()
+                    .any(|event| event.kind == SubAgentEventKind::NativeAcp)
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("initial child cursor catches up");
+        let status = handle
+            .status(
+                context(),
+                SubAgentReference {
+                    sub_agent_id: record.sub_agent_id.clone(),
+                },
+            )
+            .await
+            .expect("status reads before restart");
+        assert_eq!(status.restart_count, 0);
+        (record, status)
+    };
+
+    {
+        let host_state = SubAgentHostState::open(&database).expect("sub-agent state reopens");
+        let mut builder = CompositionBuilder::new();
+        let agent = agent_host::register(
+            &mut builder,
+            FakeAgentHost {
+                state: fake_state.clone(),
+            },
+        );
+        let host = sub_agent_host::register(&mut builder, move |imports| {
+            host_state.connect(imports.agent_host)
+        });
+        builder.connect(&host, &agent);
+        let handle = builder.handle::<sub_agent_host_contract::SubAgentHostHandle>(&host);
+        let _composition = builder.start().expect("restarted graph starts");
+        assert_eq!(
+            handle
+                .status(
+                    context(),
+                    SubAgentReference {
+                        sub_agent_id: record.sub_agent_id.clone(),
+                    },
+                )
+                .await
+                .expect("failed child remains inspectable")
+                .record
+                .lifecycle,
+            SubAgentLifecycle::Failed
+        );
+        let report = handle
+            .recover(context(), RecoverSubAgentsRequest {})
+            .await
+            .expect("exact child session resumes");
+        assert_eq!(report.recoveries.len(), 1);
+        assert_eq!(report.recoveries[0].sub_agent_id, record.sub_agent_id);
+        assert_eq!(
+            report.recoveries[0].child_session_id,
+            record.child_session_id
+        );
+        assert_eq!(
+            report.recoveries[0].disposition,
+            SubAgentRecoveryDisposition::Resumed
+        );
+        let recovered = handle
+            .status(
+                context(),
+                SubAgentReference {
+                    sub_agent_id: record.sub_agent_id.clone(),
+                },
+            )
+            .await
+            .expect("recovered status reads");
+        assert_eq!(recovered.record.parent_session_id, record.parent_session_id);
+        assert_eq!(recovered.record.child_session_id, record.child_session_id);
+        assert_eq!(
+            recovered.record.native_child_session_id,
+            record.native_child_session_id
+        );
+        assert_eq!(recovered.restart_count, 1);
+        assert_eq!(recovered.last_sequence, before_status.last_sequence + 1);
+        assert_eq!(recovered.pending_parent_to_child, 0);
+        assert_eq!(recovered.pending_child_to_parent, 0);
+        assert!(
+            matches!(
+                recovered.record.lifecycle,
+                SubAgentLifecycle::Idle | SubAgentLifecycle::Running
+            ),
+            "recovered child must be available"
+        );
+        {
+            let state = fake_state.lock().expect("fake state lock");
+            assert_eq!(state.opened.len(), 1, "recovery must not open a child");
+            assert_eq!(state.next_run, 1, "initial task must not replay");
+            assert_eq!(
+                state.resume_attempts.as_slice(),
+                std::slice::from_ref(&record.child_session_id)
+            );
+        }
+        assert!(
+            handle
+                .recover(context(), RecoverSubAgentsRequest {})
+                .await
+                .expect("recovery retry is idempotent")
+                .recoveries
+                .is_empty()
+        );
+        handle
+            .send_to_child(
+                context(),
+                SendToChildRequest {
+                    sub_agent_id: record.sub_agent_id.clone(),
+                    client_message_id: "after-recovery".into(),
+                    mode: SubAgentInputMode::Queue,
+                    native_prompt_json: r#"[{"type":"text","text":"continue"}]"#.into(),
+                },
+            )
+            .await
+            .expect("recovered child accepts new work");
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                let page = handle
+                    .read_events(
+                        context(),
+                        ReadSubAgentEventsRequest {
+                            sub_agent_id: record.sub_agent_id.clone(),
+                            after_sequence: before_status.last_sequence,
+                            limit: 100,
+                        },
+                    )
+                    .await
+                    .expect("continued events read");
+                if page.events.iter().any(|event| {
+                    event.kind == SubAgentEventKind::NativeAcp
+                        && event.payload_json.contains("\"childSequence\":2")
+                }) {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("event pump continues from the persisted child cursor");
+    }
+
+    let attempts_before_budget = fake_state
+        .lock()
+        .expect("fake state lock")
+        .resume_attempts
+        .len();
+    let host_state = SubAgentHostState::open(&database).expect("sub-agent state reopens again");
+    let mut builder = CompositionBuilder::new();
+    let agent = agent_host::register(
+        &mut builder,
+        FakeAgentHost {
+            state: fake_state.clone(),
+        },
     );
+    let host = sub_agent_host::register(&mut builder, move |imports| {
+        host_state.connect(imports.agent_host)
+    });
+    builder.connect(&host, &agent);
+    let handle = builder.handle::<sub_agent_host_contract::SubAgentHostHandle>(&host);
+    let _composition = builder.start().expect("budget graph starts");
+    let report = handle
+        .recover(context(), RecoverSubAgentsRequest {})
+        .await
+        .expect("exhausted budget is reported");
+    assert_eq!(
+        report.recoveries[0].disposition,
+        SubAgentRecoveryDisposition::RestartBudgetExhausted
+    );
+    assert_eq!(
+        fake_state
+            .lock()
+            .expect("fake state lock")
+            .resume_attempts
+            .len(),
+        attempts_before_budget,
+        "budget exhaustion must not touch agent-host"
+    );
+}
+
+async fn assert_recovery_failure(
+    client_id: &str,
+    restart_limit: u64,
+    mode: FakeResumeMode,
+    remove_parent: bool,
+    expected: SubAgentRecoveryDisposition,
+    expected_attempts: usize,
+    expected_restart_count: u64,
+) {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let database = directory.path().join("sub-agents.sqlite");
+    let fake_state = Arc::new(Mutex::new(FakeState::with_parent()));
+    let record = {
+        let host_state = SubAgentHostState::open(&database).expect("sub-agent state opens");
+        let mut builder = CompositionBuilder::new();
+        let agent = agent_host::register(
+            &mut builder,
+            FakeAgentHost {
+                state: fake_state.clone(),
+            },
+        );
+        let host = sub_agent_host::register(&mut builder, move |imports| {
+            host_state.connect(imports.agent_host)
+        });
+        builder.connect(&host, &agent);
+        let handle = builder.handle::<sub_agent_host_contract::SubAgentHostHandle>(&host);
+        let _composition = builder.start().expect("first graph starts");
+        let mut request = spawn_request(client_id, SubAgentContextMode::Fresh);
+        request.crash_restart_limit = restart_limit;
+        handle
+            .spawn(context(), request)
+            .await
+            .expect("child starts")
+    };
+    {
+        let mut state = fake_state.lock().expect("fake state lock");
+        state.resume_mode = mode;
+        if remove_parent {
+            state.sessions.remove("parent-1");
+        }
+    }
+    let host_state = SubAgentHostState::open(&database).expect("sub-agent state reopens");
+    let mut builder = CompositionBuilder::new();
+    let agent = agent_host::register(
+        &mut builder,
+        FakeAgentHost {
+            state: fake_state.clone(),
+        },
+    );
+    let host = sub_agent_host::register(&mut builder, move |imports| {
+        host_state.connect(imports.agent_host)
+    });
+    builder.connect(&host, &agent);
+    let handle = builder.handle::<sub_agent_host_contract::SubAgentHostHandle>(&host);
+    let _composition = builder.start().expect("recovery graph starts");
+    let report = handle
+        .recover(context(), RecoverSubAgentsRequest {})
+        .await
+        .expect("failure is reported without aborting recovery");
+    assert_eq!(report.recoveries.len(), 1);
+    assert_eq!(report.recoveries[0].disposition, expected);
+    let status = handle
+        .status(
+            context(),
+            SubAgentReference {
+                sub_agent_id: record.sub_agent_id,
+            },
+        )
+        .await
+        .expect("failed record remains inspectable");
+    assert_eq!(status.record.lifecycle, SubAgentLifecycle::Failed);
+    assert_eq!(status.restart_count, expected_restart_count);
+    assert!(status.last_error.is_some());
+    let state = fake_state.lock().expect("fake state lock");
+    assert_eq!(state.resume_attempts.len(), expected_attempts);
+    assert_eq!(
+        state.opened.len(),
+        1,
+        "failure must never open a replacement"
+    );
+}
+
+#[tokio::test]
+async fn recovery_failures_are_explicit_and_never_open_replacements() {
+    assert_recovery_failure(
+        "disabled",
+        0,
+        FakeResumeMode::Success,
+        false,
+        SubAgentRecoveryDisposition::RecoveryDisabled,
+        0,
+        0,
+    )
+    .await;
+    assert_recovery_failure(
+        "unavailable",
+        1,
+        FakeResumeMode::Unavailable,
+        false,
+        SubAgentRecoveryDisposition::SessionUnavailable,
+        1,
+        1,
+    )
+    .await;
+    assert_recovery_failure(
+        "identity",
+        1,
+        FakeResumeMode::IdentityMismatch,
+        false,
+        SubAgentRecoveryDisposition::IdentityMismatch,
+        1,
+        1,
+    )
+    .await;
+    assert_recovery_failure(
+        "authority",
+        1,
+        FakeResumeMode::AuthorityFailure,
+        false,
+        SubAgentRecoveryDisposition::Failed,
+        1,
+        1,
+    )
+    .await;
+    assert_recovery_failure(
+        "parent",
+        1,
+        FakeResumeMode::Success,
+        true,
+        SubAgentRecoveryDisposition::ParentUnavailable,
+        0,
+        0,
+    )
+    .await;
 }

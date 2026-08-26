@@ -12,6 +12,7 @@ use bridge_host_contract::{
 };
 use channel_gateway_contract::{AttachChannelRequest, ChannelAttachmentDisposition};
 use native_channel_contract::{BindingReference, ChannelLifecycle};
+use sub_agent_host_contract::{RecoverSubAgentsRequest, SubAgentRecoveryDisposition};
 use tokio::{sync::watch, task::JoinSet};
 use turn_router_contract::{DrainLaneRequest, PutRouteRequest, RouteReference};
 
@@ -84,13 +85,21 @@ impl ConfiguredRuntime {
         let paths = ChannelIpcPaths::for_state_directory(state_directory)
             .map_err(|error| RuntimeStartError::ChannelIpc(error.into()))?;
         let bridges = initialize_bridges(runtime.bridge_host(), &config).await?;
-        let sessions = match initialize_topology(&runtime, &config).await {
+        let mut sessions = match initialize_topology(&runtime, &config).await {
             Ok(sessions) => sessions,
             Err(error) => {
                 suspend_bridges(runtime.bridge_host(), &bridges).await;
                 return Err(error);
             }
         };
+        match recover_sub_agents(runtime.sub_agent_host()).await {
+            Ok(recovered) => sessions.extend(recovered),
+            Err(error) => {
+                suspend_bridges(runtime.bridge_host(), &bridges).await;
+                close_sessions(runtime.agent_host(), &sessions).await;
+                return Err(error);
+            }
+        }
         let channel_ipc = match ChannelIpcServer::start(
             paths,
             runtime.agent_host().clone(),
@@ -281,6 +290,21 @@ async fn suspend_bridges(
         }
     }
     clean
+}
+
+async fn recover_sub_agents(
+    sub_agent_host: &sub_agent_host_contract::SubAgentHostHandle,
+) -> Result<Vec<String>, RuntimeStartError> {
+    let report = sub_agent_host
+        .recover(call_context(), RecoverSubAgentsRequest {})
+        .await
+        .map_err(RuntimeStartError::RecoverSubAgents)?;
+    Ok(report
+        .recoveries
+        .into_iter()
+        .filter(|recovery| matches!(recovery.disposition, SubAgentRecoveryDisposition::Resumed))
+        .map(|recovery| recovery.child_session_id)
+        .collect())
 }
 
 #[derive(Clone, Copy)]
@@ -572,6 +596,7 @@ impl fmt::Display for RuntimeStartError {
             Self::RegisterBridge(_) => "bridge registration failed",
             Self::ReplaceBridge(_) => "bridge replacement failed",
             Self::StopBridge(_) => "stale bridge cleanup failed",
+            Self::RecoverSubAgents(_) => "sub-agent recovery failed",
             Self::ChannelIpc(_) => "local IPC startup failed",
             Self::StateDirectory(_) => "state-directory startup failed",
             Self::Assembly(_) => "Boxology assembly failed",
@@ -653,7 +678,8 @@ mod tests {
 
     use super::{
         StartupHandles, call_context, close_sessions, initialize_bridges,
-        initialize_topology_with_handles, session_metadata, spawn_lane_worker, suspend_bridges,
+        initialize_topology_with_handles, recover_sub_agents, session_metadata, spawn_lane_worker,
+        suspend_bridges,
     };
     use crate::{
         AcpChannelOptions, AgentConfig, BridgeAuthenticationConfig, BridgeConfig,
@@ -1449,6 +1475,80 @@ mod tests {
             assert_eq!(state.resume_attempts, first_sessions);
         }
         assert!(close_sessions(&restarted.agent_host, &restarted_sessions).await);
+    }
+
+    #[tokio::test]
+    async fn runtime_recovers_parent_before_its_durable_sub_agent() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let state = Arc::new(Mutex::new(FakeState::default()));
+        let config = config(directory.path().to_path_buf());
+        let first = graph(directory.path(), state.clone());
+        let parent_sessions = initialize_topology_with_handles(first.handles(), &config)
+            .await
+            .expect("parent topology starts");
+        let child = first
+            .sub_agent_host
+            .spawn(
+                call_context(),
+                SpawnSubAgentRequest {
+                    client_sub_agent_id: "restart-child".into(),
+                    parent_session_id: parent_sessions[0].clone(),
+                    agent_id: "fake".into(),
+                    working_directory: directory.path().to_string_lossy().into_owned(),
+                    context_mode: SubAgentContextMode::Fresh,
+                    parent_context_through_sequence: None,
+                    allow_portable_snapshot: false,
+                    native_task_prompt_json: json!([{
+                        "type": "text",
+                        "text": "continue independently after restart"
+                    }])
+                    .to_string(),
+                    metadata_json: "{}".into(),
+                    crash_restart_limit: 1,
+                },
+            )
+            .await
+            .expect("durable child starts");
+        drop(first);
+        state.lock().expect("fake state lock").resume_mode = FakeResumeMode::Success;
+
+        let restarted = graph(directory.path(), state.clone());
+        let recovered_parents = initialize_topology_with_handles(restarted.handles(), &config)
+            .await
+            .expect("parent resumes first");
+        let recovered_children = recover_sub_agents(&restarted.sub_agent_host)
+            .await
+            .expect("child reconciliation completes");
+        assert_eq!(recovered_parents, parent_sessions);
+        assert_eq!(
+            recovered_children.as_slice(),
+            std::slice::from_ref(&child.child_session_id)
+        );
+        let status = restarted
+            .sub_agent_host
+            .status(
+                call_context(),
+                SubAgentReference {
+                    sub_agent_id: child.sub_agent_id,
+                },
+            )
+            .await
+            .expect("recovered child is inspectable");
+        assert_eq!(status.record.child_session_id, child.child_session_id);
+        assert_eq!(
+            status.record.native_child_session_id,
+            child.native_child_session_id
+        );
+        assert_eq!(status.restart_count, 1);
+        assert!(matches!(status.record.lifecycle, SubAgentLifecycle::Idle));
+        assert_eq!(
+            state.lock().expect("fake state lock").resume_attempts,
+            [parent_sessions[0].clone(), child.child_session_id.clone()],
+            "startup must recover the parent before its child"
+        );
+        let mut all_sessions = recovered_parents;
+        all_sessions.extend(recovered_children);
+        assert!(close_sessions(&restarted.agent_host, &all_sessions).await);
     }
 
     #[tokio::test]

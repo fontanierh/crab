@@ -136,9 +136,16 @@ async fn real_stdio_server_lists_strict_tools_and_enforces_child_context() {
     let mut process = McpProcess::start(&state, false).await;
 
     let listed = process.request(2, "tools/list", json!({})).await;
-    let mut names = listed["result"]["tools"]
-        .as_array()
-        .expect("tool catalog")
+    let tools = listed["result"]["tools"].as_array().expect("tool catalog");
+    let spawn = tools
+        .iter()
+        .find(|tool| tool["name"] == "spawn_sub_agent")
+        .expect("spawn tool");
+    assert_eq!(
+        spawn["inputSchema"]["properties"]["crashRestartLimit"]["default"],
+        1
+    );
+    let mut names = tools
         .iter()
         .map(|tool| tool["name"].as_str().expect("tool name"))
         .collect::<Vec<_>>();

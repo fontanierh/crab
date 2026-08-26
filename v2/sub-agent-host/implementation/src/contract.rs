@@ -153,6 +153,29 @@ boxology::contract! {
         pub recorded_at_ms: u64,
     }
 
+    pub struct RecoverSubAgentsRequest {}
+
+    /// Truthful startup outcome for one durable child. Recovery never opens a replacement session.
+    pub enum SubAgentRecoveryDisposition {
+        Resumed,
+        RecoveryDisabled,
+        RestartBudgetExhausted,
+        ParentUnavailable,
+        SessionUnavailable,
+        IdentityMismatch,
+        Failed,
+    }
+
+    pub struct SubAgentRecovery {
+        pub sub_agent_id: String,
+        pub child_session_id: String,
+        pub disposition: SubAgentRecoveryDisposition,
+    }
+
+    pub struct SubAgentRecoveryReport {
+        pub recoveries: Vec<SubAgentRecovery>,
+    }
+
     #[error]
     pub enum SubAgentHostError {
         DraftOnly,
@@ -162,6 +185,7 @@ boxology::contract! {
         InvalidContextBoundary,
         NativeForkUnavailable,
         PortableSnapshotForbidden,
+        /// Retained for older consumers; bounded native resume is now implemented.
         CrashRestartUnavailable,
         SteeringUnavailable,
         AuthorityUnavailable,
@@ -189,6 +213,11 @@ boxology::contract! {
 
     #[capability]
     pub async fn status(request: SubAgentReference) -> Result<SubAgentStatus, SubAgentHostError>;
+
+    /// Reconcile children interrupted by a runtime crash. Exact native ACP resume is the only
+    /// successful path; bootstrap context and initial task input are never replayed.
+    #[capability]
+    pub async fn recover(request: RecoverSubAgentsRequest) -> Result<SubAgentRecoveryReport, SubAgentHostError>;
 
     /// Cooperatively cancel the child session, then terminate its harness after graceful timeout.
     #[capability]

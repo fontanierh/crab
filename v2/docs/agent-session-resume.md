@@ -22,7 +22,8 @@ conversation and compaction state.
 
 Only `Failed` is recoverable. `Starting`, `Ready`, `Busy`, `Stopping`, `Stopped` and unknown sessions
 are rejected. A clean host shutdown still closes sessions. Matching native-channel attachments now
-resume before replacement; runtime-owned detach and sub-agent recovery remain separate slices.
+resume before replacement, and durable sub-agents resume after their parent within an explicit
+restart budget. Runtime-owned detach remains a separate slice.
 
 Protocol basis: ACP v1's stable
 [`session/resume`](https://agentclientprotocol.com/protocol/v1/session-setup) and ACP v2's unified
