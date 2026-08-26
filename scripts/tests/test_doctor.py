@@ -78,7 +78,7 @@ class DoctorTests(unittest.TestCase):
         )
         self.assertIsNone(parse_version("unknown", "rustc"))
 
-    def test_llvm_cov_skew_is_a_failure_with_exact_remediation(self) -> None:
+    def test_llvm_cov_skew_is_optional_with_exact_remediation(self) -> None:
         root = Path(__file__).resolve().parents[2]
         checks = collect_checks(
             root,
@@ -87,7 +87,7 @@ class DoctorTests(unittest.TestCase):
             which=all_tools,
         )
         check = next(item for item in checks if item.name == "cargo-llvm-cov")
-        self.assertEqual(check.status, "failed")
+        self.assertEqual(check.status, "info")
         self.assertIn("--version 0.6.21", check.remediation or "")
 
     def test_missing_toolchain_reports_install_command_without_probing_it(self) -> None:
@@ -102,7 +102,7 @@ class DoctorTests(unittest.TestCase):
         self.assertEqual(check.status, "failed")
         self.assertIn("rustup toolchain install 1.93.0", check.remediation or "")
 
-    def test_jscpd_skew_is_a_preflight_failure(self) -> None:
+    def test_jscpd_skew_is_optional_with_install_guidance(self) -> None:
         root = Path(__file__).resolve().parents[2]
         checks = collect_checks(
             root,
@@ -111,7 +111,7 @@ class DoctorTests(unittest.TestCase):
             which=all_tools,
         )
         check = next(item for item in checks if item.name == "jscpd")
-        self.assertEqual(check.status, "failed")
+        self.assertEqual(check.status, "info")
         self.assertIn("jscpd@4.0.5", check.remediation or "")
 
     def test_missing_python_is_reported(self) -> None:
@@ -153,12 +153,12 @@ class DoctorTests(unittest.TestCase):
             which=without_node_installers,
         )
         statuses = {item.name: item.status for item in checks}
-        self.assertEqual(statuses["jscpd"], "passed")
+        self.assertEqual(statuses["jscpd"], "info")
         self.assertEqual(statuses["node"], "info")
         self.assertEqual(statuses["npm"], "info")
         self.assertNotIn("failed", statuses.values())
 
-    def test_missing_jscpd_and_npm_fail_with_install_chain(self) -> None:
+    def test_missing_jscpd_and_npm_are_informational(self) -> None:
         root = Path(__file__).resolve().parents[2]
 
         def without_jscpd_or_npm(name: str) -> str | None:
@@ -171,9 +171,8 @@ class DoctorTests(unittest.TestCase):
             which=without_jscpd_or_npm,
         )
         by_name = {item.name: item for item in checks}
-        self.assertEqual(by_name["jscpd"].status, "failed")
-        self.assertEqual(by_name["npm"].status, "failed")
-        self.assertIn("npm install --global jscpd@4.0.5", by_name["npm"].remediation or "")
+        self.assertEqual(by_name["jscpd"].status, "info")
+        self.assertEqual(by_name["npm"].status, "info")
 
     def test_patch_baseline_resolution_order_and_failure_remediation(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -217,7 +216,7 @@ class DoctorTests(unittest.TestCase):
                 which=all_tools,
             )
             missing_check = next(item for item in missing if item.name == "patch-baseline")
-            self.assertEqual(missing_check.status, "failed")
+            self.assertEqual(missing_check.status, "info")
             self.assertIn("git fetch origin main", missing_check.remediation or "")
             self.assertIn("BASE_SHA=<commit>", missing_check.remediation or "")
 

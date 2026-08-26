@@ -1,0 +1,27 @@
+%%{init: {"theme": "base", "themeVariables": {"fontFamily": "ui-sans-serif, system-ui, sans-serif", "primaryTextColor": "#172033", "lineColor": "#64748b", "edgeLabelBackground": "#ffffff"}, "flowchart": {"curve": "basis", "nodeSpacing": 42, "rankSpacing": 58}}}%%
+flowchart LR
+    CHANGE["Change"]
+    SCOPE{"Changed scope"}
+    DOCS["Docs-only<br/>skip Rust setup"]
+    FORMAT["Format"]
+    CLIPPY["Clippy"]
+    TESTS["Tests"]
+    GREEN["Green<br/>exact-tree attestation"]
+    REPORTS["Optional reports<br/>coverage · duplication · API"]
+
+    CHANGE --> SCOPE
+    SCOPE -->|"approved docs"| DOCS
+    SCOPE -->|"code or uncertain"| FORMAT
+    FORMAT --> CLIPPY --> TESTS --> GREEN
+    DOCS --> GREEN
+    CHANGE -.->|"when useful"| REPORTS
+
+    classDef input fill:#f3e8ff,stroke:#9333ea,stroke-width:2px,color:#581c87;
+    classDef required fill:#dbeafe,stroke:#2563eb,stroke-width:2px,color:#172554;
+    classDef success fill:#dcfce7,stroke:#16a34a,stroke-width:2px,color:#14532d;
+    classDef optional fill:#fef3c7,stroke:#d97706,stroke-width:2px,color:#78350f;
+
+    class CHANGE input;
+    class SCOPE,FORMAT,CLIPPY,TESTS required;
+    class DOCS,GREEN success;
+    class REPORTS optional;

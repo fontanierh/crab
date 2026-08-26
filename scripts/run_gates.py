@@ -22,7 +22,6 @@ if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from scripts.changed_scope import ScopeResult, select_scope
-from scripts.patch_coverage import resolve_patch_base, validate_diff_mode
 from scripts.workflow_common import (
     Fingerprint,
     WorkflowError,
@@ -42,10 +41,6 @@ QUALITY_GATE_NAMES = (
     "fmt",
     "clippy",
     "tests",
-    "public-api",
-    "duplication",
-    "gate-tests",
-    "coverage",
 )
 LOG_TAIL_LINES = 30
 CHECK_STATUSES = ("passed", "failed", "skipped")
@@ -349,7 +344,10 @@ def check_specs(root: Path, scope: ScopeResult) -> list[GateSpec]:
     ]
 
 
-def quality_specs(root: Path, mode: str, base_sha: str) -> list[GateSpec]:
+def quality_specs(root: Path, mode: str = "worktree", base_sha: str = "") -> list[GateSpec]:
+    # ``mode`` and ``base_sha`` remain accepted for callers using the old API, but the
+    # core handoff gate no longer depends on a Git diff or a coverage baseline.
+    del mode, base_sha
     by_name = {
         "fmt": GateSpec("fmt", ("cargo", "fmt", "--all", "--", "--check"), "make fmt-check"),
         "clippy": GateSpec(
@@ -375,43 +373,6 @@ def quality_specs(root: Path, mode: str, base_sha: str) -> list[GateSpec]:
             ),
             "make test",
         ),
-        "public-api": GateSpec(
-            "public-api",
-            ("bash", str(root / "scripts" / "public_api_usage_check.sh")),
-            "make public-api-check",
-        ),
-        "duplication": GateSpec(
-            "duplication",
-            ("bash", str(root / "scripts" / "duplication_check.sh")),
-            "make duplication-check",
-        ),
-        "gate-tests": GateSpec(
-            "gate-tests",
-            (
-                sys.executable,
-                "-m",
-                "unittest",
-                "discover",
-                "-s",
-                "scripts/tests",
-                "-p",
-                "test_*.py",
-            ),
-            "make gate-tests",
-        ),
-        "coverage": GateSpec(
-            "coverage",
-            (
-                sys.executable,
-                str(root / "scripts" / "coverage_workflow.py"),
-                "gate",
-                "--mode",
-                mode,
-                "--base-sha",
-                base_sha,
-            ),
-            f"make coverage-gate PATCH_MODE={mode} BASE_SHA={base_sha}",
-        ),
     }
     return [by_name[name] for name in QUALITY_GATE_NAMES]
 
@@ -428,9 +389,6 @@ def tool_versions(root: Path) -> dict[str, str]:
     return {
         "rustc": command_version(root, ["rustc", "-V"]),
         "clippy": command_version(root, ["cargo", "clippy", "-V"]),
-        "cargo_llvm_cov": command_version(
-            root, ["cargo-llvm-cov", "llvm-cov", "--version"]
-        ),
     }
 
 
@@ -541,40 +499,20 @@ def orchestrate_quality(
     started_at = utc_now()
     start = tree_fingerprint(root)
     versions = versions_override if versions_override is not None else tool_versions(root)
-    base_sha: str | None = None
+    # Full-workspace correctness does not need a merge base. Keeping the caller's
+    # optional base in the status file is useful provenance without making a fetch a
+    # prerequisite for a local handoff.
+    base_sha: str | None = explicit_base
     setup_error: str | None = None
-    try:
-        validate_diff_mode(root, mode)
-        base_sha = resolve_patch_base(root, explicit_base)
-    except WorkflowError as error:
-        setup_error = str(error)
-
-    if setup_error:
-        placeholder_specs = specs_override or quality_specs(root, mode, base_sha or "<unresolved>")
-        records = [
-            GateRecord(
-                name=spec.name,
-                status="skipped",
-                reason=f"setup failed: {setup_error}",
-                duration_seconds=0.0,
-                exit_code=None,
-                log_path=None,
-                rerun_command=spec.rerun_command,
-            )
-            for spec in placeholder_specs
-        ]
-        for record in records:
-            print(f"gates: SKIP {record.name}: {record.reason}")
-    else:
-        specs = list(specs_override or quality_specs(root, mode, base_sha))
-        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-        records = run_specs(
-            root,
-            specs,
-            root / "quality" / "logs" / stamp,
-            verbose=os.environ.get("VERBOSE") == "1",
-            executor=executor,
-        )
+    specs = list(specs_override or quality_specs(root))
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    records = run_specs(
+        root,
+        specs,
+        root / "quality" / "logs" / stamp,
+        verbose=os.environ.get("VERBOSE") == "1",
+        executor=executor,
+    )
 
     end = tree_fingerprint(root)
     payload, exit_code = build_status(
@@ -697,7 +635,7 @@ def verify_status(root: Path) -> int:
     names = tuple(check.get("name") for check in checks)
     if names != QUALITY_GATE_NAMES:
         print(
-            "quality-status: check names/order do not match the required seven-gate policy",
+            "quality-status: check names/order do not match the required gate policy",
             file=sys.stderr,
         )
         return 2

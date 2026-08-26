@@ -162,6 +162,6 @@ Remaining gap:
 
 Quality/diagnostics note:
 
-- Runtime reliability validation remains guarded by strict coverage gates (`make quality`).
-- When coverage regressions appear, operators can generate actionable missing-line/function
-  diagnostics with `make coverage-diagnostics` before patching tests.
+- Runtime reliability validation is guarded by format, Clippy, and behavior tests (`make quality`).
+- Contributors can generate optional missing-line diagnostics with `make coverage-diagnostics`
+  when that feedback is useful.

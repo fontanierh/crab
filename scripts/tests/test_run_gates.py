@@ -266,14 +266,14 @@ class OrchestratorTests(unittest.TestCase):
         self.assertIn("cargo_target.py", " ".join(tests.command))
         self.assertIn("cargo test --workspace", " ".join(tests.command))
 
-    def test_coverage_failure_propagates_to_quality_result(self) -> None:
+    def test_test_failure_propagates_to_quality_result(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             base = init_repo(root)
 
             def executor(_: Path, gate: GateSpec, log: Path, __: bool) -> tuple[int, float]:
                 write_log(log, f"{gate.name}\n")
-                return (1 if gate.name == "coverage" else 0), 0.01
+                return (1 if gate.name == "tests" else 0), 0.01
 
             code = orchestrate_quality(
                 root,
@@ -285,9 +285,9 @@ class OrchestratorTests(unittest.TestCase):
             )
             payload = json.loads((root / "quality" / "status.json").read_text())
         self.assertEqual(code, 1)
-        coverage = next(item for item in payload["checks"] if item["name"] == "coverage")
-        self.assertEqual(coverage["status"], "failed")
-        self.assertEqual(coverage["exit_code"], 1)
+        tests = next(item for item in payload["checks"] if item["name"] == "tests")
+        self.assertEqual(tests["status"], "failed")
+        self.assertEqual(tests["exit_code"], 1)
 
     def test_verify_status_rejects_malformed_passing_artifacts_without_traceback(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -805,7 +805,7 @@ class OrchestratorTests(unittest.TestCase):
                 check["exit_code"] = None
             cases["all-skipped"] = all_skipped
             two_failed = copy.deepcopy(valid)
-            two_failed["checks"][3].update(
+            two_failed["checks"][1].update(
                 status="failed", exit_code=1, log_path="quality/logs/second.log"
             )
             cases["two-failed"] = two_failed
@@ -817,7 +817,8 @@ class OrchestratorTests(unittest.TestCase):
             passed_nonzero["checks"][0]["exit_code"] = 1
             cases["passed-nonzero"] = passed_nonzero
             skipped_nonnull = copy.deepcopy(valid)
-            skipped_nonnull["checks"][3]["exit_code"] = 1
+            skipped_nonnull["checks"][2]["status"] = "skipped"
+            skipped_nonnull["checks"][2]["exit_code"] = 1
             cases["skipped-nonnull"] = skipped_nonnull
             unequal = copy.deepcopy(valid)
             unequal["start_fingerprint"]["sha256"] = "different"

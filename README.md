@@ -92,7 +92,8 @@ crab-memory-get --workspace-root ~/.crab/workspace --user-scope <user_id> --path
 
 ## Quality Gates
 
-Demanding aggregate and changed-line coverage is enforced.
+The required quality path is deliberately small: format, Clippy, and tests. Coverage and
+duplication remain available as optional reports without numeric merge gates.
 
 ```bash
 make doctor      # Read-only deterministic prerequisite check

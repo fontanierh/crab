@@ -5,15 +5,14 @@
 ## Validation
 - [ ] `make doctor`
 - [ ] `make check`
-- [ ] `make gate-tests` (required for workflow/config changes)
 - [ ] `make quality`
-- [ ] `quality/status.json` says `passed`, fingerprints match, and no gate was skipped
+- [ ] `make gate-tests` (only when workflow/config tooling changes)
+- [ ] `quality/status.json` says `passed` and fingerprints match
 
 Include exact rerun commands or focused log excerpts for any unusual failure investigation.
 
-## Coverage
-- Aggregate function, region, and line floors remain 95%.
-- Changed executable lines meet 95% and the small-patch floor.
+## Optional diagnostics
+- Coverage, duplication, or public-API report run when it added useful signal:
 
 ## Risk and Rollback
 - Risk:

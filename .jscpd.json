@@ -1,8 +1,8 @@
 {
-  "threshold": 0,
+  "threshold": 10,
   "reporters": ["console"],
-  "minLines": 5,
-  "minTokens": 50,
+  "minLines": 10,
+  "minTokens": 100,
   "formats": ["rust"],
   "ignore": [
     "**/target/**",

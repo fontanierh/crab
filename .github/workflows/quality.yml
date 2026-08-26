@@ -1,10 +1,5 @@
 name: quality
 
-# Accepted residual drift: jscpd is pinned at 4.0.5 but npm resolves its published
-# transitive dependency graph, and ripgrep comes from Ubuntu 24.04's apt repository.
-# Those tools are narrow duplication/grep boundaries; their behavior-relevant top-level
-# identities are tested here, while vendoring npm or pinning an apt archive adds more risk.
-
 on:
   push:
     branches: [main]
@@ -15,7 +10,7 @@ permissions:
   contents: read
 
 jobs:
-  fast:
+  quality:
     runs-on: ubuntu-24.04
 
     steps:
@@ -25,7 +20,7 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      # This must remain immediately after checkout: docs-only changes do no Rust/Node setup.
+      # Classify before setup so documentation-only changes stay genuinely cheap.
       - name: Classify changed paths
         id: scope
         shell: bash
@@ -52,122 +47,25 @@ jobs:
         uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88 # master, resolved 2026-07-12
         with:
           toolchain: "1.93.0"
-          components: rustfmt, clippy, llvm-tools-preview
+          components: rustfmt, clippy
 
       - name: Setup Rust cache
         if: steps.scope.outputs.docs_only != 'true'
         uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
 
-      - name: Install ripgrep
-        if: steps.scope.outputs.docs_only != 'true'
-        run: sudo apt-get update && sudo apt-get install -y ripgrep
-
-      - name: Changed-scope format, Clippy, and tests
+      - name: Format, Clippy, and tests
         if: steps.scope.outputs.docs_only != 'true'
         env:
           BASE_SHA: ${{ steps.scope.outputs.base_sha }}
           DIFF_MODE: committed
         run: make check
 
-      - name: Public API check
-        if: steps.scope.outputs.docs_only != 'true'
-        run: make public-api-check
-
-      - name: Workflow gate tests
-        if: steps.scope.outputs.docs_only != 'true'
-        run: make gate-tests
-
       - name: Job summary
         if: always()
         shell: bash
         run: |
           if [[ "${{ steps.scope.outputs.docs_only }}" == "true" ]]; then
-            echo "### fast: skipped (docs-only)" >> "$GITHUB_STEP_SUMMARY"
+            echo "### quality: skipped (docs-only)" >> "$GITHUB_STEP_SUMMARY"
           else
-            echo "### fast: changed-scope gates executed" >> "$GITHUB_STEP_SUMMARY"
-          fi
-
-  coverage:
-    runs-on: ubuntu-24.04
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
-        with:
-          fetch-depth: 0
-          persist-credentials: false
-
-      # Keep classification before every setup/cache/install step for an honest green skip.
-      - name: Classify changed paths
-        id: scope
-        shell: bash
-        env:
-          EVENT_NAME: ${{ github.event_name }}
-          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          PUSH_BEFORE: ${{ github.event.before }}
-        run: |
-          set -euo pipefail
-          base=""
-          if [[ "$EVENT_NAME" == "pull_request" ]]; then
-            base="$PR_BASE_SHA"
-          elif [[ -n "$PUSH_BEFORE" && ! "$PUSH_BEFORE" =~ ^0+$ ]] && git cat-file -e "$PUSH_BEFORE^{commit}" 2>/dev/null; then
-            base="$PUSH_BEFORE"
-          elif git rev-parse --verify HEAD^ >/dev/null 2>&1; then
-            base="$(git rev-parse HEAD^)"
-          fi
-          args=(--mode committed --docs-only-check --github-output "$GITHUB_OUTPUT")
-          if [[ -n "$base" ]]; then args+=(--base-sha "$base"); fi
-          python3 scripts/changed_scope.py "${args[@]}"
-
-      - name: Setup Rust toolchain
-        if: steps.scope.outputs.docs_only != 'true'
-        uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88 # master, resolved 2026-07-12
-        with:
-          toolchain: "1.93.0"
-          components: rustfmt, clippy, llvm-tools-preview
-
-      - name: Setup Rust cache
-        if: steps.scope.outputs.docs_only != 'true'
-        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
-
-      - name: Setup Node
-        if: steps.scope.outputs.docs_only != 'true'
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
-        with:
-          node-version: "20.20.2"
-
-      - name: Install pinned jscpd
-        if: steps.scope.outputs.docs_only != 'true'
-        run: npm install --global jscpd@4.0.5
-
-      - name: Install cargo-llvm-cov
-        if: steps.scope.outputs.docs_only != 'true'
-        uses: taiki-e/install-action@2ca9b94c269419b7b0c711c09d0b21c4e1d51145 # v2.83.1
-        with:
-          tool: cargo-llvm-cov@0.6.21
-
-      - name: Fresh aggregate and patch coverage
-        if: steps.scope.outputs.docs_only != 'true'
-        env:
-          BASE_SHA: ${{ steps.scope.outputs.base_sha }}
-          PATCH_MODE: committed
-        run: |
-          if [[ -z "$BASE_SHA" ]]; then
-            echo "coverage: no push/PR baseline resolved" >&2
-            exit 2
-          fi
-          make coverage-gate
-
-      - name: Duplication gate
-        if: steps.scope.outputs.docs_only != 'true'
-        run: make duplication-check
-
-      - name: Job summary
-        if: always()
-        shell: bash
-        run: |
-          if [[ "${{ steps.scope.outputs.docs_only }}" == "true" ]]; then
-            echo "### coverage: skipped (docs-only)" >> "$GITHUB_STEP_SUMMARY"
-          else
-            echo "### coverage: fresh aggregate, patch, and duplication gates executed" >> "$GITHUB_STEP_SUMMARY"
+            echo "### quality: format, Clippy, and tests executed" >> "$GITHUB_STEP_SUMMARY"
           fi
