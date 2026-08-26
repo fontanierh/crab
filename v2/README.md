@@ -68,7 +68,9 @@ interrupt as a separate explicit action.
   credentials, actively probes health and credential validity, and applies bounded restart
   backoff. Package-originated ingress is acknowledged only after the generated `trigger-inbox`
   import commits it; mutable service credentials use fingerprint-CAS atomic snapshots; selected
-  outbound delivery is durable and idempotent. See its
+  outbound delivery is durable and idempotent. `crab-v2-bridge` exposes its complete operator
+  lifecycle through authenticated local IPC without disclosing credential material. See the
+  [operator flow](docs/bridge-operations.md),
   [state contract](docs/bridge-host-storage.md) and [rendered flow](docs/bridge-host-flow.png).
 - `sub-agent-host` composes through the generated `agent-host` import, durably journals both
   message directions and the complete child ACP stream, and fails closed when requested context or

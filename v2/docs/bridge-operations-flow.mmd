@@ -1,0 +1,26 @@
+%%{init: {"theme": "base", "themeVariables": {"fontFamily": "ui-sans-serif, system-ui, sans-serif", "primaryTextColor": "#172033", "lineColor": "#64748b", "edgeLabelBackground": "#ffffff"}, "flowchart": {"curve": "basis", "nodeSpacing": 44, "rankSpacing": 58}}}%%
+flowchart LR
+    OP["operator or agent<br/>crab-v2-bridge"]
+    AUTH["owner-only local IPC<br/>0600 token · bounded JSON"]
+    HOST["bridge-host<br/>generated capabilities"]
+    SUP["supervisor<br/>health · recovery · stop"]
+    PACKAGE["bridge package<br/>QR · phone · generic auth"]
+    STORE["private credential store<br/>fingerprint-CAS snapshots"]
+    SAFE["JSON result<br/>status · presentation · no credentials"]
+
+    OP -->|"typed request"| AUTH --> HOST
+    HOST --> SUP --> PACKAGE
+    PACKAGE <-->|"private handle"| STORE
+    PACKAGE -->|"challenge or health"| HOST
+    HOST --> SAFE --> OP
+
+    classDef client fill:#f8fafc,stroke:#64748b,stroke-width:1.5px,color:#172033;
+    classDef guard fill:#fee2e2,stroke:#dc2626,stroke-width:2px,color:#7f1d1d;
+    classDef host fill:#dbeafe,stroke:#2563eb,stroke-width:2px,color:#172554;
+    classDef package fill:#ede9fe,stroke:#7c3aed,stroke-width:2px,color:#2e1065;
+    classDef safe fill:#dcfce7,stroke:#16a34a,stroke-width:2px,color:#14532d;
+    class OP client;
+    class AUTH guard;
+    class HOST,SUP host;
+    class PACKAGE,STORE package;
+    class SAFE safe;

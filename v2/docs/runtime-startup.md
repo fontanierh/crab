@@ -88,6 +88,12 @@ crab-v2-trigger \
 Use `--message-json` for a native payload and `--not-before-ms` for delayed delivery. Modes are
 `queue`, `steer` and `interrupt-and-steer`; queue is the default.
 
+## Bridge operations
+
+`crab-v2-bridge` is the single supported operator path for bridge discovery, health, reconciliation,
+authentication, credential lifecycle and shutdown. It uses the same owner-only local endpoint and
+never opens runtime state directly. See the [operator flow](bridge-operations.md).
+
 ## Restart contract
 
 | Persisted state | Startup action |
