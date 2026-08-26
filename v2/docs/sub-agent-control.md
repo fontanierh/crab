@@ -32,6 +32,5 @@ Receipts acknowledge durable acceptance, not model completion. Poll `events` wit
 cursor to receive lifecycle, interaction and full native ACP events in order without blocking the
 parent. Spawn and message IDs make retries idempotent; `stop` is idempotent too.
 
-This CLI is the stable control-plane and future tool seam. A later slice will expose these same
-capabilities as native tools inside the parent ACP session; this release does not claim automatic
-tool injection.
+This CLI remains the stable operator control-plane. Parent and child ACP sessions receive the same
+capabilities automatically through Crab's [native stdio-MCP tools](native-sub-agent-tools.md).
