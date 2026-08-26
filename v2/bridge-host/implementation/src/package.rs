@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, HashMap, HashSet},
     path::PathBuf,
     process::Stdio,
     sync::{
@@ -31,7 +31,8 @@ use crate::{
 
 const RPC_TIMEOUT: Duration = Duration::from_secs(30);
 const STOP_TIMEOUT: Duration = Duration::from_secs(5);
-const MAX_PROTOCOL_LINE_BYTES: usize = 1024 * 1024;
+const MAX_PROTOCOL_LINE_BYTES: usize = 16 * 1024 * 1024;
+const PACKAGE_PROTOCOL_VERSION: u64 = 2;
 
 type PendingCalls = Arc<Mutex<HashMap<String, oneshot::Sender<Result<Value, BridgePackageError>>>>>;
 
@@ -89,6 +90,23 @@ pub struct PackageDelivery {
     pub detail_json: String,
 }
 
+/// A package-owned credential mutation. The secret payload is deliberately not debug-printable.
+pub struct BridgeCredentialUpdate {
+    /// Must match the package instance's registered bridge.
+    pub bridge_id: String,
+    /// Lowercase SHA-256 of the exact canonical JSON snapshot previously received from Crab.
+    pub previous_fingerprint: String,
+    /// Complete fresh credential snapshot, retained only by the opaque credential provider.
+    pub credential_json: String,
+}
+
+/// Host acknowledgement proving the new credential snapshot is durable.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BridgeCredentialReceipt {
+    /// Lowercase SHA-256 of the canonical snapshot committed by Crab.
+    pub credential_fingerprint: String,
+}
+
 /// One live bridge package connection.
 #[async_trait]
 pub trait BridgePackage: Send + Sync {
@@ -110,6 +128,9 @@ pub trait BridgePackage: Send + Sync {
         &self,
         credential_json: &str,
     ) -> Result<PackageCredentialValidation, BridgePackageError>;
+    /// Tell the package its initial authentication result is durably stored. Live credential
+    /// updates must not begin before this acknowledgement succeeds.
+    async fn credential_committed(&self, credential_json: &str) -> Result<(), BridgePackageError>;
     async fn invalidate_credentials(&self, credential_json: &str)
     -> Result<(), BridgePackageError>;
     async fn deliver(
@@ -126,6 +147,17 @@ pub trait BridgeInboundSink: Send + Sync {
     async fn accept(&self, request: BridgeInbound) -> Result<TriggerIntent, BridgeHostError>;
 }
 
+/// Durable package-to-host credential callback. Success means the opaque store atomically
+/// replaced the expected prior snapshot.
+#[async_trait]
+pub trait BridgeCredentialSink: Send + Sync {
+    /// Compare and atomically persist one live credential mutation.
+    async fn persist(
+        &self,
+        request: BridgeCredentialUpdate,
+    ) -> Result<BridgeCredentialReceipt, BridgeHostError>;
+}
+
 /// Launches arbitrary agent-installed executables that implement Crab's bridge JSON-lines
 /// protocol.
 #[async_trait]
@@ -134,6 +166,7 @@ pub trait BridgePackageFactory: Send + Sync {
         &self,
         spec: &BridgeSpec,
         inbound: Arc<dyn BridgeInboundSink>,
+        credentials: Arc<dyn BridgeCredentialSink>,
     ) -> Result<Arc<dyn BridgePackage>, BridgePackageError>;
 }
 
@@ -158,18 +191,15 @@ impl BridgePackageFactory for ProcessBridgePackageFactory {
         &self,
         spec: &BridgeSpec,
         inbound: Arc<dyn BridgeInboundSink>,
+        credentials: Arc<dyn BridgeCredentialSink>,
     ) -> Result<Arc<dyn BridgePackage>, BridgePackageError> {
         let launch: ProcessLaunch = serde_json::from_str(&spec.launch_json)
             .map_err(|_| BridgePackageError::InvalidLaunch)?;
         validate_launch(&launch)?;
         let mut environment = BTreeMap::new();
         for name in &launch.environment_names {
-            if name.trim().is_empty() {
-                return Err(BridgePackageError::InvalidLaunch);
-            }
-            if let Ok(value) = std::env::var(name) {
-                environment.insert(name.clone(), value);
-            }
+            let value = std::env::var(name).map_err(|_| BridgePackageError::InvalidLaunch)?;
+            environment.insert(name.clone(), value);
         }
         let mut command = Command::new(&launch.executable);
         command
@@ -199,15 +229,19 @@ impl BridgePackageFactory for ProcessBridgePackageFactory {
         let writer = Arc::new(Mutex::new(stdin));
         let pending = Arc::new(Mutex::new(HashMap::new()));
         let protocol_alive = Arc::new(AtomicBool::new(true));
-        let (inbound_sender, inbound_receiver) = mpsc::unbounded_channel();
+        let (package_sender, package_receiver) = mpsc::unbounded_channel();
         let reader = tokio::spawn(read_messages(
             BufReader::new(stdout),
             pending.clone(),
-            inbound_sender,
+            package_sender,
             protocol_alive.clone(),
         ));
-        let inbound_worker =
-            tokio::spawn(process_inbound(inbound_receiver, writer.clone(), inbound));
+        let inbound_worker = tokio::spawn(process_package_calls(
+            package_receiver,
+            writer.clone(),
+            inbound,
+            credentials,
+        ));
         let connection = ProcessBridgePackage {
             child: Mutex::new(child),
             writer,
@@ -216,17 +250,22 @@ impl BridgePackageFactory for ProcessBridgePackageFactory {
             process_group,
             protocol_alive,
         };
-        connection
-            .call(
-                "bridge/initialize",
-                json!({
-                    "protocolVersion": 1,
-                    "bridgeId": spec.bridge_id,
-                    "packageId": spec.package_id,
-                    "configuration": parse_json(&spec.configuration_json)?,
-                }),
-            )
-            .await?;
+        let initialized: WireInitialize = decode(
+            connection
+                .call(
+                    "bridge/initialize",
+                    json!({
+                        "protocolVersion": PACKAGE_PROTOCOL_VERSION,
+                        "bridgeId": spec.bridge_id,
+                        "packageId": spec.package_id,
+                        "configuration": parse_json(&spec.configuration_json)?,
+                    }),
+                )
+                .await?,
+        )?;
+        if initialized.protocol_version != PACKAGE_PROTOCOL_VERSION {
+            return Err(BridgePackageError::ProtocolFailed);
+        }
         Ok(Arc::new(connection))
     }
 }
@@ -392,6 +431,15 @@ impl BridgePackage for ProcessBridgePackage {
         })
     }
 
+    async fn credential_committed(&self, credential_json: &str) -> Result<(), BridgePackageError> {
+        self.call(
+            "bridge/auth/committed",
+            json!({ "credential": parse_json(credential_json)? }),
+        )
+        .await?;
+        Ok(())
+    }
+
     async fn invalidate_credentials(
         &self,
         credential_json: &str,
@@ -450,15 +498,15 @@ impl Drop for ProcessBridgePackage {
     }
 }
 
-struct InboundCall {
-    id: String,
-    params: Value,
+enum PackageCall {
+    Inbound { id: String, params: Value },
+    CredentialUpdate { id: String, params: Value },
 }
 
 async fn read_messages(
     mut stdout: BufReader<ChildStdout>,
     pending: PendingCalls,
-    inbound: mpsc::UnboundedSender<InboundCall>,
+    package_calls: mpsc::UnboundedSender<PackageCall>,
     protocol_alive: Arc<AtomicBool>,
 ) {
     loop {
@@ -477,9 +525,20 @@ async fn read_messages(
         let Some(id) = message.get("id").and_then(Value::as_str).map(str::to_owned) else {
             continue;
         };
-        if message.get("method").and_then(Value::as_str) == Some("bridge/inbound") {
-            let params = message.get("params").cloned().unwrap_or(Value::Null);
-            if inbound.send(InboundCall { id, params }).is_err() {
+        let params = message.get("params").cloned().unwrap_or(Value::Null);
+        let call = match message.get("method").and_then(Value::as_str) {
+            Some("bridge/inbound") => Some(PackageCall::Inbound {
+                id: id.clone(),
+                params,
+            }),
+            Some("bridge/credential/update") => Some(PackageCall::CredentialUpdate {
+                id: id.clone(),
+                params,
+            }),
+            _ => None,
+        };
+        if let Some(call) = call {
+            if package_calls.send(call).is_err() {
                 break;
             }
             continue;
@@ -501,23 +560,42 @@ async fn read_messages(
     fail_pending(&pending, BridgePackageError::Stopped).await;
 }
 
-async fn process_inbound(
-    mut inbound: mpsc::UnboundedReceiver<InboundCall>,
+async fn process_package_calls(
+    mut calls: mpsc::UnboundedReceiver<PackageCall>,
     writer: Arc<Mutex<ChildStdin>>,
-    sink: Arc<dyn BridgeInboundSink>,
+    inbound: Arc<dyn BridgeInboundSink>,
+    credentials: Arc<dyn BridgeCredentialSink>,
 ) {
-    while let Some(call) = inbound.recv().await {
-        let result = decode_inbound(call.params).map_err(|_| BridgeHostError::InvalidSpec);
-        let response = match result {
-            Ok(request) => match sink.accept(request).await {
-                Ok(intent) => json!({
-                    "jsonrpc": "2.0",
-                    "id": call.id,
-                    "result": encode_trigger_intent(&intent),
-                }),
-                Err(_) => ingress_error(call.id),
-            },
-            Err(_) => ingress_error(call.id),
+    while let Some(call) = calls.recv().await {
+        let response = match call {
+            PackageCall::Inbound { id, params } => {
+                match decode_inbound(params).map_err(|_| BridgeHostError::InvalidSpec) {
+                    Ok(request) => match inbound.accept(request).await {
+                        Ok(intent) => json!({
+                            "jsonrpc": "2.0",
+                            "id": id,
+                            "result": encode_trigger_intent(&intent),
+                        }),
+                        Err(_) => package_call_error(id, "IngressRejected"),
+                    },
+                    Err(_) => package_call_error(id, "IngressRejected"),
+                }
+            }
+            PackageCall::CredentialUpdate { id, params } => {
+                match decode_credential_update(params) {
+                    Ok(request) => match credentials.persist(request).await {
+                        Ok(receipt) => json!({
+                            "jsonrpc": "2.0",
+                            "id": id,
+                            "result": {
+                                "credentialFingerprint": receipt.credential_fingerprint,
+                            },
+                        }),
+                        Err(_) => package_call_error(id, "CredentialUpdateRejected"),
+                    },
+                    Err(_) => package_call_error(id, "CredentialUpdateRejected"),
+                }
+            }
         };
         if write_message(&writer, &response).await.is_err() {
             break;
@@ -554,11 +632,11 @@ async fn fail_pending(pending: &PendingCalls, error: BridgePackageError) {
     }
 }
 
-fn ingress_error(id: String) -> Value {
+fn package_call_error(id: String, code: &str) -> Value {
     json!({
         "jsonrpc": "2.0",
         "id": id,
-        "error": { "code": "IngressRejected", "message": "bridge ingress rejected" },
+        "error": { "code": code, "message": "bridge package call rejected" },
     })
 }
 
@@ -569,9 +647,13 @@ fn terminate_group(process_group: Option<i32>, signal: Signal) {
 }
 
 fn validate_launch(launch: &ProcessLaunch) -> Result<(), BridgePackageError> {
+    let mut environment_names = HashSet::new();
     if !launch.executable.is_absolute()
         || !launch.working_directory.is_absolute()
         || !launch.working_directory.is_dir()
+        || launch.environment_names.iter().any(|name| {
+            name.trim().is_empty() || name.contains(['=', '\0']) || !environment_names.insert(name)
+        })
     {
         return Err(BridgePackageError::InvalidLaunch);
     }
@@ -610,6 +692,16 @@ fn decode_inbound(value: Value) -> Result<BridgeInbound, BridgePackageError> {
                 content_handle: attachment.content_handle,
             })
             .collect(),
+    })
+}
+
+fn decode_credential_update(value: Value) -> Result<BridgeCredentialUpdate, BridgePackageError> {
+    let update: WireCredentialUpdate = decode(value)?;
+    Ok(BridgeCredentialUpdate {
+        bridge_id: update.bridge_id,
+        previous_fingerprint: update.previous_fingerprint,
+        credential_json: serde_json::to_string(&update.credential)
+            .map_err(|_| BridgePackageError::ProtocolFailed)?,
     })
 }
 
@@ -668,6 +760,12 @@ struct WireChallenge {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct WireInitialize {
+    protocol_version: u64,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct WireCredential {
     credential: Value,
     expires_at_ms: Option<u64>,
@@ -702,6 +800,14 @@ struct WireInbound {
     message: Value,
     #[serde(default)]
     attachments: Vec<WireAttachment>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct WireCredentialUpdate {
+    bridge_id: String,
+    previous_fingerprint: String,
+    credential: Value,
 }
 
 #[derive(Deserialize)]

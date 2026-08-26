@@ -2,14 +2,21 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use bridge_host_implementation::{
-    AuthenticationMethod, BridgeAttachment, BridgeHostError, BridgeInbound, BridgeInboundSink,
-    BridgeIngressMode, BridgeOutbound, BridgePackageFactory, BridgeSpec,
+    AuthenticationMethod, BridgeAttachment, BridgeCredentialReceipt, BridgeCredentialSink,
+    BridgeCredentialUpdate, BridgeHostError, BridgeInbound, BridgeInboundSink, BridgeIngressMode,
+    BridgeOutbound, BridgePackageError, BridgePackageFactory, BridgeSpec,
     ProcessBridgePackageFactory, TriggerIntent,
 };
+use sha2::{Digest, Sha256};
 
 #[derive(Default)]
 struct RecordingSink {
     events: Mutex<Vec<String>>,
+}
+
+#[derive(Default)]
+struct RecordingCredentialSink {
+    updates: Mutex<Vec<String>>,
 }
 
 #[async_trait]
@@ -29,6 +36,25 @@ impl BridgeInboundSink for RecordingSink {
             trigger_id: "trigger-fixture-1".into(),
             deduplicated: false,
             recorded_at_ms: 2,
+        })
+    }
+}
+
+#[async_trait]
+impl BridgeCredentialSink for RecordingCredentialSink {
+    async fn persist(
+        &self,
+        request: BridgeCredentialUpdate,
+    ) -> Result<BridgeCredentialReceipt, BridgeHostError> {
+        self.updates
+            .lock()
+            .expect("credential sink lock")
+            .push(request.credential_json.clone());
+        Ok(BridgeCredentialReceipt {
+            credential_fingerprint: format!(
+                "{:x}",
+                Sha256::digest(request.credential_json.as_bytes())
+            ),
         })
     }
 }
@@ -60,8 +86,13 @@ fn spec(directory: &std::path::Path) -> BridgeSpec {
 async fn real_process_protocol_handles_health_auth_delivery_and_shutdown() {
     let directory = tempfile::tempdir().expect("temporary working directory");
     let sink = Arc::new(RecordingSink::default());
+    let credential_sink = Arc::new(RecordingCredentialSink::default());
     let package = ProcessBridgePackageFactory
-        .launch(&spec(directory.path()), sink.clone())
+        .launch(
+            &spec(directory.path()),
+            sink.clone(),
+            credential_sink.clone(),
+        )
         .await
         .expect("fixture process launches");
     tokio::time::timeout(std::time::Duration::from_secs(1), async {
@@ -95,6 +126,26 @@ async fn real_process_protocol_handles_health_auth_delivery_and_shutdown() {
         .await
         .expect("credential is actively validated");
     assert!(validation.valid);
+    package
+        .credential_committed(&credential.secret_json)
+        .await
+        .expect("package receives durable-auth acknowledgement");
+    tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        loop {
+            if credential_sink
+                .updates
+                .lock()
+                .expect("credential sink lock")
+                .len()
+                == 1
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("live credential mutation reaches the durable host callback");
 
     let delivery = package
         .deliver(
@@ -116,4 +167,25 @@ async fn real_process_protocol_handles_health_auth_delivery_and_shutdown() {
         .expect("selected message delivers");
     assert_eq!(delivery.external_delivery_id, "external-message-1");
     package.stop().await.expect("process group stops");
+}
+
+#[tokio::test]
+async fn explicitly_missing_environment_fails_launch() {
+    let directory = tempfile::tempdir().expect("temporary working directory");
+    let mut missing = spec(directory.path());
+    missing.launch_json = serde_json::json!({
+        "executable": env!("CARGO_BIN_EXE_bridge_fixture"),
+        "arguments": [],
+        "workingDirectory": directory.path(),
+        "environmentNames": ["CRAB_V2_TEST_ENVIRONMENT_MUST_NOT_EXIST"],
+    })
+    .to_string();
+    let result = ProcessBridgePackageFactory
+        .launch(
+            &missing,
+            Arc::new(RecordingSink::default()),
+            Arc::new(RecordingCredentialSink::default()),
+        )
+        .await;
+    assert!(matches!(result, Err(BridgePackageError::InvalidLaunch)));
 }

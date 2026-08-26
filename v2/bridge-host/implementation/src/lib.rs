@@ -8,9 +8,9 @@ pub use credentials::{
     CredentialStore, CredentialStoreError, FileCredentialStore, InMemoryCredentialStore,
 };
 pub use package::{
-    BridgeInboundSink, BridgePackage, BridgePackageError, BridgePackageFactory, PackageChallenge,
-    PackageCredential, PackageCredentialValidation, PackageDelivery, PackageHealth,
-    ProcessBridgePackageFactory,
+    BridgeCredentialReceipt, BridgeCredentialSink, BridgeCredentialUpdate, BridgeInboundSink,
+    BridgePackage, BridgePackageError, BridgePackageFactory, PackageChallenge, PackageCredential,
+    PackageCredentialValidation, PackageDelivery, PackageHealth, ProcessBridgePackageFactory,
 };
 
 use std::{
@@ -26,11 +26,13 @@ use boxology_import_trigger_inbox::{
 };
 use generated::TriggerInboxImport;
 use serde_json::{Map, Value, json};
+use sha2::{Digest, Sha256};
 use store::BridgeStore;
 use tokio::{
     sync::{Mutex, RwLock},
     task::JoinHandle,
 };
+use uuid::Uuid;
 
 type Clock = Arc<dyn Fn() -> Result<u64, BridgeHostError> + Send + Sync>;
 
@@ -68,6 +70,8 @@ impl BridgeHostState {
             credentials,
             store: Arc::new(self.store),
             connections: Arc::new(RwLock::new(HashMap::new())),
+            active_package_instances: Arc::new(RwLock::new(HashMap::new())),
+            credential_updates: Arc::new(Mutex::new(())),
             supervisors: Arc::new(StdMutex::new(HashMap::new())),
             operations: Arc::new(Mutex::new(())),
             clock: Arc::new(system_time_ms),
@@ -90,6 +94,8 @@ pub struct BridgeHost {
     credentials: Arc<dyn CredentialStore>,
     store: Arc<BridgeStore>,
     connections: Arc<RwLock<HashMap<String, Arc<dyn BridgePackage>>>>,
+    active_package_instances: Arc<RwLock<HashMap<String, String>>>,
+    credential_updates: Arc<Mutex<()>>,
     supervisors: Arc<StdMutex<HashMap<String, JoinHandle<()>>>>,
     operations: Arc<Mutex<()>>,
     clock: Clock,
@@ -103,6 +109,8 @@ impl BridgeHost {
             credentials: self.credentials.clone(),
             store: self.store.clone(),
             connections: self.connections.clone(),
+            active_package_instances: self.active_package_instances.clone(),
+            credential_updates: self.credential_updates.clone(),
             operations: self.operations.clone(),
             clock: self.clock.clone(),
         }
@@ -115,6 +123,21 @@ impl BridgeHost {
             store: self.store.clone(),
             operations: self.operations.clone(),
             clock: self.clock.clone(),
+        })
+    }
+
+    fn credential_sink(
+        &self,
+        bridge_id: &str,
+        package_instance_id: &str,
+    ) -> Arc<dyn BridgeCredentialSink> {
+        Arc::new(BridgeCredentialRouter {
+            bridge_id: bridge_id.to_owned(),
+            package_instance_id: package_instance_id.to_owned(),
+            store: self.store.clone(),
+            credentials: self.credentials.clone(),
+            active_package_instances: self.active_package_instances.clone(),
+            credential_updates: self.credential_updates.clone(),
         })
     }
 
@@ -193,9 +216,14 @@ impl BridgeHost {
         }
         self.store
             .set_lifecycle(bridge_id, &BridgeLifecycle::Starting, None, None)?;
+        let package_instance_id = Uuid::new_v4().to_string();
         let package = match self
             .packages
-            .launch(&spec, self.inbound_sink(bridge_id))
+            .launch(
+                &spec,
+                self.inbound_sink(bridge_id),
+                self.credential_sink(bridge_id, &package_instance_id),
+            )
             .await
         {
             Ok(package) => package,
@@ -204,6 +232,13 @@ impl BridgeHost {
                 return Err(BridgeHostError::PackageProtocolFailed);
             }
         };
+        activate_package_instance(
+            &self.active_package_instances,
+            &self.credential_updates,
+            bridge_id,
+            package_instance_id,
+        )
+        .await;
         self.connections
             .write()
             .await
@@ -230,6 +265,12 @@ impl BridgeHost {
         let health = match package.health(credential.as_deref()).await {
             Ok(health) => health,
             Err(_) => {
+                deactivate_package_instance(
+                    &self.active_package_instances,
+                    &self.credential_updates,
+                    bridge_id,
+                )
+                .await;
                 self.connections.write().await.remove(bridge_id);
                 let spec = self.store.spec(bridge_id)?;
                 self.schedule_backoff(bridge_id, &spec)?;
@@ -260,6 +301,12 @@ impl BridgeHost {
         };
         let mut status = self.store.report_health(&observation)?;
         if !observation.process_alive {
+            deactivate_package_instance(
+                &self.active_package_instances,
+                &self.credential_updates,
+                bridge_id,
+            )
+            .await;
             self.connections.write().await.remove(bridge_id);
             let spec = self.store.spec(bridge_id)?;
             self.schedule_backoff(bridge_id, &spec)?;
@@ -278,6 +325,12 @@ impl BridgeHost {
     }
 
     async fn stop_connection(&self, bridge_id: &str) -> Result<BridgeStatus, BridgeHostError> {
+        deactivate_package_instance(
+            &self.active_package_instances,
+            &self.credential_updates,
+            bridge_id,
+        )
+        .await;
         if let Some(package) = self.connections.write().await.remove(bridge_id) {
             let _ = package.stop().await;
         }
@@ -293,6 +346,8 @@ struct SupervisorContext {
     credentials: Arc<dyn CredentialStore>,
     store: Arc<BridgeStore>,
     connections: Arc<RwLock<HashMap<String, Arc<dyn BridgePackage>>>>,
+    active_package_instances: Arc<RwLock<HashMap<String, String>>>,
+    credential_updates: Arc<Mutex<()>>,
     operations: Arc<Mutex<()>>,
     clock: Clock,
 }
@@ -349,10 +404,31 @@ impl SupervisorContext {
                 operations: self.operations.clone(),
                 clock: self.clock.clone(),
             });
-            let Ok(package) = self.packages.launch(&spec, inbound).await else {
+            let package_instance_id = Uuid::new_v4().to_string();
+            let credential_updates: Arc<dyn BridgeCredentialSink> =
+                Arc::new(BridgeCredentialRouter {
+                    bridge_id: bridge_id.to_owned(),
+                    package_instance_id: package_instance_id.clone(),
+                    store: self.store.clone(),
+                    credentials: self.credentials.clone(),
+                    active_package_instances: self.active_package_instances.clone(),
+                    credential_updates: self.credential_updates.clone(),
+                });
+            let Ok(package) = self
+                .packages
+                .launch(&spec, inbound, credential_updates)
+                .await
+            else {
                 self.backoff(bridge_id, &spec, now_ms);
                 return;
             };
+            activate_package_instance(
+                &self.active_package_instances,
+                &self.credential_updates,
+                bridge_id,
+                package_instance_id,
+            )
+            .await;
             self.connections
                 .write()
                 .await
@@ -398,6 +474,12 @@ impl SupervisorContext {
         let health = match package.health(credential.as_deref()).await {
             Ok(health) => health,
             Err(_) => {
+                deactivate_package_instance(
+                    &self.active_package_instances,
+                    &self.credential_updates,
+                    bridge_id,
+                )
+                .await;
                 self.connections.write().await.remove(bridge_id);
                 self.backoff(bridge_id, &spec, now_ms);
                 return;
@@ -423,6 +505,12 @@ impl SupervisorContext {
             detail_json: health.detail_json,
         });
         if !process_alive {
+            deactivate_package_instance(
+                &self.active_package_instances,
+                &self.credential_updates,
+                bridge_id,
+            )
+            .await;
             self.connections.write().await.remove(bridge_id);
             self.backoff(bridge_id, &spec, now_ms);
             return;
@@ -485,6 +573,15 @@ struct BridgeIngressRouter {
     clock: Clock,
 }
 
+struct BridgeCredentialRouter {
+    bridge_id: String,
+    package_instance_id: String,
+    store: Arc<BridgeStore>,
+    credentials: Arc<dyn CredentialStore>,
+    active_package_instances: Arc<RwLock<HashMap<String, String>>>,
+    credential_updates: Arc<Mutex<()>>,
+}
+
 #[async_trait::async_trait]
 impl BridgeInboundSink for BridgeIngressRouter {
     async fn accept(&self, request: BridgeInbound) -> Result<TriggerIntent, BridgeHostError> {
@@ -506,6 +603,47 @@ impl BridgeInboundSink for BridgeIngressRouter {
             request,
         )
         .await
+    }
+}
+
+#[async_trait::async_trait]
+impl BridgeCredentialSink for BridgeCredentialRouter {
+    async fn persist(
+        &self,
+        request: BridgeCredentialUpdate,
+    ) -> Result<BridgeCredentialReceipt, BridgeHostError> {
+        let _update = self.credential_updates.lock().await;
+        if request.bridge_id != self.bridge_id
+            || !valid_credential_fingerprint(&request.previous_fingerprint)
+            || self
+                .active_package_instances
+                .read()
+                .await
+                .get(&self.bridge_id)
+                != Some(&self.package_instance_id)
+        {
+            return Err(BridgeHostError::InvalidSpec);
+        }
+        let handle = self
+            .store
+            .credential(&self.bridge_id)?
+            .credential_handle
+            .ok_or(BridgeHostError::CredentialRejected)?;
+        let current = self
+            .credentials
+            .get(&handle)
+            .await
+            .map_err(map_credential_error)?;
+        if credential_fingerprint(&current) != request.previous_fingerprint {
+            return Err(BridgeHostError::GenerationConflict);
+        }
+        self.credentials
+            .replace(&handle, &self.bridge_id, &request.credential_json)
+            .await
+            .map_err(map_credential_error)?;
+        Ok(BridgeCredentialReceipt {
+            credential_fingerprint: credential_fingerprint(&request.credential_json),
+        })
     }
 }
 
@@ -550,6 +688,12 @@ impl BridgeHost {
             return Err(BridgeHostError::GenerationConflict);
         }
         self.stop_supervisor(&request.spec.bridge_id);
+        deactivate_package_instance(
+            &self.active_package_instances,
+            &self.credential_updates,
+            &request.spec.bridge_id,
+        )
+        .await;
         if let Some(package) = self
             .connections
             .write()
@@ -681,6 +825,26 @@ impl BridgeHost {
             && previous_handle != handle
         {
             let _ = self.credentials.invalidate(&previous_handle).await;
+        }
+        if package
+            .credential_committed(&credential.secret_json)
+            .await
+            .is_err()
+        {
+            deactivate_package_instance(
+                &self.active_package_instances,
+                &self.credential_updates,
+                &request.bridge_id,
+            )
+            .await;
+            self.connections.write().await.remove(&request.bridge_id);
+            let _ = package.stop().await;
+            let _ = self.store.set_lifecycle(
+                &request.bridge_id,
+                &BridgeLifecycle::Degraded,
+                Some("credential commit acknowledgement failed"),
+                None,
+            );
         }
         Ok(stored)
     }
@@ -832,6 +996,12 @@ impl BridgeHost {
         let _ = context;
         let _operation = self.operations.lock().await;
         self.stop_supervisor(&request.bridge_id);
+        deactivate_package_instance(
+            &self.active_package_instances,
+            &self.credential_updates,
+            &request.bridge_id,
+        )
+        .await;
         if let Some(package) = self.connections.write().await.remove(&request.bridge_id) {
             let _ = package.stop().await;
         }
@@ -1009,6 +1179,36 @@ fn map_credential_error(error: CredentialStoreError) -> BridgeHostError {
         }
         CredentialStoreError::Unavailable => BridgeHostError::StorageUnavailable,
     }
+}
+
+fn credential_fingerprint(secret_json: &str) -> String {
+    format!("{:x}", Sha256::digest(secret_json.as_bytes()))
+}
+
+fn valid_credential_fingerprint(fingerprint: &str) -> bool {
+    fingerprint.len() == 64 && fingerprint.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+async fn activate_package_instance(
+    active: &RwLock<HashMap<String, String>>,
+    credential_updates: &Mutex<()>,
+    bridge_id: &str,
+    package_instance_id: String,
+) {
+    let _update = credential_updates.lock().await;
+    active
+        .write()
+        .await
+        .insert(bridge_id.to_owned(), package_instance_id);
+}
+
+async fn deactivate_package_instance(
+    active: &RwLock<HashMap<String, String>>,
+    credential_updates: &Mutex<()>,
+    bridge_id: &str,
+) {
+    let _update = credential_updates.lock().await;
+    active.write().await.remove(bridge_id);
 }
 
 fn map_trigger_error(error: ErasedCallError) -> BridgeHostError {

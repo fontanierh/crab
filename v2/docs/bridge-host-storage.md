@@ -28,17 +28,25 @@ runtime-state/
 
 ## Process protocol
 
-Each package is an absolute executable speaking bounded JSON-RPC-style messages, one JSON object
-per line. Crab clears the child environment and passes only explicitly named variables.
+Each package is an absolute executable speaking protocol v2 as bounded JSON-RPC-style messages,
+one JSON object per line. Crab clears the child environment, passes only explicitly named
+variables, and fails launch when a named variable is unavailable.
 
 | Direction | Methods |
 |---|---|
 | Host → package | `bridge/initialize`, `bridge/health`, `bridge/auth/*`, `bridge/deliver`, `bridge/shutdown` |
-| Package → host | `bridge/inbound` |
+| Package → host | `bridge/inbound`, `bridge/credential/update` |
 
 The transport multiplexes responses and ordered inbound calls without blocking health or delivery
 RPCs. `bridge/inbound` receives a success response only after durable trigger enqueue; packages can
 safely retry the same external event ID after a crash or timeout.
+
+Authentication completion is two-phase: Crab stores the initial secret under an opaque handle,
+then `bridge/auth/committed` permits live credential updates. Each update supplies the previous
+canonical-JSON SHA-256 fingerprint. Crab accepts it only from the active package instance, compares
+the current fingerprint, atomically replaces and fsyncs the same mode-0600 credential file, then
+returns the new fingerprint. Stale processes and out-of-order snapshots fail without secret-bearing
+diagnostics.
 
 Crab terminates the package process group on stop/drop, probes immediately and on every health
 interval, applies exponential backoff, and refuses starts beyond the configured restart window.

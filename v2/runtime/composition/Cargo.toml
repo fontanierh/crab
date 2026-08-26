@@ -27,4 +27,5 @@ tokio = { workspace = true }
 async-trait = { workspace = true }
 boxology = { workspace = true }
 boxology-manifest = { workspace = true }
+sha2 = { workspace = true }
 tempfile = { workspace = true }
