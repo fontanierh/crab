@@ -765,6 +765,85 @@ static __BOXOLOGY_CONTRACT_DESCRIPTOR: ::std::sync::LazyLock<
     let capability_5 = ::boxology_contract::CapabilityDescriptor::new(
         ::boxology_contract::CapabilityId::new(
             box_id.clone(),
+            ::boxology_contract::CapabilityName::new("recover")
+                .expect("generated capability name is valid"),
+        ),
+        ::boxology_contract::TypeDescriptor::structure([])
+            .expect("generated struct descriptor is valid"),
+        ::boxology_contract::TypeDescriptor::structure([
+                ::boxology_contract::FieldDescriptor::new(
+                    "recoveries",
+                    ::boxology_contract::TypeDescriptor::list(
+                            ::boxology_contract::TypeDescriptor::structure([
+                                    ::boxology_contract::FieldDescriptor::new(
+                                        "sub_agent_id",
+                                        ::boxology_contract::TypeDescriptor::string(),
+                                        None,
+                                    ),
+                                    ::boxology_contract::FieldDescriptor::new(
+                                        "child_session_id",
+                                        ::boxology_contract::TypeDescriptor::string(),
+                                        None,
+                                    ),
+                                    ::boxology_contract::FieldDescriptor::new(
+                                        "disposition",
+                                        ::boxology_contract::TypeDescriptor::enumeration([
+                                                ::boxology_contract::VariantDescriptor::new(
+                                                    "Resumed",
+                                                    ::boxology_contract::VariantPayload::Unit,
+                                                    None,
+                                                ),
+                                                ::boxology_contract::VariantDescriptor::new(
+                                                    "RecoveryDisabled",
+                                                    ::boxology_contract::VariantPayload::Unit,
+                                                    None,
+                                                ),
+                                                ::boxology_contract::VariantDescriptor::new(
+                                                    "RestartBudgetExhausted",
+                                                    ::boxology_contract::VariantPayload::Unit,
+                                                    None,
+                                                ),
+                                                ::boxology_contract::VariantDescriptor::new(
+                                                    "ParentUnavailable",
+                                                    ::boxology_contract::VariantPayload::Unit,
+                                                    None,
+                                                ),
+                                                ::boxology_contract::VariantDescriptor::new(
+                                                    "SessionUnavailable",
+                                                    ::boxology_contract::VariantPayload::Unit,
+                                                    None,
+                                                ),
+                                                ::boxology_contract::VariantDescriptor::new(
+                                                    "IdentityMismatch",
+                                                    ::boxology_contract::VariantPayload::Unit,
+                                                    None,
+                                                ),
+                                                ::boxology_contract::VariantDescriptor::new(
+                                                    "Failed",
+                                                    ::boxology_contract::VariantPayload::Unit,
+                                                    None,
+                                                ),
+                                            ])
+                                            .expect("generated enum descriptor is valid"),
+                                        None,
+                                    ),
+                                ])
+                                .expect("generated struct descriptor is valid"),
+                        )
+                        .expect("generated list descriptor is valid"),
+                    None,
+                ),
+            ])
+            .expect("generated struct descriptor is valid"),
+        error.clone(),
+        ::boxology_contract::CapabilityShape::Unary,
+        ::boxology_contract::ExposureLevel::CodeOnly,
+        ::boxology_contract::Idempotency::None,
+        None,
+    );
+    let capability_6 = ::boxology_contract::CapabilityDescriptor::new(
+        ::boxology_contract::CapabilityId::new(
+            box_id.clone(),
             ::boxology_contract::CapabilityName::new("stop")
                 .expect("generated capability name is valid"),
         ),
@@ -809,9 +888,10 @@ static __BOXOLOGY_CONTRACT_DESCRIPTOR: ::std::sync::LazyLock<
                 capability_3,
                 capability_4,
                 capability_5,
+                capability_6,
             ],
             ::boxology_contract::ContractRevision::new(
-                    "sha256:b84c9a4aeda0ad8fccc475b9dae08972f7b9b4a447609f21d2bda599b0704618",
+                    "sha256:6fc49b785cf181cdf648767ac0c1a8220b7676e14812178356dac871cba96ffd",
                 )
                 .expect("generated contract revision is non-empty"),
         )
@@ -879,6 +959,17 @@ pub trait SubAgentHostDispatch: Send + Sync + 'static {
         request: SubAgentReference,
     ) -> Pin<
         Box<dyn Future<Output = Result<SubAgentStatus, SubAgentHostError>> + Send + 'a>,
+    >;
+    fn recover<'a>(
+        &'a self,
+        context: CallContext,
+        request: RecoverSubAgentsRequest,
+    ) -> Pin<
+        Box<
+            dyn Future<
+                Output = Result<SubAgentRecoveryReport, SubAgentHostError>,
+            > + Send + 'a,
+        >,
     >;
     fn stop<'a>(
         &'a self,
@@ -1457,6 +1548,94 @@ impl SubAgentHostHandle {
             .map_err(|error| conversion_detail("output_decode", error))
             .map_err(CallError::InvalidResponse)
     }
+    pub async fn recover(
+        &self,
+        context: CallContext,
+        request: RecoverSubAgentsRequest,
+    ) -> Result<SubAgentRecoveryReport, CallError<SubAgentHostError>> {
+        let input = request
+            .encode()
+            .map_err(|error| conversion_detail("input_encode", error))
+            .map_err(CallError::ContractViolation)?;
+        let output = self
+            .target
+            .call(&SUB_AGENT_HOST_RECOVER, context, input)
+            .await
+            .map_err(|error| {
+                error.into_typed::<SubAgentHostError>(&SUB_AGENT_HOST_ERROR_DESCRIPTOR)
+            })?;
+        let output = TypeDescriptor::structure([
+                ::boxology_contract::FieldDescriptor::new(
+                    "recoveries",
+                    TypeDescriptor::list(
+                            TypeDescriptor::structure([
+                                    ::boxology_contract::FieldDescriptor::new(
+                                        "sub_agent_id",
+                                        TypeDescriptor::string(),
+                                        None,
+                                    ),
+                                    ::boxology_contract::FieldDescriptor::new(
+                                        "child_session_id",
+                                        TypeDescriptor::string(),
+                                        None,
+                                    ),
+                                    ::boxology_contract::FieldDescriptor::new(
+                                        "disposition",
+                                        TypeDescriptor::enumeration([
+                                                ::boxology_contract::VariantDescriptor::new(
+                                                    "Resumed",
+                                                    ::boxology_contract::VariantPayload::Unit,
+                                                    None,
+                                                ),
+                                                ::boxology_contract::VariantDescriptor::new(
+                                                    "RecoveryDisabled",
+                                                    ::boxology_contract::VariantPayload::Unit,
+                                                    None,
+                                                ),
+                                                ::boxology_contract::VariantDescriptor::new(
+                                                    "RestartBudgetExhausted",
+                                                    ::boxology_contract::VariantPayload::Unit,
+                                                    None,
+                                                ),
+                                                ::boxology_contract::VariantDescriptor::new(
+                                                    "ParentUnavailable",
+                                                    ::boxology_contract::VariantPayload::Unit,
+                                                    None,
+                                                ),
+                                                ::boxology_contract::VariantDescriptor::new(
+                                                    "SessionUnavailable",
+                                                    ::boxology_contract::VariantPayload::Unit,
+                                                    None,
+                                                ),
+                                                ::boxology_contract::VariantDescriptor::new(
+                                                    "IdentityMismatch",
+                                                    ::boxology_contract::VariantPayload::Unit,
+                                                    None,
+                                                ),
+                                                ::boxology_contract::VariantDescriptor::new(
+                                                    "Failed",
+                                                    ::boxology_contract::VariantPayload::Unit,
+                                                    None,
+                                                ),
+                                            ])
+                                            .expect("generated enum descriptor is valid"),
+                                        None,
+                                    ),
+                                ])
+                                .expect("generated struct descriptor is valid"),
+                        )
+                        .expect("generated list descriptor is valid"),
+                    None,
+                ),
+            ])
+            .expect("generated struct descriptor is valid")
+            .conform(DecodeRole::ConsumerOutput, output)
+            .map_err(|error| conversion_detail("output_decode", error))
+            .map_err(CallError::InvalidResponse)?;
+        <SubAgentRecoveryReport as ContractType>::decode(&output)
+            .map_err(|error| conversion_detail("output_decode", error))
+            .map_err(CallError::InvalidResponse)
+    }
     pub async fn stop(
         &self,
         context: CallContext,
@@ -1534,6 +1713,13 @@ static SUB_AGENT_HOST_STATUS: LazyLock<CapabilityId> = LazyLock::new(|| {
     CapabilityId::new(
         BoxId::new("sub-agent-host").expect("generated box identity is valid"),
         CapabilityName::new("status").expect("generated capability name is valid"),
+    )
+});
+#[rustfmt::skip]
+static SUB_AGENT_HOST_RECOVER: LazyLock<CapabilityId> = LazyLock::new(|| {
+    CapabilityId::new(
+        BoxId::new("sub-agent-host").expect("generated box identity is valid"),
+        CapabilityName::new("recover").expect("generated capability name is valid"),
     )
 });
 #[rustfmt::skip]
@@ -4259,6 +4445,403 @@ impl ::boxology_contract::ContractType for SubAgentReceipt {
     }
 }
 #[rustfmt::skip]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Default)]
+pub struct RecoverSubAgentsRequest {}
+#[rustfmt::skip]
+impl ::boxology_contract::ContractType for RecoverSubAgentsRequest {
+    fn encode_value(
+        &self,
+    ) -> ::core::result::Result<
+        ::boxology_contract::ContractValue,
+        ::boxology_contract::EncodeError,
+    > {
+        let fields = ::std::vec::Vec::new();
+        ::boxology_contract::ContractValue::object(fields)
+            .map_err(|_| unreachable!("validated generated field identities are unique"))
+    }
+    fn decode_value(
+        value: &::boxology_contract::ContractValue,
+    ) -> ::core::result::Result<Self, ::boxology_contract::DecodeError> {
+        let ::boxology_contract::ValueRef::Object(fields) = value.view() else {
+            return Err(
+                ::boxology_contract::DecodeError::new(
+                    ::boxology_contract::DecodeErrorKind::KindMismatch,
+                ),
+            );
+        };
+        if let Some((field, _)) = fields.entries().next() {
+            return Err(
+                ::boxology_contract::DecodeError::new(
+                        ::boxology_contract::DecodeErrorKind::UnknownField(field.into()),
+                    )
+                    .under(::boxology_contract::PathSegment::Field(field.into())),
+            );
+        }
+        Ok(Self {})
+    }
+}
+#[rustfmt::skip]
+/// Truthful startup outcome for one durable child. Recovery never opens a replacement session.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub enum SubAgentRecoveryDisposition {
+    #[default]
+    Resumed,
+    RecoveryDisabled,
+    RestartBudgetExhausted,
+    ParentUnavailable,
+    SessionUnavailable,
+    IdentityMismatch,
+    Failed,
+    Unknown { tag: ::std::string::String, payload: ::boxology_contract::OpaquePayload },
+}
+#[rustfmt::skip]
+impl ::boxology_contract::ContractType for SubAgentRecoveryDisposition {
+    fn encode_value(
+        &self,
+    ) -> ::core::result::Result<
+        ::boxology_contract::ContractValue,
+        ::boxology_contract::EncodeError,
+    > {
+        let (tag, payload) = match self {
+            Self::Resumed => ("Resumed".into(), ::boxology_contract::SlotValue::Null),
+            Self::RecoveryDisabled => {
+                ("RecoveryDisabled".into(), ::boxology_contract::SlotValue::Null)
+            }
+            Self::RestartBudgetExhausted => {
+                ("RestartBudgetExhausted".into(), ::boxology_contract::SlotValue::Null)
+            }
+            Self::ParentUnavailable => {
+                ("ParentUnavailable".into(), ::boxology_contract::SlotValue::Null)
+            }
+            Self::SessionUnavailable => {
+                ("SessionUnavailable".into(), ::boxology_contract::SlotValue::Null)
+            }
+            Self::IdentityMismatch => {
+                ("IdentityMismatch".into(), ::boxology_contract::SlotValue::Null)
+            }
+            Self::Failed => ("Failed".into(), ::boxology_contract::SlotValue::Null),
+            Self::Unknown { tag, payload } => {
+                (
+                    tag.clone(),
+                    ::boxology_contract::SlotValue::Value(
+                        ::boxology_contract::ContractValue::opaque(payload.forward()),
+                    ),
+                )
+            }
+        };
+        Ok(::boxology_contract::ContractValue::enum_value(tag, payload))
+    }
+    fn decode_value(
+        value: &::boxology_contract::ContractValue,
+    ) -> ::core::result::Result<Self, ::boxology_contract::DecodeError> {
+        let ::boxology_contract::ValueRef::Enum { tag, payload } = value.view() else {
+            return Err(
+                ::boxology_contract::DecodeError::new(
+                    ::boxology_contract::DecodeErrorKind::KindMismatch,
+                ),
+            );
+        };
+        match tag {
+            "Resumed" if matches!(payload, ::boxology_contract::SlotValue::Null) => {
+                Ok(Self::Resumed)
+            }
+            "Resumed" => {
+                Err(
+                    ::boxology_contract::DecodeError::new(
+                            ::boxology_contract::DecodeErrorKind::UnexpectedPayload,
+                        )
+                        .under(::boxology_contract::PathSegment::Variant(tag.into())),
+                )
+            }
+            "RecoveryDisabled" if matches!(
+                payload, ::boxology_contract::SlotValue::Null
+            ) => Ok(Self::RecoveryDisabled),
+            "RecoveryDisabled" => {
+                Err(
+                    ::boxology_contract::DecodeError::new(
+                            ::boxology_contract::DecodeErrorKind::UnexpectedPayload,
+                        )
+                        .under(::boxology_contract::PathSegment::Variant(tag.into())),
+                )
+            }
+            "RestartBudgetExhausted" if matches!(
+                payload, ::boxology_contract::SlotValue::Null
+            ) => Ok(Self::RestartBudgetExhausted),
+            "RestartBudgetExhausted" => {
+                Err(
+                    ::boxology_contract::DecodeError::new(
+                            ::boxology_contract::DecodeErrorKind::UnexpectedPayload,
+                        )
+                        .under(::boxology_contract::PathSegment::Variant(tag.into())),
+                )
+            }
+            "ParentUnavailable" if matches!(
+                payload, ::boxology_contract::SlotValue::Null
+            ) => Ok(Self::ParentUnavailable),
+            "ParentUnavailable" => {
+                Err(
+                    ::boxology_contract::DecodeError::new(
+                            ::boxology_contract::DecodeErrorKind::UnexpectedPayload,
+                        )
+                        .under(::boxology_contract::PathSegment::Variant(tag.into())),
+                )
+            }
+            "SessionUnavailable" if matches!(
+                payload, ::boxology_contract::SlotValue::Null
+            ) => Ok(Self::SessionUnavailable),
+            "SessionUnavailable" => {
+                Err(
+                    ::boxology_contract::DecodeError::new(
+                            ::boxology_contract::DecodeErrorKind::UnexpectedPayload,
+                        )
+                        .under(::boxology_contract::PathSegment::Variant(tag.into())),
+                )
+            }
+            "IdentityMismatch" if matches!(
+                payload, ::boxology_contract::SlotValue::Null
+            ) => Ok(Self::IdentityMismatch),
+            "IdentityMismatch" => {
+                Err(
+                    ::boxology_contract::DecodeError::new(
+                            ::boxology_contract::DecodeErrorKind::UnexpectedPayload,
+                        )
+                        .under(::boxology_contract::PathSegment::Variant(tag.into())),
+                )
+            }
+            "Failed" if matches!(payload, ::boxology_contract::SlotValue::Null) => {
+                Ok(Self::Failed)
+            }
+            "Failed" => {
+                Err(
+                    ::boxology_contract::DecodeError::new(
+                            ::boxology_contract::DecodeErrorKind::UnexpectedPayload,
+                        )
+                        .under(::boxology_contract::PathSegment::Variant(tag.into())),
+                )
+            }
+            _ => {
+                match payload {
+                    ::boxology_contract::SlotValue::Value(value) => {
+                        match value.view() {
+                            ::boxology_contract::ValueRef::Opaque(payload) => {
+                                Ok(Self::Unknown {
+                                    tag: tag.into(),
+                                    payload: payload.forward(),
+                                })
+                            }
+                            _ => {
+                                Err(
+                                    ::boxology_contract::DecodeError::new(
+                                            ::boxology_contract::DecodeErrorKind::UnknownVariant(
+                                                tag.into(),
+                                            ),
+                                        )
+                                        .under(
+                                            ::boxology_contract::PathSegment::Variant(tag.into()),
+                                        ),
+                                )
+                            }
+                        }
+                    }
+                    _ => {
+                        Err(
+                            ::boxology_contract::DecodeError::new(
+                                    ::boxology_contract::DecodeErrorKind::UnknownVariant(
+                                        tag.into(),
+                                    ),
+                                )
+                                .under(
+                                    ::boxology_contract::PathSegment::Variant(tag.into()),
+                                ),
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+#[rustfmt::skip]
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct SubAgentRecovery {
+    pub sub_agent_id: ::std::string::String,
+    pub child_session_id: ::std::string::String,
+    pub disposition: SubAgentRecoveryDisposition,
+}
+#[rustfmt::skip]
+impl ::boxology_contract::ContractType for SubAgentRecovery {
+    fn encode_value(
+        &self,
+    ) -> ::core::result::Result<
+        ::boxology_contract::ContractValue,
+        ::boxology_contract::EncodeError,
+    > {
+        let mut fields = ::std::vec::Vec::new();
+        if let Some(value) = ::boxology_contract::ContractType::encode_field(
+                &self.sub_agent_id,
+            )
+            .map_err(|error| {
+                error
+                    .under(
+                        ::boxology_contract::PathSegment::Field("sub_agent_id".into()),
+                    )
+            })?
+        {
+            fields.push(("sub_agent_id".into(), value));
+        }
+        if let Some(value) = ::boxology_contract::ContractType::encode_field(
+                &self.child_session_id,
+            )
+            .map_err(|error| {
+                error
+                    .under(
+                        ::boxology_contract::PathSegment::Field(
+                            "child_session_id".into(),
+                        ),
+                    )
+            })?
+        {
+            fields.push(("child_session_id".into(), value));
+        }
+        if let Some(value) = ::boxology_contract::ContractType::encode_field(
+                &self.disposition,
+            )
+            .map_err(|error| {
+                error
+                    .under(::boxology_contract::PathSegment::Field("disposition".into()))
+            })?
+        {
+            fields.push(("disposition".into(), value));
+        }
+        ::boxology_contract::ContractValue::object(fields)
+            .map_err(|_| unreachable!("validated generated field identities are unique"))
+    }
+    fn decode_value(
+        value: &::boxology_contract::ContractValue,
+    ) -> ::core::result::Result<Self, ::boxology_contract::DecodeError> {
+        let ::boxology_contract::ValueRef::Object(fields) = value.view() else {
+            return Err(
+                ::boxology_contract::DecodeError::new(
+                    ::boxology_contract::DecodeErrorKind::KindMismatch,
+                ),
+            );
+        };
+        for (field, _) in fields.entries() {
+            match field {
+                "sub_agent_id" | "child_session_id" | "disposition" => {}
+                _ => {
+                    return Err(
+                        ::boxology_contract::DecodeError::new(
+                                ::boxology_contract::DecodeErrorKind::UnknownField(
+                                    field.into(),
+                                ),
+                            )
+                            .under(::boxology_contract::PathSegment::Field(field.into())),
+                    );
+                }
+            }
+        }
+        Ok(Self {
+            sub_agent_id: <::std::string::String as ::boxology_contract::ContractType>::decode_field(
+                    fields.get("sub_agent_id"),
+                )
+                .map_err(|error| {
+                    error
+                        .under(
+                            ::boxology_contract::PathSegment::Field(
+                                "sub_agent_id".into(),
+                            ),
+                        )
+                })?,
+            child_session_id: <::std::string::String as ::boxology_contract::ContractType>::decode_field(
+                    fields.get("child_session_id"),
+                )
+                .map_err(|error| {
+                    error
+                        .under(
+                            ::boxology_contract::PathSegment::Field(
+                                "child_session_id".into(),
+                            ),
+                        )
+                })?,
+            disposition: <SubAgentRecoveryDisposition as ::boxology_contract::ContractType>::decode_field(
+                    fields.get("disposition"),
+                )
+                .map_err(|error| {
+                    error
+                        .under(
+                            ::boxology_contract::PathSegment::Field("disposition".into()),
+                        )
+                })?,
+        })
+    }
+}
+#[rustfmt::skip]
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct SubAgentRecoveryReport {
+    pub recoveries: ::std::vec::Vec<SubAgentRecovery>,
+}
+#[rustfmt::skip]
+impl ::boxology_contract::ContractType for SubAgentRecoveryReport {
+    fn encode_value(
+        &self,
+    ) -> ::core::result::Result<
+        ::boxology_contract::ContractValue,
+        ::boxology_contract::EncodeError,
+    > {
+        let mut fields = ::std::vec::Vec::new();
+        if let Some(value) = ::boxology_contract::ContractType::encode_field(
+                &self.recoveries,
+            )
+            .map_err(|error| {
+                error.under(::boxology_contract::PathSegment::Field("recoveries".into()))
+            })?
+        {
+            fields.push(("recoveries".into(), value));
+        }
+        ::boxology_contract::ContractValue::object(fields)
+            .map_err(|_| unreachable!("validated generated field identities are unique"))
+    }
+    fn decode_value(
+        value: &::boxology_contract::ContractValue,
+    ) -> ::core::result::Result<Self, ::boxology_contract::DecodeError> {
+        let ::boxology_contract::ValueRef::Object(fields) = value.view() else {
+            return Err(
+                ::boxology_contract::DecodeError::new(
+                    ::boxology_contract::DecodeErrorKind::KindMismatch,
+                ),
+            );
+        };
+        for (field, _) in fields.entries() {
+            match field {
+                "recoveries" => {}
+                _ => {
+                    return Err(
+                        ::boxology_contract::DecodeError::new(
+                                ::boxology_contract::DecodeErrorKind::UnknownField(
+                                    field.into(),
+                                ),
+                            )
+                            .under(::boxology_contract::PathSegment::Field(field.into())),
+                    );
+                }
+            }
+        }
+        Ok(Self {
+            recoveries: <::std::vec::Vec<
+                SubAgentRecovery,
+            > as ::boxology_contract::ContractType>::decode_field(
+                    fields.get("recoveries"),
+                )
+                .map_err(|error| {
+                    error
+                        .under(
+                            ::boxology_contract::PathSegment::Field("recoveries".into()),
+                        )
+                })?,
+        })
+    }
+}
+#[rustfmt::skip]
 #[derive(Debug, Clone, PartialEq, Default)]
 pub enum SubAgentHostError {
     #[default]
@@ -4269,6 +4852,7 @@ pub enum SubAgentHostError {
     InvalidContextBoundary,
     NativeForkUnavailable,
     PortableSnapshotForbidden,
+    /// Retained for older consumers; bounded native resume is now implemented.
     CrashRestartUnavailable,
     SteeringUnavailable,
     AuthorityUnavailable,
@@ -4585,7 +5169,8 @@ pub mod test_support {
     use super::{
         SubAgentHostError, SUB_AGENT_HOST_SPAWN, SUB_AGENT_HOST_SEND_TO_CHILD,
         SUB_AGENT_HOST_SEND_TO_PARENT, SUB_AGENT_HOST_READ_EVENTS, SUB_AGENT_HOST_STATUS,
-        SUB_AGENT_HOST_STOP, SubAgentHostHandle, conversion_detail,
+        SUB_AGENT_HOST_RECOVER, SUB_AGENT_HOST_STOP, SubAgentHostHandle,
+        conversion_detail,
     };
     type SpawnFuture = Pin<
         Box<
@@ -4642,6 +5227,17 @@ pub mod test_support {
         CallContext,
         super::SubAgentReference,
     ) -> StatusFuture + Send + Sync + 'static;
+    type RecoverFuture = Pin<
+        Box<
+            dyn Future<
+                Output = Result<super::SubAgentRecoveryReport, SubAgentHostError>,
+            > + Send + 'static,
+        >,
+    >;
+    type RecoverResponder = dyn Fn(
+        CallContext,
+        super::RecoverSubAgentsRequest,
+    ) -> RecoverFuture + Send + Sync + 'static;
     type StopFuture = Pin<
         Box<
             dyn Future<
@@ -4660,6 +5256,7 @@ pub mod test_support {
         send_to_parent: Option<Arc<SendToParentResponder>>,
         read_events: Option<Arc<ReadEventsResponder>>,
         status: Option<Arc<StatusResponder>>,
+        recover: Option<Arc<RecoverResponder>>,
         stop: Option<Arc<StopResponder>>,
     }
     impl SubAgentHostFake {
@@ -4728,6 +5325,21 @@ pub mod test_support {
                 + 'static,
         {
             self.status = Some(
+                Arc::new(move |context, request| {
+                    Box::pin(responder(context, request))
+                }),
+            );
+            self
+        }
+        pub fn with_recover<F, Fut>(mut self, responder: F) -> Self
+        where
+            F: Fn(CallContext, super::RecoverSubAgentsRequest) -> Fut + Send + Sync
+                + 'static,
+            Fut: Future<
+                    Output = Result<super::SubAgentRecoveryReport, SubAgentHostError>,
+                > + Send + 'static,
+        {
+            self.recover = Some(
                 Arc::new(move |context, request| {
                     Box::pin(responder(context, request))
                 }),
@@ -5098,6 +5710,41 @@ pub mod test_support {
                     }
                 });
             }
+            if capability == &*SUB_AGENT_HOST_RECOVER {
+                let Some(responder) = self.recover.clone() else {
+                    return Box::pin(ready(Err(unprogrammed())));
+                };
+                return Box::pin(async move {
+                    let input = TypeDescriptor::structure([])
+                        .expect("generated struct descriptor is valid")
+                        .conform(DecodeRole::ProviderInput, input)
+                        .map_err(|error| {
+                            ErasedCallError::ContractViolation(
+                                conversion_detail("input_decode", error),
+                            )
+                        })?;
+                    let request = <super::RecoverSubAgentsRequest as ContractType>::decode(
+                            &input,
+                        )
+                        .map_err(|error| {
+                            ErasedCallError::ContractViolation(
+                                conversion_detail("input_decode", error),
+                            )
+                        })?;
+                    match responder(context, request).await {
+                        Ok(output) => {
+                            output
+                                .encode()
+                                .map_err(|error| {
+                                    ErasedCallError::InvalidResponse(
+                                        conversion_detail("output_encode", error),
+                                    )
+                                })
+                        }
+                        Err(error) => Err(ErasedCallError::from_domain(&error)),
+                    }
+                });
+            }
             if capability == &*SUB_AGENT_HOST_STOP {
                 let Some(responder) = self.stop.clone() else {
                     return Box::pin(ready(Err(unprogrammed())));
@@ -5154,8 +5801,8 @@ pub mod test_support {
 #[rustfmt::skip]
 #[doc(hidden)]
 pub const __BOXOLOGY_SEMANTIC_DIGEST: [u8; 32] = [
-    60, 70, 154, 56, 92, 125, 3, 132, 100, 48, 135, 176, 116, 33, 114, 240, 197, 98, 188,
-    210, 29, 4, 117, 78, 184, 127, 239, 95, 110, 18, 177, 96,
+    226, 23, 2, 254, 140, 102, 249, 188, 107, 192, 222, 136, 53, 44, 85, 251, 29, 127,
+    74, 158, 194, 226, 49, 222, 127, 2, 152, 101, 19, 51, 22, 135,
 ];
 #[rustfmt::skip]
 #[doc(hidden)]
@@ -5168,17 +5815,19 @@ macro_rules! __boxology_check_implementation {
         find_send_to_parent $receiver; $($method $validity;)*);
         $crate::__boxology_check_implementation!(@ find_read_events $receiver; $($method
         $validity;)*); $crate::__boxology_check_implementation!(@ find_status $receiver;
-        $($method $validity;)*); $crate::__boxology_check_implementation!(@ find_stop
-        $receiver; $($method $validity;)*); impl $crate::SubAgentHostDispatch for
-        $receiver { fn spawn <'a > (&'a self, context : ::boxology::CallContext, input :
-        $crate::SpawnSubAgentRequest,) -> ::std::pin::Pin < ::std::boxed::Box < dyn
-        ::core::future::Future < Output = ::core::result::Result <$crate::SubAgentRecord,
-        $crate::SubAgentHostError >, > + ::core::marker::Send + 'a, >, > {
-        ::std::boxed::Box::pin(self.spawn(context, input)) } fn send_to_child <'a > (&'a
-        self, context : ::boxology::CallContext, input : $crate::SendToChildRequest,) ->
-        ::std::pin::Pin < ::std::boxed::Box < dyn ::core::future::Future < Output =
-        ::core::result::Result <$crate::InteractionReceipt, $crate::SubAgentHostError >,
-        > + ::core::marker::Send + 'a, >, > { ::std::boxed::Box::pin(self
+        $($method $validity;)*); $crate::__boxology_check_implementation!(@ find_recover
+        $receiver; $($method $validity;)*); $crate::__boxology_check_implementation!(@
+        find_stop $receiver; $($method $validity;)*); impl $crate::SubAgentHostDispatch
+        for $receiver { fn spawn <'a > (&'a self, context : ::boxology::CallContext,
+        input : $crate::SpawnSubAgentRequest,) -> ::std::pin::Pin < ::std::boxed::Box <
+        dyn ::core::future::Future < Output = ::core::result::Result
+        <$crate::SubAgentRecord, $crate::SubAgentHostError >, > + ::core::marker::Send +
+        'a, >, > { ::std::boxed::Box::pin(self.spawn(context, input)) } fn send_to_child
+        <'a > (&'a self, context : ::boxology::CallContext, input :
+        $crate::SendToChildRequest,) -> ::std::pin::Pin < ::std::boxed::Box < dyn
+        ::core::future::Future < Output = ::core::result::Result
+        <$crate::InteractionReceipt, $crate::SubAgentHostError >, > +
+        ::core::marker::Send + 'a, >, > { ::std::boxed::Box::pin(self
         .send_to_child(context, input)) } fn send_to_parent <'a > (&'a self, context :
         ::boxology::CallContext, input : $crate::SendToParentRequest,) -> ::std::pin::Pin
         < ::std::boxed::Box < dyn ::core::future::Future < Output =
@@ -5193,8 +5842,13 @@ macro_rules! __boxology_check_implementation {
         ::boxology::CallContext, input : $crate::SubAgentReference,) -> ::std::pin::Pin <
         ::std::boxed::Box < dyn ::core::future::Future < Output = ::core::result::Result
         <$crate::SubAgentStatus, $crate::SubAgentHostError >, > + ::core::marker::Send +
-        'a, >, > { ::std::boxed::Box::pin(self.status(context, input)) } fn stop <'a >
+        'a, >, > { ::std::boxed::Box::pin(self.status(context, input)) } fn recover <'a >
         (&'a self, context : ::boxology::CallContext, input :
+        $crate::RecoverSubAgentsRequest,) -> ::std::pin::Pin < ::std::boxed::Box < dyn
+        ::core::future::Future < Output = ::core::result::Result
+        <$crate::SubAgentRecoveryReport, $crate::SubAgentHostError >, > +
+        ::core::marker::Send + 'a, >, > { ::std::boxed::Box::pin(self.recover(context,
+        input)) } fn stop <'a > (&'a self, context : ::boxology::CallContext, input :
         $crate::StopSubAgentRequest,) -> ::std::pin::Pin < ::std::boxed::Box < dyn
         ::core::future::Future < Output = ::core::result::Result
         <$crate::SubAgentReceipt, $crate::SubAgentHostError >, > + ::core::marker::Send +
@@ -5291,6 +5945,25 @@ macro_rules! __boxology_check_implementation {
         $crate::__boxology_check_implementation!(@ find_status $receiver; $($rest)*);
     };
     (@ find_status $receiver:ty;) => {
+        compile_error!("Boxology capability implementation is missing");
+    };
+    (@ find_recover $receiver:ty; recover valid; $($rest:tt)*) => {
+        const _ : () = { fn require_service < T : ::core::marker::Send +
+        ::core::marker::Sync + 'static > () {} fn require_future < F :
+        ::core::future::Future < Output = ::core::result::Result
+        <$crate::SubAgentRecoveryReport, $crate::SubAgentHostError >> +
+        ::core::marker::Send > (_ : F) {} fn check(receiver : &$receiver, context :
+        ::boxology::CallContext, input : $crate::RecoverSubAgentsRequest) {
+        require_service::<$receiver > (); require_future(receiver.recover(context,
+        input)); } };
+    };
+    (@ find_recover $receiver:ty; recover invalid; $($rest:tt)*) => {
+        compile_error!("Boxology capability has an invalid structural signature");
+    };
+    (@ find_recover $receiver:ty; $other:ident $validity:ident; $($rest:tt)*) => {
+        $crate::__boxology_check_implementation!(@ find_recover $receiver; $($rest)*);
+    };
+    (@ find_recover $receiver:ty;) => {
         compile_error!("Boxology capability implementation is missing");
     };
     (@ find_stop $receiver:ty; stop valid; $($rest:tt)*) => {

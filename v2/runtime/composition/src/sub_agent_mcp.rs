@@ -23,6 +23,7 @@ use crate::{ChannelIpcClient, ChannelIpcClientError};
 
 const SERVER_NAME: &str = "crab-sub-agents";
 const MAX_EVENT_PAGE: u64 = 1_000;
+const DEFAULT_CRASH_RESTART_LIMIT: u64 = 1;
 
 /// Failure to start the Crab sub-agent MCP server from its session context.
 #[derive(Debug)]
@@ -154,6 +155,13 @@ struct SpawnInput {
     /// Additional non-secret child metadata.
     #[serde(default)]
     metadata: Map<String, Value>,
+    /// Number of later runtime crashes across which Crab may resume this exact native session.
+    #[serde(default = "default_crash_restart_limit")]
+    crash_restart_limit: u64,
+}
+
+const fn default_crash_restart_limit() -> u64 {
+    DEFAULT_CRASH_RESTART_LIMIT
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, JsonSchema)]
@@ -239,7 +247,7 @@ impl McpTool<mcp::Client> for SpawnTool {
     }
 
     fn description(&self) -> String {
-        "Spawn a separately supervised ACP child with fresh or inherited visible context; returns immediately after its initial task is accepted.".into()
+        "Spawn a separately supervised ACP child with fresh or inherited visible context and a bounded native-session restart policy; returns immediately after its initial task is accepted.".into()
     }
 
     async fn call_tool(
@@ -285,7 +293,7 @@ impl McpTool<mcp::Client> for SpawnTool {
                     .map_err(|_| invalid_input())?,
                 metadata_json: serde_json::to_string(&input.metadata)
                     .map_err(|_| invalid_input())?,
-                crash_restart_limit: 0,
+                crash_restart_limit: input.crash_restart_limit,
             })
             .await
             .map_err(ipc_error)?;

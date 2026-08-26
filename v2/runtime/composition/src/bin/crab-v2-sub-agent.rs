@@ -14,6 +14,7 @@ use sub_agent_host_contract::{
 
 const USAGE: &str = "usage: crab-v2-sub-agent --state-dir <directory> <spawn <client-id> <parent-session> <agent> <working-directory> <fresh|inherit> <none|through-sequence> <false|true> stdin | send-child <sub-agent> <message-id> <queue|steer|interrupt-and-steer> stdin | send-parent <sub-agent> <message-id> <queue|steer|interrupt-and-steer> stdin | events <sub-agent> <after-sequence> <limit> | status <sub-agent> | stop <sub-agent> <reason>>";
 const MAX_STDIN_BYTES: u64 = 2 * 1024 * 1024;
+const DEFAULT_CRASH_RESTART_LIMIT: u64 = 1;
 
 #[tokio::main]
 async fn main() -> ExitCode {
@@ -75,7 +76,7 @@ async fn execute(
                     allow_portable_snapshot,
                     native_task_prompt_json: payload.native_task_prompt_json,
                     metadata_json: payload.metadata_json,
-                    crash_restart_limit: 0,
+                    crash_restart_limit: payload.crash_restart_limit,
                 })
                 .await
                 .map(record_json)
@@ -359,11 +360,18 @@ struct SpawnPayload {
     native_task_prompt: Vec<Value>,
     #[serde(default)]
     metadata: Map<String, Value>,
+    #[serde(default = "default_crash_restart_limit")]
+    crash_restart_limit: u64,
 }
 
 struct EncodedSpawnPayload {
     native_task_prompt_json: String,
     metadata_json: String,
+    crash_restart_limit: u64,
+}
+
+const fn default_crash_restart_limit() -> u64 {
+    DEFAULT_CRASH_RESTART_LIMIT
 }
 
 fn spawn_payload(input: &[u8]) -> Result<EncodedSpawnPayload, SubAgentCliError> {
@@ -377,6 +385,7 @@ fn spawn_payload(input: &[u8]) -> Result<EncodedSpawnPayload, SubAgentCliError> 
             .map_err(|_| SubAgentCliError::InvalidStdin)?,
         metadata_json: serde_json::to_string(&payload.metadata)
             .map_err(|_| SubAgentCliError::InvalidStdin)?,
+        crash_restart_limit: payload.crash_restart_limit,
     })
 }
 
@@ -617,6 +626,15 @@ mod tests {
             r#"[{"type":"text","text":"task"}]"#
         );
         assert_eq!(spawn.metadata_json, r#"{"role":"research"}"#);
+        assert_eq!(spawn.crash_restart_limit, 1);
+        assert_eq!(
+            spawn_payload(
+                br#"{"nativeTaskPrompt":[{"type":"text","text":"task"}],"crashRestartLimit":0}"#,
+            )
+            .expect("disabled restart policy")
+            .crash_restart_limit,
+            0
+        );
         assert_eq!(
             native_prompt(br#"[{"type":"text","text":"steer"}]"#).expect("prompt"),
             r#"[{"type":"text","text":"steer"}]"#

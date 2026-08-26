@@ -23,14 +23,16 @@ Large task and message payloads never appear in process arguments. `spawn`, `sen
 compact JSON on stdout; errors use stable transport or Boxology domain codes on stderr.
 
 ```sh
-printf '%s' '{"nativeTaskPrompt":[{"type":"text","text":"Research X"}],"metadata":{"role":"research"}}' \
+printf '%s' '{"nativeTaskPrompt":[{"type":"text","text":"Research X"}],"metadata":{"role":"research"},"crashRestartLimit":1}' \
   | crab-v2-sub-agent --state-dir /path/to/state \
       spawn child-1 parent-session claude /path/to/workspace inherit 42 true stdin
 ```
 
 Receipts acknowledge durable acceptance, not model completion. Poll `events` with the returned
 cursor to receive lifecycle, interaction and full native ACP events in order without blocking the
-parent. Spawn and message IDs make retries idempotent; `stop` is idempotent too.
+parent. `crashRestartLimit` defaults to one and bounds exact-session recovery across later runtime
+crashes; zero disables recovery. Spawn and message IDs make retries idempotent; `stop` is
+idempotent too.
 
 This CLI remains the stable operator control-plane. Parent and child ACP sessions receive the same
 capabilities automatically through Crab's [native stdio-MCP tools](native-sub-agent-tools.md).

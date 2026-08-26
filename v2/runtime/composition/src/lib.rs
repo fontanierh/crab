@@ -139,6 +139,8 @@ pub enum RuntimeStartError {
     ReplaceBridge(boxology_contract::CallError<bridge_host_contract::BridgeHostError>),
     /// A bridge removed from configuration could not be stopped.
     StopBridge(boxology_contract::CallError<bridge_host_contract::BridgeHostError>),
+    /// Durable sub-agents could not be reconciled after parent session recovery.
+    RecoverSubAgents(boxology_contract::CallError<sub_agent_host_contract::SubAgentHostError>),
     /// The authenticated local capability endpoint could not start.
     ChannelIpc(ChannelIpcStartupError),
     /// The durable state directory could not be created.

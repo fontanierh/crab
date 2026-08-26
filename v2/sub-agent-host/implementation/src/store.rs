@@ -13,6 +13,7 @@ use crate::{
 
 const SCHEMA_VERSION: i64 = 1;
 const MAX_EVENT_PAGE: u64 = 1_000;
+const RECOVERY_PENDING_ERROR: &str = "runtime restarted; native child recovery pending";
 
 #[derive(Clone, Copy)]
 pub(crate) enum InteractionDirection {
@@ -28,6 +29,12 @@ pub(crate) struct SpawnStart {
 pub(crate) struct InteractionStart {
     pub(crate) completed: Option<InteractionReceipt>,
     pub(crate) should_dispatch: bool,
+}
+
+pub(crate) struct RecoveryCandidate {
+    pub(crate) record: SubAgentRecord,
+    pub(crate) crash_restart_limit: u64,
+    pub(crate) restart_count: u64,
 }
 
 pub(crate) struct SubAgentStore {
@@ -64,8 +71,16 @@ impl SubAgentStore {
         transaction
             .execute(
                 "UPDATE sub_agents SET lifecycle = 'Failed',
-                    last_error = 'runtime restarted; ACP child cannot be restored'
-                 WHERE lifecycle IN ('Starting', 'Running', 'Idle', 'Stopping')",
+                    last_error = ?1
+                 WHERE lifecycle IN ('Starting', 'Running', 'Idle')",
+                params![RECOVERY_PENDING_ERROR],
+            )
+            .map_err(storage_error)?;
+        transaction
+            .execute(
+                "UPDATE sub_agents SET lifecycle = 'Failed',
+                    last_error = 'runtime restarted while child shutdown was in progress'
+                 WHERE lifecycle = 'Stopping'",
                 [],
             )
             .map_err(storage_error)?;
@@ -282,6 +297,139 @@ impl SubAgentStore {
             restart_count: db_u64(restart_count)?,
             last_error,
         })
+    }
+
+    pub(crate) fn recovery_candidates(&self) -> Result<Vec<RecoveryCandidate>, SubAgentHostError> {
+        let connection = self.lock()?;
+        let mut statement = connection
+            .prepare(
+                "SELECT sub_agent_id, crash_restart_limit, restart_count
+                 FROM sub_agents
+                 WHERE lifecycle = 'Failed' AND last_error = ?1
+                 ORDER BY started_at_ms, sub_agent_id",
+            )
+            .map_err(storage_error)?;
+        let rows = statement
+            .query_map(params![RECOVERY_PENDING_ERROR], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, i64>(2)?,
+                ))
+            })
+            .map_err(storage_error)?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(storage_error)?;
+        rows.into_iter()
+            .map(|(sub_agent_id, crash_restart_limit, restart_count)| {
+                Ok(RecoveryCandidate {
+                    record: query_record(&connection, &sub_agent_id)?
+                        .ok_or(SubAgentHostError::UnknownSubAgent)?,
+                    crash_restart_limit: db_u64(crash_restart_limit)?,
+                    restart_count: db_u64(restart_count)?,
+                })
+            })
+            .collect()
+    }
+
+    pub(crate) fn complete_recovery(
+        &self,
+        sub_agent_id: &str,
+        expected_child_session_id: &str,
+        expected_native_session_id: &str,
+        lifecycle: &SubAgentLifecycle,
+        now_ms: u64,
+    ) -> Result<SubAgentRecord, SubAgentHostError> {
+        if !matches!(
+            lifecycle,
+            SubAgentLifecycle::Running | SubAgentLifecycle::Idle
+        ) {
+            return Err(SubAgentHostError::StorageUnavailable);
+        }
+        let mut connection = self.lock()?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(storage_error)?;
+        let next = lifecycle_tag(lifecycle)?;
+        let changed = transaction
+            .execute(
+                "UPDATE sub_agents
+                 SET lifecycle = ?4, restart_count = restart_count + 1, last_error = NULL
+                 WHERE sub_agent_id = ?1 AND child_session_id = ?2
+                   AND native_child_session_id = ?3 AND lifecycle = 'Failed'
+                   AND last_error = ?5 AND crash_restart_limit > restart_count",
+                params![
+                    sub_agent_id,
+                    expected_child_session_id,
+                    expected_native_session_id,
+                    next,
+                    RECOVERY_PENDING_ERROR,
+                ],
+            )
+            .map_err(storage_error)?;
+        if changed != 1 {
+            return Err(SubAgentHostError::StorageUnavailable);
+        }
+        let restart_count = transaction
+            .query_row(
+                "SELECT restart_count FROM sub_agents WHERE sub_agent_id = ?1",
+                params![sub_agent_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .map_err(storage_error)
+            .and_then(db_u64)?;
+        append_event(
+            &transaction,
+            sub_agent_id,
+            &SubAgentEventKind::Lifecycle,
+            &json!({
+                "lifecycle": next,
+                "recovery": "native_session_resume",
+                "restartCount": restart_count,
+            })
+            .to_string(),
+            now_ms,
+        )?;
+        transaction.commit().map_err(storage_error)?;
+        drop(connection);
+        self.record(sub_agent_id)
+    }
+
+    pub(crate) fn fail_recovery(
+        &self,
+        sub_agent_id: &str,
+        reason: &str,
+        attempted: bool,
+        now_ms: u64,
+    ) -> Result<(), SubAgentHostError> {
+        let mut connection = self.lock()?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(storage_error)?;
+        let changed = transaction
+            .execute(
+                "UPDATE sub_agents
+                 SET last_error = ?2, restart_count = restart_count + ?3
+                 WHERE sub_agent_id = ?1 AND lifecycle = 'Failed' AND last_error = ?4",
+                params![
+                    sub_agent_id,
+                    reason,
+                    i64::from(attempted),
+                    RECOVERY_PENDING_ERROR,
+                ],
+            )
+            .map_err(storage_error)?;
+        if changed != 1 {
+            return Err(SubAgentHostError::StorageUnavailable);
+        }
+        append_event(
+            &transaction,
+            sub_agent_id,
+            &SubAgentEventKind::Failed,
+            &json!({ "lifecycle": "Failed", "error": reason }).to_string(),
+            now_ms,
+        )?;
+        transaction.commit().map_err(storage_error)
     }
 
     pub(crate) fn begin_interaction(
@@ -1188,7 +1336,7 @@ mod tests {
     }
 
     #[test]
-    fn restart_fails_unrestorable_children_and_future_schema_fails_closed() {
+    fn restart_stages_children_for_recovery_and_future_schema_fails_closed() {
         let directory = tempfile::tempdir().expect("temporary directory");
         let path = directory.path().join("sub-agents.sqlite");
         let sub_agent_id = {
@@ -1225,8 +1373,15 @@ mod tests {
             status
                 .last_error
                 .as_deref()
-                .is_some_and(|error| error.contains("cannot be restored"))
+                .is_some_and(|error| error.contains("recovery pending"))
         );
+        let candidates = restarted
+            .recovery_candidates()
+            .expect("recovery candidates read");
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].record.sub_agent_id, sub_agent_id);
+        assert_eq!(candidates[0].crash_restart_limit, 0);
+        assert_eq!(candidates[0].restart_count, 0);
         drop(restarted);
 
         let connection = Connection::open(&path).expect("database opens directly");

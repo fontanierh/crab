@@ -96,6 +96,26 @@
     {
       "deprecation": null,
       "docs": [
+        " Reconcile children interrupted by a runtime crash. Exact native ACP resume is the only",
+        " successful path; bootstrap context and initial task input are never replayed."
+      ],
+      "error": "SubAgentHostError",
+      "id": "sub-agent-host.recover",
+      "idempotency": "none",
+      "input": {
+        "name": "request",
+        "type": "RecoverSubAgentsRequest"
+      },
+      "max_exposure": "code_only",
+      "name": "recover",
+      "output": {
+        "type": "SubAgentRecoveryReport"
+      },
+      "shape": "unary"
+    },
+    {
+      "deprecation": null,
+      "docs": [
         " Cooperatively cancel the child session, then terminate its harness after graceful timeout."
       ],
       "error": "SubAgentHostError",
@@ -116,9 +136,9 @@
   "provenance": {
     "generator": "boxology-generator",
     "generator_version": "0.1.1",
-    "semantic_digest": "sha256:3c469a385c7d0384643087b0742172f0c562bcd21d04754eb87fef5f6e12b160"
+    "semantic_digest": "sha256:e21702fe8c66f9bc6bc0de88352c55fb1d7f4a9ec2e231de7f02986513331687"
   },
-  "revision": "sha256:b84c9a4aeda0ad8fccc475b9dae08972f7b9b4a447609f21d2bda599b0704618",
+  "revision": "sha256:6fc49b785cf181cdf648767ac0c1a8220b7676e14812178356dac871cba96ffd",
   "schema_format": 1,
   "types": [
     {
@@ -751,6 +771,98 @@
     {
       "deprecation": null,
       "docs": [],
+      "fields": [],
+      "kind": "struct",
+      "name": "RecoverSubAgentsRequest"
+    },
+    {
+      "deprecation": null,
+      "docs": [
+        " Truthful startup outcome for one durable child. Recovery never opens a replacement session."
+      ],
+      "kind": "enum",
+      "name": "SubAgentRecoveryDisposition",
+      "variants": [
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "Resumed"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "RecoveryDisabled"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "RestartBudgetExhausted"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "ParentUnavailable"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "SessionUnavailable"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "IdentityMismatch"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "Failed"
+        }
+      ]
+    },
+    {
+      "deprecation": null,
+      "docs": [],
+      "fields": [
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "sub_agent_id",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "child_session_id",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "disposition",
+          "type": "SubAgentRecoveryDisposition"
+        }
+      ],
+      "kind": "struct",
+      "name": "SubAgentRecovery"
+    },
+    {
+      "deprecation": null,
+      "docs": [],
+      "fields": [
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "recoveries",
+          "type": "Vec<SubAgentRecovery>"
+        }
+      ],
+      "kind": "struct",
+      "name": "SubAgentRecoveryReport"
+    },
+    {
+      "deprecation": null,
+      "docs": [],
       "kind": "error",
       "name": "SubAgentHostError",
       "variants": [
@@ -798,7 +910,9 @@
         },
         {
           "deprecation": null,
-          "docs": [],
+          "docs": [
+            " Retained for older consumers; bounded native resume is now implemented."
+          ],
           "name": "CrashRestartUnavailable",
           "payload": "unit"
         },

@@ -35,7 +35,13 @@ runtime-state/
   accepted without waiting for model completion.
 - A background cursor pump copies every child ACP event, including tool calls and agent-owned
   compaction events, into the sub-agent journal without narrowing the native JSON.
-- This release cannot restore a child ACP process after Crab restarts. Active records and pending
-  deliveries become failed on reopen, and nonzero crash-restart budgets are rejected. Native
-  session resume/fork can later make bounded restart truthful without changing this schema's
-  semantics.
+- On reopen, active records become explicit recovery candidates and transport-ambiguous pending
+  interactions become failed so they can be retried with the same caller ID. Delivered
+  interactions, the ordered event journal and the exact child ACP cursor remain unchanged.
+- Startup recovers configured parent sessions first, then reconciles each child within its durable
+  `crash_restart_limit`. Recovery accepts only the same Crab child ID, native ACP ID and agent; it
+  increments `restart_count` and restarts the event pump from the stored cursor.
+- Recovery never opens a replacement child, replays inherited/bootstrap context or resends the
+  initial task. Disabled or exhausted budgets, unavailable parents/sessions, identity drift and
+  hard failures remain inspectable as `Failed`. See the
+  [rendered recovery flow](sub-agent-recovery-flow.png).

@@ -127,6 +127,13 @@ never opens runtime state directly. See the [operator flow](bridge-operations.md
 | Changed intent with a live session | Fail with an attachment conflict; never replace live work implicitly |
 | Changed intent with an unavailable session | Open one ACP session and atomically replace session + adapter metadata |
 
+After configured parents are ready, `sub-agent-host.recover` reconciles durable children in stable
+creation order. An eligible child resumes only its exact native ACP session, preserves both message
+journals and event cursors, increments its durable restart count, and restarts its cursor pump.
+Every non-resumable outcome is recorded as `Failed`; runtime startup continues without inventing a
+replacement child. A failure of the recovery capability itself still aborts startup and cleans up
+sessions already owned by the runtime.
+
 Agent-owned compaction is not resumed or reconstructed. Durable trigger IDs still deduplicate
 retries, and each configured lane is drained serially until SIGINT/SIGTERM stops workers and closes
 the local endpoint, then the live ACP sessions. UI process disconnects never close a Crab-owned

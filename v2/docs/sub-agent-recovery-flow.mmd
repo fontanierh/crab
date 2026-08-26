@@ -1,0 +1,24 @@
+%%{init: {"theme": "base", "themeVariables": {"fontFamily": "ui-sans-serif, system-ui, sans-serif", "primaryTextColor": "#172033", "lineColor": "#64748b", "edgeLabelBackground": "#ffffff"}, "flowchart": {"curve": "basis", "nodeSpacing": 42, "rankSpacing": 58}}}%%
+flowchart TB
+    START["runtime restart"]
+    LOAD["recover configured parents<br/>then load durable children<br/>in stable creation order"]
+    ELIGIBLE{"enabled · budget left<br/>parent Ready / Busy?"}
+    RESUME["resume exact child ACP session"]
+    RESULT{"resume result"}
+    RESTORE["increment restart count<br/>keep journals + child cursor<br/>restart event pump"]
+    FAIL["record Failed<br/>never open replacement<br/>never replay task/context"]
+
+    START --> LOAD --> ELIGIBLE
+    ELIGIBLE -->|"no"| FAIL
+    ELIGIBLE -->|"yes"| RESUME --> RESULT
+    RESULT -->|"same Crab ID · native ID · agent"| RESTORE
+    RESULT -->|"unavailable · changed · hard error"| FAIL
+
+    classDef start fill:#f8fafc,stroke:#64748b,stroke-width:1.5px,color:#172033;
+    classDef runtime fill:#dbeafe,stroke:#2563eb,stroke-width:2px,color:#172554;
+    classDef success fill:#dcfce7,stroke:#16a34a,stroke-width:2px,color:#14532d;
+    classDef failure fill:#fee2e2,stroke:#dc2626,stroke-width:2px,color:#7f1d1d;
+    class START start;
+    class LOAD,ELIGIBLE,RESUME,RESULT runtime;
+    class RESTORE success;
+    class FAIL failure;

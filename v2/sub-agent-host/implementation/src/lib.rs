@@ -13,11 +13,12 @@ use std::{
 use boxology_contract::{CallContext, Caller, CancelToken, ErasedCallError, TraceContext};
 use boxology_import_agent_host::{
     AcpEventDirection, AcpEventKind, AgentInputMode, AgentLifecycle, OpenSessionRequest,
-    PromptDisposition, PromptRequest, ReadEventsRequest, RunReference, SessionReference,
+    PromptDisposition, PromptRequest, ReadEventsRequest, ResumeSessionRequest, RunReference,
+    SessionReference,
 };
 use generated::AgentHostImport;
 use serde_json::{Value, json};
-use store::{InteractionDirection, SubAgentStore, spawn_fingerprint};
+use store::{InteractionDirection, RecoveryCandidate, SubAgentStore, spawn_fingerprint};
 use tokio::{sync::Mutex, task::JoinHandle};
 
 const EVENT_PAGE_LIMIT: u64 = 1_000;
@@ -348,6 +349,204 @@ impl SubAgentHost {
         };
         Ok((disposition, accepted.accepted_at_ms))
     }
+
+    fn fail_recovery(
+        &self,
+        candidate: &RecoveryCandidate,
+        disposition: SubAgentRecoveryDisposition,
+        reason: &str,
+        attempted: bool,
+    ) -> Result<SubAgentRecovery, SubAgentHostError> {
+        self.store.fail_recovery(
+            &candidate.record.sub_agent_id,
+            reason,
+            attempted,
+            (self.clock)()?,
+        )?;
+        Ok(SubAgentRecovery {
+            sub_agent_id: candidate.record.sub_agent_id.clone(),
+            child_session_id: candidate.record.child_session_id.clone(),
+            disposition,
+        })
+    }
+
+    async fn recover_candidate(
+        &self,
+        context: CallContext,
+        candidate: &RecoveryCandidate,
+    ) -> Result<SubAgentRecovery, SubAgentHostError> {
+        if candidate.crash_restart_limit == 0 {
+            return self.fail_recovery(
+                candidate,
+                SubAgentRecoveryDisposition::RecoveryDisabled,
+                "runtime restarted; child recovery disabled",
+                false,
+            );
+        }
+        if candidate.restart_count >= candidate.crash_restart_limit {
+            return self.fail_recovery(
+                candidate,
+                SubAgentRecoveryDisposition::RestartBudgetExhausted,
+                "runtime restarted; child recovery budget exhausted",
+                false,
+            );
+        }
+        if candidate.record.child_session_id.trim().is_empty()
+            || candidate.record.native_child_session_id.trim().is_empty()
+        {
+            return self.fail_recovery(
+                candidate,
+                SubAgentRecoveryDisposition::IdentityMismatch,
+                "runtime restarted; durable child identity is incomplete",
+                false,
+            );
+        }
+        match self
+            .agent_host
+            .session_status(
+                context.clone(),
+                SessionReference {
+                    session_id: candidate.record.parent_session_id.clone(),
+                },
+            )
+            .await
+        {
+            Ok(status)
+                if status.session_id == candidate.record.parent_session_id
+                    && matches!(
+                        status.lifecycle,
+                        AgentLifecycle::Ready | AgentLifecycle::Busy
+                    ) => {}
+            _ => {
+                return self.fail_recovery(
+                    candidate,
+                    SubAgentRecoveryDisposition::ParentUnavailable,
+                    "runtime restarted; parent session is unavailable",
+                    false,
+                );
+            }
+        }
+        let resumed = match self
+            .agent_host
+            .resume_session(
+                context.clone(),
+                ResumeSessionRequest {
+                    session_id: candidate.record.child_session_id.clone(),
+                },
+            )
+            .await
+        {
+            Ok(resumed) => resumed,
+            Err(error)
+                if has_domain_tag(&error, "SessionResumeUnavailable")
+                    || has_domain_tag(&error, "UnknownSession") =>
+            {
+                return self.fail_recovery(
+                    candidate,
+                    SubAgentRecoveryDisposition::SessionUnavailable,
+                    "runtime restarted; native child session cannot be resumed",
+                    true,
+                );
+            }
+            Err(error) => {
+                return self.fail_recovery(
+                    candidate,
+                    SubAgentRecoveryDisposition::Failed,
+                    hard_recovery_reason(&error),
+                    true,
+                );
+            }
+        };
+        if resumed.session_id != candidate.record.child_session_id
+            || resumed.native_session_id != candidate.record.native_child_session_id
+            || resumed.agent_id != candidate.record.agent_id
+        {
+            if resumed.session_id == candidate.record.child_session_id {
+                let _ = self
+                    .agent_host
+                    .close_session(
+                        context,
+                        SessionReference {
+                            session_id: candidate.record.child_session_id.clone(),
+                        },
+                    )
+                    .await;
+            }
+            return self.fail_recovery(
+                candidate,
+                SubAgentRecoveryDisposition::IdentityMismatch,
+                "runtime restarted; resumed child identity changed",
+                true,
+            );
+        }
+        let lifecycle = match self
+            .agent_host
+            .session_status(
+                context.clone(),
+                SessionReference {
+                    session_id: candidate.record.child_session_id.clone(),
+                },
+            )
+            .await
+        {
+            Ok(status)
+                if status.session_id == candidate.record.child_session_id
+                    && matches!(status.lifecycle, AgentLifecycle::Ready) =>
+            {
+                SubAgentLifecycle::Idle
+            }
+            Ok(status)
+                if status.session_id == candidate.record.child_session_id
+                    && matches!(status.lifecycle, AgentLifecycle::Busy) =>
+            {
+                SubAgentLifecycle::Running
+            }
+            _ => {
+                let _ = self
+                    .agent_host
+                    .close_session(
+                        context,
+                        SessionReference {
+                            session_id: candidate.record.child_session_id.clone(),
+                        },
+                    )
+                    .await;
+                return self.fail_recovery(
+                    candidate,
+                    SubAgentRecoveryDisposition::Failed,
+                    "runtime restarted; resumed child did not become available",
+                    true,
+                );
+            }
+        };
+        let record = match self.store.complete_recovery(
+            &candidate.record.sub_agent_id,
+            &candidate.record.child_session_id,
+            &candidate.record.native_child_session_id,
+            &lifecycle,
+            (self.clock)()?,
+        ) {
+            Ok(record) => record,
+            Err(error) => {
+                let _ = self
+                    .agent_host
+                    .close_session(
+                        context,
+                        SessionReference {
+                            session_id: candidate.record.child_session_id.clone(),
+                        },
+                    )
+                    .await;
+                return Err(error);
+            }
+        };
+        self.start_pump(&record.sub_agent_id, &record.child_session_id);
+        Ok(SubAgentRecovery {
+            sub_agent_id: record.sub_agent_id,
+            child_session_id: record.child_session_id,
+            disposition: SubAgentRecoveryDisposition::Resumed,
+        })
+    }
 }
 
 impl Drop for SubAgentHost {
@@ -614,6 +813,53 @@ impl SubAgentHost {
         self.store.status(&request.sub_agent_id)
     }
 
+    pub async fn recover(
+        &self,
+        context: CallContext,
+        request: RecoverSubAgentsRequest,
+    ) -> Result<SubAgentRecoveryReport, SubAgentHostError> {
+        let _ = request;
+        let _spawn = self.spawn_operations.lock().await;
+        let candidates = self.store.recovery_candidates()?;
+        let mut recoveries = Vec::with_capacity(candidates.len());
+        for candidate in &candidates {
+            match self.recover_candidate(context.clone(), candidate).await {
+                Ok(recovery) => recoveries.push(recovery),
+                Err(error) => {
+                    for recovery in &recoveries {
+                        if !matches!(recovery.disposition, SubAgentRecoveryDisposition::Resumed) {
+                            continue;
+                        }
+                        if let Ok(mut pumps) = self.pumps.lock()
+                            && let Some(handle) = pumps.remove(&recovery.sub_agent_id)
+                        {
+                            handle.abort();
+                        }
+                        let _ = self
+                            .agent_host
+                            .close_session(
+                                context.clone(),
+                                SessionReference {
+                                    session_id: recovery.child_session_id.clone(),
+                                },
+                            )
+                            .await;
+                        if let Ok(now_ms) = (self.clock)() {
+                            let _ = self.store.set_lifecycle(
+                                &recovery.sub_agent_id,
+                                &SubAgentLifecycle::Failed,
+                                Some("sub-agent recovery batch aborted"),
+                                now_ms,
+                            );
+                        }
+                    }
+                    return Err(error);
+                }
+            }
+        }
+        Ok(SubAgentRecoveryReport { recoveries })
+    }
+
     pub async fn stop(
         &self,
         context: CallContext,
@@ -676,9 +922,6 @@ fn validate_spawn(request: &SpawnSubAgentRequest) -> Result<(), SubAgentHostErro
     let metadata = parse_json(&request.metadata_json)?;
     if !metadata.is_object() {
         return Err(SubAgentHostError::InvalidNativePayload);
-    }
-    if request.crash_restart_limit > 0 {
-        return Err(SubAgentHostError::CrashRestartUnavailable);
     }
     match request.context_mode {
         SubAgentContextMode::Fresh if request.parent_context_through_sequence.is_some() => {
@@ -807,6 +1050,33 @@ fn error_label(error: &ErasedCallError) -> &'static str {
     }
 }
 
+fn has_domain_tag(error: &ErasedCallError, expected: &str) -> bool {
+    matches!(error, ErasedCallError::Domain { error_tag, .. } if error_tag == expected)
+}
+
+fn hard_recovery_reason(error: &ErasedCallError) -> &'static str {
+    match error {
+        ErasedCallError::Domain { error_tag, .. }
+            if matches!(
+                error_tag.as_str(),
+                "PreflightFailed" | "AuthorityUnavailable" | "UnknownAgent"
+            ) =>
+        {
+            "runtime restarted; child authority recovery failed"
+        }
+        ErasedCallError::Domain { error_tag, .. }
+            if matches!(
+                error_tag.as_str(),
+                "ProtocolNegotiationFailed" | "UnsupportedProtocolProfile"
+            ) =>
+        {
+            "runtime restarted; child protocol recovery failed"
+        }
+        ErasedCallError::Domain { .. } => "runtime restarted; child session recovery was rejected",
+        _ => "runtime restarted; child recovery transport failed",
+    }
+}
+
 fn background_context() -> CallContext {
     CallContext::new(
         Caller::System("sub-agent-host"),
@@ -849,6 +1119,7 @@ mod tests {
                 "send_to_parent",
                 "read_events",
                 "status",
+                "recover",
                 "stop",
             ]
         );
