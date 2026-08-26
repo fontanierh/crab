@@ -97,6 +97,7 @@ impl ConfiguredRuntime {
             runtime.native_channel().clone(),
             runtime.bridge_host().clone(),
             runtime.trigger_inbox().clone(),
+            runtime.sub_agent_host().clone(),
         )
         .await
         {
@@ -632,6 +633,12 @@ mod tests {
     use native_channel_contract::{BindingReference, ChannelLifecycle};
     use native_channel_implementation::{NativeChannelState, generated as native_channel};
     use serde_json::json;
+    use sub_agent_host_contract::{
+        ContextRealization, InputDisposition, ReadSubAgentEventsRequest, SendToChildRequest,
+        SendToParentRequest, SpawnSubAgentRequest, StopSubAgentRequest, SubAgentContextMode,
+        SubAgentEventKind, SubAgentInputMode, SubAgentLifecycle, SubAgentReference,
+    };
+    use sub_agent_host_implementation::{SubAgentHostState, generated as sub_agent_host};
     use tokio::{sync::watch, task::JoinSet};
     use trigger_inbox_contract::{
         EnqueueTrigger, TriggerMode, TriggerReference, TriggerSource, TriggerState,
@@ -1050,6 +1057,7 @@ mod tests {
         bridge_processes: Arc<FakeBridgeProcesses>,
         channel_gateway: channel_gateway_contract::ChannelGatewayHandle,
         native_channel: native_channel_contract::NativeChannelHandle,
+        sub_agent_host: sub_agent_host_contract::SubAgentHostHandle,
         turn_router: turn_router_contract::TurnRouterHandle,
         trigger_inbox: trigger_inbox_contract::TriggerInboxHandle,
     }
@@ -1087,6 +1095,15 @@ mod tests {
         let channel_gateway =
             builder.handle::<channel_gateway_contract::ChannelGatewayHandle>(&gateway);
 
+        let sub_agent_state =
+            SubAgentHostState::open(path.join("sub-agent.sqlite")).expect("sub-agent store opens");
+        let sub_agent = sub_agent_host::register(&mut builder, move |imports| {
+            sub_agent_state.connect(imports.agent_host)
+        });
+        builder.connect(&sub_agent, &agent);
+        let sub_agent_host =
+            builder.handle::<sub_agent_host_contract::SubAgentHostHandle>(&sub_agent);
+
         let inbox_store =
             TriggerInbox::open(path.join("inbox.sqlite")).expect("trigger store opens");
         let inbox = trigger_inbox::register(&mut builder, inbox_store);
@@ -1122,6 +1139,7 @@ mod tests {
             bridge_processes,
             channel_gateway,
             native_channel,
+            sub_agent_host,
             turn_router,
             trigger_inbox,
         }
@@ -1282,6 +1300,7 @@ mod tests {
             graph.native_channel.clone(),
             graph.bridge_host.clone(),
             graph.trigger_inbox.clone(),
+            graph.sub_agent_host.clone(),
         )
         .await
         .expect("IPC starts");
@@ -1292,6 +1311,7 @@ mod tests {
                 graph.native_channel.clone(),
                 graph.bridge_host.clone(),
                 graph.trigger_inbox.clone(),
+                graph.sub_agent_host.clone(),
             )
             .await,
             Err(ChannelIpcStartupError::AlreadyRunning)
@@ -1369,6 +1389,7 @@ mod tests {
             graph.native_channel.clone(),
             graph.bridge_host.clone(),
             graph.trigger_inbox.clone(),
+            graph.sub_agent_host.clone(),
         )
         .await
         .expect("IPC restarts");
@@ -1408,6 +1429,7 @@ mod tests {
             graph.native_channel.clone(),
             graph.bridge_host.clone(),
             graph.trigger_inbox.clone(),
+            graph.sub_agent_host.clone(),
         )
         .await
         .expect("IPC starts");
@@ -1500,6 +1522,199 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn authenticated_ipc_operates_complete_realtime_sub_agent_lifecycle() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let state = Arc::new(Mutex::new(FakeState::default()));
+        let graph = graph(directory.path(), state);
+        let config = config(directory.path().to_path_buf());
+        let sessions = initialize_topology_with_handles(graph.handles(), &config)
+            .await
+            .expect("parent topology starts");
+        graph
+            .agent_host
+            .prompt(
+                call_context(),
+                PromptRequest {
+                    session_id: sessions[0].clone(),
+                    client_turn_id: "parent-context".into(),
+                    mode: agent_host_contract::AgentInputMode::Queue,
+                    native_prompt_json: r#"[{"type":"text","text":"parent context"}]"#.into(),
+                },
+            )
+            .await
+            .expect("parent context is durable");
+
+        let paths = ChannelIpcPaths::for_state_directory(directory.path()).expect("paths resolve");
+        let mut server = ChannelIpcServer::start(
+            paths,
+            graph.channel_gateway.clone(),
+            graph.native_channel.clone(),
+            graph.bridge_host.clone(),
+            graph.trigger_inbox.clone(),
+            graph.sub_agent_host.clone(),
+        )
+        .await
+        .expect("IPC starts");
+        let client =
+            ChannelIpcClient::from_state_directory(directory.path()).expect("client opens");
+
+        let fresh_request = SpawnSubAgentRequest {
+            client_sub_agent_id: "ipc-fresh".into(),
+            parent_session_id: sessions[0].clone(),
+            agent_id: "fake".into(),
+            working_directory: directory.path().to_string_lossy().into_owned(),
+            context_mode: SubAgentContextMode::Fresh,
+            parent_context_through_sequence: None,
+            allow_portable_snapshot: false,
+            native_task_prompt_json: r#"[{"type":"text","text":"fresh task"}]"#.into(),
+            metadata_json: r#"{"purpose":"ipc-fresh"}"#.into(),
+            crash_restart_limit: 0,
+        };
+        let fresh = client
+            .spawn_sub_agent(fresh_request.clone())
+            .await
+            .expect("fresh child spawns through IPC");
+        assert_eq!(fresh.context_realization, ContextRealization::FreshSession);
+        let fresh_retry = client
+            .spawn_sub_agent(fresh_request)
+            .await
+            .expect("spawn retry deduplicates through IPC");
+        assert_eq!(fresh_retry.sub_agent_id, fresh.sub_agent_id);
+        assert_eq!(fresh_retry.child_session_id, fresh.child_session_id);
+        assert_eq!(fresh_retry.process_identity, fresh.process_identity);
+        assert!(
+            client
+                .stop_sub_agent(StopSubAgentRequest {
+                    sub_agent_id: fresh.sub_agent_id,
+                    reason: "fresh coverage complete".into(),
+                })
+                .await
+                .expect("fresh child stops")
+                .accepted
+        );
+
+        let inherited = client
+            .spawn_sub_agent(SpawnSubAgentRequest {
+                client_sub_agent_id: "ipc-inherited".into(),
+                parent_session_id: sessions[0].clone(),
+                agent_id: "fake".into(),
+                working_directory: directory.path().to_string_lossy().into_owned(),
+                context_mode: SubAgentContextMode::InheritParent,
+                parent_context_through_sequence: Some(2),
+                allow_portable_snapshot: true,
+                native_task_prompt_json: r#"[{"type":"text","text":"hold child work"}]"#.into(),
+                metadata_json: r#"{"purpose":"ipc-inherited"}"#.into(),
+                crash_restart_limit: 0,
+            })
+            .await
+            .expect("inherited child spawns through IPC");
+        assert_eq!(
+            inherited.context_realization,
+            ContextRealization::PortableSnapshot
+        );
+        let steered = client
+            .send_to_child(SendToChildRequest {
+                sub_agent_id: inherited.sub_agent_id.clone(),
+                client_message_id: "parent-steer".into(),
+                mode: SubAgentInputMode::Steer,
+                native_prompt_json: r#"[{"type":"text","text":"steer now"}]"#.into(),
+            })
+            .await
+            .expect("parent steers child through IPC");
+        assert_eq!(steered.client_message_id, "parent-steer");
+        let progress = client
+            .send_to_parent(SendToParentRequest {
+                sub_agent_id: inherited.sub_agent_id.clone(),
+                client_message_id: "child-progress".into(),
+                mode: SubAgentInputMode::Queue,
+                message_json: r#"{"progress":"halfway"}"#.into(),
+            })
+            .await
+            .expect("child sends progress through IPC");
+        assert_eq!(progress.client_message_id, "child-progress");
+        let interrupted = client
+            .send_to_child(SendToChildRequest {
+                sub_agent_id: inherited.sub_agent_id.clone(),
+                client_message_id: "parent-interrupt".into(),
+                mode: SubAgentInputMode::InterruptAndSteer,
+                native_prompt_json: r#"[{"type":"text","text":"replace work"}]"#.into(),
+            })
+            .await
+            .expect("parent interrupts child through IPC");
+        assert_eq!(
+            interrupted.disposition,
+            InputDisposition::CancelRequestedThenQueued
+        );
+
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                let page = client
+                    .read_sub_agent_events(ReadSubAgentEventsRequest {
+                        sub_agent_id: inherited.sub_agent_id.clone(),
+                        after_sequence: 0,
+                        limit: 100,
+                    })
+                    .await
+                    .expect("ordered events cross IPC");
+                if page
+                    .events
+                    .iter()
+                    .any(|event| event.kind == SubAgentEventKind::NativeAcp)
+                    && page
+                        .events
+                        .iter()
+                        .any(|event| event.kind == SubAgentEventKind::ChildToParent)
+                {
+                    assert!(page.next_sequence > 0);
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("event cursor catches up");
+        let status = client
+            .sub_agent_status(SubAgentReference {
+                sub_agent_id: inherited.sub_agent_id.clone(),
+            })
+            .await
+            .expect("status crosses IPC");
+        assert!(status.last_sequence > 0);
+        let stopped = client
+            .stop_sub_agent(StopSubAgentRequest {
+                sub_agent_id: inherited.sub_agent_id.clone(),
+                reason: "integration complete".into(),
+            })
+            .await
+            .expect("child stops through IPC");
+        assert!(stopped.accepted);
+        assert_eq!(
+            client
+                .sub_agent_status(SubAgentReference {
+                    sub_agent_id: inherited.sub_agent_id.clone(),
+                })
+                .await
+                .expect("terminal status crosses IPC")
+                .record
+                .lifecycle,
+            SubAgentLifecycle::Completed
+        );
+        assert!(
+            !client
+                .stop_sub_agent(StopSubAgentRequest {
+                    sub_agent_id: inherited.sub_agent_id,
+                    reason: "idempotent retry".into(),
+                })
+                .await
+                .expect("terminal stop retry is safe")
+                .accepted
+        );
+
+        server.shutdown().await.expect("IPC shuts down");
+        assert!(close_sessions(&graph.agent_host, &sessions).await);
+    }
+
+    #[tokio::test]
     async fn acp_facade_streams_cancels_and_reloads_through_real_local_ipc() {
         let directory = tempfile::tempdir().expect("temporary directory");
         let state = Arc::new(Mutex::new(FakeState::default()));
@@ -1511,6 +1726,7 @@ mod tests {
             graph.native_channel.clone(),
             graph.bridge_host.clone(),
             graph.trigger_inbox.clone(),
+            graph.sub_agent_host.clone(),
         )
         .await
         .expect("IPC starts");
@@ -1730,6 +1946,7 @@ mod tests {
             graph.native_channel.clone(),
             graph.bridge_host.clone(),
             graph.trigger_inbox.clone(),
+            graph.sub_agent_host.clone(),
         )
         .await
         .expect("IPC starts");

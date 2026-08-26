@@ -1,0 +1,33 @@
+%%{init: {"theme": "base", "themeVariables": {"fontFamily": "ui-sans-serif, system-ui, sans-serif", "primaryTextColor": "#172033", "lineColor": "#64748b", "edgeLabelBackground": "#ffffff"}, "flowchart": {"curve": "basis", "nodeSpacing": 44, "rankSpacing": 58}}}%%
+flowchart LR
+    ACTOR["parent agent · child agent · operator"]
+    CLI["crab-v2-sub-agent<br/>stable JSON CLI"]
+    STDIN["bounded stdin<br/>task and message JSON"]
+    AUTH["0600 socket + token<br/>owner-only local boundary"]
+    IPC["generated Boxology dispatch<br/>six sub-agent capabilities"]
+    HOST["sub-agent-host<br/>durable identity + journal"]
+    CHILD["separate agent-host session<br/>separately supervised ACP process"]
+    RECEIPT["immediate receipt<br/>acceptance, not completion"]
+    EVENTS["ordered cursor events<br/>complete child ACP stream"]
+
+    ACTOR --> CLI
+    STDIN --> CLI --> AUTH --> IPC --> HOST --> CHILD
+    CHILD --> HOST
+    HOST --> RECEIPT --> CLI
+    HOST --> EVENTS --> CLI
+
+    MODES["queue · steer · interrupt-and-steer"]
+    CONTEXT["fresh · inherited visible snapshot"]
+    MODES --> HOST
+    CONTEXT --> HOST
+
+    classDef client fill:#f8fafc,stroke:#64748b,stroke-width:1.5px,color:#172033;
+    classDef guard fill:#fee2e2,stroke:#dc2626,stroke-width:2px,color:#7f1d1d;
+    classDef host fill:#dbeafe,stroke:#2563eb,stroke-width:2px,color:#172554;
+    classDef agent fill:#ede9fe,stroke:#7c3aed,stroke-width:2px,color:#2e1065;
+    classDef result fill:#ecfdf5,stroke:#059669,stroke-width:1.5px,color:#064e3b;
+    class ACTOR,CLI,STDIN,MODES,CONTEXT client;
+    class AUTH guard;
+    class IPC,HOST host;
+    class CHILD agent;
+    class RECEIPT,EVENTS result;

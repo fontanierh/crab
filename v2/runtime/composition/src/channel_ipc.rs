@@ -28,6 +28,11 @@ use native_channel_contract::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::value::RawValue;
+use sub_agent_host_contract::{
+    InteractionReceipt, ReadSubAgentEventsRequest, SendToChildRequest, SendToParentRequest,
+    SpawnSubAgentRequest, StopSubAgentRequest, SubAgentEventPage, SubAgentHostHandle,
+    SubAgentReceipt, SubAgentRecord, SubAgentReference, SubAgentStatus,
+};
 use tokio::{
     io::{AsyncBufReadExt as _, AsyncReadExt as _, AsyncWriteExt as _, BufReader},
     net::{UnixListener, UnixStream},
@@ -59,6 +64,12 @@ const INVALIDATE_CREDENTIALS: &str = "bridge-host.invalidate_credentials";
 const BRIDGE_STATUS: &str = "bridge-host.bridge_status";
 const STOP_BRIDGE: &str = "bridge-host.stop_bridge";
 const SUSPEND_BRIDGE: &str = "bridge-host.suspend_bridge";
+const SPAWN_SUB_AGENT: &str = "sub-agent-host.spawn";
+const SEND_TO_CHILD: &str = "sub-agent-host.send_to_child";
+const SEND_TO_PARENT: &str = "sub-agent-host.send_to_parent";
+const READ_SUB_AGENT_EVENTS: &str = "sub-agent-host.read_events";
+const SUB_AGENT_STATUS: &str = "sub-agent-host.status";
+const STOP_SUB_AGENT: &str = "sub-agent-host.stop";
 
 /// Stable filesystem endpoints for Crab's local capability transport.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -389,6 +400,84 @@ impl ChannelIpcClient {
         .await
     }
 
+    /// Start one separately supervised ACP child without waiting for its model work to finish.
+    pub async fn spawn_sub_agent(
+        &self,
+        request: SpawnSubAgentRequest,
+    ) -> Result<SubAgentRecord, ChannelIpcClientError> {
+        self.invoke(
+            SPAWN_SUB_AGENT,
+            sub_agent_host_contract::contract_descriptor(),
+            request,
+        )
+        .await
+    }
+
+    /// Durably deliver one queue, steer or interrupt-and-steer input to the child.
+    pub async fn send_to_child(
+        &self,
+        request: SendToChildRequest,
+    ) -> Result<InteractionReceipt, ChannelIpcClientError> {
+        self.invoke(
+            SEND_TO_CHILD,
+            sub_agent_host_contract::contract_descriptor(),
+            request,
+        )
+        .await
+    }
+
+    /// Durably deliver one non-blocking child progress/result message to the parent.
+    pub async fn send_to_parent(
+        &self,
+        request: SendToParentRequest,
+    ) -> Result<InteractionReceipt, ChannelIpcClientError> {
+        self.invoke(
+            SEND_TO_PARENT,
+            sub_agent_host_contract::contract_descriptor(),
+            request,
+        )
+        .await
+    }
+
+    /// Read ordered lifecycle, interaction and native ACP events after one cursor.
+    pub async fn read_sub_agent_events(
+        &self,
+        request: ReadSubAgentEventsRequest,
+    ) -> Result<SubAgentEventPage, ChannelIpcClientError> {
+        self.invoke(
+            READ_SUB_AGENT_EVENTS,
+            sub_agent_host_contract::contract_descriptor(),
+            request,
+        )
+        .await
+    }
+
+    /// Inspect one child and its pending bidirectional work.
+    pub async fn sub_agent_status(
+        &self,
+        request: SubAgentReference,
+    ) -> Result<SubAgentStatus, ChannelIpcClientError> {
+        self.invoke(
+            SUB_AGENT_STATUS,
+            sub_agent_host_contract::contract_descriptor(),
+            request,
+        )
+        .await
+    }
+
+    /// Cooperatively stop one child; repeated terminal stops remain safe.
+    pub async fn stop_sub_agent(
+        &self,
+        request: StopSubAgentRequest,
+    ) -> Result<SubAgentReceipt, ChannelIpcClientError> {
+        self.invoke(
+            STOP_SUB_AGENT,
+            sub_agent_host_contract::contract_descriptor(),
+            request,
+        )
+        .await
+    }
+
     async fn invoke<I, O>(
         &self,
         capability_name: &str,
@@ -473,6 +562,7 @@ struct IpcCapabilities {
     native_channel: NativeChannelHandle,
     bridge_host: BridgeHostHandle,
     trigger_inbox: TriggerInboxHandle,
+    sub_agent_host: SubAgentHostHandle,
 }
 
 impl ChannelIpcServer {
@@ -482,6 +572,7 @@ impl ChannelIpcServer {
         native_channel: NativeChannelHandle,
         bridge_host: BridgeHostHandle,
         trigger_inbox: TriggerInboxHandle,
+        sub_agent_host: SubAgentHostHandle,
     ) -> Result<Self, ChannelIpcStartupError> {
         let authentication = load_or_create_token(&paths.token)?;
         prepare_socket(&paths.socket).await?;
@@ -498,6 +589,7 @@ impl ChannelIpcServer {
             native_channel,
             bridge_host,
             trigger_inbox,
+            sub_agent_host,
         };
         let task = tokio::spawn(async move {
             let result = serve(
@@ -703,6 +795,7 @@ async fn dispatch(
         native_channel,
         bridge_host,
         trigger_inbox,
+        sub_agent_host,
     } = capabilities;
     match request.capability.as_str() {
         ATTACH => {
@@ -843,6 +936,54 @@ async fn dispatch(
             )
             .await
         }
+        SPAWN_SUB_AGENT => {
+            invoke_sub_agent::<SpawnSubAgentRequest, SubAgentRecord, _, _>(
+                &request.input,
+                SPAWN_SUB_AGENT,
+                |input| sub_agent_host.spawn(call_context(), input),
+            )
+            .await
+        }
+        SEND_TO_CHILD => {
+            invoke_sub_agent::<SendToChildRequest, InteractionReceipt, _, _>(
+                &request.input,
+                SEND_TO_CHILD,
+                |input| sub_agent_host.send_to_child(call_context(), input),
+            )
+            .await
+        }
+        SEND_TO_PARENT => {
+            invoke_sub_agent::<SendToParentRequest, InteractionReceipt, _, _>(
+                &request.input,
+                SEND_TO_PARENT,
+                |input| sub_agent_host.send_to_parent(call_context(), input),
+            )
+            .await
+        }
+        READ_SUB_AGENT_EVENTS => {
+            invoke_sub_agent::<ReadSubAgentEventsRequest, SubAgentEventPage, _, _>(
+                &request.input,
+                READ_SUB_AGENT_EVENTS,
+                |input| sub_agent_host.read_events(call_context(), input),
+            )
+            .await
+        }
+        SUB_AGENT_STATUS => {
+            invoke_sub_agent::<SubAgentReference, SubAgentStatus, _, _>(
+                &request.input,
+                SUB_AGENT_STATUS,
+                |input| sub_agent_host.status(call_context(), input),
+            )
+            .await
+        }
+        STOP_SUB_AGENT => {
+            invoke_sub_agent::<StopSubAgentRequest, SubAgentReceipt, _, _>(
+                &request.input,
+                STOP_SUB_AGENT,
+                |input| sub_agent_host.stop(call_context(), input),
+            )
+            .await
+        }
         _ => wire_failure("protocol", "UnknownCapability"),
     }
 }
@@ -875,6 +1016,26 @@ where
     Fut: Future<Output = Result<O, CallError<native_channel_contract::NativeChannelError>>>,
 {
     let Some(capability) = capability(native_channel_contract::contract_descriptor(), name) else {
+        return wire_failure("internal", "MissingDescriptor");
+    };
+    let input = match decode_input::<I>(input, capability) {
+        Ok(input) => input,
+        Err(error) => return error,
+    };
+    match invoke(input).await {
+        Ok(output) => encode_output(output, capability),
+        Err(error) => wire_call_error(error),
+    }
+}
+
+async fn invoke_sub_agent<I, O, F, Fut>(input: &RawValue, name: &str, invoke: F) -> WireOutcome
+where
+    I: ContractType,
+    O: ContractType,
+    F: FnOnce(I) -> Fut,
+    Fut: Future<Output = Result<O, CallError<sub_agent_host_contract::SubAgentHostError>>>,
+{
+    let Some(capability) = capability(sub_agent_host_contract::contract_descriptor(), name) else {
         return wire_failure("internal", "MissingDescriptor");
     };
     let input = match decode_input::<I>(input, capability) {
