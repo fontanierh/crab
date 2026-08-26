@@ -2,10 +2,11 @@
 
 use std::{
     env,
+    ffi::OsString,
     fs::{self, OpenOptions},
     io::Write,
     net::{TcpStream, ToSocketAddrs},
-    path::Path,
+    path::{Path, PathBuf},
     process::Command,
     time::Duration,
 };
@@ -18,8 +19,14 @@ const ADAPTER_VERSION: &str = "0.70.0";
 const NETWORK_ENDPOINT: &str = "api.anthropic.com:443";
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
 
+struct AdapterInvocation {
+    executable: PathBuf,
+    arguments: Vec<OsString>,
+    source: &'static str,
+}
+
 fn main() {
-    match verify() {
+    match adapter_invocation(env::args_os().skip(1)).and_then(|adapter| verify(&adapter)) {
         Ok(report) => println!("{report}"),
         Err(error) => {
             eprintln!("claude authority probe failed: {error}");
@@ -28,9 +35,9 @@ fn main() {
     }
 }
 
-fn verify() -> Result<serde_json::Value, &'static str> {
+fn verify(adapter: &AdapterInvocation) -> Result<serde_json::Value, &'static str> {
     let uid = verify_non_root_uid()?;
-    verify_adapter_version()?;
+    verify_adapter_version(adapter)?;
     verify_macos_sandbox()?;
     verify_write_scope(&env::temp_dir())?;
     let home = env::var_os("HOME").ok_or("HOME is unavailable")?;
@@ -47,6 +54,7 @@ fn verify() -> Result<serde_json::Value, &'static str> {
             "probeVersion": env!("CARGO_PKG_VERSION"),
             "adapterPackage": ADAPTER_PACKAGE,
             "adapterVersion": ADAPTER_VERSION,
+            "adapterSource": adapter.source,
             "uid": uid,
             "sandbox": "launchctl:sandboxed=no",
             "filesystemScopes": ["home", "temporary-directory"],
@@ -74,9 +82,45 @@ fn verify_non_root_uid() -> Result<u32, &'static str> {
     Ok(uid)
 }
 
-fn verify_adapter_version() -> Result<(), &'static str> {
-    let output = Command::new("npx")
-        .args(["--yes", ADAPTER_PACKAGE, "--version"])
+fn adapter_invocation(
+    mut arguments: impl Iterator<Item = OsString>,
+) -> Result<AdapterInvocation, &'static str> {
+    let Some(first) = arguments.next() else {
+        return Ok(AdapterInvocation {
+            executable: "npx".into(),
+            arguments: ["--yes", ADAPTER_PACKAGE, "--version"]
+                .into_iter()
+                .map(OsString::from)
+                .collect(),
+            source: "pinned-npx",
+        });
+    };
+    if first != "--adapter-relative-to-probe" {
+        return Err("authority probe arguments are invalid");
+    }
+    let relative = PathBuf::from(
+        arguments
+            .next()
+            .ok_or("authority probe adapter path is missing")?,
+    );
+    if relative.is_absolute() || arguments.next().is_some() {
+        return Err("authority probe adapter path must be one relative path");
+    }
+    let executable = env::current_exe()
+        .map_err(|_| "authority probe executable path is unavailable")?
+        .parent()
+        .ok_or("authority probe executable directory is unavailable")?
+        .join(relative);
+    Ok(AdapterInvocation {
+        executable,
+        arguments: vec![OsString::from("--version")],
+        source: "bundle-relative",
+    })
+}
+
+fn verify_adapter_version(adapter: &AdapterInvocation) -> Result<(), &'static str> {
+    let output = Command::new(&adapter.executable)
+        .args(&adapter.arguments)
         .output()
         .map_err(|_| "pinned Claude ACP adapter could not run")?;
     if !output.status.success() {
@@ -151,7 +195,9 @@ fn sandbox_is_disabled(output: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{adapter_version_is_exact, sandbox_is_disabled};
+    use std::ffi::OsString;
+
+    use super::{adapter_invocation, adapter_version_is_exact, sandbox_is_disabled};
 
     #[test]
     fn adapter_version_match_is_exact() {
@@ -167,5 +213,50 @@ mod tests {
         assert!(!sandbox_is_disabled("sandboxed = yes\n"));
         assert!(!sandbox_is_disabled("sandboxed = no-ish\n"));
         assert!(!sandbox_is_disabled(""));
+    }
+
+    #[test]
+    fn default_adapter_stays_exactly_pinned() {
+        let invocation = adapter_invocation(std::iter::empty()).expect("default invocation");
+        assert_eq!(invocation.executable, std::path::Path::new("npx"));
+        assert_eq!(
+            invocation.arguments,
+            [
+                "--yes",
+                "@agentclientprotocol/claude-agent-acp@0.70.0",
+                "--version"
+            ]
+        );
+        assert_eq!(invocation.source, "pinned-npx");
+    }
+
+    #[test]
+    fn bundled_adapter_must_be_one_relative_path() {
+        assert!(adapter_invocation([OsString::from("--other")].into_iter()).is_err());
+        assert!(
+            adapter_invocation(
+                ["--adapter-relative-to-probe", "/absolute/adapter"]
+                    .into_iter()
+                    .map(OsString::from)
+            )
+            .is_err()
+        );
+        let invocation = adapter_invocation(
+            [
+                "--adapter-relative-to-probe",
+                "../agents/claude/node_modules/.bin/claude-agent-acp",
+            ]
+            .into_iter()
+            .map(OsString::from),
+        )
+        .expect("relative adapter path");
+        assert!(invocation.executable.is_absolute());
+        assert!(
+            invocation
+                .executable
+                .ends_with("agents/claude/node_modules/.bin/claude-agent-acp")
+        );
+        assert_eq!(invocation.arguments, ["--version"]);
+        assert_eq!(invocation.source, "bundle-relative");
     }
 }

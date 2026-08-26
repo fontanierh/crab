@@ -1,0 +1,44 @@
+flowchart LR
+    subgraph SOURCE["Reviewed source"]
+        CARGO["Cargo.lock"]
+        NPM["2 package-lock.json files"]
+        CONFIG["Bundle runtime preset"]
+        ALLOW["5-binary production allowlist"]
+    end
+
+    BUILD["make v2-bundle"]
+    CARGO --> BUILD
+    NPM --> BUILD
+    CONFIG --> BUILD
+    ALLOW --> BUILD
+
+    BUILD --> RUST["cargo build --release --locked"]
+    BUILD --> NODE["npm ci --omit=dev"]
+    RUST --> STAGE["Private staging directory"]
+    NODE --> STAGE
+
+    STAGE --> MANIFEST["SHA-256 manifest\nsource + platform + every entry"]
+    MANIFEST --> VERIFY["Strict verifier\nmissing / changed / extra / escaping = fail"]
+    VERIFY --> SMOKE["CLI + Claude + WhatsApp smoke tests"]
+    SMOKE --> ATOMIC["Atomic publish"]
+
+    ATOMIC --> BUNDLE["Offline runtime bundle"]
+    subgraph CONTENTS["Shipped closure"]
+        BIN["bin/\n5 production binaries"]
+        AGENT["agents/claude/\nlocked ACP adapter"]
+        BRIDGE["bridges/whatsapp/\nlocked first-party bridge"]
+        CFG["config/ + verifier"]
+    end
+    BUNDLE --> BIN
+    BUNDLE --> AGENT
+    BUNDLE --> BRIDGE
+    BUNDLE --> CFG
+
+    classDef source fill:#eef2ff,stroke:#4f46e5,color:#111827;
+    classDef action fill:#ecfeff,stroke:#0891b2,color:#111827;
+    classDef failclosed fill:#fff7ed,stroke:#ea580c,color:#111827;
+    classDef result fill:#ecfdf5,stroke:#059669,color:#111827;
+    class CARGO,NPM,CONFIG,ALLOW source;
+    class BUILD,RUST,NODE,STAGE action;
+    class MANIFEST,VERIFY,SMOKE failclosed;
+    class ATOMIC,BUNDLE,BIN,AGENT,BRIDGE,CFG result;

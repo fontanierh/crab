@@ -4,7 +4,7 @@ SHELL := /bin/bash
 PYTHON ?= python3
 export PYTHONDONTWRITEBYTECODE := 1
 
-.PHONY: help doctor check quick quality quality-status gate-tests fmt fmt-check clippy test public-api-check coverage coverage-gate coverage-quick coverage-diagnostics duplication-check quality-report quality-baseline
+.PHONY: help doctor check quick quality quality-status gate-tests fmt fmt-check clippy test v2-bundle v2-bundle-verify public-api-check coverage coverage-gate coverage-quick coverage-diagnostics duplication-check quality-report quality-baseline
 
 help: ## Show the repository-owned agent workflow (read-only).
 	@printf '%s\n' \
@@ -12,6 +12,7 @@ help: ## Show the repository-owned agent workflow (read-only).
 	  '  make doctor              Verify pinned, read-only prerequisites.' \
 	  '  make check               Run changed-scope format, Clippy, and tests across v1/v2.' \
 	  '  make quality             Run full v1/v2 format, Clippy, and tests.' \
+	  '  make v2-bundle           Build and verify one locked Crab v2 runtime bundle.' \
 	  '' \
 	  'Optional diagnostics (never merge gates):' \
 	  '  make coverage-quick      Generate focused coverage totals.' \
@@ -28,6 +29,8 @@ help: ## Show the repository-owned agent workflow (read-only).
 	  '  make fmt-check           Check formatting without editing.' \
 	  '  make clippy              Run full-workspace Clippy.' \
 	  '  make test                Run full-workspace tests.' \
+	  '  make v2-bundle-verify V2_BUNDLE=<path>' \
+	  '                           Verify an existing Crab v2 runtime bundle.' \
 	  '  make quality-report      Regenerate CODE_QUALITY_REPORT.md.' \
 	  '  make quality-baseline    Capture local runtime/density baselines.' \
 	  '' \
@@ -71,6 +74,13 @@ clippy: ## Run full-workspace Clippy under the manifest lint policy.
 
 test: ## Run full-workspace tests.
 	@$(PYTHON) scripts/workspace_gate.py tests --root-workspace --v2-workspace
+
+v2-bundle: ## Build and verify one locked Crab v2 runtime bundle.
+	@$(PYTHON) scripts/v2_bundle.py build $(if $(V2_BUNDLE),--output "$(V2_BUNDLE)",)
+
+v2-bundle-verify: ## Verify V2_BUNDLE without needing Rust, npm, or the source checkout.
+	@test -n "$(V2_BUNDLE)" || { echo 'V2_BUNDLE=<path> is required' >&2; exit 2; }
+	@$(PYTHON) scripts/v2_bundle.py verify "$(V2_BUNDLE)"
 
 public-api-check: ## Check public functions have cross-file use.
 	@bash scripts/public_api_usage_check.sh

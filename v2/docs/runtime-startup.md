@@ -71,6 +71,20 @@ cargo run -p crab-v2-runtime --bin crab-v2 -- \
   --state-dir /private/path/to/crab-v2-state
 ```
 
+### Clean-machine bundle
+
+For deployment, use the [verified runtime bundle](runtime-bundle.md) instead of rebuilding and
+installing packages on the target. Its bundle-relative preset keeps the same exact Claude policy,
+verifies the vendored adapter without `npx`, and registers the bundled WhatsApp bridge:
+
+```sh
+make v2-bundle
+python3 v2/dist/crab-v2-*/libexec/v2_bundle.py verify v2/dist/crab-v2-*
+```
+
+The target needs macOS, Node 22+, Claude authentication, and the documented unrestricted-host
+authority. It does not need Rust, npm, network package access, or a runtime installation step.
+
 ## Trigger ingress
 
 `crab-v2-trigger` is the single supported recipe for cron, self-work and operator ingress. It reads
