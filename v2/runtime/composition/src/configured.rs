@@ -16,8 +16,8 @@ use tokio::{sync::watch, task::JoinSet};
 use turn_router_contract::{DrainLaneRequest, PutRouteRequest, RouteReference};
 
 use crate::{
-    ChannelConfig, DraftRuntime, LaneConfig, RuntimeConfig, RuntimeStartError,
-    start_runtime_with_state_directory,
+    ChannelConfig, ChannelIpcPaths, DraftRuntime, LaneConfig, RuntimeConfig, RuntimeStartError,
+    channel_ipc::ChannelIpcServer, start_runtime_with_state_directory,
 };
 
 /// A configured, restored graph with one continuously draining worker per trigger lane.
@@ -25,6 +25,7 @@ pub struct ConfiguredRuntime {
     runtime: DraftRuntime,
     sessions: Vec<String>,
     bridges: Vec<String>,
+    channel_ipc: ChannelIpcServer,
     shutdown: watch::Sender<bool>,
     workers: JoinSet<Result<(), RuntimeRunError>>,
 }
@@ -42,6 +43,8 @@ pub enum RuntimeRunError {
     AgentHostUnavailable,
     /// A live bridge package could not be suspended cleanly.
     BridgeHostUnavailable,
+    /// The local native-channel endpoint failed or could not shut down cleanly.
+    ChannelIpcUnavailable,
 }
 
 impl fmt::Display for RuntimeRunError {
@@ -52,6 +55,7 @@ impl fmt::Display for RuntimeRunError {
             Self::SignalUnavailable => formatter.write_str("shutdown signal is unavailable"),
             Self::AgentHostUnavailable => formatter.write_str("ACP session shutdown failed"),
             Self::BridgeHostUnavailable => formatter.write_str("bridge shutdown failed"),
+            Self::ChannelIpcUnavailable => formatter.write_str("local channel IPC failed"),
         }
     }
 }
@@ -73,15 +77,32 @@ impl ConfiguredRuntime {
         config: RuntimeConfig,
         state_directory: impl AsRef<Path>,
     ) -> Result<Self, RuntimeStartError> {
+        let state_directory = state_directory.as_ref();
         config.validate()?;
         let agents = config.configured_agents()?;
-        let runtime = start_runtime_with_state_directory(state_directory.as_ref(), agents)?;
+        let runtime = start_runtime_with_state_directory(state_directory, agents)?;
+        let paths = ChannelIpcPaths::for_state_directory(state_directory)
+            .map_err(|error| RuntimeStartError::ChannelIpc(error.into()))?;
         let bridges = initialize_bridges(runtime.bridge_host(), &config).await?;
         let sessions = match initialize_topology(&runtime, &config).await {
             Ok(sessions) => sessions,
             Err(error) => {
                 suspend_bridges(runtime.bridge_host(), &bridges).await;
                 return Err(error);
+            }
+        };
+        let channel_ipc = match ChannelIpcServer::start(
+            paths,
+            runtime.channel_gateway().clone(),
+            runtime.native_channel().clone(),
+        )
+        .await
+        {
+            Ok(server) => server,
+            Err(error) => {
+                suspend_bridges(runtime.bridge_host(), &bridges).await;
+                close_sessions(runtime.agent_host(), &sessions).await;
+                return Err(RuntimeStartError::ChannelIpc(error));
             }
         };
         let (shutdown, receiver) = watch::channel(false);
@@ -98,6 +119,7 @@ impl ConfiguredRuntime {
             runtime,
             sessions,
             bridges,
+            channel_ipc,
             shutdown,
             workers,
         })
@@ -116,6 +138,7 @@ impl ConfiguredRuntime {
                 Some(Ok(Err(error))) => Err(error),
                 Some(Ok(Ok(()))) | Some(Err(_)) | None => Err(RuntimeRunError::WorkerStopped),
             },
+            () = self.channel_ipc.wait_for_failure() => Err(RuntimeRunError::ChannelIpcUnavailable),
         };
         let cleanup = self.finish().await;
         outcome.and(cleanup)
@@ -127,8 +150,17 @@ impl ConfiguredRuntime {
     }
 
     async fn finish(&mut self) -> Result<(), RuntimeRunError> {
+        let mut outcome = if self.channel_ipc.shutdown().await.is_ok() {
+            Ok(())
+        } else {
+            Err(RuntimeRunError::ChannelIpcUnavailable)
+        };
+        for session_id in self.channel_ipc.attached_session_ids() {
+            if !self.sessions.contains(&session_id) {
+                self.sessions.push(session_id);
+            }
+        }
         self.shutdown.send_replace(true);
-        let mut outcome = Ok(());
         while let Some(worker) = self.workers.join_next().await {
             match worker {
                 Ok(Ok(())) => {}
@@ -536,6 +568,7 @@ impl fmt::Display for RuntimeStartError {
             Self::RegisterBridge(_) => "bridge registration failed",
             Self::ReplaceBridge(_) => "bridge replacement failed",
             Self::StopBridge(_) => "stale bridge cleanup failed",
+            Self::ChannelIpc(_) => "local channel IPC startup failed",
             Self::StateDirectory(_) => "state-directory startup failed",
             Self::Assembly(_) => "Boxology assembly failed",
         };
@@ -549,6 +582,7 @@ impl std::error::Error for RuntimeStartError {}
 mod tests {
     use std::{
         collections::HashSet,
+        os::unix::fs::PermissionsExt as _,
         path::PathBuf,
         sync::{
             Arc, Mutex,
@@ -575,6 +609,7 @@ mod tests {
         InMemoryCredentialStore, PackageChallenge, PackageCredential, PackageCredentialValidation,
         PackageDelivery, PackageHealth, generated as bridge_host,
     };
+    use channel_gateway_contract::{AttachChannelRequest, ChannelAttachmentDisposition};
     use channel_gateway_implementation::{ChannelGateway, generated as channel_gateway};
     use native_channel_contract::{BindingReference, ChannelLifecycle};
     use native_channel_implementation::{NativeChannelState, generated as native_channel};
@@ -589,11 +624,12 @@ mod tests {
 
     use super::{
         StartupHandles, call_context, close_sessions, initialize_bridges,
-        initialize_topology_with_handles, spawn_lane_worker, suspend_bridges,
+        initialize_topology_with_handles, session_metadata, spawn_lane_worker, suspend_bridges,
     };
     use crate::{
-        AgentConfig, BridgeConfig, BridgeIngressConfig, ChannelConfig, CommandConfig, LaneConfig,
-        ProtocolConfig, RuntimeConfig,
+        AgentConfig, BridgeConfig, BridgeIngressConfig, ChannelConfig, ChannelIpcClient,
+        ChannelIpcClientError, ChannelIpcPaths, ChannelIpcStartupError, CommandConfig, LaneConfig,
+        ProtocolConfig, RuntimeConfig, channel_ipc::ChannelIpcServer,
     };
 
     #[derive(Default)]
@@ -1079,6 +1115,123 @@ mod tests {
             serde_json::from_str(&binding.native_channel_json).expect("gateway envelope decodes");
         assert_eq!(native["adapter"]["title"], "Jim v2");
         assert!(close_sessions(&restarted.agent_host, &restarted_sessions).await);
+    }
+
+    #[tokio::test]
+    async fn authenticated_ipc_reuses_live_attachment_across_client_disconnects() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let state = Arc::new(Mutex::new(FakeState::default()));
+        let config = config(directory.path().to_path_buf());
+        let graph = graph(directory.path(), state.clone());
+        let sessions = initialize_topology_with_handles(graph.handles(), &config)
+            .await
+            .expect("topology starts");
+        let paths = ChannelIpcPaths::for_state_directory(directory.path()).expect("paths resolve");
+        let mut server = ChannelIpcServer::start(
+            paths.clone(),
+            graph.channel_gateway.clone(),
+            graph.native_channel.clone(),
+        )
+        .await
+        .expect("IPC starts");
+        assert!(matches!(
+            ChannelIpcServer::start(
+                paths.clone(),
+                graph.channel_gateway.clone(),
+                graph.native_channel.clone(),
+            )
+            .await,
+            Err(ChannelIpcStartupError::AlreadyRunning)
+        ));
+        let request = AttachChannelRequest {
+            channel_id: "primary".into(),
+            adapter_id: "native-ui".into(),
+            agent_id: "fake".into(),
+            working_directory: directory.path().to_string_lossy().into_owned(),
+            bootstrap_prompt: config
+                .bootstrap_prompt(&config.channels[0])
+                .expect("bootstrap"),
+            session_metadata_json: session_metadata(&config.channels[0]).expect("metadata"),
+            native_channel_json: serde_json::to_string(&config.channels[0].native_channel)
+                .expect("native metadata"),
+        };
+
+        let client =
+            ChannelIpcClient::from_state_directory(directory.path()).expect("client opens");
+        let first = client
+            .attach_channel(request.clone())
+            .await
+            .expect("first client attaches");
+        assert_eq!(
+            first.disposition,
+            ChannelAttachmentDisposition::ReusedLiveSession
+        );
+        drop(client);
+        let second = ChannelIpcClient::from_state_directory(directory.path())
+            .expect("second client opens")
+            .attach_channel(request.clone())
+            .await
+            .expect("second client attaches");
+        assert_eq!(second.binding_id, first.binding_id);
+        assert_eq!(second.session_id, sessions[0]);
+        assert_eq!(state.lock().expect("fake state lock").next_session, 1);
+
+        let valid_token = std::fs::read_to_string(paths.token()).expect("token reads");
+        std::fs::write(paths.token(), "0".repeat(64)).expect("test token changes");
+        let unauthorized = ChannelIpcClient::from_state_directory(directory.path())
+            .expect("wrong-token client opens")
+            .channel_status(BindingReference {
+                binding_id: first.binding_id,
+            })
+            .await;
+        assert!(matches!(
+            unauthorized,
+            Err(ChannelIpcClientError::Remote { kind, code })
+                if kind == "authentication" && code == "Unauthorized"
+        ));
+        std::fs::write(paths.token(), &valid_token).expect("test token restores");
+        assert_eq!(
+            std::fs::metadata(paths.socket())
+                .expect("socket metadata")
+                .permissions()
+                .mode()
+                & 0o077,
+            0
+        );
+        assert_eq!(
+            std::fs::metadata(paths.token())
+                .expect("token metadata")
+                .permissions()
+                .mode()
+                & 0o077,
+            0
+        );
+
+        server.shutdown().await.expect("IPC shuts down");
+        assert!(!paths.socket().exists());
+        assert!(paths.token().exists());
+        let mut restarted = ChannelIpcServer::start(
+            paths.clone(),
+            graph.channel_gateway.clone(),
+            graph.native_channel.clone(),
+        )
+        .await
+        .expect("IPC restarts");
+        let after_restart = ChannelIpcClient::from_state_directory(directory.path())
+            .expect("restart client opens")
+            .attach_channel(request)
+            .await
+            .expect("restart client reuses attachment");
+        assert_eq!(after_restart.session_id, sessions[0]);
+        assert_eq!(
+            std::fs::read_to_string(paths.token()).expect("persisted token reads"),
+            valid_token
+        );
+        restarted
+            .shutdown()
+            .await
+            .expect("restarted IPC shuts down");
+        assert!(close_sessions(&graph.agent_host, &sessions).await);
     }
 
     #[tokio::test]

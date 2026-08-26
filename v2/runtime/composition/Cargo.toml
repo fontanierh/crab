@@ -24,6 +24,7 @@ turn-router-implementation = { version = "=0.0.0", path = "../../turn-router/imp
 trigger-inbox-implementation = { version = "=0.0.0", path = "../../trigger-inbox/implementation" }
 trigger-inbox-contract = { version = "=0.0.0", path = "../../trigger-inbox/generated/contract" }
 tokio = { workspace = true }
+uuid = { workspace = true }
 
 [dev-dependencies]
 async-trait = { workspace = true }

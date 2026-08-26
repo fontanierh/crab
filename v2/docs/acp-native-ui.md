@@ -26,6 +26,9 @@ The T3 Crab provider starts one lightweight `crab-v2-acp-channel` process per T3
 speaks standard ACP over stdio, but only attaches to the single long-running Crab runtime over a
 versioned local IPC transport. It must never launch or own the underlying ACP agent.
 
+The authenticated local Boxology transport is implemented. The remaining integration is the thin
+ACP stdio facade and T3 provider wiring.
+
 | T3 / ACP operation | Crab operation |
 |---|---|
 | `session/new`, `session/load`, `session/resume` | Create or attach one durable native-channel binding |
