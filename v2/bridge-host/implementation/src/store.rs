@@ -1082,6 +1082,15 @@ impl BridgeStore {
         })
     }
 
+    pub(crate) fn suspend(
+        &self,
+        bridge_id: &str,
+        now_ms: u64,
+    ) -> Result<BridgeStatus, BridgeHostError> {
+        self.set_lifecycle(bridge_id, &BridgeLifecycle::Stopped, None, None)?;
+        self.status(bridge_id, now_ms)
+    }
+
     fn lock(&self) -> Result<std::sync::MutexGuard<'_, Connection>, BridgeHostError> {
         self.connection
             .lock()
@@ -1631,6 +1640,37 @@ mod tests {
         );
         assert_eq!(records[0].display_name, "Alpha replacement");
         assert_eq!(records[0].generation, 2);
+    }
+
+    #[test]
+    fn suspension_preserves_desired_state_and_generation_across_restart() {
+        let directory = tempfile::tempdir().expect("temporary state directory");
+        let path = directory.path().join("suspend.sqlite");
+        {
+            let store = BridgeStore::open(&path).expect("store opens");
+            store.register(&spec(true), 1).expect("bridge registers");
+            let suspended = store.suspend("bridge-1", 2).expect("bridge suspends");
+            assert_eq!(suspended.lifecycle, BridgeLifecycle::Stopped);
+            assert_eq!(suspended.generation, 1);
+            assert_eq!(
+                store
+                    .suspend("bridge-1", 3)
+                    .expect("repeat is safe")
+                    .generation,
+                1
+            );
+            let record = store.record("bridge-1").expect("record remains");
+            assert!(record.desired_running);
+            assert_eq!(record.generation, 1);
+        }
+
+        let restarted = BridgeStore::open(&path).expect("store reopens");
+        assert_eq!(
+            restarted
+                .desired_bridge_ids()
+                .expect("desired catalog loads"),
+            ["bridge-1"]
+        );
     }
 
     #[test]

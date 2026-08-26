@@ -294,4 +294,8 @@ boxology::contract! {
 
     #[capability]
     pub async fn stop_bridge(request: BridgeReference) -> Result<BridgeReceipt, BridgeHostError>;
+
+    /// Gracefully stop the live package while preserving durable desired state for restart.
+    #[capability]
+    pub async fn suspend_bridge(request: BridgeReference) -> Result<BridgeStatus, BridgeHostError>;
 }

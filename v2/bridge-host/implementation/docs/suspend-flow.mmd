@@ -1,0 +1,6 @@
+flowchart LR
+    SHUTDOWN[runtime shutdown] --> SUSPEND[suspend bridge]
+    SUSPEND --> PACKAGE[graceful package stop]
+    SUSPEND --> STATE[(desired state preserved)]
+    STATE --> RESTART[next runtime start]
+    RESTART --> PACKAGE2[fresh package process]
