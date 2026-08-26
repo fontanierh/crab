@@ -252,14 +252,33 @@
         "type": "BridgeReceipt"
       },
       "shape": "unary"
+    },
+    {
+      "deprecation": null,
+      "docs": [
+        " Gracefully stop the live package while preserving durable desired state for restart."
+      ],
+      "error": "BridgeHostError",
+      "id": "bridge-host.suspend_bridge",
+      "idempotency": "none",
+      "input": {
+        "name": "request",
+        "type": "BridgeReference"
+      },
+      "max_exposure": "code_only",
+      "name": "suspend_bridge",
+      "output": {
+        "type": "BridgeStatus"
+      },
+      "shape": "unary"
     }
   ],
   "provenance": {
     "generator": "boxology-generator",
     "generator_version": "0.1.1",
-    "semantic_digest": "sha256:6a710755e524d10299e30623a3bb18af037d08a2a26e074cad2ce3ce0e9cd469"
+    "semantic_digest": "sha256:82fa6595378b2380a263c9016f93a8e4c4f210d530cb623beb3838b0af8a5ac7"
   },
-  "revision": "sha256:94b2871bed855ffffc3e3c94bc3efba8db3d7a73cff28f711d813782c0d8569f",
+  "revision": "sha256:631ac36bc009a6f8b8014c78f21d706111f7c6956e329e234b0d7bcf9b414501",
   "schema_format": 1,
   "types": [
     {

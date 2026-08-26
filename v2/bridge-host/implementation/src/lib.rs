@@ -334,9 +334,7 @@ impl BridgeHost {
         if let Some(package) = self.connections.write().await.remove(bridge_id) {
             let _ = package.stop().await;
         }
-        self.store
-            .set_lifecycle(bridge_id, &BridgeLifecycle::Stopped, None, None)?;
-        self.store.status(bridge_id, (self.clock)()?)
+        self.store.suspend(bridge_id, (self.clock)()?)
     }
 }
 
@@ -1018,6 +1016,17 @@ impl BridgeHost {
         }
         self.store.stop(&request.bridge_id, (self.clock)()?)
     }
+
+    pub async fn suspend_bridge(
+        &self,
+        context: CallContext,
+        request: BridgeReference,
+    ) -> Result<BridgeStatus, BridgeHostError> {
+        let _ = context;
+        let _operation = self.operations.lock().await;
+        self.stop_supervisor(&request.bridge_id);
+        self.stop_connection(&request.bridge_id).await
+    }
 }
 
 async fn route_inbound(
@@ -1260,6 +1269,7 @@ mod tests {
 
         for required in [
             "list_bridges",
+            "suspend_bridge",
             "reconcile_bridge",
             "begin_authentication",
             "validate_credentials",
