@@ -135,6 +135,8 @@ replacement child. A failure of the recovery capability itself still aborts star
 sessions already owned by the runtime.
 
 Agent-owned compaction is not resumed or reconstructed. Durable trigger IDs still deduplicate
-retries, and each configured lane is drained serially until SIGINT/SIGTERM stops workers and closes
-the local endpoint, then the live ACP sessions. UI process disconnects never close a Crab-owned
-session. See the [local transport contract](channel-ipc.md).
+retries, and each configured lane is drained serially until SIGINT/SIGTERM stops ingress, workers
+and bridges, then asks `agent-host` to detach its complete live set. Active work is cancelled and
+acknowledged; native sessions are not closed. On restart, parents resume before durable children.
+UI process disconnects never close a Crab-owned session. See the
+[graceful detach contract](runtime-detach.md) and [local transport contract](channel-ipc.md).

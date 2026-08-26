@@ -7,10 +7,11 @@ extern crate agent_host_contract as boxology_generated_contract;
 
 use agent_host_implementation::{
     AcpEvent, AcpEventDirection, AcpEventKind, AgentCatalog, AgentHostError, AgentInputMode,
-    AgentLifecycle, AgentSession, DiscoverAgentsRequest, EventPage, OpenSessionRequest,
-    OperationReceipt, PermissionRequest, PermissionResolution, PreflightReport, PreflightRequest,
-    PromptAccepted, PromptDisposition, PromptRequest, ReadEventsRequest, ResumeSessionRequest,
-    RunReference, SessionReference, SessionStatus, generated as agent_host,
+    AgentLifecycle, AgentSession, DetachSessionsReport, DetachSessionsRequest,
+    DiscoverAgentsRequest, EventPage, OpenSessionRequest, OperationReceipt, PermissionRequest,
+    PermissionResolution, PreflightReport, PreflightRequest, PromptAccepted, PromptDisposition,
+    PromptRequest, ReadEventsRequest, ResumeSessionRequest, RunReference, SessionReference,
+    SessionStatus, generated as agent_host,
 };
 use boxology_contract::{CallContext, Caller, CancelToken, TraceContext};
 use boxology_runtime::CompositionBuilder;
@@ -224,6 +225,19 @@ impl FakeAgentHost {
         Ok(OperationReceipt {
             accepted: true,
             recorded_at_ms: 600,
+        })
+    }
+
+    async fn detach_sessions(
+        &self,
+        context: CallContext,
+        request: DetachSessionsRequest,
+    ) -> Result<DetachSessionsReport, AgentHostError> {
+        let _ = (context, request);
+        self.state.lock().expect("fake state lock").active_run_id = None;
+        Ok(DetachSessionsReport {
+            detached_session_ids: vec!["session-1".into()],
+            failed_session_ids: Vec::new(),
         })
     }
 }

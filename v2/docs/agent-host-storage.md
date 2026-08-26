@@ -9,10 +9,11 @@ view.
 - `PRAGMA user_version = 1` creates `sessions`, `prompts`, `events`, and `permissions` atomically.
 - WAL mode, foreign keys, a five-second busy timeout, and full synchronous writes are mandatory.
 - Unknown schema versions fail closed with `StorageUnavailable`.
-- A process cannot survive a Crab restart. Reopening marks `Starting`, `Ready`, `Busy`, or
-  `Stopping` sessions and their unfinished prompts as `Failed`; their native events remain readable.
-  An explicit [native resume](agent-session-resume.md) may reconnect a failed session without
-  changing either identity or replaying Crab bootstrap context.
+- A process cannot survive a Crab restart. Reopening marks `Starting`, `Ready`, `Busy`, `Detaching`
+  or `Stopping` sessions and their unfinished prompts as `Failed`; their native events remain
+  readable. Graceful shutdown commits `Detached` instead, which remains eligible for explicit
+  [native resume](agent-session-resume.md) without changing either identity or replaying Crab
+  bootstrap context.
 
 ## Durable invariants
 
@@ -26,5 +27,6 @@ view.
 - Configured stdio MCP declarations are attached to every `session/new` and `session/resume`. Crab
   injects canonical state/workspace paths and session identity; draft ACP v2 must advertise
   `session.mcp.stdio`.
-- Closing sends the native `session/close` request. Dropping a host tears down every remaining ACP
-  process group through the official SDK transport guard.
+- Host-wide detach cancels active work, waits for acknowledgement, fails unfinished prompts and
+  tears down ACP process groups without sending `session/close`.
+- Explicit close sends native `session/close`, commits `Stopped` and is never resumable.

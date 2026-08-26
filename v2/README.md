@@ -56,8 +56,10 @@ interrupt as a separate explicit action.
 - `agent-host` runs real ACP v1/v2 subprocesses with mandatory authority preflight, durable
   prompts/events/permissions, queue/steer/cancel, explicit native resume, and process-group
   shutdown. Recovery preserves both session IDs and the event cursor while revalidating authority,
-  MCP tools and required policy; it never replays bootstrap or owns compaction. See the
-  [resume flow](docs/agent-session-resume.md). Its
+  MCP tools and required policy; it never replays bootstrap or owns compaction. Graceful runtime
+  shutdown detaches the host-owned live set without native close, while explicit close remains
+  destructive. See the [resume flow](docs/agent-session-resume.md) and
+  [detach flow](docs/runtime-detach.md). Its
   [state contract](docs/agent-host-storage.md) is schema-versioned from day one; the
   [rendered flow](docs/agent-host-flow.png) shows the process boundary.
 - `native-channel` is a durable Boxology consumer of `agent-host`: it binds one UI to one session,

@@ -9,11 +9,11 @@ flowchart LR
     INBOX["trigger-inbox.enqueue<br/>durable · idempotent"]
     RECOVER{"matching binding?"}
     REUSE["reuse live session"]
-    REBIND["open once · replace unavailable"]
+    REBIND["resume exact unavailable session<br/>replace only if explicitly unsupported"]
     BIND["open once · create binding"]
     ROUTE["CAS target → lane → binding"]
     WORKER["one bounded worker / lane<br/>claim · route · settle · repeat"]
-    SIGNAL["SIGINT / SIGTERM<br/>stop workers · close sessions"]
+    SIGNAL["SIGINT / SIGTERM<br/>stop ingress · workers · bridges<br/>detach every ACP session"]
 
     CONFIG --> ATTACH
     UI --> IPC --> ATTACH

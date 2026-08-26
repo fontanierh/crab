@@ -1,7 +1,8 @@
 # Agent session resume
 
-`agent-host.resume_session` reconnects one failed durable Crab session to the same native ACP
-session. It is explicit: opening a new session never masquerades as recovery.
+`agent-host.resume_session` reconnects one failed or intentionally detached durable Crab session
+to the same native ACP session. It is explicit: opening a new session never masquerades as
+recovery.
 
 ![Agent session resume flow](agent-session-resume-flow.png)
 
@@ -20,10 +21,11 @@ to the same ordered event journal. It does not resend bootstrap context, retry i
 rotate sessions or request compaction. The underlying agent remains the sole owner of its persisted
 conversation and compaction state.
 
-Only `Failed` is recoverable. `Starting`, `Ready`, `Busy`, `Stopping`, `Stopped` and unknown sessions
-are rejected. A clean host shutdown still closes sessions. Matching native-channel attachments now
-resume before replacement, and durable sub-agents resume after their parent within an explicit
-restart budget. Runtime-owned detach remains a separate slice.
+Only `Failed` and `Detached` are recoverable. `Starting`, `Ready`, `Busy`, `Detaching`, `Stopping`,
+`Stopped` and unknown sessions are rejected. A clean runtime shutdown cancels active work, waits
+for its acknowledgement and detaches every host-owned session without sending `session/close`.
+Matching native-channel attachments resume before replacement, and durable sub-agents resume after
+their parent within an explicit restart budget. See the [detach flow](runtime-detach.md).
 
 Protocol basis: ACP v1's stable
 [`session/resume`](https://agentclientprotocol.com/protocol/v1/session-setup) and ACP v2's unified

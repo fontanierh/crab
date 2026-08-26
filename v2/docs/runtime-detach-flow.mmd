@@ -1,0 +1,45 @@
+%%{init: {"theme": "base", "themeVariables": {"fontFamily": "ui-sans-serif, system-ui, sans-serif", "primaryTextColor": "#172033", "lineColor": "#64748b", "edgeLabelBackground": "#ffffff"}, "flowchart": {"curve": "basis", "nodeSpacing": 44, "rankSpacing": 60}}}%%
+flowchart LR
+    STOP["SIGINT · SIGTERM<br/>or operator shutdown"]
+    QUIESCE["Stop local IPC<br/>lane workers · bridges"]
+    SNAPSHOT["agent-host live set<br/>configured channels<br/>dynamic channels · sub-agents"]
+    BUSY{"Active work?"}
+    CANCEL["ACP session/cancel<br/>await acknowledgement"]
+    DETACHED[("Detached durable session<br/>same Crab ID · native ID<br/>journal + cursors")]
+    EXIT["ACP process exits<br/>no session/close"]
+    PARENT["Restart<br/>resume parents first"]
+    CHILD["Resume durable children<br/>after parent readiness"]
+    READY[("Ready<br/>same identities + cursors")]
+    CLOSE["Explicit close / rotation"]
+    DESTROY[("Stopped<br/>native session closed")]
+
+    subgraph SHUTDOWN["Quiesce the runtime"]
+        direction TB
+        STOP --> QUIESCE --> SNAPSHOT
+    end
+    subgraph DETACH["Preserve every native session"]
+        direction TB
+        BUSY -->|"yes"| CANCEL --> DETACHED
+        BUSY -->|"no"| DETACHED
+    end
+    subgraph RECOVER["Restart in dependency order"]
+        direction TB
+        EXIT --> PARENT --> CHILD --> READY
+    end
+    subgraph EXPLICIT["Separate destructive path"]
+        direction TB
+        CLOSE -->|"ACP session/close"| DESTROY
+    end
+
+    SNAPSHOT --> BUSY
+    DETACHED --> EXIT
+
+    classDef runtime fill:#dbeafe,stroke:#2563eb,stroke-width:2px,color:#172554;
+    classDef durable fill:#dcfce7,stroke:#16a34a,stroke-width:2px,color:#14532d;
+    classDef gate fill:#fef3c7,stroke:#d97706,stroke-width:2px,color:#78350f;
+    classDef destructive fill:#fee2e2,stroke:#dc2626,stroke-width:2px,color:#7f1d1d;
+
+    class STOP,QUIESCE,SNAPSHOT,CANCEL,EXIT,PARENT,CHILD runtime;
+    class DETACHED,READY durable;
+    class BUSY gate;
+    class CLOSE,DESTROY destructive;

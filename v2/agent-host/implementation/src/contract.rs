@@ -7,6 +7,8 @@ boxology::contract! {
         Starting,
         Ready,
         Busy,
+        Detaching,
+        Detached,
         Stopping,
         Stopped,
         Failed,
@@ -244,6 +246,16 @@ boxology::contract! {
         pub session_id: String,
     }
 
+    /// Explicit unit request for a host-wide graceful detach. The host owns the live-session set,
+    /// including sessions created dynamically by channels and sub-agents.
+    pub struct DetachSessionsRequest {}
+
+    /// Per-session outcomes let the runtime finish every detach before reporting a partial failure.
+    pub struct DetachSessionsReport {
+        pub detached_session_ids: Vec<String>,
+        pub failed_session_ids: Vec<String>,
+    }
+
     pub struct RunReference {
         pub session_id: String,
         pub run_id: String,
@@ -321,6 +333,11 @@ boxology::contract! {
 
     #[capability]
     pub async fn cancel_run(request: RunReference) -> Result<OperationReceipt, AgentHostError>;
+
+    /// Disconnect every live ACP process without closing its native session. Active work is
+    /// cancelled first; queued and running Crab prompts fail rather than replaying after restart.
+    #[capability]
+    pub async fn detach_sessions(request: DetachSessionsRequest) -> Result<DetachSessionsReport, AgentHostError>;
 
     /// Close the native session. There is intentionally no `compact` capability: ACP's current
     /// compaction proposal reports agent-owned compaction; it does not transfer control to Crab.

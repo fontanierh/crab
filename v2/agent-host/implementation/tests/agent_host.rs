@@ -5,10 +5,10 @@ use agent_host_implementation::{
     AgentProtocol, AuthorityAttestation, AuthorityProbeConfig, AuthorityVerifier,
     CRAB_AGENT_ID_ENV, CRAB_PARENT_SESSION_ID_ENV, CRAB_SESSION_ID_ENV, CRAB_STATE_DIRECTORY_ENV,
     CRAB_SUB_AGENT_ID_ENV, CRAB_WORKING_DIRECTORY_ENV, ConfiguredAgent, ConfiguredMcpServer,
-    DiscoverAgentsRequest, FilesystemAuthority, NetworkAuthority, OpenSessionRequest,
-    PermissionAuthority, PermissionRequest, PreflightRequest, PromptDisposition, PromptRequest,
-    ReadEventsRequest, ResumeSessionRequest, RootAuthority, RunReference, SandboxAuthority,
-    SessionReference, generated,
+    DetachSessionsRequest, DiscoverAgentsRequest, FilesystemAuthority, NetworkAuthority,
+    OpenSessionRequest, PermissionAuthority, PermissionRequest, PreflightRequest,
+    PromptDisposition, PromptRequest, ReadEventsRequest, ResumeSessionRequest, RootAuthority,
+    RunReference, SandboxAuthority, SessionReference, generated,
 };
 use async_trait::async_trait;
 use boxology_contract::{CallContext, Caller, CancelToken, TraceContext};
@@ -478,6 +478,160 @@ async fn failed_v1_and_v2_sessions_resume_native_identity_without_bootstrap_repl
                 )
                 .await,
             Err(AgentHostError::SessionResumeUnavailable)
+        );
+    }
+}
+
+#[tokio::test]
+async fn graceful_detach_preserves_v1_and_v2_native_sessions_for_exact_resume() {
+    for protocol in [AgentProtocol::V1, AgentProtocol::V2] {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let database = directory.path().join("agent-host.sqlite");
+        let agent = configured_agent(protocol);
+        let host = AgentHost::open_with_authority_verifier(
+            &database,
+            vec![agent.clone()],
+            Arc::new(FixtureAuthority),
+        )
+        .expect("host opens");
+        let session = open_fixture(&host, protocol, directory.path()).await;
+        let held = host
+            .prompt(
+                context(),
+                prompt(
+                    &session.session_id,
+                    "detach-held",
+                    AgentInputMode::Queue,
+                    "hold",
+                ),
+            )
+            .await
+            .expect("active work starts");
+        host.prompt(
+            context(),
+            prompt(
+                &session.session_id,
+                "detach-queued",
+                AgentInputMode::Queue,
+                "must-not-replay",
+            ),
+        )
+        .await
+        .expect("later work queues");
+
+        let report = host
+            .detach_sessions(context(), DetachSessionsRequest {})
+            .await
+            .expect("host-wide detach completes");
+        assert_eq!(
+            report.detached_session_ids.as_slice(),
+            std::slice::from_ref(&session.session_id)
+        );
+        assert!(report.failed_session_ids.is_empty());
+        wait_for_lifecycle(&host, &session.session_id, AgentLifecycle::Detached).await;
+        let before_resume = host
+            .read_events(
+                context(),
+                ReadEventsRequest {
+                    session_id: session.session_id.clone(),
+                    after_sequence: 0,
+                    limit: 1_000,
+                },
+            )
+            .await
+            .expect("detached journal remains readable");
+        assert!(
+            before_resume
+                .events
+                .iter()
+                .any(|event| event.native_event_json.contains("session/cancel"))
+        );
+        assert!(
+            !before_resume
+                .events
+                .iter()
+                .any(|event| event.native_event_json.contains("session/close"))
+        );
+        assert_eq!(
+            host.prompt(
+                context(),
+                prompt(
+                    &session.session_id,
+                    "while-detached",
+                    AgentInputMode::Queue,
+                    "no transport",
+                ),
+            )
+            .await,
+            Err(AgentHostError::SessionClosed)
+        );
+        drop(host);
+
+        let restarted = AgentHost::open_with_authority_verifier(
+            &database,
+            vec![agent],
+            Arc::new(FixtureAuthority),
+        )
+        .expect("host reopens");
+        let resumed = restarted
+            .resume_session(
+                context(),
+                ResumeSessionRequest {
+                    session_id: session.session_id.clone(),
+                },
+            )
+            .await
+            .expect("detached native session resumes");
+        assert_eq!(resumed.session_id, session.session_id);
+        assert_eq!(resumed.native_session_id, session.native_session_id);
+        let after_resume = restarted
+            .read_events(
+                context(),
+                ReadEventsRequest {
+                    session_id: session.session_id.clone(),
+                    after_sequence: before_resume.next_sequence,
+                    limit: 1_000,
+                },
+            )
+            .await
+            .expect("resume journal is readable");
+        assert!(after_resume.events.iter().any(|event| {
+            event.direction == AcpEventDirection::ClientToAgent
+                && event.native_event_json.contains("session/resume")
+        }));
+        assert!(
+            !after_resume
+                .events
+                .iter()
+                .any(|event| event.native_event_json.contains("must-not-replay"))
+        );
+        assert_eq!(held.session_id, resumed.session_id);
+
+        restarted
+            .close_session(
+                context(),
+                SessionReference {
+                    session_id: session.session_id.clone(),
+                },
+            )
+            .await
+            .expect("explicit close remains available");
+        let closed = restarted
+            .read_events(
+                context(),
+                ReadEventsRequest {
+                    session_id: session.session_id,
+                    after_sequence: 0,
+                    limit: 1_000,
+                },
+            )
+            .await
+            .expect("closed journal remains readable");
+        assert!(
+            closed
+                .events
+                .iter()
+                .any(|event| event.native_event_json.contains("session/close"))
         );
     }
 }
