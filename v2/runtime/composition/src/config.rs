@@ -239,8 +239,8 @@ impl std::error::Error for RuntimeConfigError {
 impl RuntimeConfig {
     /// Load, resolve relative filesystem paths and validate one strict JSON file.
     pub fn load(path: impl AsRef<Path>) -> Result<Self, RuntimeConfigError> {
-        let path = path.as_ref();
-        let bytes = fs::read(path).map_err(RuntimeConfigError::Read)?;
+        let path = absolute_config_path(path.as_ref())?;
+        let bytes = fs::read(&path).map_err(RuntimeConfigError::Read)?;
         let mut config: Self =
             serde_json::from_slice(&bytes).map_err(RuntimeConfigError::Decode)?;
         let base = path.parent().unwrap_or_else(|| Path::new("."));
@@ -395,6 +395,15 @@ impl RuntimeConfig {
     }
 }
 
+fn absolute_config_path(path: &Path) -> Result<PathBuf, RuntimeConfigError> {
+    if path.is_absolute() {
+        return Ok(path.to_owned());
+    }
+    env::current_dir()
+        .map(|directory| directory.join(path))
+        .map_err(RuntimeConfigError::Read)
+}
+
 impl BridgeConfig {
     fn spec(&self) -> Result<BridgeSpec, RuntimeConfigError> {
         let launch_json = serde_json::to_string(&serde_json::json!({
@@ -474,7 +483,15 @@ fn environment_values(names: &[String]) -> Result<BTreeMap<String, String>, Runt
 
 #[cfg(test)]
 mod tests {
-    use super::{RuntimeConfig, RuntimeConfigError};
+    use super::{RuntimeConfig, RuntimeConfigError, absolute_config_path};
+
+    #[test]
+    fn relative_config_paths_gain_an_absolute_resolution_base() {
+        let resolved = absolute_config_path(std::path::Path::new("runtime/example.json"))
+            .expect("current directory is available");
+        assert!(resolved.is_absolute());
+        assert!(resolved.ends_with("runtime/example.json"));
+    }
 
     #[test]
     fn strict_config_resolves_paths_and_references_without_secret_values() {
@@ -578,7 +595,8 @@ mod tests {
         );
         assert_eq!(
             agent.authority_probe.executable,
-            std::path::Path::new("/usr/bin/false")
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../target/release/crab-v2-claude-authority-probe")
         );
     }
 }
