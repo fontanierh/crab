@@ -5,15 +5,13 @@ use std::{
     time::Duration,
 };
 
-use agent_host_contract::{OpenSessionRequest, SessionReference};
+use agent_host_contract::SessionReference;
 use boxology_contract::{CallContext, CallError, Caller, CancelToken, TraceContext};
 use bridge_host_contract::{
     BridgeHostError, BridgeReference, BridgeSpec, ListBridgesRequest, ReplaceBridgeRequest,
 };
-use native_channel_contract::{
-    BindChannelRequest, BindingReference, ChannelBinding, ChannelLifecycle, LocateBindingRequest,
-    ReplaceSessionRequest,
-};
+use channel_gateway_contract::{AttachChannelRequest, ChannelAttachmentDisposition};
+use native_channel_contract::{BindingReference, ChannelLifecycle};
 use tokio::{sync::watch, task::JoinSet};
 use turn_router_contract::{DrainLaneRequest, PutRouteRequest, RouteReference};
 
@@ -252,6 +250,7 @@ async fn suspend_bridges(
 #[derive(Clone, Copy)]
 struct StartupHandles<'a> {
     agent_host: &'a agent_host_contract::AgentHostHandle,
+    channel_gateway: &'a channel_gateway_contract::ChannelGatewayHandle,
     native_channel: &'a native_channel_contract::NativeChannelHandle,
     turn_router: &'a turn_router_contract::TurnRouterHandle,
 }
@@ -262,6 +261,7 @@ async fn initialize_topology(
 ) -> Result<Vec<String>, RuntimeStartError> {
     let handles = StartupHandles {
         agent_host: runtime.agent_host(),
+        channel_gateway: runtime.channel_gateway(),
         native_channel: runtime.native_channel(),
         turn_router: runtime.turn_router(),
     };
@@ -291,52 +291,66 @@ async fn initialize_channel(
     config: &RuntimeConfig,
     channel: &ChannelConfig,
 ) -> Result<String, RuntimeStartError> {
-    let metadata_json = session_metadata(channel)?;
-    let session = handles
-        .agent_host
-        .open_session(
+    let route = resolve_route(handles, channel).await?;
+    cleanup_stale_route_binding(handles, channel, route.as_ref()).await?;
+    let native_channel_json = serde_json::to_string(&channel.native_channel)
+        .map_err(RuntimeStartError::SessionMetadata)?;
+    let attachment = handles
+        .channel_gateway
+        .attach_channel(
             call_context(),
-            OpenSessionRequest {
+            AttachChannelRequest {
+                channel_id: channel.channel_id.clone(),
+                adapter_id: channel.adapter_id.clone(),
                 agent_id: channel.agent_id.clone(),
                 working_directory: channel.working_directory.to_string_lossy().into_owned(),
                 bootstrap_prompt: config.bootstrap_prompt(channel)?,
-                metadata_json,
+                session_metadata_json: session_metadata(channel)?,
+                native_channel_json,
             },
         )
         .await
-        .map_err(RuntimeStartError::OpenSession)?;
-    let session_id = session.session_id;
-    let result = attach_channel(handles, channel, &session_id).await;
-    if result.is_err() {
-        close_sessions(handles.agent_host, std::slice::from_ref(&session_id)).await;
-    }
-    result.map(|()| session_id)
-}
-
-async fn attach_channel(
-    handles: StartupHandles<'_>,
-    channel: &ChannelConfig,
-    session_id: &str,
-) -> Result<(), RuntimeStartError> {
-    let channel_json = serde_json::to_string(&channel.native_channel)
-        .map_err(RuntimeStartError::SessionMetadata)?;
-    let route = resolve_route(handles, channel).await?;
-    let existing = locate_binding(handles, channel, route.as_ref()).await?;
-    let binding = restore_binding(handles, channel, &channel_json, session_id, existing).await?;
-    handles
+        .map_err(RuntimeStartError::AttachChannel)?;
+    let route_result = handles
         .turn_router
         .put_route(
             call_context(),
             PutRouteRequest {
                 target_channel_id: channel.channel_id.clone(),
                 lane: channel.lane.clone(),
-                binding_id: binding.binding_id,
+                binding_id: attachment.binding_id.clone(),
                 expected_generation: route.map(|route| route.generation),
             },
         )
-        .await
-        .map_err(RuntimeStartError::PutRoute)?;
-    Ok(())
+        .await;
+    if let Err(error) = route_result {
+        if matches!(
+            attachment.disposition,
+            ChannelAttachmentDisposition::Created
+        ) {
+            let _ = handles
+                .native_channel
+                .unbind_channel(
+                    call_context(),
+                    BindingReference {
+                        binding_id: attachment.binding_id,
+                    },
+                )
+                .await;
+        }
+        if !matches!(
+            attachment.disposition,
+            ChannelAttachmentDisposition::ReusedLiveSession
+        ) {
+            close_sessions(
+                handles.agent_host,
+                std::slice::from_ref(&attachment.session_id),
+            )
+            .await;
+        }
+        return Err(RuntimeStartError::PutRoute(error));
+    }
+    Ok(attachment.session_id)
 }
 
 fn session_metadata(channel: &ChannelConfig) -> Result<String, RuntimeStartError> {
@@ -371,11 +385,11 @@ async fn resolve_route(
     }
 }
 
-async fn locate_binding(
+async fn cleanup_stale_route_binding(
     handles: StartupHandles<'_>,
     channel: &ChannelConfig,
     route: Option<&turn_router_contract::ChannelRoute>,
-) -> Result<Option<ChannelBinding>, RuntimeStartError> {
+) -> Result<(), RuntimeStartError> {
     if let Some(route) = route {
         match handles
             .native_channel
@@ -392,7 +406,7 @@ async fn locate_binding(
                 if binding.channel_id == channel.channel_id
                     && binding.adapter_id == channel.adapter_id =>
             {
-                return Ok(Some(binding));
+                return Ok(());
             }
             Ok(binding) if binding.channel_id == channel.channel_id => {
                 handles
@@ -412,76 +426,7 @@ async fn locate_binding(
             Err(error) => return Err(RuntimeStartError::InspectBinding(error)),
         }
     }
-    match handles
-        .native_channel
-        .find_binding(
-            call_context(),
-            LocateBindingRequest {
-                channel_id: channel.channel_id.clone(),
-                adapter_id: channel.adapter_id.clone(),
-            },
-        )
-        .await
-    {
-        Ok(binding) => Ok(Some(binding)),
-        Err(CallError::Domain(native_channel_contract::NativeChannelError::UnknownBinding)) => {
-            Ok(None)
-        }
-        Err(error) => Err(RuntimeStartError::FindBinding(error)),
-    }
-}
-
-async fn restore_binding(
-    handles: StartupHandles<'_>,
-    channel: &ChannelConfig,
-    channel_json: &str,
-    session_id: &str,
-    existing: Option<ChannelBinding>,
-) -> Result<ChannelBinding, RuntimeStartError> {
-    if let Some(binding) = existing {
-        if binding.channel_id == channel.channel_id
-            && binding.adapter_id == channel.adapter_id
-            && binding.native_channel_json == channel_json
-            && !matches!(binding.lifecycle, ChannelLifecycle::Detached)
-        {
-            return handles
-                .native_channel
-                .replace_session(
-                    call_context(),
-                    ReplaceSessionRequest {
-                        binding_id: binding.binding_id,
-                        expected_session_id: binding.session_id,
-                        fresh_session_id: session_id.to_owned(),
-                        reason: "configured runtime startup".into(),
-                    },
-                )
-                .await
-                .map_err(RuntimeStartError::ReplaceSession);
-        }
-        handles
-            .native_channel
-            .unbind_channel(
-                call_context(),
-                BindingReference {
-                    binding_id: binding.binding_id,
-                },
-            )
-            .await
-            .map_err(RuntimeStartError::UnbindChannel)?;
-    }
-    handles
-        .native_channel
-        .bind_channel(
-            call_context(),
-            BindChannelRequest {
-                channel_id: channel.channel_id.clone(),
-                adapter_id: channel.adapter_id.clone(),
-                session_id: session_id.to_owned(),
-                native_channel_json: channel_json.to_owned(),
-            },
-        )
-        .await
-        .map_err(RuntimeStartError::BindChannel)
+    Ok(())
 }
 
 fn spawn_lane_worker(
@@ -582,11 +527,9 @@ impl fmt::Display for RuntimeStartError {
             Self::TurnRouter(_) => "turn-router startup failed",
             Self::TriggerInbox(_) => "trigger-inbox startup failed",
             Self::SessionMetadata(_) => "session metadata encoding failed",
-            Self::OpenSession(_) => "ACP session startup failed",
+            Self::AttachChannel(_) => "native channel attachment failed",
             Self::ResolveRoute(_) => "route recovery failed",
-            Self::InspectBinding(_) | Self::FindBinding(_) => "binding recovery failed",
-            Self::BindChannel(_) => "channel binding failed",
-            Self::ReplaceSession(_) => "channel session replacement failed",
+            Self::InspectBinding(_) => "binding recovery failed",
             Self::UnbindChannel(_) => "stale binding cleanup failed",
             Self::PutRoute(_) => "route registration failed",
             Self::ListBridges(_) => "bridge catalog recovery failed",
@@ -623,7 +566,7 @@ mod tests {
         RootAuthority, RunReference, SandboxAuthority, SessionReference, SessionStatus,
         SteeringSupport, generated as agent_host,
     };
-    use boxology_contract::CallContext;
+    use boxology_contract::{CallContext, CallError};
     use boxology_runtime::{Composition, CompositionBuilder};
     use bridge_host_contract::ListBridgesRequest;
     use bridge_host_implementation::{
@@ -632,6 +575,7 @@ mod tests {
         InMemoryCredentialStore, PackageChallenge, PackageCredential, PackageCredentialValidation,
         PackageDelivery, PackageHealth, generated as bridge_host,
     };
+    use channel_gateway_implementation::{ChannelGateway, generated as channel_gateway};
     use native_channel_contract::{BindingReference, ChannelLifecycle};
     use native_channel_implementation::{NativeChannelState, generated as native_channel};
     use serde_json::json;
@@ -828,8 +772,21 @@ mod tests {
             context: CallContext,
             request: ReadEventsRequest,
         ) -> Result<EventPage, AgentHostError> {
-            let _ = (context, request);
-            Err(AgentHostError::InvalidCursor)
+            let _ = context;
+            if !self
+                .state
+                .lock()
+                .expect("fake state lock")
+                .live_sessions
+                .contains(&request.session_id)
+            {
+                return Err(AgentHostError::UnknownSession);
+            }
+            Ok(EventPage {
+                events: Vec::new(),
+                next_sequence: request.after_sequence,
+                caught_up: true,
+            })
         }
 
         async fn resolve_permission(
@@ -907,6 +864,7 @@ mod tests {
         agent_host: agent_host_contract::AgentHostHandle,
         bridge_host: bridge_host_contract::BridgeHostHandle,
         bridge_processes: Arc<FakeBridgeProcesses>,
+        channel_gateway: channel_gateway_contract::ChannelGatewayHandle,
         native_channel: native_channel_contract::NativeChannelHandle,
         turn_router: turn_router_contract::TurnRouterHandle,
         trigger_inbox: trigger_inbox_contract::TriggerInboxHandle,
@@ -916,6 +874,7 @@ mod tests {
         fn handles(&self) -> StartupHandles<'_> {
             StartupHandles {
                 agent_host: &self.agent_host,
+                channel_gateway: &self.channel_gateway,
                 native_channel: &self.native_channel,
                 turn_router: &self.turn_router,
             }
@@ -935,6 +894,14 @@ mod tests {
         builder.connect(&channel, &agent);
         let native_channel =
             builder.handle::<native_channel_contract::NativeChannelHandle>(&channel);
+
+        let gateway = channel_gateway::register(&mut builder, move |imports| {
+            ChannelGateway::connect(imports.agent_host, imports.native_channel)
+        });
+        builder.connect(&gateway, &agent);
+        builder.connect(&gateway, &channel);
+        let channel_gateway =
+            builder.handle::<channel_gateway_contract::ChannelGatewayHandle>(&gateway);
 
         let inbox_store =
             TriggerInbox::open(path.join("inbox.sqlite")).expect("trigger store opens");
@@ -969,6 +936,7 @@ mod tests {
             agent_host,
             bridge_host,
             bridge_processes,
+            channel_gateway,
             native_channel,
             turn_router,
             trigger_inbox,
@@ -1038,11 +1006,32 @@ mod tests {
     async fn restart_reuses_binding_and_replaces_only_the_acp_session() {
         let directory = tempfile::tempdir().expect("temporary directory");
         let state = Arc::new(Mutex::new(FakeState::default()));
-        let config = config(directory.path().to_path_buf());
+        let mut config = config(directory.path().to_path_buf());
         let first = graph(directory.path(), state.clone());
         let first_sessions = initialize_topology_with_handles(first.handles(), &config)
             .await
             .expect("first topology starts");
+        let duplicate_sessions = initialize_topology_with_handles(first.handles(), &config)
+            .await
+            .expect("duplicate attach is idempotent");
+        assert_eq!(duplicate_sessions, first_sessions);
+        assert_eq!(
+            state.lock().expect("fake state lock").next_session,
+            1,
+            "duplicate attach must not start a second agent session"
+        );
+        config.channels[0].native_channel = json!({"title": "Jim v2"});
+        assert!(matches!(
+            initialize_topology_with_handles(first.handles(), &config).await,
+            Err(crate::RuntimeStartError::AttachChannel(CallError::Domain(
+                channel_gateway_contract::ChannelGatewayError::AttachmentConflict
+            )))
+        ));
+        assert_eq!(
+            state.lock().expect("fake state lock").next_session,
+            1,
+            "changed intent must not replace a live agent session"
+        );
         let first_route = first
             .turn_router
             .resolve_route(
@@ -1086,6 +1075,9 @@ mod tests {
         assert_eq!(binding.lifecycle, ChannelLifecycle::Attached);
         assert_eq!(binding.session_id, restarted_sessions[0]);
         assert_ne!(binding.session_id, first_sessions[0]);
+        let native: serde_json::Value =
+            serde_json::from_str(&binding.native_channel_json).expect("gateway envelope decodes");
+        assert_eq!(native["adapter"]["title"], "Jim v2");
         assert!(close_sessions(&restarted.agent_host, &restarted_sessions).await);
     }
 

@@ -424,11 +424,19 @@ impl ChannelStore {
         binding_id: &str,
         expected_session_id: &str,
         fresh_session_id: &str,
+        fresh_native_channel_json: Option<&str>,
         reason: &str,
         now_ms: u64,
     ) -> Result<ChannelBinding, NativeChannelError> {
         if fresh_session_id.trim().is_empty() || fresh_session_id == expected_session_id {
             return Err(NativeChannelError::SessionMismatch);
+        }
+        if let Some(fresh_native_channel_json) = fresh_native_channel_json {
+            let native_channel: Value = serde_json::from_str(fresh_native_channel_json)
+                .map_err(|_| NativeChannelError::InvalidNativePayload)?;
+            if !native_channel.is_object() {
+                return Err(NativeChannelError::InvalidNativePayload);
+            }
         }
         let mut connection = self.lock()?;
         let transaction = connection
@@ -437,13 +445,14 @@ impl ChannelStore {
         let changed = transaction
             .execute(
                 "UPDATE bindings
-                 SET session_id = ?3, lifecycle = 'Attached', published_sequence = 0,
-                     reconciled_sequence = 0, last_error = NULL, updated_at_ms = ?4
+                 SET session_id = ?3, native_channel_json = COALESCE(?4, native_channel_json), lifecycle = 'Attached', published_sequence = 0,
+                     reconciled_sequence = 0, last_error = NULL, updated_at_ms = ?5
                  WHERE binding_id = ?1 AND session_id = ?2 AND lifecycle != 'Detached'",
                 params![
                     binding_id,
                     expected_session_id,
                     fresh_session_id,
+                    fresh_native_channel_json,
                     db_i64(now_ms)?,
                 ],
             )
@@ -724,12 +733,14 @@ mod tests {
                 &binding.binding_id,
                 "session-1",
                 "session-2",
+                Some(r#"{"title":"Recovered"}"#),
                 "fresh context",
                 20,
             )
             .expect("explicit replacement recovers binding");
         assert_eq!(replaced.lifecycle, ChannelLifecycle::Attached);
         assert_eq!(replaced.session_id, "session-2");
+        assert_eq!(replaced.native_channel_json, r#"{"title":"Recovered"}"#);
     }
 
     #[test]

@@ -1,0 +1,26 @@
+%%{init: {"theme": "base", "themeVariables": {"fontFamily": "ui-sans-serif, system-ui, sans-serif", "primaryTextColor": "#172033", "lineColor": "#64748b", "edgeLabelBackground": "#ffffff"}, "flowchart": {"curve": "basis", "nodeSpacing": 42, "rankSpacing": 58}}}%%
+flowchart LR
+    REQUEST["attach intent<br/>agent · cwd · adapter metadata"]
+    FIND{"binding state"}
+    REUSE["reuse live session"]
+    CONFLICT["reject changed live intent"]
+    OPEN["open exactly one ACP session"]
+    REPLACE["atomic session + metadata replace"]
+    BIND["create binding"]
+
+    REQUEST --> FIND
+    FIND -->|"live + same"| REUSE
+    FIND -->|"live + changed"| CONFLICT
+    FIND -->|"unavailable"| OPEN
+    FIND -->|"missing"| OPEN
+    OPEN -->|"existing"| REPLACE
+    OPEN -->|"new"| BIND
+
+    classDef request fill:#f8fafc,stroke:#64748b,stroke-width:1.5px,color:#172033;
+    classDef safe fill:#dcfce7,stroke:#16a34a,stroke-width:2px,color:#14532d;
+    classDef runtime fill:#dbeafe,stroke:#2563eb,stroke-width:2px,color:#172554;
+    classDef conflict fill:#fee2e2,stroke:#dc2626,stroke-width:2px,color:#7f1d1d;
+    class REQUEST request;
+    class REUSE,REPLACE,BIND safe;
+    class FIND,OPEN runtime;
+    class CONFLICT conflict;

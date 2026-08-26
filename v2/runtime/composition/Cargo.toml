@@ -11,6 +11,8 @@ boxology-contract = { workspace = true }
 boxology-runtime = { workspace = true, features = ["test-support"] }
 bridge-host-contract = { version = "=0.0.0", path = "../../bridge-host/generated/contract" }
 bridge-host-implementation = { version = "=0.0.0", path = "../../bridge-host/implementation" }
+channel-gateway-contract = { version = "=0.0.0", path = "../../channel-gateway/generated/contract" }
+channel-gateway-implementation = { version = "=0.0.0", path = "../../channel-gateway/implementation" }
 native-channel-contract = { version = "=0.0.0", path = "../../native-channel/generated/contract" }
 native-channel-implementation = { version = "=0.0.0", path = "../../native-channel/implementation" }
 serde = { workspace = true }

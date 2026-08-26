@@ -1,6 +1,6 @@
 //! Executable assembly for the Crab v2 contract graph.
 //!
-//! Domain policy remains inside the six boxes. This composition loads deployment topology,
+//! Domain policy remains inside the seven boxes. This composition loads deployment topology,
 //! restores durable channel routes and supervises the bounded trigger-lane workers.
 
 #![deny(missing_docs)]
@@ -28,6 +28,7 @@ use bridge_host_implementation::{
     BridgeHostError, BridgeHostState, CredentialStore, CredentialStoreError, FileCredentialStore,
     InMemoryCredentialStore, ProcessBridgePackageFactory, generated as bridge_host,
 };
+use channel_gateway_implementation::{ChannelGateway, generated as channel_gateway};
 use native_channel_implementation::{
     NativeChannelError, NativeChannelState, generated as native_channel,
 };
@@ -45,6 +46,7 @@ pub struct DraftRuntime {
     pub in_process: Arc<StubTransport>,
     agent_host: agent_host_contract::AgentHostHandle,
     bridge_host: bridge_host_contract::BridgeHostHandle,
+    channel_gateway: channel_gateway_contract::ChannelGatewayHandle,
     native_channel: native_channel_contract::NativeChannelHandle,
     sub_agent_host: sub_agent_host_contract::SubAgentHostHandle,
     turn_router: turn_router_contract::TurnRouterHandle,
@@ -60,6 +62,11 @@ impl DraftRuntime {
     /// Returns the ordinary typed handle for the implemented bridge host.
     pub fn bridge_host(&self) -> &bridge_host_contract::BridgeHostHandle {
         &self.bridge_host
+    }
+
+    /// Returns the single lifecycle owner for native UI attachment.
+    pub fn channel_gateway(&self) -> &channel_gateway_contract::ChannelGatewayHandle {
+        &self.channel_gateway
     }
 
     /// Returns the ordinary typed handle for the implemented native-channel router.
@@ -104,18 +111,12 @@ pub enum RuntimeStartError {
     TriggerInbox(TriggerInboxError),
     /// Session metadata could not be encoded.
     SessionMetadata(serde_json::Error),
-    /// The configured ACP session could not be opened.
-    OpenSession(boxology_contract::CallError<agent_host_contract::AgentHostError>),
+    /// A configured native channel could not attach to its Crab-owned ACP session.
+    AttachChannel(boxology_contract::CallError<channel_gateway_contract::ChannelGatewayError>),
     /// A persisted route could not be resolved.
     ResolveRoute(boxology_contract::CallError<turn_router_contract::TurnRouterError>),
     /// A persisted native binding could not be inspected.
     InspectBinding(boxology_contract::CallError<native_channel_contract::NativeChannelError>),
-    /// A crash-orphaned native binding could not be located.
-    FindBinding(boxology_contract::CallError<native_channel_contract::NativeChannelError>),
-    /// A configured native binding could not be created.
-    BindChannel(boxology_contract::CallError<native_channel_contract::NativeChannelError>),
-    /// A persisted native binding could not receive its fresh ACP session.
-    ReplaceSession(boxology_contract::CallError<native_channel_contract::NativeChannelError>),
     /// A stale native binding could not be detached.
     UnbindChannel(boxology_contract::CallError<native_channel_contract::NativeChannelError>),
     /// A durable channel route could not be registered.
@@ -258,6 +259,19 @@ fn assemble_draft(
         builder.handle::<native_channel_contract::NativeChannelHandle>(&native_channel);
     builder.expose_all(&native_channel, in_process.clone(), ExposureLevel::CodeOnly);
 
+    let channel_gateway = channel_gateway::register(&mut builder, move |imports| {
+        ChannelGateway::connect(imports.agent_host, imports.native_channel)
+    });
+    builder.connect(&channel_gateway, &agent_host);
+    builder.connect(&channel_gateway, &native_channel);
+    let channel_gateway_handle =
+        builder.handle::<channel_gateway_contract::ChannelGatewayHandle>(&channel_gateway);
+    builder.expose_all(
+        &channel_gateway,
+        in_process.clone(),
+        ExposureLevel::CodeOnly,
+    );
+
     let sub_agent_host = sub_agent_host::register(&mut builder, move |imports| {
         sub_agent_host_state.connect(imports.agent_host)
     });
@@ -300,6 +314,7 @@ fn assemble_draft(
         in_process,
         agent_host: agent_host_handle,
         bridge_host: bridge_host_handle,
+        channel_gateway: channel_gateway_handle,
         native_channel: native_channel_handle,
         sub_agent_host: sub_agent_host_handle,
         turn_router: turn_router_handle,
@@ -332,7 +347,7 @@ mod tests {
     }
 
     #[test]
-    fn manifest_and_runtime_expose_the_same_six_box_graph() {
+    fn manifest_and_runtime_expose_the_same_seven_box_graph() {
         let manifest = Manifest::parse(
             RelativePath::new("boxology.toml").expect("manifest path is valid"),
             MANIFEST.as_bytes(),
@@ -360,6 +375,7 @@ mod tests {
             [
                 "agent-host",
                 "bridge-host",
+                "channel-gateway",
                 "native-channel",
                 "sub-agent-host",
                 "trigger-inbox",
@@ -373,7 +389,7 @@ mod tests {
                 .expect("composition exists")
                 .boxes()
                 .len(),
-            6
+            7
         );
     }
 

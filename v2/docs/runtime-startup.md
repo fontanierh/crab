@@ -1,6 +1,7 @@
 # Runtime startup
 
-`crab-v2` turns the six-box composition into one supervised process.
+`crab-v2` turns the seven-box composition into one supervised process. `channel-gateway` is
+stateless, so the state layout still contains six SQLite stores.
 
 ![Configured runtime flow](runtime-startup-flow.png)
 
@@ -36,10 +37,11 @@ cargo run -p crab-v2-runtime --bin crab-v2 -- \
 
 | Persisted state | Startup action |
 |---|---|
-| Route + matching binding | Open a fresh ACP session and atomically replace the dead session |
-| Binding created before route CAS | Find it by channel/adapter identity, replace, then register route |
-| No binding | Bind the fresh session, then register the route |
-| Stale adapter metadata | Detach the stale binding and create the configured binding |
+| Matching live binding | Reuse its session; never start a duplicate process |
+| Matching unavailable binding | Open one ACP session and atomically replace session + adapter metadata |
+| Binding created before route CAS | Find it by channel/adapter identity, recover it, then register the route |
+| No binding | Open one ACP session, bind it, then register the route |
+| Changed intent with a live session | Fail with an attachment conflict; never replace live work implicitly |
 
 Agent-owned compaction is not resumed or reconstructed. Durable trigger IDs still deduplicate
 retries, and each configured lane is drained serially until SIGINT/SIGTERM stops workers and closes

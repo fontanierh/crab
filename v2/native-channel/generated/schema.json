@@ -194,9 +194,9 @@
   "provenance": {
     "generator": "boxology-generator",
     "generator_version": "0.1.1",
-    "semantic_digest": "sha256:784d047bd95eec2be337c745674163ed5c7bd3e22193aedcc3c1d52ccdfd2a4f"
+    "semantic_digest": "sha256:1c06701a18b35378bb47478f271515d1e65a74d11c043be6d7d5b97e02d6e599"
   },
-  "revision": "sha256:a571d395b427730d2a56b7d8d40081f37c06a2b7e52d02966f591e33bb5bb095",
+  "revision": "sha256:2788474d5e325e82972fdd03b8296b794267bcd3342e6e1e2a01c25ef15fc6cd",
   "schema_format": 1,
   "types": [
     {
@@ -727,6 +727,15 @@
           "docs": [],
           "name": "fresh_session_id",
           "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [
+            " Fresh adapter destination metadata, atomically installed with the new session. Omit to",
+            " retain the current metadata when only the physical session changes."
+          ],
+          "name": "fresh_native_channel_json",
+          "type": "Option<String>"
         },
         {
           "deprecation": null,

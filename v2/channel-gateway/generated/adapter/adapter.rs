@@ -6,41 +6,67 @@ pub fn implementation_descriptor() -> ::boxology_contract::ImplementationDescrip
             ::boxology_generated_contract::contract_descriptor(),
             [
                 ::boxology_contract::ImportDescriptor::new(
-                        ::boxology_contract::BoxId::new("trigger-inbox")
+                        ::boxology_contract::BoxId::new("agent-host")
                             .expect("generated import package id is valid"),
                         ::boxology_contract::ContractRevision::new(
-                                "sha256:74f11818843afc1884367a6c23e0654c80cc22a10a580f1ad43bc1d94988ac61",
+                                "sha256:3c8c419cb08579a976cd3eb26083da2b8a114c2a7d6beece21a3cec37679c366",
                             )
                             .expect("generated import revision is valid"),
                         [
                             ::boxology_contract::CapabilityId::new(
-                                ::boxology_contract::BoxId::new("trigger-inbox")
+                                ::boxology_contract::BoxId::new("agent-host")
                                     .expect("generated import package id is valid"),
-                                ::boxology_contract::CapabilityName::new("enqueue")
+                                ::boxology_contract::CapabilityName::new("discover_agents")
                                     .expect("generated import capability name is valid"),
                             ),
                             ::boxology_contract::CapabilityId::new(
-                                ::boxology_contract::BoxId::new("trigger-inbox")
+                                ::boxology_contract::BoxId::new("agent-host")
                                     .expect("generated import package id is valid"),
-                                ::boxology_contract::CapabilityName::new("claim")
+                                ::boxology_contract::CapabilityName::new("preflight")
                                     .expect("generated import capability name is valid"),
                             ),
                             ::boxology_contract::CapabilityId::new(
-                                ::boxology_contract::BoxId::new("trigger-inbox")
+                                ::boxology_contract::BoxId::new("agent-host")
                                     .expect("generated import package id is valid"),
-                                ::boxology_contract::CapabilityName::new("extend_lease")
+                                ::boxology_contract::CapabilityName::new("open_session")
                                     .expect("generated import capability name is valid"),
                             ),
                             ::boxology_contract::CapabilityId::new(
-                                ::boxology_contract::BoxId::new("trigger-inbox")
+                                ::boxology_contract::BoxId::new("agent-host")
                                     .expect("generated import package id is valid"),
-                                ::boxology_contract::CapabilityName::new("settle")
+                                ::boxology_contract::CapabilityName::new("prompt")
                                     .expect("generated import capability name is valid"),
                             ),
                             ::boxology_contract::CapabilityId::new(
-                                ::boxology_contract::BoxId::new("trigger-inbox")
+                                ::boxology_contract::BoxId::new("agent-host")
                                     .expect("generated import package id is valid"),
-                                ::boxology_contract::CapabilityName::new("inspect")
+                                ::boxology_contract::CapabilityName::new("read_events")
+                                    .expect("generated import capability name is valid"),
+                            ),
+                            ::boxology_contract::CapabilityId::new(
+                                ::boxology_contract::BoxId::new("agent-host")
+                                    .expect("generated import package id is valid"),
+                                ::boxology_contract::CapabilityName::new(
+                                        "resolve_permission",
+                                    )
+                                    .expect("generated import capability name is valid"),
+                            ),
+                            ::boxology_contract::CapabilityId::new(
+                                ::boxology_contract::BoxId::new("agent-host")
+                                    .expect("generated import package id is valid"),
+                                ::boxology_contract::CapabilityName::new("session_status")
+                                    .expect("generated import capability name is valid"),
+                            ),
+                            ::boxology_contract::CapabilityId::new(
+                                ::boxology_contract::BoxId::new("agent-host")
+                                    .expect("generated import package id is valid"),
+                                ::boxology_contract::CapabilityName::new("cancel_run")
+                                    .expect("generated import capability name is valid"),
+                            ),
+                            ::boxology_contract::CapabilityId::new(
+                                ::boxology_contract::BoxId::new("agent-host")
+                                    .expect("generated import package id is valid"),
+                                ::boxology_contract::CapabilityName::new("close_session")
                                     .expect("generated import capability name is valid"),
                             ),
                         ],
@@ -128,7 +154,7 @@ pub fn implementation_descriptor() -> ::boxology_contract::ImplementationDescrip
         .expect("generated adapter import descriptors are valid")
 }
 #[doc(hidden)]
-pub struct TurnRouterAdapter<T> {
+pub struct ChannelGatewayAdapter<T> {
     service: T,
     _imports: ::boxology_runtime::Imports,
 }
@@ -136,11 +162,11 @@ pub struct TurnRouterAdapter<T> {
 pub fn factory<T>(
     service: T,
     imports: ::boxology_runtime::Imports,
-) -> TurnRouterAdapter<T>
+) -> ChannelGatewayAdapter<T>
 where
-    T: ::boxology_generated_contract::TurnRouterDispatch + Send + Sync + 'static,
+    T: ::boxology_generated_contract::ChannelGatewayDispatch + Send + Sync + 'static,
 {
-    TurnRouterAdapter {
+    ChannelGatewayAdapter {
         service,
         _imports: imports,
     }
@@ -150,8 +176,8 @@ pub fn register<T, F>(
     build: F,
 ) -> ::boxology_runtime::RegisteredBox
 where
-    T: ::boxology_generated_contract::TurnRouterDispatch + Send + Sync + 'static,
-    F: FnOnce(TurnRouterImports) -> T,
+    T: ::boxology_generated_contract::ChannelGatewayDispatch + Send + Sync + 'static,
+    F: FnOnce(ChannelGatewayImports) -> T,
 {
     composition
         .register(
@@ -162,22 +188,22 @@ where
             },
         )
 }
-pub struct TriggerInboxImport {
+pub struct AgentHostImport {
     handle: ::boxology_runtime::ImportHandle,
 }
-impl TriggerInboxImport {
-    pub async fn enqueue(
+impl AgentHostImport {
+    pub async fn discover_agents(
         &self,
         context: ::boxology_contract::CallContext,
-        input: ::boxology_import_trigger_inbox::EnqueueTrigger,
+        input: ::boxology_import_agent_host::DiscoverAgentsRequest,
     ) -> Result<
-        ::boxology_import_trigger_inbox::TriggerReceipt,
+        ::boxology_import_agent_host::AgentCatalog,
         ::boxology_contract::ErasedCallError,
     > {
         let capability = ::boxology_contract::CapabilityId::new(
-            ::boxology_contract::BoxId::new("trigger-inbox")
+            ::boxology_contract::BoxId::new("agent-host")
                 .expect("generated import package id is valid"),
-            ::boxology_contract::CapabilityName::new("enqueue")
+            ::boxology_contract::CapabilityName::new("discover_agents")
                 .expect("generated import capability name is valid"),
         );
         let input = input
@@ -190,275 +216,80 @@ impl TriggerInboxImport {
         let output = self.handle.call(&capability, context, input).await?;
         let output = ::boxology_contract::TypeDescriptor::structure([
                 ::boxology_contract::FieldDescriptor::new(
-                    "trigger_id",
-                    ::boxology_contract::TypeDescriptor::string(),
-                    None,
-                ),
-                ::boxology_contract::FieldDescriptor::new(
-                    "state",
-                    ::boxology_contract::TypeDescriptor::enumeration([
-                            ::boxology_contract::VariantDescriptor::new(
-                                "Pending",
-                                ::boxology_contract::VariantPayload::Unit,
-                                None,
-                            ),
-                            ::boxology_contract::VariantDescriptor::new(
-                                "Leased",
-                                ::boxology_contract::VariantPayload::Unit,
-                                None,
-                            ),
-                            ::boxology_contract::VariantDescriptor::new(
-                                "Completed",
-                                ::boxology_contract::VariantPayload::Unit,
-                                None,
-                            ),
-                            ::boxology_contract::VariantDescriptor::new(
-                                "RetryScheduled",
-                                ::boxology_contract::VariantPayload::Unit,
-                                None,
-                            ),
-                            ::boxology_contract::VariantDescriptor::new(
-                                "DeadLettered",
-                                ::boxology_contract::VariantPayload::Unit,
-                                None,
-                            ),
-                        ])
-                        .expect("generated imported enum descriptor is valid"),
-                    None,
-                ),
-                ::boxology_contract::FieldDescriptor::new(
-                    "deduplicated",
-                    ::boxology_contract::TypeDescriptor::bool(),
-                    None,
-                ),
-                ::boxology_contract::FieldDescriptor::new(
-                    "recorded_at_ms",
-                    ::boxology_contract::TypeDescriptor::u64(),
-                    None,
-                ),
-            ])
-            .expect("generated imported struct descriptor is valid")
-            .conform(::boxology_contract::DecodeRole::ConsumerOutput, output)
-            .map_err(|error| {
-                ::boxology_contract::ErasedCallError::InvalidResponse(
-                    conversion_detail("output_decode", error),
-                )
-            })?;
-        <::boxology_import_trigger_inbox::TriggerReceipt as ::boxology_contract::ContractType>::decode(
-                &output,
-            )
-            .map_err(|error| {
-                ::boxology_contract::ErasedCallError::InvalidResponse(
-                    conversion_detail("output_decode", error),
-                )
-            })
-    }
-    pub async fn claim(
-        &self,
-        context: ::boxology_contract::CallContext,
-        input: ::boxology_import_trigger_inbox::ClaimTriggers,
-    ) -> Result<
-        ::boxology_import_trigger_inbox::TriggerBatch,
-        ::boxology_contract::ErasedCallError,
-    > {
-        let capability = ::boxology_contract::CapabilityId::new(
-            ::boxology_contract::BoxId::new("trigger-inbox")
-                .expect("generated import package id is valid"),
-            ::boxology_contract::CapabilityName::new("claim")
-                .expect("generated import capability name is valid"),
-        );
-        let input = input
-            .encode()
-            .map_err(|error| {
-                ::boxology_contract::ErasedCallError::ContractViolation(
-                    conversion_detail("input_encode", error),
-                )
-            })?;
-        let output = self.handle.call(&capability, context, input).await?;
-        let output = ::boxology_contract::TypeDescriptor::structure([
-                ::boxology_contract::FieldDescriptor::new(
-                    "leases",
+                    "agents",
                     ::boxology_contract::TypeDescriptor::list(
                             ::boxology_contract::TypeDescriptor::structure([
                                     ::boxology_contract::FieldDescriptor::new(
-                                        "trigger",
-                                        ::boxology_contract::TypeDescriptor::structure([
-                                                ::boxology_contract::FieldDescriptor::new(
-                                                    "trigger_id",
-                                                    ::boxology_contract::TypeDescriptor::string(),
+                                        "agent_id",
+                                        ::boxology_contract::TypeDescriptor::string(),
+                                        None,
+                                    ),
+                                    ::boxology_contract::FieldDescriptor::new(
+                                        "display_name",
+                                        ::boxology_contract::TypeDescriptor::string(),
+                                        None,
+                                    ),
+                                    ::boxology_contract::FieldDescriptor::new(
+                                        "executable",
+                                        ::boxology_contract::TypeDescriptor::string(),
+                                        None,
+                                    ),
+                                    ::boxology_contract::FieldDescriptor::new(
+                                        "arguments",
+                                        ::boxology_contract::TypeDescriptor::list(
+                                                ::boxology_contract::TypeDescriptor::string(),
+                                            )
+                                            .expect("generated imported list descriptor is valid"),
+                                        None,
+                                    ),
+                                    ::boxology_contract::FieldDescriptor::new(
+                                        "environment_names",
+                                        ::boxology_contract::TypeDescriptor::list(
+                                                ::boxology_contract::TypeDescriptor::string(),
+                                            )
+                                            .expect("generated imported list descriptor is valid"),
+                                        None,
+                                    ),
+                                    ::boxology_contract::FieldDescriptor::new(
+                                        "lifecycle",
+                                        ::boxology_contract::TypeDescriptor::enumeration([
+                                                ::boxology_contract::VariantDescriptor::new(
+                                                    "Discovered",
+                                                    ::boxology_contract::VariantPayload::Unit,
                                                     None,
                                                 ),
-                                                ::boxology_contract::FieldDescriptor::new(
-                                                    "source",
-                                                    ::boxology_contract::TypeDescriptor::enumeration([
-                                                            ::boxology_contract::VariantDescriptor::new(
-                                                                "Bridge",
-                                                                ::boxology_contract::VariantPayload::Unit,
-                                                                None,
-                                                            ),
-                                                            ::boxology_contract::VariantDescriptor::new(
-                                                                "Scheduler",
-                                                                ::boxology_contract::VariantPayload::Unit,
-                                                                None,
-                                                            ),
-                                                            ::boxology_contract::VariantDescriptor::new(
-                                                                "SelfWork",
-                                                                ::boxology_contract::VariantPayload::Unit,
-                                                                None,
-                                                            ),
-                                                            ::boxology_contract::VariantDescriptor::new(
-                                                                "Operator",
-                                                                ::boxology_contract::VariantPayload::Unit,
-                                                                None,
-                                                            ),
-                                                        ])
-                                                        .expect("generated imported enum descriptor is valid"),
+                                                ::boxology_contract::VariantDescriptor::new(
+                                                    "Starting",
+                                                    ::boxology_contract::VariantPayload::Unit,
                                                     None,
                                                 ),
-                                                ::boxology_contract::FieldDescriptor::new(
-                                                    "source_id",
-                                                    ::boxology_contract::TypeDescriptor::string(),
+                                                ::boxology_contract::VariantDescriptor::new(
+                                                    "Ready",
+                                                    ::boxology_contract::VariantPayload::Unit,
                                                     None,
                                                 ),
-                                                ::boxology_contract::FieldDescriptor::new(
-                                                    "deduplication_key",
-                                                    ::boxology_contract::TypeDescriptor::string(),
+                                                ::boxology_contract::VariantDescriptor::new(
+                                                    "Busy",
+                                                    ::boxology_contract::VariantPayload::Unit,
                                                     None,
                                                 ),
-                                                ::boxology_contract::FieldDescriptor::new(
-                                                    "target_channel_id",
-                                                    ::boxology_contract::TypeDescriptor::string(),
+                                                ::boxology_contract::VariantDescriptor::new(
+                                                    "Stopping",
+                                                    ::boxology_contract::VariantPayload::Unit,
                                                     None,
                                                 ),
-                                                ::boxology_contract::FieldDescriptor::new(
-                                                    "lane",
-                                                    ::boxology_contract::TypeDescriptor::string(),
+                                                ::boxology_contract::VariantDescriptor::new(
+                                                    "Stopped",
+                                                    ::boxology_contract::VariantPayload::Unit,
                                                     None,
                                                 ),
-                                                ::boxology_contract::FieldDescriptor::new(
-                                                    "mode",
-                                                    ::boxology_contract::TypeDescriptor::enumeration([
-                                                            ::boxology_contract::VariantDescriptor::new(
-                                                                "Queue",
-                                                                ::boxology_contract::VariantPayload::Unit,
-                                                                None,
-                                                            ),
-                                                            ::boxology_contract::VariantDescriptor::new(
-                                                                "Steer",
-                                                                ::boxology_contract::VariantPayload::Unit,
-                                                                None,
-                                                            ),
-                                                            ::boxology_contract::VariantDescriptor::new(
-                                                                "InterruptAndSteer",
-                                                                ::boxology_contract::VariantPayload::Unit,
-                                                                None,
-                                                            ),
-                                                        ])
-                                                        .expect("generated imported enum descriptor is valid"),
-                                                    None,
-                                                ),
-                                                ::boxology_contract::FieldDescriptor::new(
-                                                    "state",
-                                                    ::boxology_contract::TypeDescriptor::enumeration([
-                                                            ::boxology_contract::VariantDescriptor::new(
-                                                                "Pending",
-                                                                ::boxology_contract::VariantPayload::Unit,
-                                                                None,
-                                                            ),
-                                                            ::boxology_contract::VariantDescriptor::new(
-                                                                "Leased",
-                                                                ::boxology_contract::VariantPayload::Unit,
-                                                                None,
-                                                            ),
-                                                            ::boxology_contract::VariantDescriptor::new(
-                                                                "Completed",
-                                                                ::boxology_contract::VariantPayload::Unit,
-                                                                None,
-                                                            ),
-                                                            ::boxology_contract::VariantDescriptor::new(
-                                                                "RetryScheduled",
-                                                                ::boxology_contract::VariantPayload::Unit,
-                                                                None,
-                                                            ),
-                                                            ::boxology_contract::VariantDescriptor::new(
-                                                                "DeadLettered",
-                                                                ::boxology_contract::VariantPayload::Unit,
-                                                                None,
-                                                            ),
-                                                        ])
-                                                        .expect("generated imported enum descriptor is valid"),
-                                                    None,
-                                                ),
-                                                ::boxology_contract::FieldDescriptor::new(
-                                                    "enqueued_at_ms",
-                                                    ::boxology_contract::TypeDescriptor::u64(),
-                                                    None,
-                                                ),
-                                                ::boxology_contract::FieldDescriptor::new(
-                                                    "not_before_ms",
-                                                    ::boxology_contract::TypeDescriptor::u64(),
-                                                    None,
-                                                ),
-                                                ::boxology_contract::FieldDescriptor::new(
-                                                    "message_json",
-                                                    ::boxology_contract::TypeDescriptor::string(),
-                                                    None,
-                                                ),
-                                                ::boxology_contract::FieldDescriptor::new(
-                                                    "attachments",
-                                                    ::boxology_contract::TypeDescriptor::list(
-                                                            ::boxology_contract::TypeDescriptor::structure([
-                                                                    ::boxology_contract::FieldDescriptor::new(
-                                                                        "media_type",
-                                                                        ::boxology_contract::TypeDescriptor::string(),
-                                                                        None,
-                                                                    ),
-                                                                    ::boxology_contract::FieldDescriptor::new(
-                                                                        "name",
-                                                                        ::boxology_contract::TypeDescriptor::optional(
-                                                                                ::boxology_contract::TypeDescriptor::string(),
-                                                                            )
-                                                                            .expect("generated imported optional descriptor is valid"),
-                                                                        None,
-                                                                    ),
-                                                                    ::boxology_contract::FieldDescriptor::new(
-                                                                        "content_handle",
-                                                                        ::boxology_contract::TypeDescriptor::string(),
-                                                                        None,
-                                                                    ),
-                                                                ])
-                                                                .expect("generated imported struct descriptor is valid"),
-                                                        )
-                                                        .expect("generated imported list descriptor is valid"),
-                                                    None,
-                                                ),
-                                                ::boxology_contract::FieldDescriptor::new(
-                                                    "attempt",
-                                                    ::boxology_contract::TypeDescriptor::u64(),
+                                                ::boxology_contract::VariantDescriptor::new(
+                                                    "Failed",
+                                                    ::boxology_contract::VariantPayload::Unit,
                                                     None,
                                                 ),
                                             ])
-                                            .expect("generated imported struct descriptor is valid"),
-                                        None,
-                                    ),
-                                    ::boxology_contract::FieldDescriptor::new(
-                                        "lease_token",
-                                        ::boxology_contract::TypeDescriptor::string(),
-                                        None,
-                                    ),
-                                    ::boxology_contract::FieldDescriptor::new(
-                                        "worker_id",
-                                        ::boxology_contract::TypeDescriptor::string(),
-                                        None,
-                                    ),
-                                    ::boxology_contract::FieldDescriptor::new(
-                                        "leased_at_ms",
-                                        ::boxology_contract::TypeDescriptor::u64(),
-                                        None,
-                                    ),
-                                    ::boxology_contract::FieldDescriptor::new(
-                                        "expires_at_ms",
-                                        ::boxology_contract::TypeDescriptor::u64(),
+                                            .expect("generated imported enum descriptor is valid"),
                                         None,
                                     ),
                                 ])
@@ -475,7 +306,7 @@ impl TriggerInboxImport {
                     conversion_detail("output_decode", error),
                 )
             })?;
-        <::boxology_import_trigger_inbox::TriggerBatch as ::boxology_contract::ContractType>::decode(
+        <::boxology_import_agent_host::AgentCatalog as ::boxology_contract::ContractType>::decode(
                 &output,
             )
             .map_err(|error| {
@@ -484,18 +315,18 @@ impl TriggerInboxImport {
                 )
             })
     }
-    pub async fn extend_lease(
+    pub async fn preflight(
         &self,
         context: ::boxology_contract::CallContext,
-        input: ::boxology_import_trigger_inbox::ExtendLease,
+        input: ::boxology_import_agent_host::PreflightRequest,
     ) -> Result<
-        ::boxology_import_trigger_inbox::TriggerLease,
+        ::boxology_import_agent_host::PreflightReport,
         ::boxology_contract::ErasedCallError,
     > {
         let capability = ::boxology_contract::CapabilityId::new(
-            ::boxology_contract::BoxId::new("trigger-inbox")
+            ::boxology_contract::BoxId::new("agent-host")
                 .expect("generated import package id is valid"),
-            ::boxology_contract::CapabilityName::new("extend_lease")
+            ::boxology_contract::CapabilityName::new("preflight")
                 .expect("generated import capability name is valid"),
         );
         let input = input
@@ -508,33 +339,23 @@ impl TriggerInboxImport {
         let output = self.handle.call(&capability, context, input).await?;
         let output = ::boxology_contract::TypeDescriptor::structure([
                 ::boxology_contract::FieldDescriptor::new(
-                    "trigger",
+                    "agent_id",
+                    ::boxology_contract::TypeDescriptor::string(),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
+                    "working_directory",
+                    ::boxology_contract::TypeDescriptor::string(),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
+                    "authority",
                     ::boxology_contract::TypeDescriptor::structure([
                             ::boxology_contract::FieldDescriptor::new(
-                                "trigger_id",
-                                ::boxology_contract::TypeDescriptor::string(),
-                                None,
-                            ),
-                            ::boxology_contract::FieldDescriptor::new(
-                                "source",
+                                "sandbox",
                                 ::boxology_contract::TypeDescriptor::enumeration([
                                         ::boxology_contract::VariantDescriptor::new(
-                                            "Bridge",
-                                            ::boxology_contract::VariantPayload::Unit,
-                                            None,
-                                        ),
-                                        ::boxology_contract::VariantDescriptor::new(
-                                            "Scheduler",
-                                            ::boxology_contract::VariantPayload::Unit,
-                                            None,
-                                        ),
-                                        ::boxology_contract::VariantDescriptor::new(
-                                            "SelfWork",
-                                            ::boxology_contract::VariantPayload::Unit,
-                                            None,
-                                        ),
-                                        ::boxology_contract::VariantDescriptor::new(
-                                            "Operator",
+                                            "DisabledAndVerified",
                                             ::boxology_contract::VariantPayload::Unit,
                                             None,
                                         ),
@@ -543,40 +364,10 @@ impl TriggerInboxImport {
                                 None,
                             ),
                             ::boxology_contract::FieldDescriptor::new(
-                                "source_id",
-                                ::boxology_contract::TypeDescriptor::string(),
-                                None,
-                            ),
-                            ::boxology_contract::FieldDescriptor::new(
-                                "deduplication_key",
-                                ::boxology_contract::TypeDescriptor::string(),
-                                None,
-                            ),
-                            ::boxology_contract::FieldDescriptor::new(
-                                "target_channel_id",
-                                ::boxology_contract::TypeDescriptor::string(),
-                                None,
-                            ),
-                            ::boxology_contract::FieldDescriptor::new(
-                                "lane",
-                                ::boxology_contract::TypeDescriptor::string(),
-                                None,
-                            ),
-                            ::boxology_contract::FieldDescriptor::new(
-                                "mode",
+                                "permissions",
                                 ::boxology_contract::TypeDescriptor::enumeration([
                                         ::boxology_contract::VariantDescriptor::new(
-                                            "Queue",
-                                            ::boxology_contract::VariantPayload::Unit,
-                                            None,
-                                        ),
-                                        ::boxology_contract::VariantDescriptor::new(
-                                            "Steer",
-                                            ::boxology_contract::VariantPayload::Unit,
-                                            None,
-                                        ),
-                                        ::boxology_contract::VariantDescriptor::new(
-                                            "InterruptAndSteer",
+                                            "YoloAndVerified",
                                             ::boxology_contract::VariantPayload::Unit,
                                             None,
                                         ),
@@ -585,30 +376,10 @@ impl TriggerInboxImport {
                                 None,
                             ),
                             ::boxology_contract::FieldDescriptor::new(
-                                "state",
+                                "filesystem",
                                 ::boxology_contract::TypeDescriptor::enumeration([
                                         ::boxology_contract::VariantDescriptor::new(
-                                            "Pending",
-                                            ::boxology_contract::VariantPayload::Unit,
-                                            None,
-                                        ),
-                                        ::boxology_contract::VariantDescriptor::new(
-                                            "Leased",
-                                            ::boxology_contract::VariantPayload::Unit,
-                                            None,
-                                        ),
-                                        ::boxology_contract::VariantDescriptor::new(
-                                            "Completed",
-                                            ::boxology_contract::VariantPayload::Unit,
-                                            None,
-                                        ),
-                                        ::boxology_contract::VariantDescriptor::new(
-                                            "RetryScheduled",
-                                            ::boxology_contract::VariantPayload::Unit,
-                                            None,
-                                        ),
-                                        ::boxology_contract::VariantDescriptor::new(
-                                            "DeadLettered",
+                                            "UnrestrictedAndVerified",
                                             ::boxology_contract::VariantPayload::Unit,
                                             None,
                                         ),
@@ -617,51 +388,165 @@ impl TriggerInboxImport {
                                 None,
                             ),
                             ::boxology_contract::FieldDescriptor::new(
-                                "enqueued_at_ms",
+                                "network",
+                                ::boxology_contract::TypeDescriptor::enumeration([
+                                        ::boxology_contract::VariantDescriptor::new(
+                                            "UnrestrictedAndVerified",
+                                            ::boxology_contract::VariantPayload::Unit,
+                                            None,
+                                        ),
+                                    ])
+                                    .expect("generated imported enum descriptor is valid"),
+                                None,
+                            ),
+                            ::boxology_contract::FieldDescriptor::new(
+                                "root",
+                                ::boxology_contract::TypeDescriptor::enumeration([
+                                        ::boxology_contract::VariantDescriptor::new(
+                                            "PasswordlessSudoAndVerified",
+                                            ::boxology_contract::VariantPayload::Unit,
+                                            None,
+                                        ),
+                                    ])
+                                    .expect("generated imported enum descriptor is valid"),
+                                None,
+                            ),
+                            ::boxology_contract::FieldDescriptor::new(
+                                "verified_at_ms",
                                 ::boxology_contract::TypeDescriptor::u64(),
                                 None,
                             ),
                             ::boxology_contract::FieldDescriptor::new(
-                                "not_before_ms",
-                                ::boxology_contract::TypeDescriptor::u64(),
-                                None,
-                            ),
-                            ::boxology_contract::FieldDescriptor::new(
-                                "message_json",
+                                "evidence_json",
                                 ::boxology_contract::TypeDescriptor::string(),
                                 None,
                             ),
+                        ])
+                        .expect("generated imported struct descriptor is valid"),
+                    None,
+                ),
+            ])
+            .expect("generated imported struct descriptor is valid")
+            .conform(::boxology_contract::DecodeRole::ConsumerOutput, output)
+            .map_err(|error| {
+                ::boxology_contract::ErasedCallError::InvalidResponse(
+                    conversion_detail("output_decode", error),
+                )
+            })?;
+        <::boxology_import_agent_host::PreflightReport as ::boxology_contract::ContractType>::decode(
+                &output,
+            )
+            .map_err(|error| {
+                ::boxology_contract::ErasedCallError::InvalidResponse(
+                    conversion_detail("output_decode", error),
+                )
+            })
+    }
+    pub async fn open_session(
+        &self,
+        context: ::boxology_contract::CallContext,
+        input: ::boxology_import_agent_host::OpenSessionRequest,
+    ) -> Result<
+        ::boxology_import_agent_host::AgentSession,
+        ::boxology_contract::ErasedCallError,
+    > {
+        let capability = ::boxology_contract::CapabilityId::new(
+            ::boxology_contract::BoxId::new("agent-host")
+                .expect("generated import package id is valid"),
+            ::boxology_contract::CapabilityName::new("open_session")
+                .expect("generated import capability name is valid"),
+        );
+        let input = input
+            .encode()
+            .map_err(|error| {
+                ::boxology_contract::ErasedCallError::ContractViolation(
+                    conversion_detail("input_encode", error),
+                )
+            })?;
+        let output = self.handle.call(&capability, context, input).await?;
+        let output = ::boxology_contract::TypeDescriptor::structure([
+                ::boxology_contract::FieldDescriptor::new(
+                    "session_id",
+                    ::boxology_contract::TypeDescriptor::string(),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
+                    "native_session_id",
+                    ::boxology_contract::TypeDescriptor::string(),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
+                    "agent_id",
+                    ::boxology_contract::TypeDescriptor::string(),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
+                    "negotiation",
+                    ::boxology_contract::TypeDescriptor::structure([
                             ::boxology_contract::FieldDescriptor::new(
-                                "attachments",
-                                ::boxology_contract::TypeDescriptor::list(
-                                        ::boxology_contract::TypeDescriptor::structure([
-                                                ::boxology_contract::FieldDescriptor::new(
-                                                    "media_type",
-                                                    ::boxology_contract::TypeDescriptor::string(),
-                                                    None,
-                                                ),
-                                                ::boxology_contract::FieldDescriptor::new(
-                                                    "name",
-                                                    ::boxology_contract::TypeDescriptor::optional(
-                                                            ::boxology_contract::TypeDescriptor::string(),
-                                                        )
-                                                        .expect("generated imported optional descriptor is valid"),
-                                                    None,
-                                                ),
-                                                ::boxology_contract::FieldDescriptor::new(
-                                                    "content_handle",
-                                                    ::boxology_contract::TypeDescriptor::string(),
-                                                    None,
-                                                ),
-                                            ])
-                                            .expect("generated imported struct descriptor is valid"),
-                                    )
-                                    .expect("generated imported list descriptor is valid"),
+                                "protocol_version",
+                                ::boxology_contract::TypeDescriptor::u64(),
                                 None,
                             ),
                             ::boxology_contract::FieldDescriptor::new(
-                                "attempt",
-                                ::boxology_contract::TypeDescriptor::u64(),
+                                "protocol_profile",
+                                ::boxology_contract::TypeDescriptor::enumeration([
+                                        ::boxology_contract::VariantDescriptor::new(
+                                            "V1Stable",
+                                            ::boxology_contract::VariantPayload::Unit,
+                                            None,
+                                        ),
+                                        ::boxology_contract::VariantDescriptor::new(
+                                            "V2Draft",
+                                            ::boxology_contract::VariantPayload::Unit,
+                                            None,
+                                        ),
+                                    ])
+                                    .expect("generated imported enum descriptor is valid"),
+                                None,
+                            ),
+                            ::boxology_contract::FieldDescriptor::new(
+                                "steering",
+                                ::boxology_contract::TypeDescriptor::enumeration([
+                                        ::boxology_contract::VariantDescriptor::new(
+                                            "TurnBoundaryQueue",
+                                            ::boxology_contract::VariantPayload::Unit,
+                                            None,
+                                        ),
+                                        ::boxology_contract::VariantDescriptor::new(
+                                            "AcpV2ConcurrentPrompt",
+                                            ::boxology_contract::VariantPayload::Unit,
+                                            None,
+                                        ),
+                                        ::boxology_contract::VariantDescriptor::new(
+                                            "AgentExtension",
+                                            ::boxology_contract::VariantPayload::Unit,
+                                            None,
+                                        ),
+                                    ])
+                                    .expect("generated imported enum descriptor is valid"),
+                                None,
+                            ),
+                            ::boxology_contract::FieldDescriptor::new(
+                                "compaction_reporting",
+                                ::boxology_contract::TypeDescriptor::enumeration([
+                                        ::boxology_contract::VariantDescriptor::new(
+                                            "OpaqueAgentManaged",
+                                            ::boxology_contract::VariantPayload::Unit,
+                                            None,
+                                        ),
+                                        ::boxology_contract::VariantDescriptor::new(
+                                            "DraftLifecycleUpdates",
+                                            ::boxology_contract::VariantPayload::Unit,
+                                            None,
+                                        ),
+                                    ])
+                                    .expect("generated imported enum descriptor is valid"),
+                                None,
+                            ),
+                            ::boxology_contract::FieldDescriptor::new(
+                                "agent_capabilities_json",
+                                ::boxology_contract::TypeDescriptor::string(),
                                 None,
                             ),
                         ])
@@ -669,23 +554,80 @@ impl TriggerInboxImport {
                     None,
                 ),
                 ::boxology_contract::FieldDescriptor::new(
-                    "lease_token",
-                    ::boxology_contract::TypeDescriptor::string(),
-                    None,
-                ),
-                ::boxology_contract::FieldDescriptor::new(
-                    "worker_id",
-                    ::boxology_contract::TypeDescriptor::string(),
-                    None,
-                ),
-                ::boxology_contract::FieldDescriptor::new(
-                    "leased_at_ms",
-                    ::boxology_contract::TypeDescriptor::u64(),
-                    None,
-                ),
-                ::boxology_contract::FieldDescriptor::new(
-                    "expires_at_ms",
-                    ::boxology_contract::TypeDescriptor::u64(),
+                    "authority",
+                    ::boxology_contract::TypeDescriptor::structure([
+                            ::boxology_contract::FieldDescriptor::new(
+                                "sandbox",
+                                ::boxology_contract::TypeDescriptor::enumeration([
+                                        ::boxology_contract::VariantDescriptor::new(
+                                            "DisabledAndVerified",
+                                            ::boxology_contract::VariantPayload::Unit,
+                                            None,
+                                        ),
+                                    ])
+                                    .expect("generated imported enum descriptor is valid"),
+                                None,
+                            ),
+                            ::boxology_contract::FieldDescriptor::new(
+                                "permissions",
+                                ::boxology_contract::TypeDescriptor::enumeration([
+                                        ::boxology_contract::VariantDescriptor::new(
+                                            "YoloAndVerified",
+                                            ::boxology_contract::VariantPayload::Unit,
+                                            None,
+                                        ),
+                                    ])
+                                    .expect("generated imported enum descriptor is valid"),
+                                None,
+                            ),
+                            ::boxology_contract::FieldDescriptor::new(
+                                "filesystem",
+                                ::boxology_contract::TypeDescriptor::enumeration([
+                                        ::boxology_contract::VariantDescriptor::new(
+                                            "UnrestrictedAndVerified",
+                                            ::boxology_contract::VariantPayload::Unit,
+                                            None,
+                                        ),
+                                    ])
+                                    .expect("generated imported enum descriptor is valid"),
+                                None,
+                            ),
+                            ::boxology_contract::FieldDescriptor::new(
+                                "network",
+                                ::boxology_contract::TypeDescriptor::enumeration([
+                                        ::boxology_contract::VariantDescriptor::new(
+                                            "UnrestrictedAndVerified",
+                                            ::boxology_contract::VariantPayload::Unit,
+                                            None,
+                                        ),
+                                    ])
+                                    .expect("generated imported enum descriptor is valid"),
+                                None,
+                            ),
+                            ::boxology_contract::FieldDescriptor::new(
+                                "root",
+                                ::boxology_contract::TypeDescriptor::enumeration([
+                                        ::boxology_contract::VariantDescriptor::new(
+                                            "PasswordlessSudoAndVerified",
+                                            ::boxology_contract::VariantPayload::Unit,
+                                            None,
+                                        ),
+                                    ])
+                                    .expect("generated imported enum descriptor is valid"),
+                                None,
+                            ),
+                            ::boxology_contract::FieldDescriptor::new(
+                                "verified_at_ms",
+                                ::boxology_contract::TypeDescriptor::u64(),
+                                None,
+                            ),
+                            ::boxology_contract::FieldDescriptor::new(
+                                "evidence_json",
+                                ::boxology_contract::TypeDescriptor::string(),
+                                None,
+                            ),
+                        ])
+                        .expect("generated imported struct descriptor is valid"),
                     None,
                 ),
             ])
@@ -696,7 +638,7 @@ impl TriggerInboxImport {
                     conversion_detail("output_decode", error),
                 )
             })?;
-        <::boxology_import_trigger_inbox::TriggerLease as ::boxology_contract::ContractType>::decode(
+        <::boxology_import_agent_host::AgentSession as ::boxology_contract::ContractType>::decode(
                 &output,
             )
             .map_err(|error| {
@@ -705,18 +647,18 @@ impl TriggerInboxImport {
                 )
             })
     }
-    pub async fn settle(
+    pub async fn prompt(
         &self,
         context: ::boxology_contract::CallContext,
-        input: ::boxology_import_trigger_inbox::SettleTrigger,
+        input: ::boxology_import_agent_host::PromptRequest,
     ) -> Result<
-        ::boxology_import_trigger_inbox::TriggerReceipt,
+        ::boxology_import_agent_host::PromptAccepted,
         ::boxology_contract::ErasedCallError,
     > {
         let capability = ::boxology_contract::CapabilityId::new(
-            ::boxology_contract::BoxId::new("trigger-inbox")
+            ::boxology_contract::BoxId::new("agent-host")
                 .expect("generated import package id is valid"),
-            ::boxology_contract::CapabilityName::new("settle")
+            ::boxology_contract::CapabilityName::new("prompt")
                 .expect("generated import capability name is valid"),
         );
         let input = input
@@ -729,35 +671,269 @@ impl TriggerInboxImport {
         let output = self.handle.call(&capability, context, input).await?;
         let output = ::boxology_contract::TypeDescriptor::structure([
                 ::boxology_contract::FieldDescriptor::new(
-                    "trigger_id",
+                    "session_id",
                     ::boxology_contract::TypeDescriptor::string(),
                     None,
                 ),
                 ::boxology_contract::FieldDescriptor::new(
-                    "state",
+                    "run_id",
+                    ::boxology_contract::TypeDescriptor::string(),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
+                    "accepted_at_ms",
+                    ::boxology_contract::TypeDescriptor::u64(),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
+                    "disposition",
                     ::boxology_contract::TypeDescriptor::enumeration([
                             ::boxology_contract::VariantDescriptor::new(
-                                "Pending",
+                                "StartedForegroundWork",
                                 ::boxology_contract::VariantPayload::Unit,
                                 None,
                             ),
                             ::boxology_contract::VariantDescriptor::new(
-                                "Leased",
+                                "ContributedToActiveWork",
                                 ::boxology_contract::VariantPayload::Unit,
                                 None,
                             ),
                             ::boxology_contract::VariantDescriptor::new(
-                                "Completed",
+                                "QueuedForTurnBoundary",
                                 ::boxology_contract::VariantPayload::Unit,
                                 None,
                             ),
+                        ])
+                        .expect("generated imported enum descriptor is valid"),
+                    None,
+                ),
+            ])
+            .expect("generated imported struct descriptor is valid")
+            .conform(::boxology_contract::DecodeRole::ConsumerOutput, output)
+            .map_err(|error| {
+                ::boxology_contract::ErasedCallError::InvalidResponse(
+                    conversion_detail("output_decode", error),
+                )
+            })?;
+        <::boxology_import_agent_host::PromptAccepted as ::boxology_contract::ContractType>::decode(
+                &output,
+            )
+            .map_err(|error| {
+                ::boxology_contract::ErasedCallError::InvalidResponse(
+                    conversion_detail("output_decode", error),
+                )
+            })
+    }
+    pub async fn read_events(
+        &self,
+        context: ::boxology_contract::CallContext,
+        input: ::boxology_import_agent_host::ReadEventsRequest,
+    ) -> Result<
+        ::boxology_import_agent_host::EventPage,
+        ::boxology_contract::ErasedCallError,
+    > {
+        let capability = ::boxology_contract::CapabilityId::new(
+            ::boxology_contract::BoxId::new("agent-host")
+                .expect("generated import package id is valid"),
+            ::boxology_contract::CapabilityName::new("read_events")
+                .expect("generated import capability name is valid"),
+        );
+        let input = input
+            .encode()
+            .map_err(|error| {
+                ::boxology_contract::ErasedCallError::ContractViolation(
+                    conversion_detail("input_encode", error),
+                )
+            })?;
+        let output = self.handle.call(&capability, context, input).await?;
+        let output = ::boxology_contract::TypeDescriptor::structure([
+                ::boxology_contract::FieldDescriptor::new(
+                    "events",
+                    ::boxology_contract::TypeDescriptor::list(
+                            ::boxology_contract::TypeDescriptor::structure([
+                                    ::boxology_contract::FieldDescriptor::new(
+                                        "session_id",
+                                        ::boxology_contract::TypeDescriptor::string(),
+                                        None,
+                                    ),
+                                    ::boxology_contract::FieldDescriptor::new(
+                                        "run_id",
+                                        ::boxology_contract::TypeDescriptor::optional(
+                                                ::boxology_contract::TypeDescriptor::string(),
+                                            )
+                                            .expect("generated imported optional descriptor is valid"),
+                                        None,
+                                    ),
+                                    ::boxology_contract::FieldDescriptor::new(
+                                        "sequence",
+                                        ::boxology_contract::TypeDescriptor::u64(),
+                                        None,
+                                    ),
+                                    ::boxology_contract::FieldDescriptor::new(
+                                        "observed_at_ms",
+                                        ::boxology_contract::TypeDescriptor::u64(),
+                                        None,
+                                    ),
+                                    ::boxology_contract::FieldDescriptor::new(
+                                        "kind",
+                                        ::boxology_contract::TypeDescriptor::enumeration([
+                                                ::boxology_contract::VariantDescriptor::new(
+                                                    "Message",
+                                                    ::boxology_contract::VariantPayload::Unit,
+                                                    None,
+                                                ),
+                                                ::boxology_contract::VariantDescriptor::new(
+                                                    "Thought",
+                                                    ::boxology_contract::VariantPayload::Unit,
+                                                    None,
+                                                ),
+                                                ::boxology_contract::VariantDescriptor::new(
+                                                    "Plan",
+                                                    ::boxology_contract::VariantPayload::Unit,
+                                                    None,
+                                                ),
+                                                ::boxology_contract::VariantDescriptor::new(
+                                                    "ToolCall",
+                                                    ::boxology_contract::VariantPayload::Unit,
+                                                    None,
+                                                ),
+                                                ::boxology_contract::VariantDescriptor::new(
+                                                    "ToolResult",
+                                                    ::boxology_contract::VariantPayload::Unit,
+                                                    None,
+                                                ),
+                                                ::boxology_contract::VariantDescriptor::new(
+                                                    "Terminal",
+                                                    ::boxology_contract::VariantPayload::Unit,
+                                                    None,
+                                                ),
+                                                ::boxology_contract::VariantDescriptor::new(
+                                                    "FileDiff",
+                                                    ::boxology_contract::VariantPayload::Unit,
+                                                    None,
+                                                ),
+                                                ::boxology_contract::VariantDescriptor::new(
+                                                    "PermissionRequest",
+                                                    ::boxology_contract::VariantPayload::Unit,
+                                                    None,
+                                                ),
+                                                ::boxology_contract::VariantDescriptor::new(
+                                                    "Usage",
+                                                    ::boxology_contract::VariantPayload::Unit,
+                                                    None,
+                                                ),
+                                                ::boxology_contract::VariantDescriptor::new(
+                                                    "Compaction",
+                                                    ::boxology_contract::VariantPayload::Unit,
+                                                    None,
+                                                ),
+                                                ::boxology_contract::VariantDescriptor::new(
+                                                    "SessionState",
+                                                    ::boxology_contract::VariantPayload::Unit,
+                                                    None,
+                                                ),
+                                                ::boxology_contract::VariantDescriptor::new(
+                                                    "RunFinished",
+                                                    ::boxology_contract::VariantPayload::Unit,
+                                                    None,
+                                                ),
+                                                ::boxology_contract::VariantDescriptor::new(
+                                                    "Other",
+                                                    ::boxology_contract::VariantPayload::Unit,
+                                                    None,
+                                                ),
+                                            ])
+                                            .expect("generated imported enum descriptor is valid"),
+                                        None,
+                                    ),
+                                    ::boxology_contract::FieldDescriptor::new(
+                                        "direction",
+                                        ::boxology_contract::TypeDescriptor::enumeration([
+                                                ::boxology_contract::VariantDescriptor::new(
+                                                    "ClientToAgent",
+                                                    ::boxology_contract::VariantPayload::Unit,
+                                                    None,
+                                                ),
+                                                ::boxology_contract::VariantDescriptor::new(
+                                                    "AgentToClient",
+                                                    ::boxology_contract::VariantPayload::Unit,
+                                                    None,
+                                                ),
+                                            ])
+                                            .expect("generated imported enum descriptor is valid"),
+                                        None,
+                                    ),
+                                    ::boxology_contract::FieldDescriptor::new(
+                                        "native_event_json",
+                                        ::boxology_contract::TypeDescriptor::string(),
+                                        None,
+                                    ),
+                                ])
+                                .expect("generated imported struct descriptor is valid"),
+                        )
+                        .expect("generated imported list descriptor is valid"),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
+                    "next_sequence",
+                    ::boxology_contract::TypeDescriptor::u64(),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
+                    "caught_up",
+                    ::boxology_contract::TypeDescriptor::bool(),
+                    None,
+                ),
+            ])
+            .expect("generated imported struct descriptor is valid")
+            .conform(::boxology_contract::DecodeRole::ConsumerOutput, output)
+            .map_err(|error| {
+                ::boxology_contract::ErasedCallError::InvalidResponse(
+                    conversion_detail("output_decode", error),
+                )
+            })?;
+        <::boxology_import_agent_host::EventPage as ::boxology_contract::ContractType>::decode(
+                &output,
+            )
+            .map_err(|error| {
+                ::boxology_contract::ErasedCallError::InvalidResponse(
+                    conversion_detail("output_decode", error),
+                )
+            })
+    }
+    pub async fn resolve_permission(
+        &self,
+        context: ::boxology_contract::CallContext,
+        input: ::boxology_import_agent_host::PermissionRequest,
+    ) -> Result<
+        ::boxology_import_agent_host::PermissionResolution,
+        ::boxology_contract::ErasedCallError,
+    > {
+        let capability = ::boxology_contract::CapabilityId::new(
+            ::boxology_contract::BoxId::new("agent-host")
+                .expect("generated import package id is valid"),
+            ::boxology_contract::CapabilityName::new("resolve_permission")
+                .expect("generated import capability name is valid"),
+        );
+        let input = input
+            .encode()
+            .map_err(|error| {
+                ::boxology_contract::ErasedCallError::ContractViolation(
+                    conversion_detail("input_encode", error),
+                )
+            })?;
+        let output = self.handle.call(&capability, context, input).await?;
+        let output = ::boxology_contract::TypeDescriptor::structure([
+                ::boxology_contract::FieldDescriptor::new(
+                    "request_id",
+                    ::boxology_contract::TypeDescriptor::string(),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
+                    "decision",
+                    ::boxology_contract::TypeDescriptor::enumeration([
                             ::boxology_contract::VariantDescriptor::new(
-                                "RetryScheduled",
-                                ::boxology_contract::VariantPayload::Unit,
-                                None,
-                            ),
-                            ::boxology_contract::VariantDescriptor::new(
-                                "DeadLettered",
+                                "AllowUnrestricted",
                                 ::boxology_contract::VariantPayload::Unit,
                                 None,
                             ),
@@ -766,7 +942,152 @@ impl TriggerInboxImport {
                     None,
                 ),
                 ::boxology_contract::FieldDescriptor::new(
-                    "deduplicated",
+                    "native_response_json",
+                    ::boxology_contract::TypeDescriptor::string(),
+                    None,
+                ),
+            ])
+            .expect("generated imported struct descriptor is valid")
+            .conform(::boxology_contract::DecodeRole::ConsumerOutput, output)
+            .map_err(|error| {
+                ::boxology_contract::ErasedCallError::InvalidResponse(
+                    conversion_detail("output_decode", error),
+                )
+            })?;
+        <::boxology_import_agent_host::PermissionResolution as ::boxology_contract::ContractType>::decode(
+                &output,
+            )
+            .map_err(|error| {
+                ::boxology_contract::ErasedCallError::InvalidResponse(
+                    conversion_detail("output_decode", error),
+                )
+            })
+    }
+    pub async fn session_status(
+        &self,
+        context: ::boxology_contract::CallContext,
+        input: ::boxology_import_agent_host::SessionReference,
+    ) -> Result<
+        ::boxology_import_agent_host::SessionStatus,
+        ::boxology_contract::ErasedCallError,
+    > {
+        let capability = ::boxology_contract::CapabilityId::new(
+            ::boxology_contract::BoxId::new("agent-host")
+                .expect("generated import package id is valid"),
+            ::boxology_contract::CapabilityName::new("session_status")
+                .expect("generated import capability name is valid"),
+        );
+        let input = input
+            .encode()
+            .map_err(|error| {
+                ::boxology_contract::ErasedCallError::ContractViolation(
+                    conversion_detail("input_encode", error),
+                )
+            })?;
+        let output = self.handle.call(&capability, context, input).await?;
+        let output = ::boxology_contract::TypeDescriptor::structure([
+                ::boxology_contract::FieldDescriptor::new(
+                    "session_id",
+                    ::boxology_contract::TypeDescriptor::string(),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
+                    "lifecycle",
+                    ::boxology_contract::TypeDescriptor::enumeration([
+                            ::boxology_contract::VariantDescriptor::new(
+                                "Discovered",
+                                ::boxology_contract::VariantPayload::Unit,
+                                None,
+                            ),
+                            ::boxology_contract::VariantDescriptor::new(
+                                "Starting",
+                                ::boxology_contract::VariantPayload::Unit,
+                                None,
+                            ),
+                            ::boxology_contract::VariantDescriptor::new(
+                                "Ready",
+                                ::boxology_contract::VariantPayload::Unit,
+                                None,
+                            ),
+                            ::boxology_contract::VariantDescriptor::new(
+                                "Busy",
+                                ::boxology_contract::VariantPayload::Unit,
+                                None,
+                            ),
+                            ::boxology_contract::VariantDescriptor::new(
+                                "Stopping",
+                                ::boxology_contract::VariantPayload::Unit,
+                                None,
+                            ),
+                            ::boxology_contract::VariantDescriptor::new(
+                                "Stopped",
+                                ::boxology_contract::VariantPayload::Unit,
+                                None,
+                            ),
+                            ::boxology_contract::VariantDescriptor::new(
+                                "Failed",
+                                ::boxology_contract::VariantPayload::Unit,
+                                None,
+                            ),
+                        ])
+                        .expect("generated imported enum descriptor is valid"),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
+                    "last_sequence",
+                    ::boxology_contract::TypeDescriptor::u64(),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
+                    "active_run_id",
+                    ::boxology_contract::TypeDescriptor::optional(
+                            ::boxology_contract::TypeDescriptor::string(),
+                        )
+                        .expect("generated imported optional descriptor is valid"),
+                    None,
+                ),
+            ])
+            .expect("generated imported struct descriptor is valid")
+            .conform(::boxology_contract::DecodeRole::ConsumerOutput, output)
+            .map_err(|error| {
+                ::boxology_contract::ErasedCallError::InvalidResponse(
+                    conversion_detail("output_decode", error),
+                )
+            })?;
+        <::boxology_import_agent_host::SessionStatus as ::boxology_contract::ContractType>::decode(
+                &output,
+            )
+            .map_err(|error| {
+                ::boxology_contract::ErasedCallError::InvalidResponse(
+                    conversion_detail("output_decode", error),
+                )
+            })
+    }
+    pub async fn cancel_run(
+        &self,
+        context: ::boxology_contract::CallContext,
+        input: ::boxology_import_agent_host::RunReference,
+    ) -> Result<
+        ::boxology_import_agent_host::OperationReceipt,
+        ::boxology_contract::ErasedCallError,
+    > {
+        let capability = ::boxology_contract::CapabilityId::new(
+            ::boxology_contract::BoxId::new("agent-host")
+                .expect("generated import package id is valid"),
+            ::boxology_contract::CapabilityName::new("cancel_run")
+                .expect("generated import capability name is valid"),
+        );
+        let input = input
+            .encode()
+            .map_err(|error| {
+                ::boxology_contract::ErasedCallError::ContractViolation(
+                    conversion_detail("input_encode", error),
+                )
+            })?;
+        let output = self.handle.call(&capability, context, input).await?;
+        let output = ::boxology_contract::TypeDescriptor::structure([
+                ::boxology_contract::FieldDescriptor::new(
+                    "accepted",
                     ::boxology_contract::TypeDescriptor::bool(),
                     None,
                 ),
@@ -783,7 +1104,7 @@ impl TriggerInboxImport {
                     conversion_detail("output_decode", error),
                 )
             })?;
-        <::boxology_import_trigger_inbox::TriggerReceipt as ::boxology_contract::ContractType>::decode(
+        <::boxology_import_agent_host::OperationReceipt as ::boxology_contract::ContractType>::decode(
                 &output,
             )
             .map_err(|error| {
@@ -792,18 +1113,18 @@ impl TriggerInboxImport {
                 )
             })
     }
-    pub async fn inspect(
+    pub async fn close_session(
         &self,
         context: ::boxology_contract::CallContext,
-        input: ::boxology_import_trigger_inbox::TriggerReference,
+        input: ::boxology_import_agent_host::SessionReference,
     ) -> Result<
-        ::boxology_import_trigger_inbox::TriggerRecord,
+        ::boxology_import_agent_host::OperationReceipt,
         ::boxology_contract::ErasedCallError,
     > {
         let capability = ::boxology_contract::CapabilityId::new(
-            ::boxology_contract::BoxId::new("trigger-inbox")
+            ::boxology_contract::BoxId::new("agent-host")
                 .expect("generated import package id is valid"),
-            ::boxology_contract::CapabilityName::new("inspect")
+            ::boxology_contract::CapabilityName::new("close_session")
                 .expect("generated import capability name is valid"),
         );
         let input = input
@@ -816,156 +1137,12 @@ impl TriggerInboxImport {
         let output = self.handle.call(&capability, context, input).await?;
         let output = ::boxology_contract::TypeDescriptor::structure([
                 ::boxology_contract::FieldDescriptor::new(
-                    "trigger_id",
-                    ::boxology_contract::TypeDescriptor::string(),
+                    "accepted",
+                    ::boxology_contract::TypeDescriptor::bool(),
                     None,
                 ),
                 ::boxology_contract::FieldDescriptor::new(
-                    "source",
-                    ::boxology_contract::TypeDescriptor::enumeration([
-                            ::boxology_contract::VariantDescriptor::new(
-                                "Bridge",
-                                ::boxology_contract::VariantPayload::Unit,
-                                None,
-                            ),
-                            ::boxology_contract::VariantDescriptor::new(
-                                "Scheduler",
-                                ::boxology_contract::VariantPayload::Unit,
-                                None,
-                            ),
-                            ::boxology_contract::VariantDescriptor::new(
-                                "SelfWork",
-                                ::boxology_contract::VariantPayload::Unit,
-                                None,
-                            ),
-                            ::boxology_contract::VariantDescriptor::new(
-                                "Operator",
-                                ::boxology_contract::VariantPayload::Unit,
-                                None,
-                            ),
-                        ])
-                        .expect("generated imported enum descriptor is valid"),
-                    None,
-                ),
-                ::boxology_contract::FieldDescriptor::new(
-                    "source_id",
-                    ::boxology_contract::TypeDescriptor::string(),
-                    None,
-                ),
-                ::boxology_contract::FieldDescriptor::new(
-                    "deduplication_key",
-                    ::boxology_contract::TypeDescriptor::string(),
-                    None,
-                ),
-                ::boxology_contract::FieldDescriptor::new(
-                    "target_channel_id",
-                    ::boxology_contract::TypeDescriptor::string(),
-                    None,
-                ),
-                ::boxology_contract::FieldDescriptor::new(
-                    "lane",
-                    ::boxology_contract::TypeDescriptor::string(),
-                    None,
-                ),
-                ::boxology_contract::FieldDescriptor::new(
-                    "mode",
-                    ::boxology_contract::TypeDescriptor::enumeration([
-                            ::boxology_contract::VariantDescriptor::new(
-                                "Queue",
-                                ::boxology_contract::VariantPayload::Unit,
-                                None,
-                            ),
-                            ::boxology_contract::VariantDescriptor::new(
-                                "Steer",
-                                ::boxology_contract::VariantPayload::Unit,
-                                None,
-                            ),
-                            ::boxology_contract::VariantDescriptor::new(
-                                "InterruptAndSteer",
-                                ::boxology_contract::VariantPayload::Unit,
-                                None,
-                            ),
-                        ])
-                        .expect("generated imported enum descriptor is valid"),
-                    None,
-                ),
-                ::boxology_contract::FieldDescriptor::new(
-                    "state",
-                    ::boxology_contract::TypeDescriptor::enumeration([
-                            ::boxology_contract::VariantDescriptor::new(
-                                "Pending",
-                                ::boxology_contract::VariantPayload::Unit,
-                                None,
-                            ),
-                            ::boxology_contract::VariantDescriptor::new(
-                                "Leased",
-                                ::boxology_contract::VariantPayload::Unit,
-                                None,
-                            ),
-                            ::boxology_contract::VariantDescriptor::new(
-                                "Completed",
-                                ::boxology_contract::VariantPayload::Unit,
-                                None,
-                            ),
-                            ::boxology_contract::VariantDescriptor::new(
-                                "RetryScheduled",
-                                ::boxology_contract::VariantPayload::Unit,
-                                None,
-                            ),
-                            ::boxology_contract::VariantDescriptor::new(
-                                "DeadLettered",
-                                ::boxology_contract::VariantPayload::Unit,
-                                None,
-                            ),
-                        ])
-                        .expect("generated imported enum descriptor is valid"),
-                    None,
-                ),
-                ::boxology_contract::FieldDescriptor::new(
-                    "enqueued_at_ms",
-                    ::boxology_contract::TypeDescriptor::u64(),
-                    None,
-                ),
-                ::boxology_contract::FieldDescriptor::new(
-                    "not_before_ms",
-                    ::boxology_contract::TypeDescriptor::u64(),
-                    None,
-                ),
-                ::boxology_contract::FieldDescriptor::new(
-                    "message_json",
-                    ::boxology_contract::TypeDescriptor::string(),
-                    None,
-                ),
-                ::boxology_contract::FieldDescriptor::new(
-                    "attachments",
-                    ::boxology_contract::TypeDescriptor::list(
-                            ::boxology_contract::TypeDescriptor::structure([
-                                    ::boxology_contract::FieldDescriptor::new(
-                                        "media_type",
-                                        ::boxology_contract::TypeDescriptor::string(),
-                                        None,
-                                    ),
-                                    ::boxology_contract::FieldDescriptor::new(
-                                        "name",
-                                        ::boxology_contract::TypeDescriptor::optional(
-                                                ::boxology_contract::TypeDescriptor::string(),
-                                            )
-                                            .expect("generated imported optional descriptor is valid"),
-                                        None,
-                                    ),
-                                    ::boxology_contract::FieldDescriptor::new(
-                                        "content_handle",
-                                        ::boxology_contract::TypeDescriptor::string(),
-                                        None,
-                                    ),
-                                ])
-                                .expect("generated imported struct descriptor is valid"),
-                        )
-                        .expect("generated imported list descriptor is valid"),
-                    None,
-                ),
-                ::boxology_contract::FieldDescriptor::new(
-                    "attempt",
+                    "recorded_at_ms",
                     ::boxology_contract::TypeDescriptor::u64(),
                     None,
                 ),
@@ -977,7 +1154,7 @@ impl TriggerInboxImport {
                     conversion_detail("output_decode", error),
                 )
             })?;
-        <::boxology_import_trigger_inbox::TriggerRecord as ::boxology_contract::ContractType>::decode(
+        <::boxology_import_agent_host::OperationReceipt as ::boxology_contract::ContractType>::decode(
                 &output,
             )
             .map_err(|error| {
@@ -1996,16 +2173,16 @@ impl NativeChannelImport {
             })
     }
 }
-pub struct TurnRouterImports {
-    pub trigger_inbox: TriggerInboxImport,
+pub struct ChannelGatewayImports {
+    pub agent_host: AgentHostImport,
     pub native_channel: NativeChannelImport,
 }
-pub fn typed_imports(imports: &::boxology_runtime::Imports) -> TurnRouterImports {
-    TurnRouterImports {
-        trigger_inbox: TriggerInboxImport {
+pub fn typed_imports(imports: &::boxology_runtime::Imports) -> ChannelGatewayImports {
+    ChannelGatewayImports {
+        agent_host: AgentHostImport {
             handle: imports
                 .handle(
-                    &::boxology_contract::BoxId::new("trigger-inbox")
+                    &::boxology_contract::BoxId::new("agent-host")
                         .expect("generated import package id is valid"),
                 )
                 .expect("declared import handle is present")
@@ -2022,9 +2199,9 @@ pub fn typed_imports(imports: &::boxology_runtime::Imports) -> TurnRouterImports
         },
     }
 }
-impl<T> ::boxology_contract::ErasedTarget for TurnRouterAdapter<T>
+impl<T> ::boxology_contract::ErasedTarget for ChannelGatewayAdapter<T>
 where
-    T: ::boxology_generated_contract::TurnRouterDispatch + Send + Sync + 'static,
+    T: ::boxology_generated_contract::ChannelGatewayDispatch + Send + Sync + 'static,
 {
     fn call<'a>(
         &'a self,
@@ -2041,190 +2218,91 @@ where
             > + Send + 'a,
         >,
     > {
-        let capabilities = ::boxology_generated_contract::contract_descriptor()
-            .capabilities();
-        if capability == capabilities[0].id() {
-            return Box::pin(async move {
-                let input = ::boxology_contract::TypeDescriptor::structure([
-                        ::boxology_contract::FieldDescriptor::new(
-                            "target_channel_id",
-                            ::boxology_contract::TypeDescriptor::string(),
-                            None,
-                        ),
-                        ::boxology_contract::FieldDescriptor::new(
-                            "lane",
-                            ::boxology_contract::TypeDescriptor::string(),
-                            None,
-                        ),
-                        ::boxology_contract::FieldDescriptor::new(
-                            "binding_id",
-                            ::boxology_contract::TypeDescriptor::string(),
-                            None,
-                        ),
-                        ::boxology_contract::FieldDescriptor::new(
-                            "expected_generation",
-                            ::boxology_contract::TypeDescriptor::optional(
-                                    ::boxology_contract::TypeDescriptor::u64(),
-                                )
-                                .expect("generated optional descriptor is valid"),
-                            None,
-                        ),
-                    ])
-                    .expect("generated struct descriptor is valid")
-                    .conform(::boxology_contract::DecodeRole::ProviderInput, input)
-                    .map_err(|error| {
-                        ::boxology_contract::ErasedCallError::ContractViolation(
-                            conversion_detail("input_decode", error),
-                        )
-                    })?;
-                let input = <::boxology_generated_contract::PutRouteRequest as ::boxology_contract::ContractType>::decode(
-                        &input,
-                    )
-                    .map_err(|error| {
-                        ::boxology_contract::ErasedCallError::ContractViolation(
-                            conversion_detail("input_decode", error),
-                        )
-                    })?;
-                match ::boxology_generated_contract::TurnRouterDispatch::put_route(
-                        &self.service,
-                        context,
-                        input,
-                    )
-                    .await
-                {
-                    Ok(output) => {
-                        output
-                            .encode()
-                            .map_err(|error| {
-                                ::boxology_contract::ErasedCallError::InvalidResponse(
-                                    conversion_detail("output_encode", error),
-                                )
-                            })
-                    }
-                    Err(error) => {
-                        Err(::boxology_contract::ErasedCallError::from_domain(&error))
-                    }
-                }
-            });
+        let expected = ::boxology_generated_contract::contract_descriptor()
+            .capabilities()
+            .first()
+            .expect("generated ChannelGateway contract has one capability")
+            .id();
+        if capability != expected {
+            return Box::pin(::std::future::ready(Err(unknown_capability())));
         }
-        if capability == capabilities[1].id() {
-            return Box::pin(async move {
-                let input = ::boxology_contract::TypeDescriptor::structure([
-                        ::boxology_contract::FieldDescriptor::new(
-                            "target_channel_id",
-                            ::boxology_contract::TypeDescriptor::string(),
-                            None,
-                        ),
-                    ])
-                    .expect("generated struct descriptor is valid")
-                    .conform(::boxology_contract::DecodeRole::ProviderInput, input)
-                    .map_err(|error| {
-                        ::boxology_contract::ErasedCallError::ContractViolation(
-                            conversion_detail("input_decode", error),
-                        )
-                    })?;
-                let input = <::boxology_generated_contract::RouteReference as ::boxology_contract::ContractType>::decode(
-                        &input,
+        Box::pin(async move {
+            let input = ::boxology_contract::TypeDescriptor::structure([
+                    ::boxology_contract::FieldDescriptor::new(
+                        "channel_id",
+                        ::boxology_contract::TypeDescriptor::string(),
+                        None,
+                    ),
+                    ::boxology_contract::FieldDescriptor::new(
+                        "adapter_id",
+                        ::boxology_contract::TypeDescriptor::string(),
+                        None,
+                    ),
+                    ::boxology_contract::FieldDescriptor::new(
+                        "agent_id",
+                        ::boxology_contract::TypeDescriptor::string(),
+                        None,
+                    ),
+                    ::boxology_contract::FieldDescriptor::new(
+                        "working_directory",
+                        ::boxology_contract::TypeDescriptor::string(),
+                        None,
+                    ),
+                    ::boxology_contract::FieldDescriptor::new(
+                        "bootstrap_prompt",
+                        ::boxology_contract::TypeDescriptor::optional(
+                                ::boxology_contract::TypeDescriptor::string(),
+                            )
+                            .expect("generated optional descriptor is valid"),
+                        None,
+                    ),
+                    ::boxology_contract::FieldDescriptor::new(
+                        "session_metadata_json",
+                        ::boxology_contract::TypeDescriptor::string(),
+                        None,
+                    ),
+                    ::boxology_contract::FieldDescriptor::new(
+                        "native_channel_json",
+                        ::boxology_contract::TypeDescriptor::string(),
+                        None,
+                    ),
+                ])
+                .expect("generated struct descriptor is valid")
+                .conform(::boxology_contract::DecodeRole::ProviderInput, input)
+                .map_err(|error| {
+                    ::boxology_contract::ErasedCallError::ContractViolation(
+                        conversion_detail("input_decode", error),
                     )
-                    .map_err(|error| {
-                        ::boxology_contract::ErasedCallError::ContractViolation(
-                            conversion_detail("input_decode", error),
-                        )
-                    })?;
-                match ::boxology_generated_contract::TurnRouterDispatch::resolve_route(
-                        &self.service,
-                        context,
-                        input,
+                })?;
+            let input = <::boxology_generated_contract::AttachChannelRequest as ::boxology_contract::ContractType>::decode(
+                    &input,
+                )
+                .map_err(|error| {
+                    ::boxology_contract::ErasedCallError::ContractViolation(
+                        conversion_detail("input_decode", error),
                     )
-                    .await
-                {
-                    Ok(output) => {
-                        output
-                            .encode()
-                            .map_err(|error| {
-                                ::boxology_contract::ErasedCallError::InvalidResponse(
-                                    conversion_detail("output_encode", error),
-                                )
-                            })
-                    }
-                    Err(error) => {
-                        Err(::boxology_contract::ErasedCallError::from_domain(&error))
-                    }
+                })?;
+            match ::boxology_generated_contract::ChannelGatewayDispatch::attach_channel(
+                    &self.service,
+                    context,
+                    input,
+                )
+                .await
+            {
+                Ok(output) => {
+                    output
+                        .encode()
+                        .map_err(|error| {
+                            ::boxology_contract::ErasedCallError::InvalidResponse(
+                                conversion_detail("output_encode", error),
+                            )
+                        })
                 }
-            });
-        }
-        if capability == capabilities[2].id() {
-            return Box::pin(async move {
-                let input = ::boxology_contract::TypeDescriptor::structure([
-                        ::boxology_contract::FieldDescriptor::new(
-                            "worker_id",
-                            ::boxology_contract::TypeDescriptor::string(),
-                            None,
-                        ),
-                        ::boxology_contract::FieldDescriptor::new(
-                            "lane",
-                            ::boxology_contract::TypeDescriptor::string(),
-                            None,
-                        ),
-                        ::boxology_contract::FieldDescriptor::new(
-                            "limit",
-                            ::boxology_contract::TypeDescriptor::u64(),
-                            None,
-                        ),
-                        ::boxology_contract::FieldDescriptor::new(
-                            "lease_duration_ms",
-                            ::boxology_contract::TypeDescriptor::u64(),
-                            None,
-                        ),
-                        ::boxology_contract::FieldDescriptor::new(
-                            "retry_delay_ms",
-                            ::boxology_contract::TypeDescriptor::u64(),
-                            None,
-                        ),
-                        ::boxology_contract::FieldDescriptor::new(
-                            "max_attempts",
-                            ::boxology_contract::TypeDescriptor::u64(),
-                            None,
-                        ),
-                    ])
-                    .expect("generated struct descriptor is valid")
-                    .conform(::boxology_contract::DecodeRole::ProviderInput, input)
-                    .map_err(|error| {
-                        ::boxology_contract::ErasedCallError::ContractViolation(
-                            conversion_detail("input_decode", error),
-                        )
-                    })?;
-                let input = <::boxology_generated_contract::DrainLaneRequest as ::boxology_contract::ContractType>::decode(
-                        &input,
-                    )
-                    .map_err(|error| {
-                        ::boxology_contract::ErasedCallError::ContractViolation(
-                            conversion_detail("input_decode", error),
-                        )
-                    })?;
-                match ::boxology_generated_contract::TurnRouterDispatch::drain_lane(
-                        &self.service,
-                        context,
-                        input,
-                    )
-                    .await
-                {
-                    Ok(output) => {
-                        output
-                            .encode()
-                            .map_err(|error| {
-                                ::boxology_contract::ErasedCallError::InvalidResponse(
-                                    conversion_detail("output_encode", error),
-                                )
-                            })
-                    }
-                    Err(error) => {
-                        Err(::boxology_contract::ErasedCallError::from_domain(&error))
-                    }
+                Err(error) => {
+                    Err(::boxology_contract::ErasedCallError::from_domain(&error))
                 }
-            });
-        }
-        Box::pin(::std::future::ready(Err(unknown_capability())))
+            }
+        })
     }
 }
 fn conversion_detail(

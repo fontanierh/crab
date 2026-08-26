@@ -28,3 +28,5 @@ and sequence instead of copying it into a second event journal.
 - Interrupt is a separate operation: it cancels the active run and leaves accepted queued turns for
   the agent host to drain in stable order. Interrupt and session-replacement reasons are retained as
   operator audit records.
+- Session replacement atomically installs the fresh session and adapter metadata while preserving
+  the binding identity. A failed replacement leaves the previous binding untouched.

@@ -342,6 +342,7 @@ impl NativeChannel {
             &request.binding_id,
             &request.expected_session_id,
             &request.fresh_session_id,
+            request.fresh_native_channel_json.as_deref(),
             &request.reason,
             (self.clock)()?,
         )

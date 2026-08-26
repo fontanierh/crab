@@ -9,6 +9,7 @@ composition restores configured sessions and continuously routes durable ingress
 v2/
 ├── agent-host/       ACP lifecycle, native event stream, mandatory host authority
 ├── native-channel/   one channel ↔ one ACP session, with the full native view
+├── channel-gateway/  idempotent UI attachment and physical-session recovery
 ├── bridge-host/      supervised external integrations, auth and selected delivery
 ├── sub-agent-host/   supervised ACP subprocesses with bidirectional live interaction
 ├── trigger-inbox/    transactional SQLite ingress used by bridges, cron and self-work
@@ -57,6 +58,9 @@ interrupt as a separate explicit action.
   routes queue/steer and explicit interrupt, replays the complete bidirectional ACP stream, and
   confirms adapter publication in order. See its [state contract](docs/native-channel-storage.md)
   and [rendered flow](docs/native-channel-flow.png).
+- `channel-gateway` is the single lifecycle path for configured and dynamic UI attachment. It
+  reuses a matching live binding, replaces only unavailable physical sessions, and rejects changed
+  intent while a session is live. See the [rendered attach flow](docs/channel-gateway-flow.png).
 - `bridge-host` supervises agent-installed JSON-lines packages, brokers private file-backed
   credentials, actively probes health and credential validity, and applies bounded restart
   backoff. Package-originated ingress is acknowledged only after the generated `trigger-inbox`
