@@ -17,6 +17,12 @@
           "executable": "../bin/crab-v2-sub-agent-mcp",
           "arguments": [],
           "environmentFrom": []
+        },
+        {
+          "name": "crab-bridges",
+          "executable": "../bin/crab-v2-bridge-mcp",
+          "arguments": [],
+          "environmentFrom": []
         }
       ],
       "protocol": "v1",

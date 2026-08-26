@@ -14,12 +14,16 @@ operators never open Crab's databases or credential store.
 | `native-channel.channel_status` | `native-channel` |
 | `native-channel.replay_native_events` | `native-channel` |
 | `trigger-inbox.enqueue` | `trigger-inbox` |
+| `bridge-host.register_bridge` | `bridge-host` |
 | `bridge-host.list_bridges` | `bridge-host` |
+| `bridge-host.replace_bridge` | `bridge-host` |
 | `bridge-host.reconcile_bridge` | `bridge-host` |
 | `bridge-host.begin_authentication` | `bridge-host` |
 | `bridge-host.submit_authentication` | `bridge-host` |
 | `bridge-host.validate_credentials` | `bridge-host` |
 | `bridge-host.invalidate_credentials` | `bridge-host` |
+| `bridge-host.deliver_message` | `bridge-host` |
+| `bridge-host.delivery_status` | `bridge-host` |
 | `bridge-host.bridge_status` | `bridge-host` |
 | `bridge-host.suspend_bridge` | `bridge-host` |
 | `bridge-host.stop_bridge` | `bridge-host` |

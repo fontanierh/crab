@@ -620,8 +620,9 @@ mod tests {
     use boxology_runtime::{Composition, CompositionBuilder};
     use bridge_host_contract::{
         AuthenticationMethod as ContractAuthenticationMethod, BeginAuthenticationRequest,
-        BridgeLifecycle, BridgeReference, CredentialLifecycle, ListBridgesRequest,
-        ReconcileBridgeRequest, SubmitAuthenticationRequest,
+        BridgeLifecycle, BridgeReference, CredentialLifecycle, DeliveryLifecycle,
+        DeliveryReference, ListBridgesRequest, ReconcileBridgeRequest, ReplaceBridgeRequest,
+        SubmitAuthenticationRequest,
     };
     use bridge_host_implementation::{
         AuthenticationMethod, BridgeCredentialSink, BridgeHostState, BridgeInboundSink,
@@ -762,10 +763,13 @@ mod tests {
 
         async fn deliver(
             &self,
-            _request: &BridgeOutbound,
+            request: &BridgeOutbound,
             _credential_json: Option<&str>,
         ) -> Result<PackageDelivery, BridgePackageError> {
-            Err(BridgePackageError::ProtocolFailed)
+            Ok(PackageDelivery {
+                external_delivery_id: format!("fixture:{}", request.message_id),
+                detail_json: r#"{"fixture":true}"#.into(),
+            })
         }
 
         async fn stop(&self) -> Result<(), BridgePackageError> {
@@ -1420,11 +1424,11 @@ mod tests {
         let directory = tempfile::tempdir().expect("temporary directory");
         let state = Arc::new(Mutex::new(FakeState::default()));
         let graph = graph(directory.path(), state);
-        let mut config = config(directory.path().to_path_buf());
+        let mut topology_config = config(directory.path().to_path_buf());
         let mut bridge = bridge_config(directory.path().to_path_buf());
         bridge.authentication_methods = vec![BridgeAuthenticationConfig::PhoneCode];
-        config.bridges.push(bridge);
-        initialize_bridges(&graph.bridge_host, &config)
+        topology_config.bridges.push(bridge);
+        initialize_bridges(&graph.bridge_host, &topology_config)
             .await
             .expect("configured bridge starts");
         let paths = ChannelIpcPaths::for_state_directory(directory.path()).expect("paths resolve");
@@ -1445,6 +1449,32 @@ mod tests {
         let catalog = client.list_bridges().await.expect("catalog crosses IPC");
         assert_eq!(catalog.bridges.len(), 1);
         assert_eq!(catalog.bridges[0].bridge_id, "whatsapp");
+        let mut dynamic_config = config(directory.path().to_path_buf());
+        let mut dynamic_bridge = bridge_config(directory.path().to_path_buf());
+        dynamic_bridge.bridge_id = "signal".into();
+        dynamic_bridge.package_id = "agent.signal".into();
+        dynamic_bridge.display_name = "Signal".into();
+        dynamic_bridge.desired_running = false;
+        dynamic_config.bridges.push(dynamic_bridge);
+        let mut dynamic_spec = dynamic_config
+            .bridge_specs()
+            .expect("dynamic bridge spec encodes")
+            .remove(0);
+        let registered = client
+            .register_bridge(dynamic_spec.clone())
+            .await
+            .expect("agent-installed bridge registration crosses IPC");
+        assert_eq!(registered.bridge_id, "signal");
+        assert_eq!(registered.generation, 1);
+        dynamic_spec.display_name = "Signal bridge".into();
+        let replaced = client
+            .replace_bridge(ReplaceBridgeRequest {
+                expected_generation: 1,
+                spec: dynamic_spec,
+            })
+            .await
+            .expect("agent-installed bridge replacement crosses IPC");
+        assert_eq!(replaced.generation, 2);
         let status = client
             .bridge_status(BridgeReference {
                 bridge_id: "whatsapp".into(),
@@ -1489,6 +1519,38 @@ mod tests {
             .await
             .expect("reconcile crosses IPC");
         assert_eq!(reconciled.lifecycle, BridgeLifecycle::Healthy);
+        let outbound = BridgeOutbound {
+            bridge_id: "whatsapp".into(),
+            message_id: "selected-1".into(),
+            destination_json: r#"{"chatId":"fixture"}"#.into(),
+            message_json: r#"{"type":"text","text":"selected output"}"#.into(),
+            attachments: Vec::new(),
+            idempotency_key: "selected-1".into(),
+        };
+        let delivered = client
+            .deliver_bridge_message(outbound.clone())
+            .await
+            .expect("selected message delivery crosses IPC");
+        assert_eq!(delivered.lifecycle, DeliveryLifecycle::Delivered);
+        let delivery_status = client
+            .bridge_delivery_status(DeliveryReference {
+                bridge_id: "whatsapp".into(),
+                message_id: "selected-1".into(),
+            })
+            .await
+            .expect("delivery status crosses IPC");
+        assert_eq!(
+            delivery_status.external_delivery_id,
+            delivered.external_delivery_id
+        );
+        assert_eq!(
+            client
+                .deliver_bridge_message(outbound)
+                .await
+                .expect("delivery retry deduplicates")
+                .attempt,
+            delivered.attempt
+        );
         assert!(
             client
                 .invalidate_bridge_credentials(BridgeReference {

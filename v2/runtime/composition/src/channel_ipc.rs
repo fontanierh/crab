@@ -19,8 +19,9 @@ use boxology_contract::{
 };
 use bridge_host_contract::{
     AuthenticationChallenge, BeginAuthenticationRequest, BridgeCatalog, BridgeHostHandle,
-    BridgeReceipt, BridgeReference, BridgeStatus, CredentialStatus, ListBridgesRequest,
-    ReconcileBridgeRequest, SubmitAuthenticationRequest,
+    BridgeOutbound, BridgeReceipt, BridgeRecord, BridgeReference, BridgeSpec, BridgeStatus,
+    CredentialStatus, DeliveryReceipt, DeliveryReference, ListBridgesRequest,
+    ReconcileBridgeRequest, ReplaceBridgeRequest, SubmitAuthenticationRequest,
 };
 use channel_gateway_contract::{AttachChannelRequest, ChannelAttachment, ChannelGatewayHandle};
 use native_channel_contract::{
@@ -56,12 +57,16 @@ const INTERRUPT: &str = "native-channel.interrupt_and_drain";
 const CHANNEL_STATUS: &str = "native-channel.channel_status";
 const REPLAY: &str = "native-channel.replay_native_events";
 const ENQUEUE_TRIGGER: &str = "trigger-inbox.enqueue";
+const REGISTER_BRIDGE: &str = "bridge-host.register_bridge";
 const LIST_BRIDGES: &str = "bridge-host.list_bridges";
+const REPLACE_BRIDGE: &str = "bridge-host.replace_bridge";
 const RECONCILE_BRIDGE: &str = "bridge-host.reconcile_bridge";
 const BEGIN_AUTHENTICATION: &str = "bridge-host.begin_authentication";
 const SUBMIT_AUTHENTICATION: &str = "bridge-host.submit_authentication";
 const VALIDATE_CREDENTIALS: &str = "bridge-host.validate_credentials";
 const INVALIDATE_CREDENTIALS: &str = "bridge-host.invalidate_credentials";
+const DELIVER_BRIDGE_MESSAGE: &str = "bridge-host.deliver_message";
+const BRIDGE_DELIVERY_STATUS: &str = "bridge-host.delivery_status";
 const BRIDGE_STATUS: &str = "bridge-host.bridge_status";
 const STOP_BRIDGE: &str = "bridge-host.stop_bridge";
 const SUSPEND_BRIDGE: &str = "bridge-host.suspend_bridge";
@@ -298,6 +303,32 @@ impl ChannelIpcClient {
         .await
     }
 
+    /// Register one strict, secret-free agent-installed bridge package.
+    pub async fn register_bridge(
+        &self,
+        request: BridgeSpec,
+    ) -> Result<BridgeRecord, ChannelIpcClientError> {
+        self.invoke(
+            REGISTER_BRIDGE,
+            bridge_host_contract::contract_descriptor(),
+            request,
+        )
+        .await
+    }
+
+    /// Replace package, configuration or policy under generation control.
+    pub async fn replace_bridge(
+        &self,
+        request: ReplaceBridgeRequest,
+    ) -> Result<BridgeRecord, ChannelIpcClientError> {
+        self.invoke(
+            REPLACE_BRIDGE,
+            bridge_host_contract::contract_descriptor(),
+            request,
+        )
+        .await
+    }
+
     /// Converge one bridge toward its desired state with generation control.
     pub async fn reconcile_bridge(
         &self,
@@ -357,6 +388,32 @@ impl ChannelIpcClient {
     ) -> Result<BridgeReceipt, ChannelIpcClientError> {
         self.invoke(
             INVALIDATE_CREDENTIALS,
+            bridge_host_contract::contract_descriptor(),
+            request,
+        )
+        .await
+    }
+
+    /// Deliver one deliberately selected external message with durable deduplication.
+    pub async fn deliver_bridge_message(
+        &self,
+        request: BridgeOutbound,
+    ) -> Result<DeliveryReceipt, ChannelIpcClientError> {
+        self.invoke(
+            DELIVER_BRIDGE_MESSAGE,
+            bridge_host_contract::contract_descriptor(),
+            request,
+        )
+        .await
+    }
+
+    /// Inspect one durable selected-message delivery.
+    pub async fn bridge_delivery_status(
+        &self,
+        request: DeliveryReference,
+    ) -> Result<DeliveryReceipt, ChannelIpcClientError> {
+        self.invoke(
+            BRIDGE_DELIVERY_STATUS,
             bridge_host_contract::contract_descriptor(),
             request,
         )
@@ -891,11 +948,27 @@ async fn dispatch(
                 Err(error) => wire_call_error(error),
             }
         }
+        REGISTER_BRIDGE => {
+            invoke_bridge::<BridgeSpec, BridgeRecord, _, _>(
+                &request.input,
+                REGISTER_BRIDGE,
+                |input| bridge_host.register_bridge(call_context(), input),
+            )
+            .await
+        }
         LIST_BRIDGES => {
             invoke_bridge::<ListBridgesRequest, BridgeCatalog, _, _>(
                 &request.input,
                 LIST_BRIDGES,
                 |input| bridge_host.list_bridges(call_context(), input),
+            )
+            .await
+        }
+        REPLACE_BRIDGE => {
+            invoke_bridge::<ReplaceBridgeRequest, BridgeRecord, _, _>(
+                &request.input,
+                REPLACE_BRIDGE,
+                |input| bridge_host.replace_bridge(call_context(), input),
             )
             .await
         }
@@ -936,6 +1009,22 @@ async fn dispatch(
                 &request.input,
                 INVALIDATE_CREDENTIALS,
                 |input| bridge_host.invalidate_credentials(call_context(), input),
+            )
+            .await
+        }
+        DELIVER_BRIDGE_MESSAGE => {
+            invoke_bridge::<BridgeOutbound, DeliveryReceipt, _, _>(
+                &request.input,
+                DELIVER_BRIDGE_MESSAGE,
+                |input| bridge_host.deliver_message(call_context(), input),
+            )
+            .await
+        }
+        BRIDGE_DELIVERY_STATUS => {
+            invoke_bridge::<DeliveryReference, DeliveryReceipt, _, _>(
+                &request.input,
+                BRIDGE_DELIVERY_STATUS,
+                |input| bridge_host.delivery_status(call_context(), input),
             )
             .await
         }

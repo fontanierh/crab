@@ -68,3 +68,7 @@ crab-v2-bridge --state-dir "$CRAB_V2_STATE" stop whatsapp
 `suspend` halts the current process while preserving desired state. `reconcile` applies the declared
 generation and desired state through the supervisor. `stop` durably disables the bridge. Domain
 failures retain their stable Boxology code on stderr and return a non-zero status.
+
+ACP agents receive the broader install, generation, authentication and selected-delivery lifecycle
+through the first-party [native bridge tools](native-bridge-tools.md). Both surfaces share this
+owner-only IPC and the same generated `bridge-host` capabilities.

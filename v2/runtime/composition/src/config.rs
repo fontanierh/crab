@@ -656,12 +656,18 @@ mod tests {
             std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
                 .join("../../target/release/crab-v2-claude-authority-probe")
         );
-        assert_eq!(agent.session_mcp_servers.len(), 1);
+        assert_eq!(agent.session_mcp_servers.len(), 2);
         assert_eq!(agent.session_mcp_servers[0].name, "crab-sub-agents");
         assert_eq!(
             agent.session_mcp_servers[0].executable,
             std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
                 .join("../../target/release/crab-v2-sub-agent-mcp")
+        );
+        assert_eq!(agent.session_mcp_servers[1].name, "crab-bridges");
+        assert_eq!(
+            agent.session_mcp_servers[1].executable,
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../target/release/crab-v2-bridge-mcp")
         );
     }
 
@@ -696,10 +702,15 @@ mod tests {
                 "../agents/claude/node_modules/.bin/claude-agent-acp"
             ]
         );
-        assert_eq!(agent.session_mcp_servers.len(), 1);
+        assert_eq!(agent.session_mcp_servers.len(), 2);
         assert_eq!(
             agent.session_mcp_servers[0].executable,
             runtime.join("../bin/crab-v2-sub-agent-mcp")
+        );
+        assert_eq!(agent.session_mcp_servers[1].name, "crab-bridges");
+        assert_eq!(
+            agent.session_mcp_servers[1].executable,
+            runtime.join("../bin/crab-v2-bridge-mcp")
         );
         let bridge = &config.bridges[0];
         assert_eq!(

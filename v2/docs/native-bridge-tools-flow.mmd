@@ -1,0 +1,28 @@
+%%{init: {"theme": "base", "themeVariables": {"fontFamily": "ui-sans-serif, system-ui, sans-serif", "primaryTextColor": "#172033", "lineColor": "#64748b", "edgeLabelBackground": "#ffffff"}, "flowchart": {"curve": "basis", "nodeSpacing": 44, "rankSpacing": 58}}}%%
+flowchart LR
+    ACP["parent or child<br/>ACP session"]
+    MCP["crab-v2-bridge-mcp<br/>13 strict tools"]
+    IPC["owner-only local IPC<br/>0600 token + socket"]
+    HOST["bridge-host<br/>generation + supervision"]
+    PACKAGE["agent-installed package<br/>JSON-lines protocol"]
+    CREDS["private credential store<br/>opaque handles"]
+    INGRESS["trigger-inbox<br/>durable external ingress"]
+    DELIVERY["selected outbound<br/>idempotent delivery"]
+
+    ACP <-->|"MCP stdio"| MCP
+    MCP -->|"authenticated calls"| IPC --> HOST
+    HOST <-->|"health + auth"| PACKAGE
+    HOST --> CREDS
+    PACKAGE --> INGRESS
+    HOST --> DELIVERY
+
+    classDef agent fill:#ede9fe,stroke:#7c3aed,stroke-width:2px,color:#2e1065;
+    classDef boundary fill:#fef3c7,stroke:#d97706,stroke-width:2px,color:#78350f;
+    classDef host fill:#dbeafe,stroke:#2563eb,stroke-width:2px,color:#172554;
+    classDef package fill:#f8fafc,stroke:#64748b,stroke-width:1.5px,color:#172033;
+    classDef durable fill:#dcfce7,stroke:#16a34a,stroke-width:2px,color:#14532d;
+    class ACP agent;
+    class MCP,IPC boundary;
+    class HOST host;
+    class PACKAGE package;
+    class CREDS,INGRESS,DELIVERY durable;
