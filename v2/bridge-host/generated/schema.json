@@ -23,6 +23,25 @@
     {
       "deprecation": null,
       "docs": [
+        " List durable registrations without package configuration or credential material."
+      ],
+      "error": "BridgeHostError",
+      "id": "bridge-host.list_bridges",
+      "idempotency": "none",
+      "input": {
+        "name": "request",
+        "type": "ListBridgesRequest"
+      },
+      "max_exposure": "code_only",
+      "name": "list_bridges",
+      "output": {
+        "type": "BridgeCatalog"
+      },
+      "shape": "unary"
+    },
+    {
+      "deprecation": null,
+      "docs": [
         " Install a new immutable generation; ingress mode changes only through this operation."
       ],
       "error": "BridgeHostError",
@@ -238,9 +257,9 @@
   "provenance": {
     "generator": "boxology-generator",
     "generator_version": "0.1.1",
-    "semantic_digest": "sha256:bb5351ee8f6839e881180c82f291d70669f184485da93cce1ca5f7742ffc1ecb"
+    "semantic_digest": "sha256:6a710755e524d10299e30623a3bb18af037d08a2a26e074cad2ce3ce0e9cd469"
   },
-  "revision": "sha256:cee7259d119314b5e641eecea60d57f31b65cfb1d9ae9f1647e6de9ee7d2562f",
+  "revision": "sha256:94b2871bed855ffffc3e3c94bc3efba8db3d7a73cff28f711d813782c0d8569f",
   "schema_format": 1,
   "types": [
     {
@@ -589,6 +608,29 @@
       ],
       "kind": "struct",
       "name": "BridgeRecord"
+    },
+    {
+      "deprecation": null,
+      "docs": [
+        " Non-secret durable registrations ordered by bridge identity."
+      ],
+      "fields": [
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "bridges",
+          "type": "Vec<BridgeRecord>"
+        }
+      ],
+      "kind": "struct",
+      "name": "BridgeCatalog"
+    },
+    {
+      "deprecation": null,
+      "docs": [],
+      "fields": [],
+      "kind": "struct",
+      "name": "ListBridgesRequest"
     },
     {
       "deprecation": null,

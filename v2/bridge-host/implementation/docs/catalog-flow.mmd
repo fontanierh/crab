@@ -1,0 +1,6 @@
+flowchart LR
+    CONFIG[configured bridge IDs] --> DIFF{compare IDs}
+    CATALOG[(durable bridge catalog)] --> DIFF
+    DIFF -->|configured and persisted| RESTORE[restore or replace]
+    DIFF -->|configured only| REGISTER[register]
+    DIFF -->|persisted only| STOP[stop]

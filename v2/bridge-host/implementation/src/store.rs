@@ -290,6 +290,24 @@ impl BridgeStore {
             .map_err(storage_error)
     }
 
+    pub(crate) fn records(&self) -> Result<Vec<BridgeRecord>, BridgeHostError> {
+        let bridge_ids = {
+            let connection = self.lock()?;
+            let mut statement = connection
+                .prepare("SELECT bridge_id FROM bridges ORDER BY bridge_id")
+                .map_err(storage_error)?;
+            statement
+                .query_map([], |row| row.get::<_, String>(0))
+                .map_err(storage_error)?
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .map_err(storage_error)?
+        };
+        bridge_ids
+            .iter()
+            .map(|bridge_id| self.record(bridge_id))
+            .collect()
+    }
+
     pub(crate) fn record(&self, bridge_id: &str) -> Result<BridgeRecord, BridgeHostError> {
         let connection = self.lock()?;
         connection
@@ -1583,6 +1601,36 @@ mod tests {
             })
             .expect("audit count");
         assert_eq!(audit_count, 3);
+    }
+
+    #[test]
+    fn catalog_is_empty_then_ordered_replaced_and_restart_safe() {
+        let directory = tempfile::tempdir().expect("temporary state directory");
+        let path = directory.path().join("catalog.sqlite");
+        {
+            let store = BridgeStore::open(&path).expect("store opens");
+            assert!(store.records().expect("empty catalog lists").is_empty());
+            let mut beta = spec(false);
+            beta.bridge_id = "beta".into();
+            let mut alpha = spec(false);
+            alpha.bridge_id = "alpha".into();
+            store.register(&beta, 1).expect("beta registers");
+            store.register(&alpha, 2).expect("alpha registers");
+            alpha.display_name = "Alpha replacement".into();
+            store.replace(&alpha, 1, 3).expect("alpha replaces");
+        }
+
+        let restarted = BridgeStore::open(&path).expect("store reopens");
+        let records = restarted.records().expect("catalog lists");
+        assert_eq!(
+            records
+                .iter()
+                .map(|record| record.bridge_id.as_str())
+                .collect::<Vec<_>>(),
+            ["alpha", "beta"]
+        );
+        assert_eq!(records[0].display_name, "Alpha replacement");
+        assert_eq!(records[0].generation, 2);
     }
 
     #[test]

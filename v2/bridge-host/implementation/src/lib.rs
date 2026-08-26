@@ -675,6 +675,17 @@ impl BridgeHost {
         self.store.record(&record.bridge_id)
     }
 
+    pub async fn list_bridges(
+        &self,
+        context: CallContext,
+        request: ListBridgesRequest,
+    ) -> Result<BridgeCatalog, BridgeHostError> {
+        let _ = (context, request);
+        Ok(BridgeCatalog {
+            bridges: self.store.records()?,
+        })
+    }
+
     pub async fn replace_bridge(
         &self,
         context: CallContext,
@@ -1248,6 +1259,7 @@ mod tests {
             .collect::<Vec<_>>();
 
         for required in [
+            "list_bridges",
             "reconcile_bridge",
             "begin_authentication",
             "validate_credentials",
