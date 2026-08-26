@@ -12,7 +12,9 @@ and sequence instead of copying it into a second event journal.
 - WAL mode, foreign keys, a five-second busy timeout, and full synchronous writes are mandatory.
 - Unknown schema versions fail closed with `StorageUnavailable`.
 - ACP processes cannot survive a runtime restart. Reopening marks live bindings `Failed`; an
-  explicit `replace_session` attaches a fresh session while retaining channel identity.
+  explicit `replace_session` attaches a fresh session while retaining channel identity. Startup
+  can inspect a binding without its dead session or find it by `(adapter_id, channel_id)` after a
+  crash between binding creation and route registration.
 
 ## Durable invariants
 

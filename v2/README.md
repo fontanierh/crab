@@ -1,7 +1,7 @@
-# Crab v2 contract draft
+# Crab v2
 
-Crab v2 is a small, ACP-native host. These contracts describe its boundaries before any runtime
-implementation is selected.
+Crab v2 is a small, ACP-native host. Boxology contracts own its domain boundaries; the executable
+composition restores configured sessions and continuously routes durable ingress.
 
 ![Crab v2 architecture](docs/crab-v2-architecture.png)
 
@@ -13,7 +13,7 @@ v2/
 ├── sub-agent-host/   supervised ACP subprocesses with bidirectional live interaction
 ├── trigger-inbox/    transactional SQLite ingress used by bridges, cron and self-work
 ├── turn-router/      durable target resolution, lane ordering and trigger settlement
-└── runtime/          thin composition; no domain policy
+└── runtime/          strict topology, restart recovery and lane supervision
 ```
 
 | | Channel | Bridge |
@@ -72,6 +72,9 @@ interrupt as a separate explicit action.
   native channels. It serializes each lane, maps queue/steer/interrupt explicitly, and settles only
   after durable channel acceptance. See its [state contract](docs/turn-router-storage.md) and
   [rendered flow](docs/turn-router-flow.png).
+- `crab-v2` loads secret-free schema-v1 topology, opens fresh ACP sessions, recovers persisted
+  bindings/routes and continuously drains every configured trigger lane. See the
+  [startup contract and rendered flow](docs/runtime-startup.md).
 - For a native UI, start by testing an off-the-shelf ACP client; build on reusable ACP components
   only if that cannot attach cleanly. See [the UI landscape](docs/acp-native-ui.md).
 

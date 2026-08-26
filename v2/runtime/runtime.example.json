@@ -1,0 +1,40 @@
+{
+  "schema": 1,
+  "agents": [
+    {
+      "agentId": "primary-agent",
+      "displayName": "Primary ACP agent",
+      "executable": "/absolute/path/to/acp-agent",
+      "arguments": ["--acp", "--no-sandbox", "--yolo"],
+      "environmentFrom": ["AGENT_API_TOKEN"],
+      "protocol": "v2",
+      "authorityProbe": {
+        "executable": "/absolute/path/to/authority-probe",
+        "arguments": [],
+        "environmentFrom": []
+      }
+    }
+  ],
+  "channels": [
+    {
+      "channelId": "primary",
+      "adapterId": "native-ui",
+      "agentId": "primary-agent",
+      "workingDirectory": "/absolute/path/to/agent-workspace",
+      "nativeChannel": { "title": "Primary" },
+      "sessionMetadata": {},
+      "lane": "primary"
+    }
+  ],
+  "lanes": [
+    {
+      "lane": "primary",
+      "workerId": "crab-v2-primary",
+      "batchLimit": 16,
+      "leaseDurationMs": 30000,
+      "retryDelayMs": 1000,
+      "maxAttempts": 3,
+      "pollIntervalMs": 100
+    }
+  ]
+}

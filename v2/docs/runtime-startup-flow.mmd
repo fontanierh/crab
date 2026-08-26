@@ -1,0 +1,30 @@
+%%{init: {"theme": "base", "themeVariables": {"fontFamily": "ui-sans-serif, system-ui, sans-serif", "primaryTextColor": "#172033", "lineColor": "#64748b", "edgeLabelBackground": "#ffffff"}, "flowchart": {"curve": "basis", "nodeSpacing": 42, "rankSpacing": 54}}}%%
+flowchart LR
+    CONFIG["strict JSON topology<br/>secret names, never values"]
+    STATE[("six SQLite stores<br/>private state directory")]
+    OPEN["authority preflight<br/>open fresh ACP session"]
+    RECOVER{"persisted route<br/>and binding?"}
+    REBIND["inspect or find binding<br/>replace session"]
+    BIND["create binding"]
+    ROUTE["CAS target → lane → binding"]
+    WORKER["one bounded worker / lane<br/>claim · route · settle · repeat"]
+    SIGNAL["SIGINT / SIGTERM<br/>stop workers · close sessions"]
+
+    CONFIG --> OPEN
+    STATE --> RECOVER
+    OPEN --> RECOVER
+    RECOVER -->|"yes"| REBIND
+    RECOVER -->|"no"| BIND
+    REBIND --> ROUTE
+    BIND --> ROUTE
+    ROUTE --> WORKER
+    WORKER --> SIGNAL
+
+    classDef config fill:#f8fafc,stroke:#64748b,stroke-width:1.5px,color:#172033;
+    classDef durable fill:#dcfce7,stroke:#16a34a,stroke-width:2px,color:#14532d;
+    classDef agent fill:#ede9fe,stroke:#7c3aed,stroke-width:2px,color:#2e1065;
+    classDef runtime fill:#ffedd5,stroke:#ea580c,stroke-width:2px,color:#7c2d12;
+    class CONFIG,SIGNAL config;
+    class STATE durable;
+    class OPEN agent;
+    class RECOVER,REBIND,BIND,ROUTE,WORKER runtime;

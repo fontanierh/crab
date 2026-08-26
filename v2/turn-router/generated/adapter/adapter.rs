@@ -50,7 +50,7 @@ pub fn implementation_descriptor() -> ::boxology_contract::ImplementationDescrip
                         ::boxology_contract::BoxId::new("native-channel")
                             .expect("generated import package id is valid"),
                         ::boxology_contract::ContractRevision::new(
-                                "sha256:4395f8de32429f96d57bc2b1eab16b96d415b649a5cc1a189a20bbd091251bfd",
+                                "sha256:a571d395b427730d2a56b7d8d40081f37c06a2b7e52d02966f591e33bb5bb095",
                             )
                             .expect("generated import revision is valid"),
                         [
@@ -100,6 +100,18 @@ pub fn implementation_descriptor() -> ::boxology_contract::ImplementationDescrip
                                 ::boxology_contract::BoxId::new("native-channel")
                                     .expect("generated import package id is valid"),
                                 ::boxology_contract::CapabilityName::new("channel_status")
+                                    .expect("generated import capability name is valid"),
+                            ),
+                            ::boxology_contract::CapabilityId::new(
+                                ::boxology_contract::BoxId::new("native-channel")
+                                    .expect("generated import package id is valid"),
+                                ::boxology_contract::CapabilityName::new("inspect_binding")
+                                    .expect("generated import capability name is valid"),
+                            ),
+                            ::boxology_contract::CapabilityId::new(
+                                ::boxology_contract::BoxId::new("native-channel")
+                                    .expect("generated import package id is valid"),
+                                ::boxology_contract::CapabilityName::new("find_binding")
                                     .expect("generated import capability name is valid"),
                             ),
                             ::boxology_contract::CapabilityId::new(
@@ -1721,6 +1733,210 @@ impl NativeChannelImport {
                 )
             })?;
         <::boxology_import_native_channel::ChannelStatus as ::boxology_contract::ContractType>::decode(
+                &output,
+            )
+            .map_err(|error| {
+                ::boxology_contract::ErasedCallError::InvalidResponse(
+                    conversion_detail("output_decode", error),
+                )
+            })
+    }
+    pub async fn inspect_binding(
+        &self,
+        context: ::boxology_contract::CallContext,
+        input: ::boxology_import_native_channel::BindingReference,
+    ) -> Result<
+        ::boxology_import_native_channel::ChannelBinding,
+        ::boxology_contract::ErasedCallError,
+    > {
+        let capability = ::boxology_contract::CapabilityId::new(
+            ::boxology_contract::BoxId::new("native-channel")
+                .expect("generated import package id is valid"),
+            ::boxology_contract::CapabilityName::new("inspect_binding")
+                .expect("generated import capability name is valid"),
+        );
+        let input = input
+            .encode()
+            .map_err(|error| {
+                ::boxology_contract::ErasedCallError::ContractViolation(
+                    conversion_detail("input_encode", error),
+                )
+            })?;
+        let output = self.handle.call(&capability, context, input).await?;
+        let output = ::boxology_contract::TypeDescriptor::structure([
+                ::boxology_contract::FieldDescriptor::new(
+                    "binding_id",
+                    ::boxology_contract::TypeDescriptor::string(),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
+                    "channel_id",
+                    ::boxology_contract::TypeDescriptor::string(),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
+                    "adapter_id",
+                    ::boxology_contract::TypeDescriptor::string(),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
+                    "session_id",
+                    ::boxology_contract::TypeDescriptor::string(),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
+                    "lifecycle",
+                    ::boxology_contract::TypeDescriptor::enumeration([
+                            ::boxology_contract::VariantDescriptor::new(
+                                "Binding",
+                                ::boxology_contract::VariantPayload::Unit,
+                                None,
+                            ),
+                            ::boxology_contract::VariantDescriptor::new(
+                                "Attached",
+                                ::boxology_contract::VariantPayload::Unit,
+                                None,
+                            ),
+                            ::boxology_contract::VariantDescriptor::new(
+                                "Replaying",
+                                ::boxology_contract::VariantPayload::Unit,
+                                None,
+                            ),
+                            ::boxology_contract::VariantDescriptor::new(
+                                "Detached",
+                                ::boxology_contract::VariantPayload::Unit,
+                                None,
+                            ),
+                            ::boxology_contract::VariantDescriptor::new(
+                                "Failed",
+                                ::boxology_contract::VariantPayload::Unit,
+                                None,
+                            ),
+                        ])
+                        .expect("generated imported enum descriptor is valid"),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
+                    "native_channel_json",
+                    ::boxology_contract::TypeDescriptor::string(),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
+                    "published_sequence",
+                    ::boxology_contract::TypeDescriptor::u64(),
+                    None,
+                ),
+            ])
+            .expect("generated imported struct descriptor is valid")
+            .conform(::boxology_contract::DecodeRole::ConsumerOutput, output)
+            .map_err(|error| {
+                ::boxology_contract::ErasedCallError::InvalidResponse(
+                    conversion_detail("output_decode", error),
+                )
+            })?;
+        <::boxology_import_native_channel::ChannelBinding as ::boxology_contract::ContractType>::decode(
+                &output,
+            )
+            .map_err(|error| {
+                ::boxology_contract::ErasedCallError::InvalidResponse(
+                    conversion_detail("output_decode", error),
+                )
+            })
+    }
+    pub async fn find_binding(
+        &self,
+        context: ::boxology_contract::CallContext,
+        input: ::boxology_import_native_channel::LocateBindingRequest,
+    ) -> Result<
+        ::boxology_import_native_channel::ChannelBinding,
+        ::boxology_contract::ErasedCallError,
+    > {
+        let capability = ::boxology_contract::CapabilityId::new(
+            ::boxology_contract::BoxId::new("native-channel")
+                .expect("generated import package id is valid"),
+            ::boxology_contract::CapabilityName::new("find_binding")
+                .expect("generated import capability name is valid"),
+        );
+        let input = input
+            .encode()
+            .map_err(|error| {
+                ::boxology_contract::ErasedCallError::ContractViolation(
+                    conversion_detail("input_encode", error),
+                )
+            })?;
+        let output = self.handle.call(&capability, context, input).await?;
+        let output = ::boxology_contract::TypeDescriptor::structure([
+                ::boxology_contract::FieldDescriptor::new(
+                    "binding_id",
+                    ::boxology_contract::TypeDescriptor::string(),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
+                    "channel_id",
+                    ::boxology_contract::TypeDescriptor::string(),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
+                    "adapter_id",
+                    ::boxology_contract::TypeDescriptor::string(),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
+                    "session_id",
+                    ::boxology_contract::TypeDescriptor::string(),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
+                    "lifecycle",
+                    ::boxology_contract::TypeDescriptor::enumeration([
+                            ::boxology_contract::VariantDescriptor::new(
+                                "Binding",
+                                ::boxology_contract::VariantPayload::Unit,
+                                None,
+                            ),
+                            ::boxology_contract::VariantDescriptor::new(
+                                "Attached",
+                                ::boxology_contract::VariantPayload::Unit,
+                                None,
+                            ),
+                            ::boxology_contract::VariantDescriptor::new(
+                                "Replaying",
+                                ::boxology_contract::VariantPayload::Unit,
+                                None,
+                            ),
+                            ::boxology_contract::VariantDescriptor::new(
+                                "Detached",
+                                ::boxology_contract::VariantPayload::Unit,
+                                None,
+                            ),
+                            ::boxology_contract::VariantDescriptor::new(
+                                "Failed",
+                                ::boxology_contract::VariantPayload::Unit,
+                                None,
+                            ),
+                        ])
+                        .expect("generated imported enum descriptor is valid"),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
+                    "native_channel_json",
+                    ::boxology_contract::TypeDescriptor::string(),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
+                    "published_sequence",
+                    ::boxology_contract::TypeDescriptor::u64(),
+                    None,
+                ),
+            ])
+            .expect("generated imported struct descriptor is valid")
+            .conform(::boxology_contract::DecodeRole::ConsumerOutput, output)
+            .map_err(|error| {
+                ::boxology_contract::ErasedCallError::InvalidResponse(
+                    conversion_detail("output_decode", error),
+                )
+            })?;
+        <::boxology_import_native_channel::ChannelBinding as ::boxology_contract::ContractType>::decode(
                 &output,
             )
             .map_err(|error| {

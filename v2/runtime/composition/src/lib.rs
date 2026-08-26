@@ -1,14 +1,25 @@
-//! Thin assembly proof for the Crab v2 contract draft.
+//! Executable assembly for the Crab v2 contract graph.
 //!
-//! This crate deliberately contains no routing, auth or agent policy. Those decisions belong to
-//! the six boxes. The composition only proves that generated adapters form one coherent graph.
+//! Domain policy remains inside the six boxes. This composition loads deployment topology,
+//! restores durable channel routes and supervises the bounded trigger-lane workers.
 
 #![deny(missing_docs)]
 #![forbid(unsafe_code)]
 
+#[cfg(test)]
+extern crate agent_host_contract as boxology_generated_contract;
+
 use std::{path::Path, sync::Arc};
 
-use agent_host_implementation::{AgentHost, AgentHostError, generated as agent_host};
+mod config;
+mod configured;
+
+pub use config::*;
+pub use configured::*;
+
+use agent_host_implementation::{
+    AgentHost, AgentHostError, ConfiguredAgent, generated as agent_host,
+};
 use boxology_contract::ExposureLevel;
 use boxology_runtime::{
     AssemblyErrors, Composition, CompositionBuilder, test_support::StubTransport,
@@ -72,9 +83,11 @@ impl DraftRuntime {
     }
 }
 
-/// Failures while assembling the partially implemented v2 runtime.
+/// Failures while assembling and restoring the v2 runtime.
 #[derive(Debug)]
 pub enum RuntimeStartError {
+    /// Runtime topology configuration could not be loaded or resolved.
+    Configuration(RuntimeConfigError),
     /// The concrete ACP agent host could not start.
     AgentHost(AgentHostError),
     /// The concrete bridge-host state could not start.
@@ -89,6 +102,24 @@ pub enum RuntimeStartError {
     TurnRouter(TurnRouterError),
     /// The concrete trigger store could not start.
     TriggerInbox(TriggerInboxError),
+    /// Session metadata could not be encoded.
+    SessionMetadata(serde_json::Error),
+    /// The configured ACP session could not be opened.
+    OpenSession(boxology_contract::CallError<agent_host_contract::AgentHostError>),
+    /// A persisted route could not be resolved.
+    ResolveRoute(boxology_contract::CallError<turn_router_contract::TurnRouterError>),
+    /// A persisted native binding could not be inspected.
+    InspectBinding(boxology_contract::CallError<native_channel_contract::NativeChannelError>),
+    /// A crash-orphaned native binding could not be located.
+    FindBinding(boxology_contract::CallError<native_channel_contract::NativeChannelError>),
+    /// A configured native binding could not be created.
+    BindChannel(boxology_contract::CallError<native_channel_contract::NativeChannelError>),
+    /// A persisted native binding could not receive its fresh ACP session.
+    ReplaceSession(boxology_contract::CallError<native_channel_contract::NativeChannelError>),
+    /// A stale native binding could not be detached.
+    UnbindChannel(boxology_contract::CallError<native_channel_contract::NativeChannelError>),
+    /// A durable channel route could not be registered.
+    PutRoute(boxology_contract::CallError<turn_router_contract::TurnRouterError>),
     /// The durable state directory could not be created.
     StateDirectory(std::io::Error),
     /// Boxology rejected the composition graph.
@@ -98,6 +129,12 @@ pub enum RuntimeStartError {
 impl From<AssemblyErrors> for RuntimeStartError {
     fn from(error: AssemblyErrors) -> Self {
         Self::Assembly(error)
+    }
+}
+
+impl From<RuntimeConfigError> for RuntimeStartError {
+    fn from(error: RuntimeConfigError) -> Self {
+        Self::Configuration(error)
     }
 }
 
@@ -149,7 +186,13 @@ pub fn start_draft_with_trigger_store(
 pub fn start_draft_with_state_directory(
     path: impl AsRef<Path>,
 ) -> Result<DraftRuntime, RuntimeStartError> {
-    let path = path.as_ref();
+    start_runtime_with_state_directory(path.as_ref(), Vec::new())
+}
+
+fn start_runtime_with_state_directory(
+    path: &Path,
+    agents: Vec<ConfiguredAgent>,
+) -> Result<DraftRuntime, RuntimeStartError> {
     std::fs::create_dir_all(path).map_err(RuntimeStartError::StateDirectory)?;
     #[cfg(unix)]
     {
@@ -158,7 +201,7 @@ pub fn start_draft_with_state_directory(
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
             .map_err(RuntimeStartError::StateDirectory)?;
     }
-    let agent_host = AgentHost::open(path.join("agent-host.sqlite"), Vec::new())
+    let agent_host = AgentHost::open(path.join("agent-host.sqlite"), agents)
         .map_err(RuntimeStartError::AgentHost)?;
     let bridge_host = BridgeHostState::open(path.join("bridge-host.sqlite"))
         .map_err(RuntimeStartError::BridgeHost)?;

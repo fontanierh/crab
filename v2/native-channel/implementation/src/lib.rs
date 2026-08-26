@@ -367,6 +367,27 @@ impl NativeChannel {
         })
     }
 
+    pub async fn inspect_binding(
+        &self,
+        context: CallContext,
+        request: BindingReference,
+    ) -> Result<ChannelBinding, NativeChannelError> {
+        let _ = context;
+        self.store.binding(&request.binding_id)
+    }
+
+    pub async fn find_binding(
+        &self,
+        context: CallContext,
+        request: LocateBindingRequest,
+    ) -> Result<ChannelBinding, NativeChannelError> {
+        let _ = context;
+        if request.channel_id.trim().is_empty() || request.adapter_id.trim().is_empty() {
+            return Err(NativeChannelError::InvalidNativePayload);
+        }
+        self.store.find_binding(&request)
+    }
+
     pub async fn unbind_channel(
         &self,
         context: CallContext,
@@ -548,6 +569,8 @@ mod tests {
                 "replay_native_events",
                 "replace_session",
                 "channel_status",
+                "inspect_binding",
+                "find_binding",
                 "unbind_channel",
             ]
         );

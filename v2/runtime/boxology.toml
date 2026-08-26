@@ -1,7 +1,7 @@
 schema = 1
 id = "crab-v2-runtime"
 kind = "composition"
-owned = ["boxology.toml", "composition/**"]
+owned = ["boxology.toml", "composition/**", "runtime.example.json"]
 
 [quality]
 commands = ["cargo test -p crab-v2-runtime"]

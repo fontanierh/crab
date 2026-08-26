@@ -6,8 +6,8 @@ use uuid::Uuid;
 
 use crate::{
     AcceptedTurn, BindChannelRequest, ChannelBinding, ChannelInputMode, ChannelLifecycle,
-    ChannelReceipt, ChannelTurn, ChannelTurnDisposition, NativeChannelError, NativeChannelEvent,
-    PublishReceipt,
+    ChannelReceipt, ChannelTurn, ChannelTurnDisposition, LocateBindingRequest, NativeChannelError,
+    NativeChannelEvent, PublishReceipt,
 };
 
 const SCHEMA_VERSION: i64 = 1;
@@ -105,6 +105,24 @@ impl ChannelStore {
     pub(crate) fn binding(&self, binding_id: &str) -> Result<ChannelBinding, NativeChannelError> {
         let connection = self.lock()?;
         query_binding(&connection, binding_id)?.ok_or(NativeChannelError::UnknownBinding)
+    }
+
+    pub(crate) fn find_binding(
+        &self,
+        request: &LocateBindingRequest,
+    ) -> Result<ChannelBinding, NativeChannelError> {
+        let connection = self.lock()?;
+        let binding_id = connection
+            .query_row(
+                "SELECT binding_id FROM bindings
+                 WHERE channel_id = ?1 AND adapter_id = ?2 AND lifecycle != 'Detached'",
+                params![request.channel_id, request.adapter_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(storage_error)?
+            .ok_or(NativeChannelError::UnknownBinding)?;
+        query_binding(&connection, &binding_id)?.ok_or(NativeChannelError::UnknownBinding)
     }
 
     pub(crate) fn last_error(
@@ -660,7 +678,7 @@ mod tests {
     use rusqlite::Connection;
 
     use super::ChannelStore;
-    use crate::{BindChannelRequest, ChannelLifecycle, NativeChannelError};
+    use crate::{BindChannelRequest, ChannelLifecycle, LocateBindingRequest, NativeChannelError};
 
     fn request() -> BindChannelRequest {
         BindChannelRequest {
@@ -685,6 +703,15 @@ mod tests {
             .binding(&binding.binding_id)
             .expect("binding remains readable");
         assert_eq!(recovered.lifecycle, ChannelLifecycle::Failed);
+        assert_eq!(
+            restarted
+                .find_binding(&LocateBindingRequest {
+                    channel_id: "channel-1".into(),
+                    adapter_id: "native-ui".into(),
+                })
+                .expect("runtime can locate a crash-orphaned binding"),
+            recovered
+        );
         assert_eq!(
             restarted
                 .last_error(&binding.binding_id)

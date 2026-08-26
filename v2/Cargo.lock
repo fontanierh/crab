@@ -431,6 +431,7 @@ dependencies = [
  "bridge-host-implementation",
  "native-channel-contract",
  "native-channel-implementation",
+ "serde",
  "serde_json",
  "sub-agent-host-contract",
  "sub-agent-host-implementation",
