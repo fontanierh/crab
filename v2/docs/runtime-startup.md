@@ -80,6 +80,31 @@ cargo run -p crab-v2-runtime --bin crab-v2 -- \
   --state-dir /private/path/to/crab-v2-state
 ```
 
+### Codex preset
+
+[`runtime.codex.example.json`](../runtime/runtime.codex.example.json) pins the official Codex ACP
+adapter to `1.6.2` and verifies `mode=agent-full-access`, `model=gpt-5.6-sol`, and
+`reasoning_effort=high` before readiness. It attaches the same bridge and sub-agent tools as the
+Claude preset.
+
+The shell-free `crab-v2-codex-authority-probe` verifies the exact adapter, macOS sandbox state,
+home and temporary-directory writes, and OpenAI network reachability. The host still verifies the
+workspace and passwordless root independently. Codex owns authentication: the adapter can reuse
+its existing ChatGPT login; API-key deployments add `CODEX_API_KEY` or `OPENAI_API_KEY` to
+`environmentFrom` and the owner-private environment file.
+
+Codex `1.6.2` advertises `_session/steering`, but an idle race starts a new turn outside the
+request lifecycle. Crab therefore leaves that extension disabled for this preset: Queue remains
+portable and active Steer fails truthfully instead of creating unowned work.
+
+![Codex full-authority preflight](codex-authority-flow.png)
+
+```sh
+cargo build --release -p agent-host-implementation \
+  --bin crab-v2-codex-authority-probe
+cp runtime/runtime.codex.example.json runtime/runtime.json
+```
+
 ### Clean-machine bundle
 
 For deployment, use the [verified runtime bundle](runtime-bundle.md) instead of rebuilding and
