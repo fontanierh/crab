@@ -19,8 +19,9 @@ use agent_client_protocol::{
             AgentCapabilities, AuthMethod, AuthMethodAgent, AuthenticateRequest,
             AuthenticateResponse, CancelNotification, Implementation, InitializeRequest,
             InitializeResponse, LoadSessionRequest, LoadSessionResponse, NewSessionRequest,
-            NewSessionResponse, PromptRequest, PromptResponse, StopReason,
+            NewSessionResponse, PromptRequest, PromptResponse, SessionNotification, StopReason,
         },
+        v2::UpdateSessionNotification,
     },
 };
 use channel_gateway_contract::AttachChannelRequest;
@@ -550,23 +551,21 @@ async fn process_event(
     connection: &ConnectionTo<Client>,
     event: &NativeChannelEvent,
 ) -> Result<(), ()> {
-    let Ok(mut native) = serde_json::from_str::<Value>(&event.native_event_json) else {
+    let Ok(native) = serde_json::from_str::<Value>(&event.native_event_json) else {
         return Ok(());
     };
     if matches!(event.direction, Some(NativeEventDirection::AgentToClient))
         && native.get("method").and_then(Value::as_str) == Some("session/update")
+        && let Some(params) = native.get("params").and_then(Value::as_object)
     {
-        let params = native
-            .get_mut("params")
-            .and_then(Value::as_object_mut)
-            .ok_or(())?;
-        params.insert(
-            "sessionId".into(),
-            Value::String(session.facade_session_id.clone()),
-        );
-        connection
-            .send_notification(UntypedMessage::new("session/update", params).map_err(|_| ())?)
-            .map_err(|_| ())?;
+        for notification in project_session_update_to_v1(params, &session.facade_session_id) {
+            let Value::Object(params) = serde_json::to_value(notification).map_err(|_| ())? else {
+                return Err(());
+            };
+            connection
+                .send_notification(UntypedMessage::new("session/update", &params).map_err(|_| ())?)
+                .map_err(|_| ())?;
+        }
     }
     if let Some(run_id) = event.run_id.clone() {
         let completion = if matches!(event.kind, NativeEventKind::RunFinished) {
@@ -587,6 +586,27 @@ async fn process_event(
         }
     }
     Ok(())
+}
+
+fn project_session_update_to_v1(
+    params: &Map<String, Value>,
+    facade_session_id: &str,
+) -> Vec<SessionNotification> {
+    let mut params = params.clone();
+    params.insert(
+        "sessionId".into(),
+        Value::String(facade_session_id.to_owned()),
+    );
+    let value = Value::Object(params);
+
+    if let Ok(notification) = serde_json::from_value::<SessionNotification>(value.clone()) {
+        return vec![notification];
+    }
+
+    let Ok(notification) = serde_json::from_value::<UpdateSessionNotification>(value) else {
+        return Vec::new();
+    };
+    Vec::<SessionNotification>::try_from(notification).unwrap_or_default()
 }
 
 fn stop_reason(message: &Value) -> Option<StopReason> {
@@ -644,10 +664,12 @@ fn stable_internal_error() -> agent_client_protocol::Error {
 mod tests {
     use std::path::{Path, PathBuf};
 
-    use agent_client_protocol::schema::v1::StopReason;
+    use agent_client_protocol::schema::v1::{SessionNotification, SessionUpdate, StopReason};
     use serde_json::json;
 
-    use super::{input_mode, stop_reason, supported_workspace, turn_id};
+    use super::{
+        input_mode, project_session_update_to_v1, stop_reason, supported_workspace, turn_id,
+    };
     use native_channel_contract::ChannelInputMode;
 
     #[test]
@@ -693,5 +715,44 @@ mod tests {
             0,
         ));
         assert!(!supported_workspace(Path::new("relative"), &[], 0));
+    }
+
+    #[test]
+    fn v2_only_lifecycle_updates_do_not_escape_the_v1_facade() {
+        let state = json!({
+            "sessionId": "physical-session",
+            "update": {
+                "sessionUpdate": "state_update",
+                "state": "running"
+            }
+        });
+        let message = json!({
+            "sessionId": "physical-session",
+            "update": {
+                "sessionUpdate": "agent_message_chunk",
+                "messageId": "message-1",
+                "content": {"type": "text", "text": "still connected"}
+            }
+        });
+
+        let projected = [state, message]
+            .iter()
+            .flat_map(|params| {
+                project_session_update_to_v1(
+                    params.as_object().expect("notification params"),
+                    "facade-session",
+                )
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(projected.len(), 1);
+        assert_eq!(projected[0].session_id.to_string(), "facade-session");
+        assert!(matches!(
+            projected[0].update,
+            SessionUpdate::AgentMessageChunk(_)
+        ));
+        let encoded = serde_json::to_value(&projected[0]).expect("v1 notification JSON");
+        serde_json::from_value::<SessionNotification>(encoded)
+            .expect("strict v1 client accepts projected update");
     }
 }

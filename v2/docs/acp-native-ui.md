@@ -38,7 +38,7 @@ The compatibility point is `fontanierh/t3code@82f517c`.
 | `session/prompt` in queue mode | `accept_turn(Queue)` |
 | `session/prompt` in steer mode | `accept_turn(Steer)` |
 | `session/cancel` | `interrupt_and_drain` |
-| `session/update` | Lossless ordered native-channel replay with facade session IDs |
+| `session/update` | Ordered replay, validated or projected into ACP v1 with facade session IDs |
 
 T3 launches:
 
@@ -59,6 +59,11 @@ Queue and steer must be separate UI actions or an explicit composer mode. Interr
 separate action. The proxy may rewrite transport-local request and session IDs, but it must retain
 every native agent update needed to render thoughts, plans, tools, terminals, diffs, usage and
 compaction.
+
+The native-channel journal remains the lossless source of truth. On the ACP v1 stdio connection,
+the facade forwards validated v1 updates and uses ACP's explicit conversion layer for representable
+v2 updates. V2-only lifecycle and terminal variants stay in the journal instead of being emitted as
+invalid v1 notifications; foreground completion is returned by the v1 `session/prompt` response.
 
 Crab owns the underlying agent and its tool authority. The facade rejects client-supplied MCP
 servers, the T3 provider sends `mcpServers: []`, and T3's per-thread MCP bearer credential never
