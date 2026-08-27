@@ -1,7 +1,7 @@
 %%{init: {"theme": "base", "themeVariables": {"fontFamily": "ui-sans-serif, system-ui, sans-serif", "primaryTextColor": "#172033", "lineColor": "#64748b", "edgeLabelBackground": "#ffffff"}, "flowchart": {"curve": "basis", "nodeSpacing": 42, "rankSpacing": 54}}}%%
 flowchart LR
     T3["T3 Code<br/>ACP v1 client"]
-    FACADE["crab-v2-acp-channel<br/>attach only · never owns agent"]
+    FACADE["crab-v2-acp-channel<br/>attach · ACP v2→v1 projection"]
     IPC["owner-only local IPC<br/>token stays on host"]
     CHANNEL["durable native channel<br/>binding · ordered event log"]
     AGENT["Crab-owned ACP agent<br/>single long-running session"]
@@ -13,7 +13,7 @@ flowchart LR
     FACADE -->|"accept_turn"| IPC
     AGENT -->|"complete native ACP stream"| CHANNEL
     CHANNEL -->|"replay"| FACADE
-    FACADE -->|"session/update + stop reason"| T3
+    FACADE -->|"valid ACP v1 updates + stop reason"| T3
     T3 -->|"session/cancel"| FACADE
     FACADE -->|"interrupt_and_drain"| IPC
     T3 -. "stdio disconnect: session stays live" .-> AGENT
