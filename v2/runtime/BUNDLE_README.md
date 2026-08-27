@@ -1,9 +1,9 @@
 # Crab v2 runtime bundle
 
 This directory is a verified, platform-specific Crab v2 release. It includes the production Rust
-binaries, the locked Claude ACP adapter, and the first-party WhatsApp bridge with its production
-dependencies. Building requires Rust, npm, and the network; running does not install or fetch
-anything.
+binaries, locked Claude and Codex ACP adapters, and the first-party WhatsApp bridge with their
+production dependencies. Building requires Rust, npm, and the network; running does not install or
+fetch anything.
 
 ## Verify
 
@@ -26,13 +26,20 @@ python3 libexec/v2_bundle.py deploy . \
   --workspace /absolute/path/to/agent-workspace \
   --environment-file ~/.crab-secrets/crab.env
 
+# Or select Codex on first deployment (Claude is the default):
+python3 libexec/v2_bundle.py deploy . \
+  --workspace /absolute/path/to/agent-workspace \
+  --agent codex
+
 # Later, from a newly verified bundle:
 python3 libexec/v2_bundle.py deploy .
 ```
 
-The optional environment file must be an owner-only regular dotenv file. Only names declared by
-the runtime config are captured; the Claude preset requires `CLAUDE_CODE_OAUTH_TOKEN`. Later
-updates preserve already captured credentials when the file is omitted.
+`--agent` is valid only on first deployment; updates preserve the durable config. The optional
+environment file must be an owner-only regular dotenv file. Only names declared by the selected
+runtime config are captured. Claude requires `CLAUDE_CODE_OAUTH_TOKEN`; Codex reuses its user-owned
+ChatGPT authentication. Later updates preserve already captured environment values when the file
+is omitted.
 
 Deployment copies the bundle into an immutable release under `~/.crab-v2`, keeps config, state,
 logs and credentials outside releases, and owns the single `com.crab.v2.runtime` user LaunchAgent.

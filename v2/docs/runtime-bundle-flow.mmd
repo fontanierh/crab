@@ -1,9 +1,9 @@
 flowchart LR
     subgraph SOURCE["Reviewed source"]
         CARGO["Cargo.lock"]
-        NPM["2 package-lock.json files"]
-        CONFIG["Bundle runtime preset"]
-        ALLOW["8-binary production allowlist"]
+        NPM["3 package-lock.json files"]
+        CONFIG["Claude + Codex<br/>bundle presets"]
+        ALLOW["9-binary production allowlist"]
     end
 
     BUILD["make v2-bundle"]
@@ -19,13 +19,13 @@ flowchart LR
 
     STAGE --> MANIFEST["SHA-256 manifest\nsource + platform + every entry"]
     MANIFEST --> VERIFY["Strict verifier\nmissing / changed / extra / escaping = fail"]
-    VERIFY --> SMOKE["CLI + Claude + WhatsApp smoke tests"]
+    VERIFY --> SMOKE["CLI + both agents<br/>+ WhatsApp smoke tests"]
     SMOKE --> ATOMIC["Atomic publish"]
 
     ATOMIC --> BUNDLE["Offline runtime bundle"]
     subgraph CONTENTS["Shipped closure"]
-        BIN["bin/\n8 production binaries"]
-        AGENT["agents/claude/\nlocked ACP adapter"]
+        BIN["bin/\n9 production binaries"]
+        AGENT["agents/{claude,codex}/\nlocked ACP adapters"]
         BRIDGE["bridges/whatsapp/\nlocked first-party bridge"]
         CFG["config/ + verifier"]
     end
