@@ -360,6 +360,43 @@ async fn read_private(path: &Path, maximum: usize) -> Result<Vec<u8>, ContentSto
     Ok(bytes)
 }
 
+pub(crate) async fn read_import_source(path: &Path) -> Result<Vec<u8>, ContentStoreError> {
+    if !path.is_absolute() {
+        return Err(ContentStoreError::InvalidContent);
+    }
+    let path_metadata = tokio::fs::symlink_metadata(path)
+        .await
+        .map_err(|_| ContentStoreError::Unavailable)?;
+    if !path_metadata.is_file() || path_metadata.file_type().is_symlink() {
+        return Err(ContentStoreError::InvalidContent);
+    }
+    let file = tokio::fs::File::open(path)
+        .await
+        .map_err(|_| ContentStoreError::Unavailable)?;
+    let before = file
+        .metadata()
+        .await
+        .map_err(|_| ContentStoreError::Unavailable)?;
+    if !before.is_file() || before.len() == 0 || before.len() > MAX_CONTENT_BYTES as u64 {
+        return Err(ContentStoreError::InvalidContent);
+    }
+    let mut bytes = Vec::new();
+    file.take((MAX_CONTENT_BYTES + 1) as u64)
+        .read_to_end(&mut bytes)
+        .await
+        .map_err(|_| ContentStoreError::Unavailable)?;
+    let after = tokio::fs::metadata(path)
+        .await
+        .map_err(|_| ContentStoreError::Unavailable)?;
+    if bytes.len() as u64 != before.len()
+        || after.len() != before.len()
+        || before.modified().ok() != after.modified().ok()
+    {
+        return Err(ContentStoreError::InvalidContent);
+    }
+    Ok(bytes)
+}
+
 async fn write_private(root: &Path, path: &Path, bytes: &[u8]) -> Result<(), ContentStoreError> {
     let temporary = root.join(format!(".content-{}.tmp", Uuid::new_v4()));
     let mut options = tokio::fs::OpenOptions::new();
@@ -397,7 +434,10 @@ async fn write_private(root: &Path, path: &Path, bytes: &[u8]) -> Result<(), Con
 
 #[cfg(test)]
 mod tests {
-    use super::{ContentStore, ContentUpload, FileContentStore, MAX_CONTENT_BYTES};
+    use super::{
+        ContentStore, ContentStoreError, ContentUpload, FileContentStore, MAX_CONTENT_BYTES,
+        read_import_source,
+    };
 
     fn upload(bytes: &[u8]) -> ContentUpload {
         ContentUpload {
@@ -471,6 +511,47 @@ mod tests {
                 .await
                 .is_err()
         );
+    }
+
+    #[tokio::test]
+    async fn import_source_is_absolute_regular_bounded_and_stable() {
+        let directory = tempfile::tempdir().expect("temporary source directory");
+        let source = directory.path().join("source.bin");
+        std::fs::write(&source, b"agent content").expect("source writes");
+        assert_eq!(
+            read_import_source(&source).await.expect("source reads"),
+            b"agent content"
+        );
+        assert_eq!(
+            read_import_source(std::path::Path::new("relative.bin")).await,
+            Err(ContentStoreError::InvalidContent)
+        );
+
+        let empty = directory.path().join("empty.bin");
+        std::fs::write(&empty, []).expect("empty source writes");
+        assert_eq!(
+            read_import_source(&empty).await,
+            Err(ContentStoreError::InvalidContent)
+        );
+
+        let oversized = directory.path().join("oversized.bin");
+        let file = std::fs::File::create(&oversized).expect("oversized source creates");
+        file.set_len((MAX_CONTENT_BYTES + 1) as u64)
+            .expect("oversized source grows");
+        assert_eq!(
+            read_import_source(&oversized).await,
+            Err(ContentStoreError::InvalidContent)
+        );
+
+        #[cfg(unix)]
+        {
+            let link = directory.path().join("source-link.bin");
+            std::os::unix::fs::symlink(&source, &link).expect("source symlink creates");
+            assert_eq!(
+                read_import_source(&link).await,
+                Err(ContentStoreError::InvalidContent)
+            );
+        }
     }
 
     #[tokio::test]

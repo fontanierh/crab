@@ -18,8 +18,9 @@ use boxology_contract::{
 use bridge_host_contract::{
     AuthenticationChallenge, BeginAuthenticationRequest, BridgeCatalog, BridgeHostHandle,
     BridgeOutbound, BridgeReceipt, BridgeRecord, BridgeReference, BridgeSpec, BridgeStatus,
-    CredentialStatus, DeliveryReceipt, DeliveryReference, ListBridgesRequest,
-    ReconcileBridgeRequest, ReplaceBridgeRequest, SubmitAuthenticationRequest,
+    CredentialStatus, DeliveryReceipt, DeliveryReference, ImportBridgeContentRequest,
+    ImportedBridgeContent, ListBridgesRequest, ReconcileBridgeRequest, ReplaceBridgeRequest,
+    SubmitAuthenticationRequest,
 };
 use channel_gateway_contract::{AttachChannelRequest, ChannelAttachment, ChannelGatewayHandle};
 use native_channel_contract::{
@@ -63,6 +64,7 @@ const BEGIN_AUTHENTICATION: &str = "bridge-host.begin_authentication";
 const SUBMIT_AUTHENTICATION: &str = "bridge-host.submit_authentication";
 const VALIDATE_CREDENTIALS: &str = "bridge-host.validate_credentials";
 const INVALIDATE_CREDENTIALS: &str = "bridge-host.invalidate_credentials";
+const IMPORT_BRIDGE_CONTENT: &str = "bridge-host.import_content";
 const DELIVER_BRIDGE_MESSAGE: &str = "bridge-host.deliver_message";
 const BRIDGE_DELIVERY_STATUS: &str = "bridge-host.delivery_status";
 const BRIDGE_STATUS: &str = "bridge-host.bridge_status";
@@ -386,6 +388,19 @@ impl ChannelIpcClient {
     ) -> Result<BridgeReceipt, ChannelIpcClientError> {
         self.invoke(
             INVALIDATE_CREDENTIALS,
+            bridge_host_contract::contract_descriptor(),
+            request,
+        )
+        .await
+    }
+
+    /// Copy one bounded local file into Crab-owned content for a selected bridge delivery.
+    pub async fn import_bridge_content(
+        &self,
+        request: ImportBridgeContentRequest,
+    ) -> Result<ImportedBridgeContent, ChannelIpcClientError> {
+        self.invoke(
+            IMPORT_BRIDGE_CONTENT,
             bridge_host_contract::contract_descriptor(),
             request,
         )
@@ -977,6 +992,14 @@ async fn dispatch(request: WireRequest, capabilities: IpcCapabilities) -> WireOu
                 &request.input,
                 INVALIDATE_CREDENTIALS,
                 |input| bridge_host.invalidate_credentials(call_context(), input),
+            )
+            .await
+        }
+        IMPORT_BRIDGE_CONTENT => {
+            invoke_bridge::<ImportBridgeContentRequest, ImportedBridgeContent, _, _>(
+                &request.input,
+                IMPORT_BRIDGE_CONTENT,
+                |input| bridge_host.import_content(call_context(), input),
             )
             .await
         }

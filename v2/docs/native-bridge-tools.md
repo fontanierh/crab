@@ -11,7 +11,7 @@ crab-v2-bridge-mcp
 ├── package        register · replace · list
 ├── lifecycle      reconcile · status · suspend · stop
 ├── authentication begin · submit · validate · invalidate
-└── selected output deliver · delivery status
+└── selected output import local content · deliver · delivery status
 ```
 
 Registration is strict and secret-free: executable and working-directory paths are absolute,
@@ -26,3 +26,8 @@ credential exists. Active validation proves the service credential still works.
 `deliver_bridge_message` is intentional external communication, not channel mirroring. Its stable
 message/idempotency key makes retries safe, and `bridge_delivery_status` reads the durable result.
 The native ACP event stream remains exclusive to channels.
+
+`import_bridge_content` accepts one absolute regular file, stable import ID, media type and optional
+name. Crab rejects relative paths, symlinks, empty/oversized/changing files, copies at most 8 MiB
+into its private content store, and returns the exact bridge-bound attachment object to pass to
+`deliver_bridge_message`. Importing alone never communicates externally.

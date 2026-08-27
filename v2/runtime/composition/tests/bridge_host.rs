@@ -9,7 +9,8 @@ use boxology_runtime::CompositionBuilder;
 use bridge_host_contract::{
     AuthenticationMethod, BeginAuthenticationRequest, BridgeInbound, BridgeIngressMode,
     BridgeLifecycle, BridgeOutbound, BridgeReference, BridgeSpec, DeliveryLifecycle,
-    ReconcileBridgeRequest, ReplaceBridgeRequest, SubmitAuthenticationRequest,
+    ImportBridgeContentRequest, ReconcileBridgeRequest, ReplaceBridgeRequest,
+    SubmitAuthenticationRequest,
 };
 use bridge_host_implementation::{
     BridgeCredentialReceipt, BridgeCredentialSink, BridgeCredentialUpdate, BridgeHostState,
@@ -404,12 +405,50 @@ async fn bridge_host_owns_auth_ingress_delivery_and_generations() {
         "ingress rejects handles the host did not issue"
     );
 
+    let source_directory = tempfile::tempdir().expect("content source directory");
+    let source = source_directory.path().join("agent diagram.jpg");
+    std::fs::write(&source, b"agent-created image").expect("content source writes");
+    let imported = bridge_handle
+        .import_content(
+            context(),
+            ImportBridgeContentRequest {
+                bridge_id: "whatsapp".into(),
+                import_id: "agent-diagram-v1".into(),
+                source_path: source.to_string_lossy().into_owned(),
+                media_type: "image/jpeg".into(),
+                name: Some("diagram.jpg".into()),
+            },
+        )
+        .await
+        .expect("agent content imports into the bridge store");
+    assert_eq!(imported.size_bytes, 19);
+    assert_eq!(
+        imported.sha256,
+        format!("{:x}", Sha256::digest(b"agent-created image"))
+    );
+    assert_eq!(
+        bridge_handle
+            .import_content(
+                context(),
+                ImportBridgeContentRequest {
+                    bridge_id: "whatsapp".into(),
+                    import_id: "agent-diagram-v1".into(),
+                    source_path: source.to_string_lossy().into_owned(),
+                    media_type: "image/jpeg".into(),
+                    name: Some("diagram.jpg".into()),
+                },
+            )
+            .await
+            .expect("exact import retry is idempotent"),
+        imported
+    );
+
     let outbound = BridgeOutbound {
         bridge_id: "whatsapp".into(),
         message_id: "message-1".into(),
         destination_json: r#"{"chat":"one"}"#.into(),
         message_json: r#"{"text":"reply"}"#.into(),
-        attachments: Vec::new(),
+        attachments: vec![imported.attachment],
         idempotency_key: "outbound-1".into(),
     };
     let delivered = bridge_handle
