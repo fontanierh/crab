@@ -2,21 +2,23 @@
 flowchart LR
     UI["Native agent UI<br/>full session view"]
     INGRESS["Bridge · scheduler · sub-agent<br/>automatic interrupting ingress"]
+    LANES["weak keyed operation lanes<br/>new: adapter/channel · live: binding"]
     CHANNEL["Native channel<br/>binding · cursor · input policy"]
     DB[("Channel SQLite<br/>turns · interruption receipts + reasons<br/>publication receipts")]
     IMPORT{"Boxology import<br/>agent-host contract"}
     AGENT["ACP agent host<br/>durable raw event journal"]
 
-    UI -->|"queue · steer"| CHANNEL
-    UI -->|"explicit interrupt"| CHANNEL
-    INGRESS -->|"atomic accept + cancel"| CHANNEL
+    UI -->|"queue · steer"| LANES
+    UI -->|"explicit interrupt"| LANES
+    INGRESS -->|"atomic accept + cancel"| LANES
+    LANES -->|"same identity serial · unrelated parallel"| CHANNEL
     CHANNEL <-->|"binding + dedupe"| DB
     CHANNEL --> IMPORT
     IMPORT -->|"prompt · cancel"| AGENT
     AGENT -->|"ordered ACP events"| IMPORT
     IMPORT --> CHANNEL
     CHANNEL -->|"replay every event"| UI
-    UI -->|"ordered publication ack"| CHANNEL
+    UI -->|"ordered publication ack"| LANES
 
     classDef ui fill:#f3e8ff,stroke:#9333ea,stroke-width:2px,color:#581c87;
     classDef external fill:#f8fafc,stroke:#64748b,stroke-width:1.5px,color:#172033;
@@ -26,6 +28,6 @@ flowchart LR
 
     class UI ui;
     class INGRESS external;
-    class CHANNEL,AGENT runtime;
+    class LANES,CHANNEL,AGENT runtime;
     class DB durable;
     class IMPORT boundary;
