@@ -22,11 +22,17 @@ The same command handles first installation and every update. Only the first run
 workspace argument:
 
 ```sh
-python3 libexec/v2_bundle.py deploy . --workspace /absolute/path/to/agent-workspace
+python3 libexec/v2_bundle.py deploy . \
+  --workspace /absolute/path/to/agent-workspace \
+  --environment-file ~/.crab-secrets/crab.env
 
 # Later, from a newly verified bundle:
 python3 libexec/v2_bundle.py deploy .
 ```
+
+The optional environment file must be an owner-only regular dotenv file. Only names declared by
+the runtime config are captured; the Claude preset requires `CLAUDE_CODE_OAUTH_TOKEN`. Later
+updates preserve already captured credentials when the file is omitted.
 
 Deployment copies the bundle into an immutable release under `~/.crab-v2`, keeps config, state,
 logs and credentials outside releases, and owns the single `com.crab.v2.runtime` user LaunchAgent.

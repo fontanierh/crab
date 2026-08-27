@@ -2,6 +2,8 @@ flowchart TB
     BUNDLE["New offline bundle"] --> VERIFY["Verify manifest<br/>clean commit + host platform"]
     VERIFY --> COPY["Copy + re-verify<br/>releases/&lt;commit-platform&gt;"]
     COPY --> PREFLIGHT["Preflight durable config<br/>Node 22+ + declared environment"]
+    ENV["Owner-private dotenv<br/>first install"] --> CAPTURE["Capture declared names only<br/>PATH + Claude token"]
+    CAPTURE --> PREFLIGHT
     PREFLIGHT --> STOP["Graceful launchd stop<br/>com.crab.v2.runtime"]
     STOP --> FLIP["Atomic current symlink flip"]
     FLIP --> START["Bootstrap one owner-only LaunchAgent"]
@@ -37,8 +39,8 @@ flowchart TB
     classDef durable fill:#f8fafc,stroke:#64748b,color:#111827;
     classDef success fill:#ecfdf5,stroke:#059669,color:#111827;
     classDef rollback fill:#fff7ed,stroke:#ea580c,color:#111827;
-    class BUNDLE input;
-    class VERIFY,COPY,PREFLIGHT,STOP,FLIP,START action;
+    class BUNDLE,ENV input;
+    class VERIFY,COPY,CAPTURE,PREFLIGHT,STOP,FLIP,START action;
     class CONFIG,STATE,LOGS,HASH,PID,IPC durable;
     class RECORD,LIVE success;
     class HALT,RESTORE,RESTART rollback;

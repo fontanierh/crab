@@ -642,6 +642,7 @@ mod tests {
             agent.arguments,
             ["--yes", "@agentclientprotocol/claude-agent-acp@0.70.0"]
         );
+        assert_eq!(agent.environment_from, ["PATH", "CLAUDE_CODE_OAUTH_TOKEN"]);
         assert_eq!(agent.protocol, super::ProtocolConfig::V1);
         assert_eq!(
             agent.session_options.get("mode").map(String::as_str),
@@ -649,7 +650,7 @@ mod tests {
         );
         assert_eq!(
             agent.session_options.get("model").map(String::as_str),
-            Some("opus[1m]")
+            Some("opus")
         );
         assert_eq!(
             agent.authority_probe.executable,
@@ -682,6 +683,7 @@ mod tests {
             runtime.join("../agents/claude/node_modules/.bin/claude-agent-acp")
         );
         assert_eq!(agent.arguments, Vec::<String>::new());
+        assert_eq!(agent.environment_from, ["PATH", "CLAUDE_CODE_OAUTH_TOKEN"]);
         assert_eq!(agent.protocol, super::ProtocolConfig::V1);
         assert_eq!(
             agent.session_options.get("mode").map(String::as_str),
@@ -689,7 +691,7 @@ mod tests {
         );
         assert_eq!(
             agent.session_options.get("model").map(String::as_str),
-            Some("opus[1m]")
+            Some("opus")
         );
         assert_eq!(
             agent.authority_probe.executable,

@@ -50,7 +50,8 @@ agent workspace; updates reuse the durable config:
 
 ```sh
 python3 /path/to/bundle/libexec/v2_bundle.py deploy /path/to/bundle \
-  --workspace /absolute/path/to/agent-workspace
+  --workspace /absolute/path/to/agent-workspace \
+  --environment-file ~/.crab-secrets/crab.env
 
 python3 /path/to/new-bundle/libexec/v2_bundle.py deploy /path/to/new-bundle
 ```
@@ -71,8 +72,11 @@ python3 /path/to/new-bundle/libexec/v2_bundle.py deploy /path/to/new-bundle
 ```
 
 The command verifies both source and copied bundles, requires a clean host-matching release,
-captures only config-declared environment names, and preserves unavailable values from the prior
-owner-only LaunchAgent. It then gracefully stops `com.crab.v2.runtime`, atomically flips `current`,
+captures only config-declared environment names from the ambient process and an optional
+owner-private environment file, and preserves unavailable values from the prior owner-only
+LaunchAgent. The first Claude deployment requires `CLAUDE_CODE_OAUTH_TOKEN`; later updates reuse
+the previously captured value when it is not supplied again. It then gracefully stops
+`com.crab.v2.runtime`, atomically flips `current`,
 and proves all three readiness facts: the manifest still verifies, launchd owns the only `crab-v2`
 PID, and the owner-authenticated bridge IPC responds. A failure at any point after cutover restores
 the prior symlink, plist, provenance and process, then verifies that rollback.
