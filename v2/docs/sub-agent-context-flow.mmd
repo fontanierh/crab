@@ -7,7 +7,9 @@ flowchart LR
     FORK{"same agent advertises<br/>session/fork?"}
     NATIVE["new supervised ACP process<br/>session/fork(parent native ID)"]
     FALLBACK{"portable snapshot<br/>explicitly allowed?"}
-    SNAPSHOT["replay visible message events<br/>through immutable cursor"]
+    SNAPSHOT["stream visible message events<br/>through immutable cursor"]
+    CAP{"complete bootstrap<br/>within 2 MiB?"}
+    OVERSIZE["InvalidContextBoundary"]
     FAIL["NativeForkUnavailable"]
     POLICY["verify child authority + policy<br/>attach child MCP identity"]
     TASK["accept initial task<br/>start realtime journals"]
@@ -19,7 +21,9 @@ flowchart LR
     HEAD -->|"no"| FALLBACK
     FORK -->|"yes"| NATIVE --> POLICY
     FORK -->|"no / rejected"| FALLBACK
-    FALLBACK -->|"yes"| SNAPSHOT --> FRESH
+    FALLBACK -->|"yes"| SNAPSHOT --> CAP
+    CAP -->|"yes"| FRESH
+    CAP -->|"no"| OVERSIZE
     FALLBACK -->|"no"| FAIL
     POLICY --> TASK
 
@@ -27,7 +31,7 @@ flowchart LR
     classDef runtime fill:#dbeafe,stroke:#2563eb,stroke-width:2px,color:#172554;
     classDef success fill:#dcfce7,stroke:#16a34a,stroke-width:2px,color:#14532d;
     classDef failure fill:#fee2e2,stroke:#dc2626,stroke-width:2px,color:#7f1d1d;
-    class MODE,HEAD,FORK,FALLBACK decision;
+    class MODE,HEAD,FORK,FALLBACK,CAP decision;
     class REQUEST,FRESH,NATIVE,SNAPSHOT,POLICY runtime;
     class TASK success;
-    class FAIL failure;
+    class FAIL,OVERSIZE failure;
