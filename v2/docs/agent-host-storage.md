@@ -47,6 +47,10 @@ database, which is also the durable operator/UI view.
   fork. Exhaustion fails immediately with `SessionCapacityUnavailable`. The actor lease owns its
   slot until actual task exit; exit then reaps only the matching handle generation, so delayed
   cleanup cannot remove a resumed replacement.
+- Authority verification admits at most 16 concurrent probes and fails fast with
+  `AuthorityUnavailable`. Before parsing, filesystem access or storage, the host caps identifiers
+  and turn keys at 256 bytes, absolute working directories at 4 KiB, session metadata at 64 KiB and
+  bootstrap prompts at 2 MiB.
 - ACP v1 has one foreground run; queued prompts drain FIFO after its prompt response. A configured
   `_session/steering` extension may contribute to that run only after `initialize` advertises it.
   Crab requests `promptRequired` on an idle race and starts the continuation itself through normal

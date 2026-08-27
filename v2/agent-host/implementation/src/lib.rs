@@ -32,6 +32,11 @@ use uuid::Uuid;
 const CONTROL_TIMEOUT: Duration = Duration::from_secs(30);
 const AUTHORITY_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_AGENT_SESSION_ACTORS: usize = 128;
+const MAX_CONCURRENT_AUTHORITY_PREFLIGHTS: usize = 16;
+pub(crate) const MAX_AGENT_IDENTIFIER_BYTES: usize = 256;
+const MAX_WORKING_DIRECTORY_BYTES: usize = 4 * 1024;
+const MAX_SESSION_METADATA_BYTES: usize = 64 * 1024;
+const MAX_BOOTSTRAP_PROMPT_BYTES: usize = 2 * 1024 * 1024;
 
 pub(crate) type Clock = Arc<dyn Fn() -> Result<u64, AgentHostError> + Send + Sync>;
 
@@ -42,6 +47,7 @@ pub struct AgentHost {
     authority: SharedAuthorityVerifier,
     sessions: Arc<RwLock<HashMap<String, SessionHandle>>>,
     session_slots: Arc<Semaphore>,
+    preflight_slots: Arc<Semaphore>,
     state_directory: Option<PathBuf>,
     clock: Clock,
     authority_timeout: Duration,
@@ -122,6 +128,7 @@ impl AgentHost {
             authority,
             sessions: Arc::new(RwLock::new(HashMap::new())),
             session_slots: Arc::new(Semaphore::new(MAX_AGENT_SESSION_ACTORS)),
+            preflight_slots: Arc::new(Semaphore::new(MAX_CONCURRENT_AUTHORITY_PREFLIGHTS)),
             state_directory,
             clock: Arc::new(system_time_ms),
             authority_timeout: AUTHORITY_TIMEOUT,
@@ -179,10 +186,14 @@ impl AgentHost {
         agent_id: &str,
         working_directory: &str,
     ) -> Result<PreflightReport, AgentHostError> {
+        if !valid_identifier(agent_id) || !valid_working_directory(working_directory) {
+            return Err(AgentHostError::PreflightFailed);
+        }
         let agent = self
             .agents
             .get(agent_id)
             .ok_or(AgentHostError::UnknownAgent)?;
+        let _preflight_slot = self.try_preflight_slot()?;
         let canonical = tokio::fs::canonicalize(working_directory)
             .await
             .map_err(|_| AgentHostError::PreflightFailed)?;
@@ -220,6 +231,13 @@ impl AgentHost {
             .clone()
             .try_acquire_owned()
             .map_err(|_| AgentHostError::SessionCapacityUnavailable)
+    }
+
+    fn try_preflight_slot(&self) -> Result<OwnedSemaphorePermit, AgentHostError> {
+        self.preflight_slots
+            .clone()
+            .try_acquire_owned()
+            .map_err(|_| AgentHostError::AuthorityUnavailable)
     }
 
     async fn register_live_session(
@@ -290,8 +308,13 @@ impl AgentHost {
         request: OpenSessionRequest,
     ) -> Result<AgentSession, AgentHostError> {
         let _ = context;
-        let metadata = serde_json::from_str::<Map<String, Value>>(&request.metadata_json)
-            .map_err(|_| AgentHostError::InvalidNativePayload)?;
+        if !valid_identifier(&request.agent_id)
+            || !valid_working_directory(&request.working_directory)
+            || !valid_bootstrap_prompt(request.bootstrap_prompt.as_deref())
+        {
+            return Err(AgentHostError::InvalidNativePayload);
+        }
+        let metadata = parse_session_metadata(&request.metadata_json)?;
         let agent = self
             .agents
             .get(&request.agent_id)
@@ -352,9 +375,11 @@ impl AgentHost {
         request: ResumeSessionRequest,
     ) -> Result<AgentSession, AgentHostError> {
         let _ = context;
+        if !valid_identifier(&request.session_id) {
+            return Err(AgentHostError::InvalidNativePayload);
+        }
         let recoverable = self.store.recoverable_session(&request.session_id)?;
-        let metadata = serde_json::from_str::<Map<String, Value>>(&recoverable.metadata_json)
-            .map_err(|_| AgentHostError::InvalidNativePayload)?;
+        let metadata = parse_session_metadata(&recoverable.metadata_json)?;
         let agent = self
             .agents
             .get(&recoverable.agent_id)
@@ -410,8 +435,13 @@ impl AgentHost {
         request: ForkSessionRequest,
     ) -> Result<AgentSession, AgentHostError> {
         let _ = context;
-        let metadata = serde_json::from_str::<Map<String, Value>>(&request.metadata_json)
-            .map_err(|_| AgentHostError::InvalidNativePayload)?;
+        if !valid_identifier(&request.parent_session_id)
+            || !valid_identifier(&request.agent_id)
+            || !valid_working_directory(&request.working_directory)
+        {
+            return Err(AgentHostError::InvalidNativePayload);
+        }
+        let metadata = parse_session_metadata(&request.metadata_json)?;
         let session_slot = self.try_session_slot()?;
         let parent_handle = self.live_session(&request.parent_session_id).await?;
         let _parent_control = parent_handle.control.lock().await;
@@ -612,6 +642,27 @@ fn spawn_session_reaper(
     })
 }
 
+fn valid_identifier(value: &str) -> bool {
+    !value.trim().is_empty() && value.len() <= MAX_AGENT_IDENTIFIER_BYTES
+}
+
+fn valid_working_directory(value: &str) -> bool {
+    !value.trim().is_empty()
+        && value.len() <= MAX_WORKING_DIRECTORY_BYTES
+        && Path::new(value).is_absolute()
+}
+
+fn valid_bootstrap_prompt(value: Option<&str>) -> bool {
+    value.is_none_or(|prompt| prompt.len() <= MAX_BOOTSTRAP_PROMPT_BYTES)
+}
+
+fn parse_session_metadata(metadata_json: &str) -> Result<Map<String, Value>, AgentHostError> {
+    if metadata_json.len() > MAX_SESSION_METADATA_BYTES {
+        return Err(AgentHostError::InvalidNativePayload);
+    }
+    serde_json::from_str(metadata_json).map_err(|_| AgentHostError::InvalidNativePayload)
+}
+
 async fn session_control<T>(
     handle: &SessionHandle,
     timeout: Duration,
@@ -667,9 +718,11 @@ mod tests {
 
     use super::{
         AgentHost, AgentHostError, AgentProtocol, AuthorityAttestation, AuthorityProbeConfig,
-        AuthorityVerifier, ConfiguredAgent, ListAgentSessionsRequest, MAX_AGENT_SESSION_ACTORS,
-        OpenSessionRequest, SessionCommand, SessionHandle, generated, session_control,
-        spawn_session_reaper,
+        AuthorityVerifier, ConfiguredAgent, ListAgentSessionsRequest, MAX_AGENT_IDENTIFIER_BYTES,
+        MAX_AGENT_SESSION_ACTORS, MAX_BOOTSTRAP_PROMPT_BYTES, MAX_CONCURRENT_AUTHORITY_PREFLIGHTS,
+        MAX_SESSION_METADATA_BYTES, MAX_WORKING_DIRECTORY_BYTES, OpenSessionRequest,
+        SessionCommand, SessionHandle, generated, parse_session_metadata, session_control,
+        spawn_session_reaper, valid_bootstrap_prompt, valid_identifier, valid_working_directory,
     };
     use tokio::sync::{Mutex, RwLock, mpsc, oneshot};
 
@@ -860,6 +913,50 @@ mod tests {
 
         slots.pop();
         assert!(host.try_session_slot().is_ok());
+    }
+
+    #[test]
+    fn authority_preflight_admission_is_hard_capped_and_released() {
+        let host = AgentHost::open_in_memory(Vec::new()).expect("empty host opens");
+        let mut slots = (0..MAX_CONCURRENT_AUTHORITY_PREFLIGHTS)
+            .map(|_| host.try_preflight_slot().expect("slot remains within cap"))
+            .collect::<Vec<_>>();
+        assert!(matches!(
+            host.try_preflight_slot(),
+            Err(AgentHostError::AuthorityUnavailable)
+        ));
+
+        slots.pop();
+        assert!(host.try_preflight_slot().is_ok());
+    }
+
+    #[test]
+    fn startup_identifiers_paths_and_payloads_are_bounded_before_use() {
+        assert!(valid_identifier("a"));
+        assert!(valid_identifier(&"a".repeat(MAX_AGENT_IDENTIFIER_BYTES)));
+        assert!(!valid_identifier(" "));
+        assert!(!valid_identifier(
+            &"a".repeat(MAX_AGENT_IDENTIFIER_BYTES + 1)
+        ));
+
+        assert!(valid_working_directory("/tmp/crab"));
+        assert!(!valid_working_directory("relative"));
+        assert!(!valid_working_directory(&format!(
+            "/{}",
+            "a".repeat(MAX_WORKING_DIRECTORY_BYTES)
+        )));
+
+        assert!(valid_bootstrap_prompt(Some(
+            &"x".repeat(MAX_BOOTSTRAP_PROMPT_BYTES)
+        )));
+        assert!(!valid_bootstrap_prompt(Some(
+            &"x".repeat(MAX_BOOTSTRAP_PROMPT_BYTES + 1)
+        )));
+        assert!(parse_session_metadata("{}").is_ok());
+        assert_eq!(
+            parse_session_metadata(&"x".repeat(MAX_SESSION_METADATA_BYTES + 1)),
+            Err(AgentHostError::InvalidNativePayload)
+        );
     }
 
     #[tokio::test]

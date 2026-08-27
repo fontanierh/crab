@@ -1,9 +1,19 @@
 %%{init: {"theme": "base", "themeVariables": {"fontFamily": "ui-sans-serif, system-ui, sans-serif", "primaryTextColor": "#172033", "lineColor": "#64748b", "edgeLabelBackground": "#ffffff"}, "flowchart": {"curve": "basis", "nodeSpacing": 42, "rankSpacing": 58}}}%%
 flowchart TB
-    REQUEST["open · resume · fork"] --> ADMIT{"Actor slot available?<br/>128 pending + live"}
+    REQUEST["open · resume · fork"] --> VALIDATE{"Bounded session ingress?<br/>IDs 256 B · path 4 KiB<br/>metadata 64 KiB · bootstrap 2 MiB"}
+    DIRECT["standalone preflight"] --> PREFLIGHT_INPUT{"Bounded preflight ingress?<br/>ID 256 B · path 4 KiB"}
+    VALIDATE -->|"no"| INVALID["Reject before parse / filesystem access"]
+    PREFLIGHT_INPUT -->|"no"| INVALID
+    VALIDATE -->|"yes"| ADMIT{"Actor slot available?<br/>128 pending + live"}
     ADMIT -->|"no"| FULL["SessionCapacityUnavailable<br/>fail immediately"]
-    ADMIT -->|"yes"| PREFLIGHT["Authority preflight + durable Starting state"]
-    PREFLIGHT --> SPAWN["Spawn ACP actor<br/>lease owns slot + exit signal"]
+    ADMIT -->|"yes"| PROBE{"Preflight slot available?<br/>16 concurrent probes"}
+    PREFLIGHT_INPUT -->|"yes"| PROBE
+    PROBE -->|"no"| BUSY["AuthorityUnavailable<br/>fail immediately"]
+    PROBE -->|"yes"| PREFLIGHT["Verify no sandbox · yolo · sudo"]
+    PREFLIGHT --> SESSION{"Session request?"}
+    SESSION -->|"no"| REPORT["Return verified preflight report"]
+    SESSION -->|"yes"| START["Commit durable Starting state"]
+    START --> SPAWN["Spawn ACP actor<br/>lease owns slot + exit signal"]
     SPAWN --> OPENED{"Negotiation opened?"}
     OPENED -->|"no"| EXIT["Actor exits<br/>lease releases slot"]
     OPENED -->|"yes"| REGISTER["Register handle<br/>session ID + generation"]
@@ -19,8 +29,8 @@ flowchart TB
     classDef reject fill:#ffe3e3,stroke:#c92a2a,color:#5c1b1b
     classDef cleanup fill:#f3f0ff,stroke:#7048e8,color:#2f1b69
 
-    class REQUEST request
-    class ADMIT,OPENED,REAP decision
-    class PREFLIGHT,SPAWN,REGISTER,LIVE runtime
-    class FULL reject
+    class REQUEST,DIRECT request
+    class VALIDATE,PREFLIGHT_INPUT,ADMIT,PROBE,SESSION,OPENED,REAP decision
+    class PREFLIGHT,REPORT,START,SPAWN,REGISTER,LIVE runtime
+    class INVALID,FULL,BUSY reject
     class EXIT,REMOVE,KEEP cleanup

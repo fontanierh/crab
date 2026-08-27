@@ -23,7 +23,8 @@
     {
       "deprecation": null,
       "docs": [
-        " Fail closed unless every mandatory authority probe succeeds in this working directory."
+        " Fail closed unless every mandatory authority probe succeeds in this working directory. The",
+        " host admits at most 16 concurrent authority preflights."
       ],
       "error": "AgentHostError",
       "id": "agent-host.preflight",
@@ -278,9 +279,9 @@
   "provenance": {
     "generator": "boxology-generator",
     "generator_version": "0.1.1",
-    "semantic_digest": "sha256:8898706001b7b1d2be07dc71d67947da0a26d56f8332d5921d6d427d4bcbdaf8"
+    "semantic_digest": "sha256:3aae15f64a4d312b08ef5ddec2655a96e6805cce21169abb709e0f45940020e0"
   },
-  "revision": "sha256:63cb45f413ae2a41f38e2ba35229bcb274d58ec5ad41bfa4221f61d9670fe7ff",
+  "revision": "sha256:1e1444b2417edd0e85db64323f8db54f76e3eddba0be9652e8e5c6537b902459",
   "schema_format": 1,
   "types": [
     {
@@ -555,13 +556,17 @@
       "fields": [
         {
           "deprecation": null,
-          "docs": [],
+          "docs": [
+            " Configured agent identifier, capped at 256 bytes."
+          ],
           "name": "agent_id",
           "type": "String"
         },
         {
           "deprecation": null,
-          "docs": [],
+          "docs": [
+            " Absolute host path, capped at 4 KiB before filesystem access."
+          ],
           "name": "working_directory",
           "type": "String"
         }
@@ -720,27 +725,34 @@
       "fields": [
         {
           "deprecation": null,
-          "docs": [],
+          "docs": [
+            " Configured agent identifier, capped at 256 bytes."
+          ],
           "name": "agent_id",
           "type": "String"
         },
         {
           "deprecation": null,
-          "docs": [],
+          "docs": [
+            " Absolute host path, capped at 4 KiB before filesystem access."
+          ],
           "name": "working_directory",
           "type": "String"
         },
         {
           "deprecation": null,
           "docs": [
-            " Crab may bootstrap identity/memory, but it does not own compaction or token arithmetic."
+            " Crab may bootstrap identity/memory up to 2 MiB, but it does not own compaction or token",
+            " arithmetic."
           ],
           "name": "bootstrap_prompt",
           "type": "Option<String>"
         },
         {
           "deprecation": null,
-          "docs": [],
+          "docs": [
+            " Non-secret JSON object capped at 64 KiB before parsing or durable storage."
+          ],
           "name": "metadata_json",
           "type": "String"
         }
@@ -757,7 +769,9 @@
       "fields": [
         {
           "deprecation": null,
-          "docs": [],
+          "docs": [
+            " Durable Crab session identifier, capped at 256 bytes."
+          ],
           "name": "session_id",
           "type": "String"
         }
@@ -774,7 +788,9 @@
       "fields": [
         {
           "deprecation": null,
-          "docs": [],
+          "docs": [
+            " Durable Crab session identifier, capped at 256 bytes."
+          ],
           "name": "parent_session_id",
           "type": "String"
         },
@@ -794,13 +810,17 @@
         },
         {
           "deprecation": null,
-          "docs": [],
+          "docs": [
+            " Absolute host path, capped at 4 KiB before filesystem access."
+          ],
           "name": "working_directory",
           "type": "String"
         },
         {
           "deprecation": null,
-          "docs": [],
+          "docs": [
+            " Non-secret JSON object capped at 64 KiB before parsing or durable storage."
+          ],
           "name": "metadata_json",
           "type": "String"
         }
@@ -893,7 +913,7 @@
         {
           "deprecation": null,
           "docs": [
-            " Stable caller key used to deduplicate a retried turn."
+            " Stable caller key used to deduplicate a retried turn, capped at 256 bytes."
           ],
           "name": "client_turn_id",
           "type": "String"
