@@ -32,7 +32,9 @@ runtime-state/
 
 - SQLite schema v1 uses WAL, foreign keys, full synchronous writes and fail-closed version checks.
 - Spawn and message retries use caller IDs plus canonical request fingerprints; changed retries are
-  rejected instead of silently reusing prior work.
+  rejected instead of silently reusing prior work. Spawns serialize by caller ID, so unrelated ACP
+  children can start concurrently while exact retries remain ordered. The keyed lock registry is
+  weak and pruned.
 - Initial tasks and parent-to-child native prompts are capped at 2 MiB before parsing or durable
   interaction storage. Generated child-to-parent prompts obey the same boundary.
 - Parent-to-child and child-to-parent sends support queue, steer and actor-serialized
@@ -46,10 +48,13 @@ runtime-state/
   interactions become failed so they can be retried with the same caller ID. Delivered
   interactions, the ordered event journal and the exact child ACP cursor remain unchanged.
 - Startup recovers configured parent sessions first, then reconciles each child within its durable
-  `crash_restart_limit`. Recovery accepts only the same Crab child ID, native ACP ID and agent; it
-  increments `restart_count` and restarts the event pump from the stored cursor.
+  `crash_restart_limit`. Recovery takes an exclusive barrier: it waits for active spawns and blocks
+  new ones until the durable candidate batch is reconciled. Recovery accepts only the same Crab
+  child ID, native ACP ID and agent; it increments `restart_count` and restarts the event pump from
+  the stored cursor.
 - Recovery never opens a replacement child, replays inherited/bootstrap context or resends the
   initial task. Disabled or exhausted budgets, unavailable parents/sessions, identity drift and
   hard failures remain inspectable as `Failed`. See the
-  [rendered recovery flow](sub-agent-recovery-flow.png) and
+  [rendered recovery flow](sub-agent-recovery-flow.png),
+  [rendered spawn concurrency](sub-agent-spawn-concurrency.png) and
   [rendered pump lifecycle](sub-agent-pump-lifecycle.png).

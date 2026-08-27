@@ -1,0 +1,25 @@
+flowchart TD
+    spawnA[Spawn client A] --> lockA[Weak identity lock A]
+    spawnB[Spawn client B] --> lockB[Weak identity lock B]
+    retryA[Retry client A] --> lockA
+
+    lockA --> readA[Recovery read permit]
+    lockB --> readB[Recovery read permit]
+    readA --> childA[Preflight + start child A]
+    readB --> childB[Preflight + start child B]
+
+    recovery[Startup recovery] --> write[Exclusive recovery permit]
+    childA --> releaseA[Release A]
+    childB --> releaseB[Release B]
+    releaseA --> write
+    releaseB --> write
+    write --> reconcile[Reconcile durable child batch]
+    reconcile --> resume[New spawns resume]
+
+    releaseA --> prune[Prune idle weak identity locks]
+    releaseB --> prune
+
+    classDef barrier fill:#fff4dc,stroke:#b26a00,color:#3a2600
+    classDef concurrent fill:#e9f7ef,stroke:#237a4b,color:#102a1c
+    class write,recovery,reconcile barrier
+    class spawnA,spawnB,retryA,lockA,lockB,readA,readB,childA,childB,releaseA,releaseB,resume,prune concurrent
