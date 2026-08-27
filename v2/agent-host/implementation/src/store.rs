@@ -53,24 +53,29 @@ impl AgentStore {
             _ => return Err(AgentHostError::StorageUnavailable),
         }
 
-        connection
-            .execute(
-                "UPDATE sessions
-                 SET lifecycle = 'Failed', active_run_id = NULL
-                 WHERE lifecycle IN ('Starting', 'Ready', 'Busy', 'Detaching', 'Stopping')",
-                [],
-            )
-            .map_err(storage_error)?;
-        connection
-            .execute(
-                "UPDATE prompts SET state = 'Failed' WHERE state IN ('Queued', 'Running')",
-                [],
-            )
-            .map_err(storage_error)?;
-
-        Ok(Self {
+        let store = Self {
             connection: Mutex::new(connection),
-        })
+        };
+        let interrupted_sessions = {
+            let connection = store.lock()?;
+            let mut statement = connection
+                .prepare(
+                    "SELECT session_id, updated_at_ms FROM sessions
+                     WHERE lifecycle IN ('Starting', 'Ready', 'Busy', 'Detaching', 'Stopping')",
+                )
+                .map_err(storage_error)?;
+            statement
+                .query_map([], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+                })
+                .map_err(storage_error)?
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .map_err(storage_error)?
+        };
+        for (session_id, updated_at_ms) in interrupted_sessions {
+            store.set_lifecycle(&session_id, &AgentLifecycle::Failed, db_u64(updated_at_ms)?)?;
+        }
+        Ok(store)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -425,23 +430,35 @@ impl AgentStore {
         state: &str,
         now_ms: u64,
     ) -> Result<(), AgentHostError> {
+        let outcome = match state {
+            "Completed" => "completed",
+            "Failed" => "failed",
+            _ => return Err(AgentHostError::StorageUnavailable),
+        };
         let mut connection = self.lock()?;
         let transaction = connection
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(storage_error)?;
-        transaction
+        let changed = transaction
             .execute(
                 "UPDATE prompts SET state = ?3 WHERE session_id = ?1 AND run_id = ?2",
                 params![session_id, run_id, state],
             )
             .map_err(storage_error)?;
-        transaction
+        if changed == 0 {
+            return Err(AgentHostError::UnknownRun);
+        }
+        ensure_run_finished_event(&transaction, session_id, run_id, outcome, now_ms)?;
+        let changed = transaction
             .execute(
                 "UPDATE sessions SET lifecycle = 'Ready', active_run_id = NULL, updated_at_ms = ?3
                  WHERE session_id = ?1 AND active_run_id = ?2",
                 params![session_id, run_id, db_i64(now_ms)?],
             )
             .map_err(storage_error)?;
+        if changed != 1 {
+            return Err(AgentHostError::UnknownRun);
+        }
         transaction.commit().map_err(storage_error)?;
         Ok(())
     }
@@ -487,8 +504,33 @@ impl AgentStore {
         lifecycle: &AgentLifecycle,
         now_ms: u64,
     ) -> Result<(), AgentHostError> {
-        let connection = self.lock()?;
-        let changed = connection
+        let mut connection = self.lock()?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(storage_error)?;
+        if matches!(
+            lifecycle,
+            AgentLifecycle::Detached | AgentLifecycle::Failed | AgentLifecycle::Stopped
+        ) {
+            let unfinished_runs = {
+                let mut statement = transaction
+                    .prepare(
+                        "SELECT DISTINCT run_id FROM prompts
+                         WHERE session_id = ?1 AND state IN ('Queued', 'Running')
+                         ORDER BY accepted_at_ms, run_id",
+                    )
+                    .map_err(storage_error)?;
+                statement
+                    .query_map(params![session_id], |row| row.get::<_, String>(0))
+                    .map_err(storage_error)?
+                    .collect::<rusqlite::Result<Vec<_>>>()
+                    .map_err(storage_error)?
+            };
+            for run_id in unfinished_runs {
+                ensure_run_finished_event(&transaction, session_id, &run_id, "failed", now_ms)?;
+            }
+        }
+        let changed = transaction
             .execute(
                 "UPDATE sessions SET lifecycle = ?2, active_run_id = CASE
                     WHEN ?2 IN ('Ready', 'Busy') THEN active_run_id ELSE NULL END,
@@ -503,7 +545,7 @@ impl AgentStore {
             lifecycle,
             AgentLifecycle::Detached | AgentLifecycle::Failed | AgentLifecycle::Stopped
         ) {
-            connection
+            transaction
                 .execute(
                     "UPDATE prompts SET state = 'Failed'
                      WHERE session_id = ?1 AND state IN ('Queued', 'Running')",
@@ -511,7 +553,7 @@ impl AgentStore {
                 )
                 .map_err(storage_error)?;
         }
-        Ok(())
+        transaction.commit().map_err(storage_error)
     }
 
     pub(crate) fn record_native_line(
@@ -838,6 +880,65 @@ fn authority(verified_at_ms: u64, evidence_json: String) -> AuthorityAttestation
         verified_at_ms,
         evidence_json,
     }
+}
+
+fn ensure_run_finished_event(
+    transaction: &Transaction<'_>,
+    session_id: &str,
+    run_id: &str,
+    outcome: &str,
+    now_ms: u64,
+) -> Result<(), AgentHostError> {
+    let (last_sequence, has_terminal_event) = transaction
+        .query_row(
+            "SELECT last_sequence, EXISTS(
+                SELECT 1 FROM events
+                WHERE session_id = ?1 AND run_id = ?2 AND kind = 'RunFinished'
+             )
+             FROM sessions WHERE session_id = ?1",
+            params![session_id, run_id],
+            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, bool>(1)?)),
+        )
+        .optional()
+        .map_err(storage_error)?
+        .ok_or(AgentHostError::UnknownSession)?;
+    if has_terminal_event {
+        return Ok(());
+    }
+    let sequence = last_sequence
+        .checked_add(1)
+        .ok_or(AgentHostError::StorageUnavailable)?;
+    let terminal_event = serde_json::to_string(&serde_json::json!({
+        "jsonrpc": "2.0",
+        "method": "crab/run_finished",
+        "params": {
+            "sessionId": session_id,
+            "runId": run_id,
+            "outcome": outcome,
+        },
+    }))
+    .map_err(|_| AgentHostError::StorageUnavailable)?;
+    transaction
+        .execute(
+            "INSERT INTO events (
+                session_id, sequence, run_id, observed_at_ms, kind, direction, native_event_json
+             ) VALUES (?1, ?2, ?3, ?4, 'RunFinished', 'AgentToClient', ?5)",
+            params![
+                session_id,
+                sequence,
+                run_id,
+                db_i64(now_ms)?,
+                terminal_event,
+            ],
+        )
+        .map_err(storage_error)?;
+    transaction
+        .execute(
+            "UPDATE sessions SET last_sequence = ?2, updated_at_ms = ?3 WHERE session_id = ?1",
+            params![session_id, sequence, db_i64(now_ms)?],
+        )
+        .map_err(storage_error)?;
+    Ok(())
 }
 
 fn classify_event(message: Option<&Value>) -> AcpEventKind {

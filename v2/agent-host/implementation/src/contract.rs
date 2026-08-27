@@ -209,6 +209,8 @@ boxology::contract! {
         pub direction: AcpEventDirection,
         /// The complete ACP JSON-RPC message. `crab/*` lifecycle notifications are the only
         /// Crab-authored extension; every native ACP message remains byte-for-byte intact.
+        /// `crab/run_finished` carries `sessionId`, `runId`, and a `completed` or `failed`
+        /// `outcome`, and appears only when ACP did not emit its own terminal event.
         pub native_event_json: String,
     }
 

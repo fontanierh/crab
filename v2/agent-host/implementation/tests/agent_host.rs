@@ -112,6 +112,133 @@ async fn open_fixture(
 }
 
 #[tokio::test]
+async fn prompt_errors_keep_the_native_error_and_emit_one_terminal_event() {
+    for protocol in [AgentProtocol::V1, AgentProtocol::V2] {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let host = AgentHost::open_with_authority_verifier(
+            directory.path().join("agent-host.sqlite"),
+            vec![configured_agent(protocol)],
+            Arc::new(FixtureAuthority),
+        )
+        .expect("host opens");
+        let session = open_fixture(&host, protocol, directory.path()).await;
+        let failed = host
+            .prompt(
+                context(),
+                prompt(
+                    &session.session_id,
+                    "prompt-error",
+                    AgentInputMode::Queue,
+                    "error",
+                ),
+            )
+            .await
+            .expect("the run is accepted before the ACP response arrives");
+        wait_for_lifecycle(&host, &session.session_id, AgentLifecycle::Ready).await;
+
+        let page = host
+            .read_events(
+                context(),
+                ReadEventsRequest {
+                    session_id: session.session_id.clone(),
+                    after_sequence: 0,
+                    limit: 1_000,
+                },
+            )
+            .await
+            .expect("failed run events remain readable");
+        let run_events = page
+            .events
+            .iter()
+            .filter(|event| event.run_id.as_deref() == Some(failed.run_id.as_str()))
+            .collect::<Vec<_>>();
+        let native_error = run_events
+            .iter()
+            .find(|event| {
+                serde_json::from_str::<Value>(&event.native_event_json)
+                    .ok()
+                    .and_then(|message| message.pointer("/error/code").cloned())
+                    == Some(serde_json::json!(-32001))
+            })
+            .expect("the native JSON-RPC error is preserved verbatim");
+        assert!(
+            native_error
+                .native_event_json
+                .contains("fixture prompt failed")
+        );
+        let terminal = run_events
+            .iter()
+            .filter(|event| event.kind == AcpEventKind::RunFinished)
+            .collect::<Vec<_>>();
+        assert_eq!(terminal.len(), 1, "every failed run has one terminal event");
+        assert!(terminal[0].sequence > native_error.sequence);
+        assert_eq!(terminal[0].direction, AcpEventDirection::AgentToClient);
+        let terminal_message: Value = serde_json::from_str(&terminal[0].native_event_json)
+            .expect("Crab terminal event is valid JSON-RPC");
+        assert_eq!(terminal_message["method"], "crab/run_finished");
+        assert_eq!(terminal_message["params"]["sessionId"], session.session_id);
+        assert_eq!(terminal_message["params"]["runId"], failed.run_id);
+        assert_eq!(terminal_message["params"]["outcome"], "failed");
+        assert_eq!(
+            host.session_status(
+                context(),
+                SessionReference {
+                    session_id: session.session_id.clone(),
+                },
+            )
+            .await
+            .expect("session status remains queryable")
+            .active_run_id,
+            None
+        );
+
+        let recovered = host
+            .prompt(
+                context(),
+                prompt(
+                    &session.session_id,
+                    "after-error",
+                    AgentInputMode::Queue,
+                    "recovered",
+                ),
+            )
+            .await
+            .expect("the same session accepts later work");
+        wait_for_lifecycle(&host, &session.session_id, AgentLifecycle::Ready).await;
+        let recovered_page = host
+            .read_events(
+                context(),
+                ReadEventsRequest {
+                    session_id: session.session_id.clone(),
+                    after_sequence: page.next_sequence,
+                    limit: 1_000,
+                },
+            )
+            .await
+            .expect("later native events are readable");
+        let recovered_terminals = recovered_page
+            .events
+            .iter()
+            .filter(|event| {
+                event.run_id.as_deref() == Some(recovered.run_id.as_str())
+                    && event.kind == AcpEventKind::RunFinished
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            recovered_terminals.len(),
+            1,
+            "native completion is not duplicated by the fallback"
+        );
+        assert!(
+            !recovered_terminals[0]
+                .native_event_json
+                .contains("crab/run_finished")
+        );
+        host.shutdown().await;
+    }
+}
+
+#[tokio::test]
 async fn required_session_options_fail_closed_for_both_acp_profiles() {
     for protocol in [AgentProtocol::V1, AgentProtocol::V2] {
         for failure in ["rewrite", "missing", "unsupported"] {
@@ -352,17 +479,18 @@ async fn failed_v1_and_v2_sessions_resume_native_identity_without_bootstrap_repl
         wait_for_event(&host, &session.session_id, "bootstrap-once").await;
         wait_for_lifecycle(&host, &session.session_id, AgentLifecycle::Ready).await;
 
-        host.prompt(
-            context(),
-            prompt(
-                &session.session_id,
-                "crash-turn",
-                AgentInputMode::Queue,
-                "crash",
-            ),
-        )
-        .await
-        .expect("crashing prompt is accepted first");
+        let crashed = host
+            .prompt(
+                context(),
+                prompt(
+                    &session.session_id,
+                    "crash-turn",
+                    AgentInputMode::Queue,
+                    "crash",
+                ),
+            )
+            .await
+            .expect("crashing prompt is accepted first");
         wait_for_lifecycle(&host, &session.session_id, AgentLifecycle::Failed).await;
         let failed_events = host
             .read_events(
@@ -376,6 +504,20 @@ async fn failed_v1_and_v2_sessions_resume_native_identity_without_bootstrap_repl
             .await
             .expect("failed session events remain readable");
         let failed_cursor = failed_events.next_sequence;
+        let crash_terminals = failed_events
+            .events
+            .iter()
+            .filter(|event| {
+                event.run_id.as_deref() == Some(crashed.run_id.as_str())
+                    && event.kind == AcpEventKind::RunFinished
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(crash_terminals.len(), 1);
+        assert!(
+            crash_terminals[0]
+                .native_event_json
+                .contains("crab/run_finished")
+        );
         drop(host);
 
         let resumed_host = AgentHost::open_with_authority_verifier(
@@ -507,17 +649,18 @@ async fn graceful_detach_preserves_v1_and_v2_native_sessions_for_exact_resume() 
             )
             .await
             .expect("active work starts");
-        host.prompt(
-            context(),
-            prompt(
-                &session.session_id,
-                "detach-queued",
-                AgentInputMode::Queue,
-                "must-not-replay",
-            ),
-        )
-        .await
-        .expect("later work queues");
+        let queued = host
+            .prompt(
+                context(),
+                prompt(
+                    &session.session_id,
+                    "detach-queued",
+                    AgentInputMode::Queue,
+                    "must-not-replay",
+                ),
+            )
+            .await
+            .expect("later work queues");
 
         let report = host
             .detach_sessions(context(), DetachSessionsRequest {})
@@ -552,6 +695,24 @@ async fn graceful_detach_preserves_v1_and_v2_native_sessions_for_exact_resume() 
                 .iter()
                 .any(|event| event.native_event_json.contains("session/close"))
         );
+        for run_id in [&held.run_id, &queued.run_id] {
+            assert_eq!(
+                before_resume
+                    .events
+                    .iter()
+                    .filter(|event| {
+                        event.run_id.as_deref() == Some(run_id.as_str())
+                            && event.kind == AcpEventKind::RunFinished
+                    })
+                    .count(),
+                1,
+                "active and queued runs each terminate exactly once"
+            );
+        }
+        assert!(before_resume.events.iter().any(|event| {
+            event.run_id.as_deref() == Some(queued.run_id.as_str())
+                && event.native_event_json.contains("crab/run_finished")
+        }));
         assert_eq!(
             host.prompt(
                 context(),
