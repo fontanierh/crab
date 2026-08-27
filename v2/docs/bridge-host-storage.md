@@ -23,6 +23,11 @@ runtime-state/
   generation; schema-v1 registrations also gain a null alert target.
 - Each bridge generation is immutable. Package, configuration, management or ingress-mode changes
   use compare-and-swap replacement and append a generation audit row.
+- Agent-managed unregistration is generation-CAS protected. It stops supervision, revokes the
+  opaque credential and advances to an `Unregistered` tombstone. Historical ingress, deliveries
+  and their private content remain available to queued work and audit; registering the same ID
+  later starts a fresh credential-less generation. Runtime-configured registrations cannot use this
+  path.
 - Runtime restart preserves desired state and credential handles, invalidates stale health and
   pending challenges, then restarts desired packages under their configured budget. Startup stops
   only removed `RuntimeConfigured` registrations; `AgentManaged` bridges survive static topology

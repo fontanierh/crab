@@ -98,19 +98,94 @@ impl BridgeStore {
         now_ms: u64,
     ) -> Result<(BridgeRecord, bool), BridgeHostError> {
         let fingerprint = spec_fingerprint(spec)?;
+        let methods = encode_authentication_methods(&spec.authentication_methods)?;
         let mut connection = self.lock()?;
         let transaction = connection
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(storage_error)?;
-        if let Some(existing) = transaction
+        if let Some((existing, lifecycle)) = transaction
             .query_row(
-                "SELECT spec_fingerprint FROM bridges WHERE bridge_id = ?1",
+                "SELECT spec_fingerprint, lifecycle FROM bridges WHERE bridge_id = ?1",
                 params![spec.bridge_id],
-                |row| row.get::<_, String>(0),
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
             )
             .optional()
             .map_err(storage_error)?
         {
+            if lifecycle == "Unregistered" {
+                transaction
+                    .execute(
+                        "UPDATE bridges SET
+                            package_id = ?2, display_name = ?3, launch_json = ?4,
+                            configuration_json = ?5, authentication_methods_json = ?6,
+                            ingress_mode = ?7, management = ?8, desired_running = ?9,
+                            health_interval_ms = ?10, credential_validation_interval_ms = ?11,
+                            restart_limit = ?12, restart_window_ms = ?13,
+                            lifecycle = 'Registered', generation = generation + 1,
+                            registered_at_ms = ?14, consecutive_failures = 0,
+                            next_restart_at_ms = NULL, last_error = NULL,
+                            alert_target_channel_id = ?15, alert_lane = ?16,
+                            spec_fingerprint = ?17
+                         WHERE bridge_id = ?1 AND lifecycle = 'Unregistered'",
+                        params![
+                            spec.bridge_id,
+                            spec.package_id,
+                            spec.display_name,
+                            spec.launch_json,
+                            spec.configuration_json,
+                            methods,
+                            ingress_mode_tag(&spec.ingress_mode)?,
+                            management_tag(&spec.management)?,
+                            spec.desired_running,
+                            db_i64(spec.health_interval_ms)?,
+                            db_i64(spec.credential_validation_interval_ms)?,
+                            db_i64(spec.restart_limit)?,
+                            db_i64(spec.restart_window_ms)?,
+                            db_i64(now_ms)?,
+                            spec.alert_target
+                                .as_ref()
+                                .map(|target| target.channel_id.as_str()),
+                            spec.alert_target
+                                .as_ref()
+                                .map(|target| target.lane.as_str()),
+                            fingerprint,
+                        ],
+                    )
+                    .map_err(storage_error)?;
+                transaction
+                    .execute(
+                        "UPDATE credentials SET lifecycle = 'Missing', credential_handle = NULL,
+                            validated_at_ms = NULL, expires_at_ms = NULL, account_hint = NULL,
+                            detail_json = '{}'
+                         WHERE bridge_id = ?1",
+                        params![spec.bridge_id],
+                    )
+                    .map_err(storage_error)?;
+                transaction
+                    .execute(
+                        "DELETE FROM health WHERE bridge_id = ?1",
+                        params![spec.bridge_id],
+                    )
+                    .map_err(storage_error)?;
+                transaction
+                    .execute(
+                        "DELETE FROM restart_events WHERE bridge_id = ?1",
+                        params![spec.bridge_id],
+                    )
+                    .map_err(storage_error)?;
+                transaction
+                    .execute(
+                        "INSERT INTO generation_audit (
+                            bridge_id, generation, changed_at_ms, spec_fingerprint
+                         ) SELECT bridge_id, generation, ?2, spec_fingerprint
+                           FROM bridges WHERE bridge_id = ?1",
+                        params![spec.bridge_id, db_i64(now_ms)?],
+                    )
+                    .map_err(storage_error)?;
+                transaction.commit().map_err(storage_error)?;
+                drop(connection);
+                return Ok((self.record(&spec.bridge_id)?, true));
+            }
             if !fingerprints_equal(&existing, &fingerprint)? {
                 return Err(BridgeHostError::DuplicateBridgeConflict);
             }
@@ -135,7 +210,6 @@ impl BridgeStore {
             drop(connection);
             return Ok((self.record(&spec.bridge_id)?, false));
         }
-        let methods = encode_authentication_methods(&spec.authentication_methods)?;
         transaction
             .execute(
                 "INSERT INTO bridges (
@@ -217,7 +291,7 @@ impl BridgeStore {
                     lifecycle = 'Registered', generation = generation + 1,
                     consecutive_failures = 0, next_restart_at_ms = NULL, last_error = NULL,
                     alert_target_channel_id = ?15, alert_lane = ?16, spec_fingerprint = ?17
-                 WHERE bridge_id = ?1 AND generation = ?2",
+                 WHERE bridge_id = ?1 AND generation = ?2 AND lifecycle != 'Unregistered'",
                 params![
                     spec.bridge_id,
                     db_i64(expected_generation)?,
@@ -280,7 +354,7 @@ impl BridgeStore {
                         health_interval_ms, credential_validation_interval_ms,
                         restart_limit, restart_window_ms,
                         alert_target_channel_id, alert_lane
-                 FROM bridges WHERE bridge_id = ?1",
+                 FROM bridges WHERE bridge_id = ?1 AND lifecycle != 'Unregistered'",
                 params![bridge_id],
                 |row| {
                     Ok((
@@ -352,7 +426,9 @@ impl BridgeStore {
         let connection = self.lock()?;
         let mut statement = connection
             .prepare(
-                "SELECT bridge_id FROM bridges WHERE desired_running = TRUE ORDER BY bridge_id",
+                "SELECT bridge_id FROM bridges
+                 WHERE desired_running = TRUE AND lifecycle != 'Unregistered'
+                 ORDER BY bridge_id",
             )
             .map_err(storage_error)?;
         statement
@@ -1178,11 +1254,113 @@ impl BridgeStore {
         })
     }
 
+    pub(crate) fn validate_unregister(
+        &self,
+        bridge_id: &str,
+        expected_generation: u64,
+    ) -> Result<(), BridgeHostError> {
+        let record = self.record(bridge_id)?;
+        if record.lifecycle == BridgeLifecycle::Unregistered {
+            return Err(BridgeHostError::UnknownBridge);
+        }
+        if record.generation != expected_generation {
+            return Err(BridgeHostError::GenerationConflict);
+        }
+        if record.management != BridgeManagement::AgentManaged {
+            return Err(BridgeHostError::ManagementConflict);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn unregister(
+        &self,
+        bridge_id: &str,
+        expected_generation: u64,
+        now_ms: u64,
+    ) -> Result<BridgeReceipt, BridgeHostError> {
+        self.validate_unregister(bridge_id, expected_generation)?;
+        let mut spec = self.spec(bridge_id)?;
+        spec.desired_running = false;
+        let fingerprint = spec_fingerprint(&spec)?;
+        let mut connection = self.lock()?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(storage_error)?;
+        let changed = transaction
+            .execute(
+                "UPDATE bridges SET lifecycle = 'Unregistered', desired_running = FALSE,
+                    generation = generation + 1, consecutive_failures = 0,
+                    next_restart_at_ms = NULL, last_error = NULL, spec_fingerprint = ?3
+                 WHERE bridge_id = ?1 AND generation = ?2
+                   AND management = 'AgentManaged' AND lifecycle != 'Unregistered'",
+                params![bridge_id, db_i64(expected_generation)?, fingerprint],
+            )
+            .map_err(storage_error)?;
+        if changed != 1 {
+            return Err(if bridge_exists(&transaction, bridge_id)? {
+                BridgeHostError::GenerationConflict
+            } else {
+                BridgeHostError::UnknownBridge
+            });
+        }
+        transaction
+            .execute(
+                "UPDATE credentials SET lifecycle = 'Revoked', credential_handle = NULL,
+                    validated_at_ms = ?2, expires_at_ms = NULL, account_hint = NULL,
+                    detail_json = '{}'
+                 WHERE bridge_id = ?1",
+                params![bridge_id, db_i64(now_ms)?],
+            )
+            .map_err(storage_error)?;
+        transaction
+            .execute(
+                "DELETE FROM health WHERE bridge_id = ?1",
+                params![bridge_id],
+            )
+            .map_err(storage_error)?;
+        transaction
+            .execute(
+                "DELETE FROM restart_events WHERE bridge_id = ?1",
+                params![bridge_id],
+            )
+            .map_err(storage_error)?;
+        transaction
+            .execute(
+                "UPDATE challenges SET state = 'Superseded'
+                 WHERE bridge_id = ?1 AND state = 'Pending'",
+                params![bridge_id],
+            )
+            .map_err(storage_error)?;
+        transaction
+            .execute(
+                "UPDATE bridge_incidents SET recovered_at_ms = ?2,
+                    recovery_trigger_id = COALESCE(recovery_trigger_id, 'unregistered')
+                 WHERE bridge_id = ?1 AND recovered_at_ms IS NULL",
+                params![bridge_id, db_i64(now_ms)?],
+            )
+            .map_err(storage_error)?;
+        transaction
+            .execute(
+                "INSERT INTO generation_audit (
+                    bridge_id, generation, changed_at_ms, spec_fingerprint
+                 ) SELECT bridge_id, generation, ?2, spec_fingerprint
+                   FROM bridges WHERE bridge_id = ?1",
+                params![bridge_id, db_i64(now_ms)?],
+            )
+            .map_err(storage_error)?;
+        transaction.commit().map_err(storage_error)?;
+        Ok(BridgeReceipt {
+            accepted: true,
+            recorded_at_ms: now_ms,
+        })
+    }
+
     pub(crate) fn suspend(
         &self,
         bridge_id: &str,
         now_ms: u64,
     ) -> Result<BridgeStatus, BridgeHostError> {
+        self.spec(bridge_id)?;
         self.set_lifecycle(bridge_id, &BridgeLifecycle::Stopped, None, None)?;
         self.status(bridge_id, now_ms)
     }
@@ -1729,7 +1907,10 @@ fn mark_incident_trigger(
 fn bridge_exists(connection: &Connection, bridge_id: &str) -> Result<bool, BridgeHostError> {
     connection
         .query_row(
-            "SELECT EXISTS(SELECT 1 FROM bridges WHERE bridge_id = ?1)",
+            "SELECT EXISTS(
+                SELECT 1 FROM bridges
+                WHERE bridge_id = ?1 AND lifecycle != 'Unregistered'
+             )",
             params![bridge_id],
             |row| row.get(0),
         )
@@ -2017,6 +2198,7 @@ fn lifecycle_tag(lifecycle: &BridgeLifecycle) -> Result<&'static str, BridgeHost
         BridgeLifecycle::Degraded => Ok("Degraded"),
         BridgeLifecycle::BackingOff => Ok("BackingOff"),
         BridgeLifecycle::Stopped => Ok("Stopped"),
+        BridgeLifecycle::Unregistered => Ok("Unregistered"),
         BridgeLifecycle::Failed => Ok("Failed"),
         BridgeLifecycle::Unknown { .. } => Err(BridgeHostError::StorageUnavailable),
     }
@@ -2031,6 +2213,7 @@ fn parse_lifecycle(value: &str) -> Result<BridgeLifecycle, BridgeHostError> {
         "Degraded" => Ok(BridgeLifecycle::Degraded),
         "BackingOff" => Ok(BridgeLifecycle::BackingOff),
         "Stopped" => Ok(BridgeLifecycle::Stopped),
+        "Unregistered" => Ok(BridgeLifecycle::Unregistered),
         "Failed" => Ok(BridgeLifecycle::Failed),
         _ => Err(BridgeHostError::StorageUnavailable),
     }
@@ -2243,6 +2426,69 @@ mod tests {
                 .management,
             BridgeManagement::AgentManaged
         );
+    }
+
+    #[test]
+    fn unregister_tombstone_survives_restart_and_reactivates_as_a_fresh_generation() {
+        let directory = tempfile::tempdir().expect("temporary state directory");
+        let path = directory.path().join("unregister.sqlite");
+        {
+            let store = BridgeStore::open(&path).expect("store opens");
+            let mut agent_managed = spec(true);
+            agent_managed.management = BridgeManagement::AgentManaged;
+            store
+                .register(&agent_managed, 1)
+                .expect("agent bridge registers");
+            assert!(matches!(
+                store.unregister("bridge-1", 2, 2),
+                Err(BridgeHostError::GenerationConflict)
+            ));
+            store
+                .unregister("bridge-1", 1, 3)
+                .expect("agent bridge unregisters");
+            let tombstone = store.record("bridge-1").expect("tombstone remains");
+            assert_eq!(tombstone.lifecycle, BridgeLifecycle::Unregistered);
+            assert_eq!(tombstone.generation, 2);
+            assert!(!tombstone.desired_running);
+            assert!(matches!(
+                store.spec("bridge-1"),
+                Err(BridgeHostError::UnknownBridge)
+            ));
+            assert!(
+                store
+                    .desired_bridge_ids()
+                    .expect("desired catalog reads")
+                    .is_empty()
+            );
+        }
+
+        let restarted = BridgeStore::open(&path).expect("store reopens");
+        let tombstone = restarted.record("bridge-1").expect("tombstone reloads");
+        assert_eq!(tombstone.lifecycle, BridgeLifecycle::Unregistered);
+        assert_eq!(tombstone.generation, 2);
+        assert!(matches!(
+            restarted.set_desired("bridge-1", 2, true, 4),
+            Err(BridgeHostError::UnknownBridge)
+        ));
+
+        let mut reactivated = spec(false);
+        reactivated.management = BridgeManagement::AgentManaged;
+        reactivated.display_name = "Reactivated".into();
+        let (record, inserted) = restarted
+            .register(&reactivated, 5)
+            .expect("retired ID reactivates");
+        assert!(inserted);
+        assert_eq!(record.lifecycle, BridgeLifecycle::Registered);
+        assert_eq!(record.generation, 3);
+        assert_eq!(record.display_name, "Reactivated");
+        let audit_count = restarted
+            .lock()
+            .expect("store lock")
+            .query_row("SELECT COUNT(*) FROM generation_audit", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .expect("audit count");
+        assert_eq!(audit_count, 3);
     }
 
     #[test]

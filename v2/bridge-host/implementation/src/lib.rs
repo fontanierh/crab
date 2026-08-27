@@ -977,6 +977,48 @@ impl BridgeHost {
         self.store.record(&record.bridge_id)
     }
 
+    pub async fn unregister_bridge(
+        &self,
+        context: CallContext,
+        request: UnregisterBridgeRequest,
+    ) -> Result<BridgeReceipt, BridgeHostError> {
+        let _ = context;
+        let _operation = self.operations.lock().await;
+        self.store
+            .validate_unregister(&request.bridge_id, request.expected_generation)?;
+        let credential = self.store.credential(&request.bridge_id)?;
+        let secret = if let Some(handle) = credential.credential_handle.as_deref() {
+            self.credentials.get(handle).await.ok()
+        } else {
+            None
+        };
+        self.stop_supervisor(&request.bridge_id);
+        deactivate_package_instance(
+            &self.active_package_instances,
+            &self.credential_updates,
+            &request.bridge_id,
+        )
+        .await;
+        let package = self.connections.write().await.remove(&request.bridge_id);
+        if let Some(package) = package {
+            if let Some(secret) = secret.as_deref() {
+                let _ = package.invalidate_credentials(secret).await;
+            }
+            let _ = package.stop().await;
+        }
+        if let Some(handle) = credential.credential_handle {
+            self.credentials
+                .invalidate(&handle)
+                .await
+                .map_err(map_credential_error)?;
+        }
+        self.store.unregister(
+            &request.bridge_id,
+            request.expected_generation,
+            (self.clock)()?,
+        )
+    }
+
     pub async fn reconcile_bridge(
         &self,
         context: CallContext,
@@ -1603,6 +1645,7 @@ mod tests {
 
         for required in [
             "list_bridges",
+            "unregister_bridge",
             "suspend_bridge",
             "reconcile_bridge",
             "begin_authentication",

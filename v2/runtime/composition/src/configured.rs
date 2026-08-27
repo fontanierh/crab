@@ -653,7 +653,7 @@ mod tests {
         AuthenticationMethod as ContractAuthenticationMethod, BeginAuthenticationRequest,
         BridgeLifecycle, BridgeReference, CredentialLifecycle, DeliveryLifecycle,
         DeliveryReference, ListBridgesRequest, ReconcileBridgeRequest, ReplaceBridgeRequest,
-        SubmitAuthenticationRequest,
+        SubmitAuthenticationRequest, UnregisterBridgeRequest,
     };
     use bridge_host_implementation::{
         AuthenticationMethod, BridgeCredentialSink, BridgeHostState, BridgeInboundSink,
@@ -1826,6 +1826,7 @@ mod tests {
             .bridge_specs()
             .expect("dynamic bridge spec encodes")
             .remove(0);
+        dynamic_spec.management = BridgeManagement::AgentManaged;
         let registered = client
             .register_bridge(dynamic_spec.clone())
             .await
@@ -1841,6 +1842,24 @@ mod tests {
             .await
             .expect("agent-installed bridge replacement crosses IPC");
         assert_eq!(replaced.generation, 2);
+        assert!(
+            client
+                .unregister_bridge(UnregisterBridgeRequest {
+                    bridge_id: "signal".into(),
+                    expected_generation: 2,
+                })
+                .await
+                .expect("agent bridge unregistration crosses IPC")
+                .accepted
+        );
+        let retired = client
+            .bridge_status(BridgeReference {
+                bridge_id: "signal".into(),
+            })
+            .await
+            .expect("retired bridge tombstone crosses IPC");
+        assert_eq!(retired.lifecycle, BridgeLifecycle::Unregistered);
+        assert_eq!(retired.generation, 3);
         let status = client
             .bridge_status(BridgeReference {
                 bridge_id: "whatsapp".into(),
@@ -1951,6 +1970,16 @@ mod tests {
                 .expect("durable stop crosses IPC")
                 .accepted
         );
+        assert!(matches!(
+            client
+                .unregister_bridge(UnregisterBridgeRequest {
+                    bridge_id: "whatsapp".into(),
+                    expected_generation: 2,
+                })
+                .await,
+            Err(ChannelIpcClientError::Remote { kind, code })
+                if kind == "domain" && code == "ManagementConflict"
+        ));
 
         server.shutdown().await.expect("IPC shuts down");
     }

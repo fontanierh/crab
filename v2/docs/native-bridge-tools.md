@@ -8,7 +8,7 @@ and operating it through generic `bridge-host` supervision.
 
 ```text
 crab-v2-bridge-mcp
-├── package        register · replace · list
+├── package        register · replace · unregister · list
 ├── lifecycle      reconcile · status · suspend · stop
 ├── authentication begin · submit · validate · invalidate
 └── selected output import local content · deliver · delivery status
@@ -23,6 +23,12 @@ deduplicated incident and recovery turns in queue mode. Start a new package with
 `desiredRunning: false`; install and inspect it, then reconcile its current generation to running.
 Replacement first reads the durable catalog, preserves that registration's management owner, and
 then delegates the expected generation to the host CAS; a concurrent change cannot be overwritten.
+
+`unregister_bridge` is available only to `AgentManaged` registrations and uses the same generation
+CAS. It stops supervision, revokes the private credential, and advances the record to an auditable
+`Unregistered` tombstone. Inbound/delivery history and referenced private content remain intact for
+queued work and replay. Registering the same ID later creates a fresh generation with no credential;
+runtime-configured bridges remain owned by runtime topology.
 
 Authentication presentations such as QR images, phone codes, or URLs are ephemeral MCP results.
 Crab stores resulting credentials behind a private handle; tool output reveals only whether a

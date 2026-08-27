@@ -86,10 +86,10 @@ interrupt as a separate explicit action.
   material. See the
   [operator flow](docs/bridge-operations.md),
   [state contract](docs/bridge-host-storage.md) and [rendered flow](docs/bridge-host-flow.png).
-- Every configured ACP parent and child receives 14 strict native bridge tools. An agent can install
-  a package it wrote, change it under generation control, authenticate it, validate its credentials,
-  stage bounded workspace files into Crab-owned content, and send deliberately selected output
-  without gaining credential-store access. See the
+- Every configured ACP parent and child receives 15 strict native bridge tools. An agent can install
+  a package it wrote, change or retire it under generation control, authenticate it, validate its
+  credentials, stage bounded workspace files into Crab-owned content, and send deliberately
+  selected output without gaining credential-store access. See the
   [agent bridge boundary](docs/native-bridge-tools.md).
 - `sub-agent-host` composes through the generated `agent-host` import, durably journals both
   message directions and the complete child ACP stream. After parents recover, eligible children

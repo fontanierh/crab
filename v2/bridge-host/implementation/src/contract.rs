@@ -9,6 +9,7 @@ boxology::contract! {
         Degraded,
         BackingOff,
         Stopped,
+        Unregistered,
         Failed,
     }
 
@@ -122,6 +123,12 @@ boxology::contract! {
     pub struct ReplaceBridgeRequest {
         pub expected_generation: u64,
         pub spec: BridgeSpec,
+    }
+
+    /// Retire one agent-managed registration with compare-and-swap generation control.
+    pub struct UnregisterBridgeRequest {
+        pub bridge_id: String,
+        pub expected_generation: u64,
     }
 
     /// Truthful observed health from the bridge process, not merely supervisor process liveness.
@@ -269,6 +276,7 @@ boxology::contract! {
         UnknownBridge,
         DuplicateBridgeConflict,
         GenerationConflict,
+        ManagementConflict,
         RestartBudgetExhausted,
         AuthenticationUnavailable,
         ChallengeExpired,
@@ -292,6 +300,10 @@ boxology::contract! {
     /// Install a new immutable generation; ingress mode changes only through this operation.
     #[capability]
     pub async fn replace_bridge(request: ReplaceBridgeRequest) -> Result<BridgeRecord, BridgeHostError>;
+
+    /// Retire an agent-managed registration and credential while preserving referenced history.
+    #[capability]
+    pub async fn unregister_bridge(request: UnregisterBridgeRequest) -> Result<BridgeReceipt, BridgeHostError>;
 
     /// Converge observed lifecycle toward desired lifecycle using bounded recovery.
     #[capability]

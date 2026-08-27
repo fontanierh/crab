@@ -33,6 +33,11 @@ static __BOXOLOGY_CONTRACT_DESCRIPTOR: ::std::sync::LazyLock<
                 None,
             ),
             ::boxology_contract::VariantDescriptor::new(
+                "ManagementConflict",
+                ::boxology_contract::VariantPayload::Unit,
+                None,
+            ),
+            ::boxology_contract::VariantDescriptor::new(
                 "RestartBudgetExhausted",
                 ::boxology_contract::VariantPayload::Unit,
                 None,
@@ -297,6 +302,11 @@ static __BOXOLOGY_CONTRACT_DESCRIPTOR: ::std::sync::LazyLock<
                                 None,
                             ),
                             ::boxology_contract::VariantDescriptor::new(
+                                "Unregistered",
+                                ::boxology_contract::VariantPayload::Unit,
+                                None,
+                            ),
+                            ::boxology_contract::VariantDescriptor::new(
                                 "Failed",
                                 ::boxology_contract::VariantPayload::Unit,
                                 None,
@@ -450,6 +460,11 @@ static __BOXOLOGY_CONTRACT_DESCRIPTOR: ::std::sync::LazyLock<
                                                 ),
                                                 ::boxology_contract::VariantDescriptor::new(
                                                     "Stopped",
+                                                    ::boxology_contract::VariantPayload::Unit,
+                                                    None,
+                                                ),
+                                                ::boxology_contract::VariantDescriptor::new(
+                                                    "Unregistered",
                                                     ::boxology_contract::VariantPayload::Unit,
                                                     None,
                                                 ),
@@ -775,6 +790,11 @@ static __BOXOLOGY_CONTRACT_DESCRIPTOR: ::std::sync::LazyLock<
                                 None,
                             ),
                             ::boxology_contract::VariantDescriptor::new(
+                                "Unregistered",
+                                ::boxology_contract::VariantPayload::Unit,
+                                None,
+                            ),
+                            ::boxology_contract::VariantDescriptor::new(
                                 "Failed",
                                 ::boxology_contract::VariantPayload::Unit,
                                 None,
@@ -868,6 +888,44 @@ static __BOXOLOGY_CONTRACT_DESCRIPTOR: ::std::sync::LazyLock<
     let capability_3 = ::boxology_contract::CapabilityDescriptor::new(
         ::boxology_contract::CapabilityId::new(
             box_id.clone(),
+            ::boxology_contract::CapabilityName::new("unregister_bridge")
+                .expect("generated capability name is valid"),
+        ),
+        ::boxology_contract::TypeDescriptor::structure([
+                ::boxology_contract::FieldDescriptor::new(
+                    "bridge_id",
+                    ::boxology_contract::TypeDescriptor::string(),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
+                    "expected_generation",
+                    ::boxology_contract::TypeDescriptor::u64(),
+                    None,
+                ),
+            ])
+            .expect("generated struct descriptor is valid"),
+        ::boxology_contract::TypeDescriptor::structure([
+                ::boxology_contract::FieldDescriptor::new(
+                    "accepted",
+                    ::boxology_contract::TypeDescriptor::bool(),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
+                    "recorded_at_ms",
+                    ::boxology_contract::TypeDescriptor::u64(),
+                    None,
+                ),
+            ])
+            .expect("generated struct descriptor is valid"),
+        error.clone(),
+        ::boxology_contract::CapabilityShape::Unary,
+        ::boxology_contract::ExposureLevel::CodeOnly,
+        ::boxology_contract::Idempotency::None,
+        None,
+    );
+    let capability_4 = ::boxology_contract::CapabilityDescriptor::new(
+        ::boxology_contract::CapabilityId::new(
+            box_id.clone(),
             ::boxology_contract::CapabilityName::new("reconcile_bridge")
                 .expect("generated capability name is valid"),
         ),
@@ -934,267 +992,7 @@ static __BOXOLOGY_CONTRACT_DESCRIPTOR: ::std::sync::LazyLock<
                                 None,
                             ),
                             ::boxology_contract::VariantDescriptor::new(
-                                "Failed",
-                                ::boxology_contract::VariantPayload::Unit,
-                                None,
-                            ),
-                        ])
-                        .expect("generated enum descriptor is valid"),
-                    None,
-                ),
-                ::boxology_contract::FieldDescriptor::new(
-                    "generation",
-                    ::boxology_contract::TypeDescriptor::u64(),
-                    None,
-                ),
-                ::boxology_contract::FieldDescriptor::new(
-                    "consecutive_failures",
-                    ::boxology_contract::TypeDescriptor::u64(),
-                    None,
-                ),
-                ::boxology_contract::FieldDescriptor::new(
-                    "restart_count_in_window",
-                    ::boxology_contract::TypeDescriptor::u64(),
-                    None,
-                ),
-                ::boxology_contract::FieldDescriptor::new(
-                    "next_restart_at_ms",
-                    ::boxology_contract::TypeDescriptor::optional(
-                            ::boxology_contract::TypeDescriptor::u64(),
-                        )
-                        .expect("generated optional descriptor is valid"),
-                    None,
-                ),
-                ::boxology_contract::FieldDescriptor::new(
-                    "last_health",
-                    ::boxology_contract::TypeDescriptor::optional(
-                            ::boxology_contract::TypeDescriptor::structure([
-                                    ::boxology_contract::FieldDescriptor::new(
-                                        "bridge_id",
-                                        ::boxology_contract::TypeDescriptor::string(),
-                                        None,
-                                    ),
-                                    ::boxology_contract::FieldDescriptor::new(
-                                        "observed_at_ms",
-                                        ::boxology_contract::TypeDescriptor::u64(),
-                                        None,
-                                    ),
-                                    ::boxology_contract::FieldDescriptor::new(
-                                        "process_alive",
-                                        ::boxology_contract::TypeDescriptor::bool(),
-                                        None,
-                                    ),
-                                    ::boxology_contract::FieldDescriptor::new(
-                                        "service_connected",
-                                        ::boxology_contract::TypeDescriptor::bool(),
-                                        None,
-                                    ),
-                                    ::boxology_contract::FieldDescriptor::new(
-                                        "can_receive",
-                                        ::boxology_contract::TypeDescriptor::bool(),
-                                        None,
-                                    ),
-                                    ::boxology_contract::FieldDescriptor::new(
-                                        "can_send",
-                                        ::boxology_contract::TypeDescriptor::bool(),
-                                        None,
-                                    ),
-                                    ::boxology_contract::FieldDescriptor::new(
-                                        "credential_lifecycle",
-                                        ::boxology_contract::TypeDescriptor::enumeration([
-                                                ::boxology_contract::VariantDescriptor::new(
-                                                    "Missing",
-                                                    ::boxology_contract::VariantPayload::Unit,
-                                                    None,
-                                                ),
-                                                ::boxology_contract::VariantDescriptor::new(
-                                                    "Challenged",
-                                                    ::boxology_contract::VariantPayload::Unit,
-                                                    None,
-                                                ),
-                                                ::boxology_contract::VariantDescriptor::new(
-                                                    "Validating",
-                                                    ::boxology_contract::VariantPayload::Unit,
-                                                    None,
-                                                ),
-                                                ::boxology_contract::VariantDescriptor::new(
-                                                    "Valid",
-                                                    ::boxology_contract::VariantPayload::Unit,
-                                                    None,
-                                                ),
-                                                ::boxology_contract::VariantDescriptor::new(
-                                                    "Expiring",
-                                                    ::boxology_contract::VariantPayload::Unit,
-                                                    None,
-                                                ),
-                                                ::boxology_contract::VariantDescriptor::new(
-                                                    "Rejected",
-                                                    ::boxology_contract::VariantPayload::Unit,
-                                                    None,
-                                                ),
-                                                ::boxology_contract::VariantDescriptor::new(
-                                                    "Revoked",
-                                                    ::boxology_contract::VariantPayload::Unit,
-                                                    None,
-                                                ),
-                                            ])
-                                            .expect("generated enum descriptor is valid"),
-                                        None,
-                                    ),
-                                    ::boxology_contract::FieldDescriptor::new(
-                                        "detail_json",
-                                        ::boxology_contract::TypeDescriptor::string(),
-                                        None,
-                                    ),
-                                ])
-                                .expect("generated struct descriptor is valid"),
-                        )
-                        .expect("generated optional descriptor is valid"),
-                    None,
-                ),
-                ::boxology_contract::FieldDescriptor::new(
-                    "last_error",
-                    ::boxology_contract::TypeDescriptor::optional(
-                            ::boxology_contract::TypeDescriptor::string(),
-                        )
-                        .expect("generated optional descriptor is valid"),
-                    None,
-                ),
-            ])
-            .expect("generated struct descriptor is valid"),
-        error.clone(),
-        ::boxology_contract::CapabilityShape::Unary,
-        ::boxology_contract::ExposureLevel::CodeOnly,
-        ::boxology_contract::Idempotency::None,
-        None,
-    );
-    let capability_4 = ::boxology_contract::CapabilityDescriptor::new(
-        ::boxology_contract::CapabilityId::new(
-            box_id.clone(),
-            ::boxology_contract::CapabilityName::new("report_health")
-                .expect("generated capability name is valid"),
-        ),
-        ::boxology_contract::TypeDescriptor::structure([
-                ::boxology_contract::FieldDescriptor::new(
-                    "bridge_id",
-                    ::boxology_contract::TypeDescriptor::string(),
-                    None,
-                ),
-                ::boxology_contract::FieldDescriptor::new(
-                    "observed_at_ms",
-                    ::boxology_contract::TypeDescriptor::u64(),
-                    None,
-                ),
-                ::boxology_contract::FieldDescriptor::new(
-                    "process_alive",
-                    ::boxology_contract::TypeDescriptor::bool(),
-                    None,
-                ),
-                ::boxology_contract::FieldDescriptor::new(
-                    "service_connected",
-                    ::boxology_contract::TypeDescriptor::bool(),
-                    None,
-                ),
-                ::boxology_contract::FieldDescriptor::new(
-                    "can_receive",
-                    ::boxology_contract::TypeDescriptor::bool(),
-                    None,
-                ),
-                ::boxology_contract::FieldDescriptor::new(
-                    "can_send",
-                    ::boxology_contract::TypeDescriptor::bool(),
-                    None,
-                ),
-                ::boxology_contract::FieldDescriptor::new(
-                    "credential_lifecycle",
-                    ::boxology_contract::TypeDescriptor::enumeration([
-                            ::boxology_contract::VariantDescriptor::new(
-                                "Missing",
-                                ::boxology_contract::VariantPayload::Unit,
-                                None,
-                            ),
-                            ::boxology_contract::VariantDescriptor::new(
-                                "Challenged",
-                                ::boxology_contract::VariantPayload::Unit,
-                                None,
-                            ),
-                            ::boxology_contract::VariantDescriptor::new(
-                                "Validating",
-                                ::boxology_contract::VariantPayload::Unit,
-                                None,
-                            ),
-                            ::boxology_contract::VariantDescriptor::new(
-                                "Valid",
-                                ::boxology_contract::VariantPayload::Unit,
-                                None,
-                            ),
-                            ::boxology_contract::VariantDescriptor::new(
-                                "Expiring",
-                                ::boxology_contract::VariantPayload::Unit,
-                                None,
-                            ),
-                            ::boxology_contract::VariantDescriptor::new(
-                                "Rejected",
-                                ::boxology_contract::VariantPayload::Unit,
-                                None,
-                            ),
-                            ::boxology_contract::VariantDescriptor::new(
-                                "Revoked",
-                                ::boxology_contract::VariantPayload::Unit,
-                                None,
-                            ),
-                        ])
-                        .expect("generated enum descriptor is valid"),
-                    None,
-                ),
-                ::boxology_contract::FieldDescriptor::new(
-                    "detail_json",
-                    ::boxology_contract::TypeDescriptor::string(),
-                    None,
-                ),
-            ])
-            .expect("generated struct descriptor is valid"),
-        ::boxology_contract::TypeDescriptor::structure([
-                ::boxology_contract::FieldDescriptor::new(
-                    "bridge_id",
-                    ::boxology_contract::TypeDescriptor::string(),
-                    None,
-                ),
-                ::boxology_contract::FieldDescriptor::new(
-                    "lifecycle",
-                    ::boxology_contract::TypeDescriptor::enumeration([
-                            ::boxology_contract::VariantDescriptor::new(
-                                "Registered",
-                                ::boxology_contract::VariantPayload::Unit,
-                                None,
-                            ),
-                            ::boxology_contract::VariantDescriptor::new(
-                                "Starting",
-                                ::boxology_contract::VariantPayload::Unit,
-                                None,
-                            ),
-                            ::boxology_contract::VariantDescriptor::new(
-                                "AwaitingAuthentication",
-                                ::boxology_contract::VariantPayload::Unit,
-                                None,
-                            ),
-                            ::boxology_contract::VariantDescriptor::new(
-                                "Healthy",
-                                ::boxology_contract::VariantPayload::Unit,
-                                None,
-                            ),
-                            ::boxology_contract::VariantDescriptor::new(
-                                "Degraded",
-                                ::boxology_contract::VariantPayload::Unit,
-                                None,
-                            ),
-                            ::boxology_contract::VariantDescriptor::new(
-                                "BackingOff",
-                                ::boxology_contract::VariantPayload::Unit,
-                                None,
-                            ),
-                            ::boxology_contract::VariantDescriptor::new(
-                                "Stopped",
+                                "Unregistered",
                                 ::boxology_contract::VariantPayload::Unit,
                                 None,
                             ),
@@ -1336,6 +1134,276 @@ static __BOXOLOGY_CONTRACT_DESCRIPTOR: ::std::sync::LazyLock<
     let capability_5 = ::boxology_contract::CapabilityDescriptor::new(
         ::boxology_contract::CapabilityId::new(
             box_id.clone(),
+            ::boxology_contract::CapabilityName::new("report_health")
+                .expect("generated capability name is valid"),
+        ),
+        ::boxology_contract::TypeDescriptor::structure([
+                ::boxology_contract::FieldDescriptor::new(
+                    "bridge_id",
+                    ::boxology_contract::TypeDescriptor::string(),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
+                    "observed_at_ms",
+                    ::boxology_contract::TypeDescriptor::u64(),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
+                    "process_alive",
+                    ::boxology_contract::TypeDescriptor::bool(),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
+                    "service_connected",
+                    ::boxology_contract::TypeDescriptor::bool(),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
+                    "can_receive",
+                    ::boxology_contract::TypeDescriptor::bool(),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
+                    "can_send",
+                    ::boxology_contract::TypeDescriptor::bool(),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
+                    "credential_lifecycle",
+                    ::boxology_contract::TypeDescriptor::enumeration([
+                            ::boxology_contract::VariantDescriptor::new(
+                                "Missing",
+                                ::boxology_contract::VariantPayload::Unit,
+                                None,
+                            ),
+                            ::boxology_contract::VariantDescriptor::new(
+                                "Challenged",
+                                ::boxology_contract::VariantPayload::Unit,
+                                None,
+                            ),
+                            ::boxology_contract::VariantDescriptor::new(
+                                "Validating",
+                                ::boxology_contract::VariantPayload::Unit,
+                                None,
+                            ),
+                            ::boxology_contract::VariantDescriptor::new(
+                                "Valid",
+                                ::boxology_contract::VariantPayload::Unit,
+                                None,
+                            ),
+                            ::boxology_contract::VariantDescriptor::new(
+                                "Expiring",
+                                ::boxology_contract::VariantPayload::Unit,
+                                None,
+                            ),
+                            ::boxology_contract::VariantDescriptor::new(
+                                "Rejected",
+                                ::boxology_contract::VariantPayload::Unit,
+                                None,
+                            ),
+                            ::boxology_contract::VariantDescriptor::new(
+                                "Revoked",
+                                ::boxology_contract::VariantPayload::Unit,
+                                None,
+                            ),
+                        ])
+                        .expect("generated enum descriptor is valid"),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
+                    "detail_json",
+                    ::boxology_contract::TypeDescriptor::string(),
+                    None,
+                ),
+            ])
+            .expect("generated struct descriptor is valid"),
+        ::boxology_contract::TypeDescriptor::structure([
+                ::boxology_contract::FieldDescriptor::new(
+                    "bridge_id",
+                    ::boxology_contract::TypeDescriptor::string(),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
+                    "lifecycle",
+                    ::boxology_contract::TypeDescriptor::enumeration([
+                            ::boxology_contract::VariantDescriptor::new(
+                                "Registered",
+                                ::boxology_contract::VariantPayload::Unit,
+                                None,
+                            ),
+                            ::boxology_contract::VariantDescriptor::new(
+                                "Starting",
+                                ::boxology_contract::VariantPayload::Unit,
+                                None,
+                            ),
+                            ::boxology_contract::VariantDescriptor::new(
+                                "AwaitingAuthentication",
+                                ::boxology_contract::VariantPayload::Unit,
+                                None,
+                            ),
+                            ::boxology_contract::VariantDescriptor::new(
+                                "Healthy",
+                                ::boxology_contract::VariantPayload::Unit,
+                                None,
+                            ),
+                            ::boxology_contract::VariantDescriptor::new(
+                                "Degraded",
+                                ::boxology_contract::VariantPayload::Unit,
+                                None,
+                            ),
+                            ::boxology_contract::VariantDescriptor::new(
+                                "BackingOff",
+                                ::boxology_contract::VariantPayload::Unit,
+                                None,
+                            ),
+                            ::boxology_contract::VariantDescriptor::new(
+                                "Stopped",
+                                ::boxology_contract::VariantPayload::Unit,
+                                None,
+                            ),
+                            ::boxology_contract::VariantDescriptor::new(
+                                "Unregistered",
+                                ::boxology_contract::VariantPayload::Unit,
+                                None,
+                            ),
+                            ::boxology_contract::VariantDescriptor::new(
+                                "Failed",
+                                ::boxology_contract::VariantPayload::Unit,
+                                None,
+                            ),
+                        ])
+                        .expect("generated enum descriptor is valid"),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
+                    "generation",
+                    ::boxology_contract::TypeDescriptor::u64(),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
+                    "consecutive_failures",
+                    ::boxology_contract::TypeDescriptor::u64(),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
+                    "restart_count_in_window",
+                    ::boxology_contract::TypeDescriptor::u64(),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
+                    "next_restart_at_ms",
+                    ::boxology_contract::TypeDescriptor::optional(
+                            ::boxology_contract::TypeDescriptor::u64(),
+                        )
+                        .expect("generated optional descriptor is valid"),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
+                    "last_health",
+                    ::boxology_contract::TypeDescriptor::optional(
+                            ::boxology_contract::TypeDescriptor::structure([
+                                    ::boxology_contract::FieldDescriptor::new(
+                                        "bridge_id",
+                                        ::boxology_contract::TypeDescriptor::string(),
+                                        None,
+                                    ),
+                                    ::boxology_contract::FieldDescriptor::new(
+                                        "observed_at_ms",
+                                        ::boxology_contract::TypeDescriptor::u64(),
+                                        None,
+                                    ),
+                                    ::boxology_contract::FieldDescriptor::new(
+                                        "process_alive",
+                                        ::boxology_contract::TypeDescriptor::bool(),
+                                        None,
+                                    ),
+                                    ::boxology_contract::FieldDescriptor::new(
+                                        "service_connected",
+                                        ::boxology_contract::TypeDescriptor::bool(),
+                                        None,
+                                    ),
+                                    ::boxology_contract::FieldDescriptor::new(
+                                        "can_receive",
+                                        ::boxology_contract::TypeDescriptor::bool(),
+                                        None,
+                                    ),
+                                    ::boxology_contract::FieldDescriptor::new(
+                                        "can_send",
+                                        ::boxology_contract::TypeDescriptor::bool(),
+                                        None,
+                                    ),
+                                    ::boxology_contract::FieldDescriptor::new(
+                                        "credential_lifecycle",
+                                        ::boxology_contract::TypeDescriptor::enumeration([
+                                                ::boxology_contract::VariantDescriptor::new(
+                                                    "Missing",
+                                                    ::boxology_contract::VariantPayload::Unit,
+                                                    None,
+                                                ),
+                                                ::boxology_contract::VariantDescriptor::new(
+                                                    "Challenged",
+                                                    ::boxology_contract::VariantPayload::Unit,
+                                                    None,
+                                                ),
+                                                ::boxology_contract::VariantDescriptor::new(
+                                                    "Validating",
+                                                    ::boxology_contract::VariantPayload::Unit,
+                                                    None,
+                                                ),
+                                                ::boxology_contract::VariantDescriptor::new(
+                                                    "Valid",
+                                                    ::boxology_contract::VariantPayload::Unit,
+                                                    None,
+                                                ),
+                                                ::boxology_contract::VariantDescriptor::new(
+                                                    "Expiring",
+                                                    ::boxology_contract::VariantPayload::Unit,
+                                                    None,
+                                                ),
+                                                ::boxology_contract::VariantDescriptor::new(
+                                                    "Rejected",
+                                                    ::boxology_contract::VariantPayload::Unit,
+                                                    None,
+                                                ),
+                                                ::boxology_contract::VariantDescriptor::new(
+                                                    "Revoked",
+                                                    ::boxology_contract::VariantPayload::Unit,
+                                                    None,
+                                                ),
+                                            ])
+                                            .expect("generated enum descriptor is valid"),
+                                        None,
+                                    ),
+                                    ::boxology_contract::FieldDescriptor::new(
+                                        "detail_json",
+                                        ::boxology_contract::TypeDescriptor::string(),
+                                        None,
+                                    ),
+                                ])
+                                .expect("generated struct descriptor is valid"),
+                        )
+                        .expect("generated optional descriptor is valid"),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
+                    "last_error",
+                    ::boxology_contract::TypeDescriptor::optional(
+                            ::boxology_contract::TypeDescriptor::string(),
+                        )
+                        .expect("generated optional descriptor is valid"),
+                    None,
+                ),
+            ])
+            .expect("generated struct descriptor is valid"),
+        error.clone(),
+        ::boxology_contract::CapabilityShape::Unary,
+        ::boxology_contract::ExposureLevel::CodeOnly,
+        ::boxology_contract::Idempotency::None,
+        None,
+    );
+    let capability_6 = ::boxology_contract::CapabilityDescriptor::new(
+        ::boxology_contract::CapabilityId::new(
+            box_id.clone(),
             ::boxology_contract::CapabilityName::new("begin_authentication")
                 .expect("generated capability name is valid"),
         ),
@@ -1461,7 +1529,7 @@ static __BOXOLOGY_CONTRACT_DESCRIPTOR: ::std::sync::LazyLock<
         ::boxology_contract::Idempotency::None,
         None,
     );
-    let capability_6 = ::boxology_contract::CapabilityDescriptor::new(
+    let capability_7 = ::boxology_contract::CapabilityDescriptor::new(
         ::boxology_contract::CapabilityId::new(
             box_id.clone(),
             ::boxology_contract::CapabilityName::new("submit_authentication")
@@ -1578,7 +1646,7 @@ static __BOXOLOGY_CONTRACT_DESCRIPTOR: ::std::sync::LazyLock<
         ::boxology_contract::Idempotency::None,
         None,
     );
-    let capability_7 = ::boxology_contract::CapabilityDescriptor::new(
+    let capability_8 = ::boxology_contract::CapabilityDescriptor::new(
         ::boxology_contract::CapabilityId::new(
             box_id.clone(),
             ::boxology_contract::CapabilityName::new("validate_credentials")
@@ -1685,7 +1753,7 @@ static __BOXOLOGY_CONTRACT_DESCRIPTOR: ::std::sync::LazyLock<
         ::boxology_contract::Idempotency::None,
         None,
     );
-    let capability_8 = ::boxology_contract::CapabilityDescriptor::new(
+    let capability_9 = ::boxology_contract::CapabilityDescriptor::new(
         ::boxology_contract::CapabilityId::new(
             box_id.clone(),
             ::boxology_contract::CapabilityName::new("invalidate_credentials")
@@ -1718,7 +1786,7 @@ static __BOXOLOGY_CONTRACT_DESCRIPTOR: ::std::sync::LazyLock<
         ::boxology_contract::Idempotency::None,
         None,
     );
-    let capability_9 = ::boxology_contract::CapabilityDescriptor::new(
+    let capability_10 = ::boxology_contract::CapabilityDescriptor::new(
         ::boxology_contract::CapabilityId::new(
             box_id.clone(),
             ::boxology_contract::CapabilityName::new("accept_inbound")
@@ -1859,7 +1927,7 @@ static __BOXOLOGY_CONTRACT_DESCRIPTOR: ::std::sync::LazyLock<
         ::boxology_contract::Idempotency::None,
         None,
     );
-    let capability_10 = ::boxology_contract::CapabilityDescriptor::new(
+    let capability_11 = ::boxology_contract::CapabilityDescriptor::new(
         ::boxology_contract::CapabilityId::new(
             box_id.clone(),
             ::boxology_contract::CapabilityName::new("import_content")
@@ -1940,7 +2008,7 @@ static __BOXOLOGY_CONTRACT_DESCRIPTOR: ::std::sync::LazyLock<
         ::boxology_contract::Idempotency::None,
         None,
     );
-    let capability_11 = ::boxology_contract::CapabilityDescriptor::new(
+    let capability_12 = ::boxology_contract::CapabilityDescriptor::new(
         ::boxology_contract::CapabilityId::new(
             box_id.clone(),
             ::boxology_contract::CapabilityName::new("deliver_message")
@@ -2081,7 +2149,7 @@ static __BOXOLOGY_CONTRACT_DESCRIPTOR: ::std::sync::LazyLock<
         ::boxology_contract::Idempotency::None,
         None,
     );
-    let capability_12 = ::boxology_contract::CapabilityDescriptor::new(
+    let capability_13 = ::boxology_contract::CapabilityDescriptor::new(
         ::boxology_contract::CapabilityId::new(
             box_id.clone(),
             ::boxology_contract::CapabilityName::new("delivery_status")
@@ -2179,7 +2247,7 @@ static __BOXOLOGY_CONTRACT_DESCRIPTOR: ::std::sync::LazyLock<
         ::boxology_contract::Idempotency::None,
         None,
     );
-    let capability_13 = ::boxology_contract::CapabilityDescriptor::new(
+    let capability_14 = ::boxology_contract::CapabilityDescriptor::new(
         ::boxology_contract::CapabilityId::new(
             box_id.clone(),
             ::boxology_contract::CapabilityName::new("bridge_status")
@@ -2234,6 +2302,11 @@ static __BOXOLOGY_CONTRACT_DESCRIPTOR: ::std::sync::LazyLock<
                             ),
                             ::boxology_contract::VariantDescriptor::new(
                                 "Stopped",
+                                ::boxology_contract::VariantPayload::Unit,
+                                None,
+                            ),
+                            ::boxology_contract::VariantDescriptor::new(
+                                "Unregistered",
                                 ::boxology_contract::VariantPayload::Unit,
                                 None,
                             ),
@@ -2372,7 +2445,7 @@ static __BOXOLOGY_CONTRACT_DESCRIPTOR: ::std::sync::LazyLock<
         ::boxology_contract::Idempotency::None,
         None,
     );
-    let capability_14 = ::boxology_contract::CapabilityDescriptor::new(
+    let capability_15 = ::boxology_contract::CapabilityDescriptor::new(
         ::boxology_contract::CapabilityId::new(
             box_id.clone(),
             ::boxology_contract::CapabilityName::new("stop_bridge")
@@ -2405,7 +2478,7 @@ static __BOXOLOGY_CONTRACT_DESCRIPTOR: ::std::sync::LazyLock<
         ::boxology_contract::Idempotency::None,
         None,
     );
-    let capability_15 = ::boxology_contract::CapabilityDescriptor::new(
+    let capability_16 = ::boxology_contract::CapabilityDescriptor::new(
         ::boxology_contract::CapabilityId::new(
             box_id.clone(),
             ::boxology_contract::CapabilityName::new("suspend_bridge")
@@ -2460,6 +2533,11 @@ static __BOXOLOGY_CONTRACT_DESCRIPTOR: ::std::sync::LazyLock<
                             ),
                             ::boxology_contract::VariantDescriptor::new(
                                 "Stopped",
+                                ::boxology_contract::VariantPayload::Unit,
+                                None,
+                            ),
+                            ::boxology_contract::VariantDescriptor::new(
+                                "Unregistered",
                                 ::boxology_contract::VariantPayload::Unit,
                                 None,
                             ),
@@ -2617,9 +2695,10 @@ static __BOXOLOGY_CONTRACT_DESCRIPTOR: ::std::sync::LazyLock<
                 capability_13,
                 capability_14,
                 capability_15,
+                capability_16,
             ],
             ::boxology_contract::ContractRevision::new(
-                    "sha256:c65fa0ac55db94ce97d4892f7b1e187c6d0cfd8c23ac0fe7410dbf4539d90485",
+                    "sha256:ca07fafec76f61af23aa1478f6bc28aca8685173c8d83599d7f816d2e760dc55",
                 )
                 .expect("generated contract revision is non-empty"),
         )
@@ -2663,6 +2742,13 @@ pub trait BridgeHostDispatch: Send + Sync + 'static {
         request: ReplaceBridgeRequest,
     ) -> Pin<
         Box<dyn Future<Output = Result<BridgeRecord, BridgeHostError>> + Send + 'a>,
+    >;
+    fn unregister_bridge<'a>(
+        &'a self,
+        context: CallContext,
+        request: UnregisterBridgeRequest,
+    ) -> Pin<
+        Box<dyn Future<Output = Result<BridgeReceipt, BridgeHostError>> + Send + 'a>,
     >;
     fn reconcile_bridge<'a>(
         &'a self,
@@ -2846,6 +2932,11 @@ impl BridgeHostHandle {
                                 None,
                             ),
                             ::boxology_contract::VariantDescriptor::new(
+                                "Unregistered",
+                                ::boxology_contract::VariantPayload::Unit,
+                                None,
+                            ),
+                            ::boxology_contract::VariantDescriptor::new(
                                 "Failed",
                                 ::boxology_contract::VariantPayload::Unit,
                                 None,
@@ -3008,6 +3099,11 @@ impl BridgeHostHandle {
                                                 ),
                                                 ::boxology_contract::VariantDescriptor::new(
                                                     "Stopped",
+                                                    ::boxology_contract::VariantPayload::Unit,
+                                                    None,
+                                                ),
+                                                ::boxology_contract::VariantDescriptor::new(
+                                                    "Unregistered",
                                                     ::boxology_contract::VariantPayload::Unit,
                                                     None,
                                                 ),
@@ -3180,6 +3276,11 @@ impl BridgeHostHandle {
                                 None,
                             ),
                             ::boxology_contract::VariantDescriptor::new(
+                                "Unregistered",
+                                ::boxology_contract::VariantPayload::Unit,
+                                None,
+                            ),
+                            ::boxology_contract::VariantDescriptor::new(
                                 "Failed",
                                 ::boxology_contract::VariantPayload::Unit,
                                 None,
@@ -3271,6 +3372,42 @@ impl BridgeHostHandle {
             .map_err(|error| conversion_detail("output_decode", error))
             .map_err(CallError::InvalidResponse)
     }
+    pub async fn unregister_bridge(
+        &self,
+        context: CallContext,
+        request: UnregisterBridgeRequest,
+    ) -> Result<BridgeReceipt, CallError<BridgeHostError>> {
+        let input = request
+            .encode()
+            .map_err(|error| conversion_detail("input_encode", error))
+            .map_err(CallError::ContractViolation)?;
+        let output = self
+            .target
+            .call(&BRIDGE_HOST_UNREGISTER_BRIDGE, context, input)
+            .await
+            .map_err(|error| {
+                error.into_typed::<BridgeHostError>(&BRIDGE_HOST_ERROR_DESCRIPTOR)
+            })?;
+        let output = TypeDescriptor::structure([
+                ::boxology_contract::FieldDescriptor::new(
+                    "accepted",
+                    TypeDescriptor::bool(),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
+                    "recorded_at_ms",
+                    TypeDescriptor::u64(),
+                    None,
+                ),
+            ])
+            .expect("generated struct descriptor is valid")
+            .conform(DecodeRole::ConsumerOutput, output)
+            .map_err(|error| conversion_detail("output_decode", error))
+            .map_err(CallError::InvalidResponse)?;
+        <BridgeReceipt as ContractType>::decode(&output)
+            .map_err(|error| conversion_detail("output_decode", error))
+            .map_err(CallError::InvalidResponse)
+    }
     pub async fn reconcile_bridge(
         &self,
         context: CallContext,
@@ -3328,6 +3465,11 @@ impl BridgeHostHandle {
                             ),
                             ::boxology_contract::VariantDescriptor::new(
                                 "Stopped",
+                                ::boxology_contract::VariantPayload::Unit,
+                                None,
+                            ),
+                            ::boxology_contract::VariantDescriptor::new(
+                                "Unregistered",
                                 ::boxology_contract::VariantPayload::Unit,
                                 None,
                             ),
@@ -3520,6 +3662,11 @@ impl BridgeHostHandle {
                             ),
                             ::boxology_contract::VariantDescriptor::new(
                                 "Stopped",
+                                ::boxology_contract::VariantPayload::Unit,
+                                None,
+                            ),
+                            ::boxology_contract::VariantDescriptor::new(
+                                "Unregistered",
                                 ::boxology_contract::VariantPayload::Unit,
                                 None,
                             ),
@@ -4376,6 +4523,11 @@ impl BridgeHostHandle {
                                 None,
                             ),
                             ::boxology_contract::VariantDescriptor::new(
+                                "Unregistered",
+                                ::boxology_contract::VariantPayload::Unit,
+                                None,
+                            ),
+                            ::boxology_contract::VariantDescriptor::new(
                                 "Failed",
                                 ::boxology_contract::VariantPayload::Unit,
                                 None,
@@ -4604,6 +4756,11 @@ impl BridgeHostHandle {
                                 None,
                             ),
                             ::boxology_contract::VariantDescriptor::new(
+                                "Unregistered",
+                                ::boxology_contract::VariantPayload::Unit,
+                                None,
+                            ),
+                            ::boxology_contract::VariantDescriptor::new(
                                 "Failed",
                                 ::boxology_contract::VariantPayload::Unit,
                                 None,
@@ -4766,6 +4923,14 @@ static BRIDGE_HOST_REPLACE_BRIDGE: LazyLock<CapabilityId> = LazyLock::new(|| {
     )
 });
 #[rustfmt::skip]
+static BRIDGE_HOST_UNREGISTER_BRIDGE: LazyLock<CapabilityId> = LazyLock::new(|| {
+    CapabilityId::new(
+        BoxId::new("bridge-host").expect("generated box identity is valid"),
+        CapabilityName::new("unregister_bridge")
+            .expect("generated capability name is valid"),
+    )
+});
+#[rustfmt::skip]
 static BRIDGE_HOST_RECONCILE_BRIDGE: LazyLock<CapabilityId> = LazyLock::new(|| {
     CapabilityId::new(
         BoxId::new("bridge-host").expect("generated box identity is valid"),
@@ -4895,6 +5060,11 @@ static BRIDGE_HOST_ERROR_DESCRIPTOR: LazyLock<TypeDescriptor> = LazyLock::new(||
                 None,
             ),
             ::boxology_contract::VariantDescriptor::new(
+                "ManagementConflict",
+                ::boxology_contract::VariantPayload::Unit,
+                None,
+            ),
+            ::boxology_contract::VariantDescriptor::new(
                 "RestartBudgetExhausted",
                 ::boxology_contract::VariantPayload::Unit,
                 None,
@@ -4962,6 +5132,7 @@ pub enum BridgeLifecycle {
     Degraded,
     BackingOff,
     Stopped,
+    Unregistered,
     Failed,
     Unknown { tag: ::std::string::String, payload: ::boxology_contract::OpaquePayload },
 }
@@ -4987,6 +5158,9 @@ impl ::boxology_contract::ContractType for BridgeLifecycle {
                 ("BackingOff".into(), ::boxology_contract::SlotValue::Null)
             }
             Self::Stopped => ("Stopped".into(), ::boxology_contract::SlotValue::Null),
+            Self::Unregistered => {
+                ("Unregistered".into(), ::boxology_contract::SlotValue::Null)
+            }
             Self::Failed => ("Failed".into(), ::boxology_contract::SlotValue::Null),
             Self::Unknown { tag, payload } => {
                 (
@@ -5080,6 +5254,17 @@ impl ::boxology_contract::ContractType for BridgeLifecycle {
                 Ok(Self::Stopped)
             }
             "Stopped" => {
+                Err(
+                    ::boxology_contract::DecodeError::new(
+                            ::boxology_contract::DecodeErrorKind::UnexpectedPayload,
+                        )
+                        .under(::boxology_contract::PathSegment::Variant(tag.into())),
+                )
+            }
+            "Unregistered" if matches!(payload, ::boxology_contract::SlotValue::Null) => {
+                Ok(Self::Unregistered)
+            }
+            "Unregistered" => {
                 Err(
                     ::boxology_contract::DecodeError::new(
                             ::boxology_contract::DecodeErrorKind::UnexpectedPayload,
@@ -6949,6 +7134,97 @@ impl ::boxology_contract::ContractType for ReplaceBridgeRequest {
                 )
                 .map_err(|error| {
                     error.under(::boxology_contract::PathSegment::Field("spec".into()))
+                })?,
+        })
+    }
+}
+#[rustfmt::skip]
+/// Retire one agent-managed registration with compare-and-swap generation control.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Default)]
+pub struct UnregisterBridgeRequest {
+    pub bridge_id: ::std::string::String,
+    pub expected_generation: u64,
+}
+#[rustfmt::skip]
+impl ::boxology_contract::ContractType for UnregisterBridgeRequest {
+    fn encode_value(
+        &self,
+    ) -> ::core::result::Result<
+        ::boxology_contract::ContractValue,
+        ::boxology_contract::EncodeError,
+    > {
+        let mut fields = ::std::vec::Vec::new();
+        if let Some(value) = ::boxology_contract::ContractType::encode_field(
+                &self.bridge_id,
+            )
+            .map_err(|error| {
+                error.under(::boxology_contract::PathSegment::Field("bridge_id".into()))
+            })?
+        {
+            fields.push(("bridge_id".into(), value));
+        }
+        if let Some(value) = ::boxology_contract::ContractType::encode_field(
+                &self.expected_generation,
+            )
+            .map_err(|error| {
+                error
+                    .under(
+                        ::boxology_contract::PathSegment::Field(
+                            "expected_generation".into(),
+                        ),
+                    )
+            })?
+        {
+            fields.push(("expected_generation".into(), value));
+        }
+        ::boxology_contract::ContractValue::object(fields)
+            .map_err(|_| unreachable!("validated generated field identities are unique"))
+    }
+    fn decode_value(
+        value: &::boxology_contract::ContractValue,
+    ) -> ::core::result::Result<Self, ::boxology_contract::DecodeError> {
+        let ::boxology_contract::ValueRef::Object(fields) = value.view() else {
+            return Err(
+                ::boxology_contract::DecodeError::new(
+                    ::boxology_contract::DecodeErrorKind::KindMismatch,
+                ),
+            );
+        };
+        for (field, _) in fields.entries() {
+            match field {
+                "bridge_id" | "expected_generation" => {}
+                _ => {
+                    return Err(
+                        ::boxology_contract::DecodeError::new(
+                                ::boxology_contract::DecodeErrorKind::UnknownField(
+                                    field.into(),
+                                ),
+                            )
+                            .under(::boxology_contract::PathSegment::Field(field.into())),
+                    );
+                }
+            }
+        }
+        Ok(Self {
+            bridge_id: <::std::string::String as ::boxology_contract::ContractType>::decode_field(
+                    fields.get("bridge_id"),
+                )
+                .map_err(|error| {
+                    error
+                        .under(
+                            ::boxology_contract::PathSegment::Field("bridge_id".into()),
+                        )
+                })?,
+            expected_generation: <u64 as ::boxology_contract::ContractType>::decode_field(
+                    fields.get("expected_generation"),
+                )
+                .map_err(|error| {
+                    error
+                        .under(
+                            ::boxology_contract::PathSegment::Field(
+                                "expected_generation".into(),
+                            ),
+                        )
                 })?,
         })
     }
@@ -9373,6 +9649,7 @@ pub enum BridgeHostError {
     UnknownBridge,
     DuplicateBridgeConflict,
     GenerationConflict,
+    ManagementConflict,
     RestartBudgetExhausted,
     AuthenticationUnavailable,
     ChallengeExpired,
@@ -9406,6 +9683,9 @@ impl ::boxology_contract::ContractType for BridgeHostError {
             }
             Self::GenerationConflict => {
                 ("GenerationConflict".into(), ::boxology_contract::SlotValue::Null)
+            }
+            Self::ManagementConflict => {
+                ("ManagementConflict".into(), ::boxology_contract::SlotValue::Null)
             }
             Self::RestartBudgetExhausted => {
                 ("RestartBudgetExhausted".into(), ::boxology_contract::SlotValue::Null)
@@ -9510,6 +9790,17 @@ impl ::boxology_contract::ContractType for BridgeHostError {
                 payload, ::boxology_contract::SlotValue::Null
             ) => Ok(Self::GenerationConflict),
             "GenerationConflict" => {
+                Err(
+                    ::boxology_contract::DecodeError::new(
+                            ::boxology_contract::DecodeErrorKind::UnexpectedPayload,
+                        )
+                        .under(::boxology_contract::PathSegment::Variant(tag.into())),
+                )
+            }
+            "ManagementConflict" if matches!(
+                payload, ::boxology_contract::SlotValue::Null
+            ) => Ok(Self::ManagementConflict),
+            "ManagementConflict" => {
                 Err(
                     ::boxology_contract::DecodeError::new(
                             ::boxology_contract::DecodeErrorKind::UnexpectedPayload,
@@ -9677,6 +9968,7 @@ impl ::boxology_contract::ContractError for BridgeHostError {
             Self::UnknownBridge => "UnknownBridge",
             Self::DuplicateBridgeConflict => "DuplicateBridgeConflict",
             Self::GenerationConflict => "GenerationConflict",
+            Self::ManagementConflict => "ManagementConflict",
             Self::RestartBudgetExhausted => "RestartBudgetExhausted",
             Self::AuthenticationUnavailable => "AuthenticationUnavailable",
             Self::ChallengeExpired => "ChallengeExpired",
@@ -9703,13 +9995,14 @@ pub mod test_support {
     };
     use super::{
         BridgeHostError, BRIDGE_HOST_REGISTER_BRIDGE, BRIDGE_HOST_LIST_BRIDGES,
-        BRIDGE_HOST_REPLACE_BRIDGE, BRIDGE_HOST_RECONCILE_BRIDGE,
-        BRIDGE_HOST_REPORT_HEALTH, BRIDGE_HOST_BEGIN_AUTHENTICATION,
-        BRIDGE_HOST_SUBMIT_AUTHENTICATION, BRIDGE_HOST_VALIDATE_CREDENTIALS,
-        BRIDGE_HOST_INVALIDATE_CREDENTIALS, BRIDGE_HOST_ACCEPT_INBOUND,
-        BRIDGE_HOST_IMPORT_CONTENT, BRIDGE_HOST_DELIVER_MESSAGE,
-        BRIDGE_HOST_DELIVERY_STATUS, BRIDGE_HOST_BRIDGE_STATUS, BRIDGE_HOST_STOP_BRIDGE,
-        BRIDGE_HOST_SUSPEND_BRIDGE, BridgeHostHandle, conversion_detail,
+        BRIDGE_HOST_REPLACE_BRIDGE, BRIDGE_HOST_UNREGISTER_BRIDGE,
+        BRIDGE_HOST_RECONCILE_BRIDGE, BRIDGE_HOST_REPORT_HEALTH,
+        BRIDGE_HOST_BEGIN_AUTHENTICATION, BRIDGE_HOST_SUBMIT_AUTHENTICATION,
+        BRIDGE_HOST_VALIDATE_CREDENTIALS, BRIDGE_HOST_INVALIDATE_CREDENTIALS,
+        BRIDGE_HOST_ACCEPT_INBOUND, BRIDGE_HOST_IMPORT_CONTENT,
+        BRIDGE_HOST_DELIVER_MESSAGE, BRIDGE_HOST_DELIVERY_STATUS,
+        BRIDGE_HOST_BRIDGE_STATUS, BRIDGE_HOST_STOP_BRIDGE, BRIDGE_HOST_SUSPEND_BRIDGE,
+        BridgeHostHandle, conversion_detail,
     };
     type RegisterBridgeFuture = Pin<
         Box<
@@ -9744,6 +10037,17 @@ pub mod test_support {
         CallContext,
         super::ReplaceBridgeRequest,
     ) -> ReplaceBridgeFuture + Send + Sync + 'static;
+    type UnregisterBridgeFuture = Pin<
+        Box<
+            dyn Future<
+                Output = Result<super::BridgeReceipt, BridgeHostError>,
+            > + Send + 'static,
+        >,
+    >;
+    type UnregisterBridgeResponder = dyn Fn(
+        CallContext,
+        super::UnregisterBridgeRequest,
+    ) -> UnregisterBridgeFuture + Send + Sync + 'static;
     type ReconcileBridgeFuture = Pin<
         Box<
             dyn Future<
@@ -9892,6 +10196,7 @@ pub mod test_support {
         register_bridge: Option<Arc<RegisterBridgeResponder>>,
         list_bridges: Option<Arc<ListBridgesResponder>>,
         replace_bridge: Option<Arc<ReplaceBridgeResponder>>,
+        unregister_bridge: Option<Arc<UnregisterBridgeResponder>>,
         reconcile_bridge: Option<Arc<ReconcileBridgeResponder>>,
         report_health: Option<Arc<ReportHealthResponder>>,
         begin_authentication: Option<Arc<BeginAuthenticationResponder>>,
@@ -9944,6 +10249,20 @@ pub mod test_support {
                 + 'static,
         {
             self.replace_bridge = Some(
+                Arc::new(move |context, request| {
+                    Box::pin(responder(context, request))
+                }),
+            );
+            self
+        }
+        pub fn with_unregister_bridge<F, Fut>(mut self, responder: F) -> Self
+        where
+            F: Fn(CallContext, super::UnregisterBridgeRequest) -> Fut + Send + Sync
+                + 'static,
+            Fut: Future<Output = Result<super::BridgeReceipt, BridgeHostError>> + Send
+                + 'static,
+        {
+            self.unregister_bridge = Some(
                 Arc::new(move |context, request| {
                     Box::pin(responder(context, request))
                 }),
@@ -10530,6 +10849,52 @@ pub mod test_support {
                             )
                         })?;
                     let request = <super::ReplaceBridgeRequest as ContractType>::decode(
+                            &input,
+                        )
+                        .map_err(|error| {
+                            ErasedCallError::ContractViolation(
+                                conversion_detail("input_decode", error),
+                            )
+                        })?;
+                    match responder(context, request).await {
+                        Ok(output) => {
+                            output
+                                .encode()
+                                .map_err(|error| {
+                                    ErasedCallError::InvalidResponse(
+                                        conversion_detail("output_encode", error),
+                                    )
+                                })
+                        }
+                        Err(error) => Err(ErasedCallError::from_domain(&error)),
+                    }
+                });
+            }
+            if capability == &*BRIDGE_HOST_UNREGISTER_BRIDGE {
+                let Some(responder) = self.unregister_bridge.clone() else {
+                    return Box::pin(ready(Err(unprogrammed())));
+                };
+                return Box::pin(async move {
+                    let input = TypeDescriptor::structure([
+                            ::boxology_contract::FieldDescriptor::new(
+                                "bridge_id",
+                                TypeDescriptor::string(),
+                                None,
+                            ),
+                            ::boxology_contract::FieldDescriptor::new(
+                                "expected_generation",
+                                TypeDescriptor::u64(),
+                                None,
+                            ),
+                        ])
+                        .expect("generated struct descriptor is valid")
+                        .conform(DecodeRole::ProviderInput, input)
+                        .map_err(|error| {
+                            ErasedCallError::ContractViolation(
+                                conversion_detail("input_decode", error),
+                            )
+                        })?;
+                    let request = <super::UnregisterBridgeRequest as ContractType>::decode(
                             &input,
                         )
                         .map_err(|error| {
@@ -11350,8 +11715,8 @@ pub mod test_support {
 #[rustfmt::skip]
 #[doc(hidden)]
 pub const __BOXOLOGY_SEMANTIC_DIGEST: [u8; 32] = [
-    125, 145, 3, 57, 18, 176, 232, 48, 201, 43, 191, 155, 100, 197, 0, 210, 103, 114,
-    208, 222, 6, 149, 3, 100, 168, 87, 162, 76, 39, 80, 3, 50,
+    173, 141, 86, 207, 70, 200, 209, 5, 195, 76, 12, 75, 167, 66, 20, 172, 82, 3, 220,
+    142, 165, 163, 32, 252, 214, 166, 80, 145, 232, 93, 25, 230,
 ];
 #[rustfmt::skip]
 #[doc(hidden)]
@@ -11363,26 +11728,28 @@ macro_rules! __boxology_check_implementation {
         find_list_bridges $receiver; $($method $validity;)*);
         $crate::__boxology_check_implementation!(@ find_replace_bridge $receiver;
         $($method $validity;)*); $crate::__boxology_check_implementation!(@
-        find_reconcile_bridge $receiver; $($method $validity;)*);
-        $crate::__boxology_check_implementation!(@ find_report_health $receiver;
+        find_unregister_bridge $receiver; $($method $validity;)*);
+        $crate::__boxology_check_implementation!(@ find_reconcile_bridge $receiver;
         $($method $validity;)*); $crate::__boxology_check_implementation!(@
-        find_begin_authentication $receiver; $($method $validity;)*);
-        $crate::__boxology_check_implementation!(@ find_submit_authentication $receiver;
+        find_report_health $receiver; $($method $validity;)*);
+        $crate::__boxology_check_implementation!(@ find_begin_authentication $receiver;
         $($method $validity;)*); $crate::__boxology_check_implementation!(@
-        find_validate_credentials $receiver; $($method $validity;)*);
-        $crate::__boxology_check_implementation!(@ find_invalidate_credentials $receiver;
+        find_submit_authentication $receiver; $($method $validity;)*);
+        $crate::__boxology_check_implementation!(@ find_validate_credentials $receiver;
         $($method $validity;)*); $crate::__boxology_check_implementation!(@
-        find_accept_inbound $receiver; $($method $validity;)*);
-        $crate::__boxology_check_implementation!(@ find_import_content $receiver;
+        find_invalidate_credentials $receiver; $($method $validity;)*);
+        $crate::__boxology_check_implementation!(@ find_accept_inbound $receiver;
         $($method $validity;)*); $crate::__boxology_check_implementation!(@
-        find_deliver_message $receiver; $($method $validity;)*);
-        $crate::__boxology_check_implementation!(@ find_delivery_status $receiver;
+        find_import_content $receiver; $($method $validity;)*);
+        $crate::__boxology_check_implementation!(@ find_deliver_message $receiver;
         $($method $validity;)*); $crate::__boxology_check_implementation!(@
-        find_bridge_status $receiver; $($method $validity;)*);
-        $crate::__boxology_check_implementation!(@ find_stop_bridge $receiver; $($method
-        $validity;)*); $crate::__boxology_check_implementation!(@ find_suspend_bridge
-        $receiver; $($method $validity;)*); impl $crate::BridgeHostDispatch for $receiver
-        { fn register_bridge <'a > (&'a self, context : ::boxology::CallContext, input :
+        find_delivery_status $receiver; $($method $validity;)*);
+        $crate::__boxology_check_implementation!(@ find_bridge_status $receiver;
+        $($method $validity;)*); $crate::__boxology_check_implementation!(@
+        find_stop_bridge $receiver; $($method $validity;)*);
+        $crate::__boxology_check_implementation!(@ find_suspend_bridge $receiver;
+        $($method $validity;)*); impl $crate::BridgeHostDispatch for $receiver { fn
+        register_bridge <'a > (&'a self, context : ::boxology::CallContext, input :
         $crate::BridgeSpec,) -> ::std::pin::Pin < ::std::boxed::Box < dyn
         ::core::future::Future < Output = ::core::result::Result <$crate::BridgeRecord,
         $crate::BridgeHostError >, > + ::core::marker::Send + 'a, >, > {
@@ -11396,8 +11763,13 @@ macro_rules! __boxology_check_implementation {
         $crate::ReplaceBridgeRequest,) -> ::std::pin::Pin < ::std::boxed::Box < dyn
         ::core::future::Future < Output = ::core::result::Result <$crate::BridgeRecord,
         $crate::BridgeHostError >, > + ::core::marker::Send + 'a, >, > {
-        ::std::boxed::Box::pin(self.replace_bridge(context, input)) } fn reconcile_bridge
-        <'a > (&'a self, context : ::boxology::CallContext, input :
+        ::std::boxed::Box::pin(self.replace_bridge(context, input)) } fn
+        unregister_bridge <'a > (&'a self, context : ::boxology::CallContext, input :
+        $crate::UnregisterBridgeRequest,) -> ::std::pin::Pin < ::std::boxed::Box < dyn
+        ::core::future::Future < Output = ::core::result::Result <$crate::BridgeReceipt,
+        $crate::BridgeHostError >, > + ::core::marker::Send + 'a, >, > {
+        ::std::boxed::Box::pin(self.unregister_bridge(context, input)) } fn
+        reconcile_bridge <'a > (&'a self, context : ::boxology::CallContext, input :
         $crate::ReconcileBridgeRequest,) -> ::std::pin::Pin < ::std::boxed::Box < dyn
         ::core::future::Future < Output = ::core::result::Result <$crate::BridgeStatus,
         $crate::BridgeHostError >, > + ::core::marker::Send + 'a, >, > {
@@ -11520,6 +11892,27 @@ macro_rules! __boxology_check_implementation {
         $($rest)*);
     };
     (@ find_replace_bridge $receiver:ty;) => {
+        compile_error!("Boxology capability implementation is missing");
+    };
+    (@ find_unregister_bridge $receiver:ty; unregister_bridge valid; $($rest:tt)*) => {
+        const _ : () = { fn require_service < T : ::core::marker::Send +
+        ::core::marker::Sync + 'static > () {} fn require_future < F :
+        ::core::future::Future < Output = ::core::result::Result <$crate::BridgeReceipt,
+        $crate::BridgeHostError >> + ::core::marker::Send > (_ : F) {} fn check(receiver
+        : &$receiver, context : ::boxology::CallContext, input :
+        $crate::UnregisterBridgeRequest) { require_service::<$receiver > ();
+        require_future(receiver.unregister_bridge(context, input)); } };
+    };
+    (@ find_unregister_bridge $receiver:ty; unregister_bridge invalid; $($rest:tt)*) => {
+        compile_error!("Boxology capability has an invalid structural signature");
+    };
+    (
+        @ find_unregister_bridge $receiver:ty; $other:ident $validity:ident; $($rest:tt)*
+    ) => {
+        $crate::__boxology_check_implementation!(@ find_unregister_bridge $receiver;
+        $($rest)*);
+    };
+    (@ find_unregister_bridge $receiver:ty;) => {
         compile_error!("Boxology capability implementation is missing");
     };
     (@ find_reconcile_bridge $receiver:ty; reconcile_bridge valid; $($rest:tt)*) => {

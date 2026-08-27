@@ -184,7 +184,7 @@ fn encoded_catalog(management: BridgeManagement) -> Value {
 }
 
 #[tokio::test]
-async fn real_stdio_server_lists_fourteen_strict_agent_bridge_tools() {
+async fn real_stdio_server_lists_fifteen_strict_agent_bridge_tools() {
     let (_temporary, state) = state_directory();
     let mut process = McpProcess::start(&state, false).await;
     let listed = process.request(2, "tools/list", json!({})).await;
@@ -219,6 +219,7 @@ async fn real_stdio_server_lists_fourteen_strict_agent_bridge_tools() {
             "stop_bridge",
             "submit_bridge_authentication",
             "suspend_bridge",
+            "unregister_bridge",
             "validate_bridge_credentials",
         ]
     );
@@ -327,13 +328,17 @@ async fn child_session_bridge_calls_use_authenticated_boxology_ipc() {
 }
 
 #[tokio::test]
-async fn replacement_preserves_runtime_configured_management_on_the_ipc_wire() {
+async fn replacement_preserves_management_and_unregister_uses_generation_cas_on_the_ipc_wire() {
     let (_temporary, state) = state_directory();
     let socket = state.join("channel-ipc.sock");
     let listener = UnixListener::bind(&socket).expect("fixture IPC listener");
     fs::set_permissions(&socket, fs::Permissions::from_mode(0o600)).expect("owner-only IPC socket");
     let fixture = tokio::spawn(async move {
-        for expected in ["bridge-host.list_bridges", "bridge-host.replace_bridge"] {
+        for expected in [
+            "bridge-host.list_bridges",
+            "bridge-host.replace_bridge",
+            "bridge-host.unregister_bridge",
+        ] {
             let (stream, _) = listener.accept().await.expect("MCP IPC connection");
             let (reader, mut writer) = stream.into_split();
             let mut lines = BufReader::new(reader).lines();
@@ -353,12 +358,21 @@ async fn replacement_preserves_runtime_configured_management_on_the_ipc_wire() {
                     "status": "ok",
                     "output": encoded_catalog(BridgeManagement::RuntimeConfigured)
                 })
-            } else {
+            } else if expected == "bridge-host.replace_bridge" {
                 assert_eq!(request["input"]["expected_generation"], "7");
                 assert_eq!(
                     request["input"]["spec"]["management"]["tag"],
                     "RuntimeConfigured"
                 );
+                json!({
+                    "protocolVersion": 1,
+                    "requestId": request["requestId"],
+                    "status": "error",
+                    "error": { "kind": "domain", "code": "FixtureRejected" }
+                })
+            } else {
+                assert_eq!(request["input"]["bridge_id"], "signal");
+                assert_eq!(request["input"]["expected_generation"], "7");
                 json!({
                     "protocolVersion": 1,
                     "requestId": request["requestId"],
@@ -387,6 +401,20 @@ async fn replacement_preserves_runtime_configured_management_on_the_ipc_wire() {
         )
         .await;
     assert!(replaced.to_string().contains("FixtureRejected"));
+    let unregistered = process
+        .request(
+            3,
+            "tools/call",
+            json!({
+                "name": "unregister_bridge",
+                "arguments": {
+                    "bridgeId": "signal",
+                    "expectedGeneration": 7
+                }
+            }),
+        )
+        .await;
+    assert!(unregistered.to_string().contains("FixtureRejected"));
     fixture.await.expect("IPC fixture completes");
     process.finish().await;
 }

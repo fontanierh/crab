@@ -7,10 +7,11 @@ use async_trait::async_trait;
 use boxology_contract::{CallContext, Caller, CancelToken, TraceContext};
 use boxology_runtime::CompositionBuilder;
 use bridge_host_contract::{
-    AuthenticationMethod, BeginAuthenticationRequest, BridgeAlertTarget, BridgeInbound,
-    BridgeIngressMode, BridgeLifecycle, BridgeManagement, BridgeOutbound, BridgeReference,
-    BridgeSpec, DeliveryLifecycle, ImportBridgeContentRequest, ReconcileBridgeRequest,
-    ReplaceBridgeRequest, SubmitAuthenticationRequest,
+    AuthenticationMethod, BeginAuthenticationRequest, BridgeAlertTarget, BridgeHostError,
+    BridgeInbound, BridgeIngressMode, BridgeLifecycle, BridgeManagement, BridgeOutbound,
+    BridgeReference, BridgeSpec, DeliveryLifecycle, DeliveryReference, ImportBridgeContentRequest,
+    ListBridgesRequest, ReconcileBridgeRequest, ReplaceBridgeRequest, SubmitAuthenticationRequest,
+    UnregisterBridgeRequest,
 };
 use bridge_host_implementation::{
     BridgeCredentialReceipt, BridgeCredentialSink, BridgeCredentialUpdate, BridgeHostState,
@@ -28,6 +29,7 @@ struct FakePackage {
     stops: AtomicUsize,
     validations: AtomicUsize,
     credential_commits: AtomicUsize,
+    credential_invalidations: AtomicUsize,
 }
 
 #[async_trait]
@@ -96,6 +98,7 @@ impl BridgePackage for FakePackage {
         &self,
         _credential_json: &str,
     ) -> Result<(), BridgePackageError> {
+        self.credential_invalidations.fetch_add(1, Ordering::SeqCst);
         Ok(())
     }
 
@@ -489,15 +492,111 @@ async fn bridge_host_owns_auth_ingress_delivery_and_generations() {
         "a superseded package instance cannot mutate current credentials"
     );
 
+    assert!(matches!(
+        bridge_handle
+            .unregister_bridge(
+                context(),
+                UnregisterBridgeRequest {
+                    bridge_id: "whatsapp".into(),
+                    expected_generation: 1,
+                },
+            )
+            .await,
+        Err(boxology_contract::CallError::Domain(
+            BridgeHostError::GenerationConflict
+        ))
+    ));
     bridge_handle
-        .stop_bridge(
+        .unregister_bridge(
             context(),
-            BridgeReference {
+            UnregisterBridgeRequest {
                 bridge_id: "whatsapp".into(),
+                expected_generation: 2,
             },
         )
         .await
-        .expect("bridge stops through host");
+        .expect("agent-managed bridge unregisters");
+    assert_eq!(
+        observed_package
+            .credential_invalidations
+            .load(Ordering::SeqCst),
+        1
+    );
+    assert!(credential_store.get(handle).await.is_err());
+    let catalog = bridge_handle
+        .list_bridges(context(), ListBridgesRequest {})
+        .await
+        .expect("catalog remains inspectable");
+    let tombstone = catalog
+        .bridges
+        .iter()
+        .find(|bridge| bridge.bridge_id == "whatsapp")
+        .expect("unregistered tombstone remains auditable");
+    assert_eq!(tombstone.lifecycle, BridgeLifecycle::Unregistered);
+    assert_eq!(tombstone.generation, 3);
+    assert!(!tombstone.desired_running);
+    assert_eq!(
+        bridge_handle
+            .delivery_status(
+                context(),
+                DeliveryReference {
+                    bridge_id: "whatsapp".into(),
+                    message_id: "message-1".into(),
+                },
+            )
+            .await
+            .expect("delivery audit survives unregistration"),
+        delivered
+    );
+    assert!(matches!(
+        bridge_handle
+            .reconcile_bridge(
+                context(),
+                ReconcileBridgeRequest {
+                    bridge_id: "whatsapp".into(),
+                    expected_generation: 3,
+                    desired_running: true,
+                },
+            )
+            .await,
+        Err(boxology_contract::CallError::Domain(
+            BridgeHostError::UnknownBridge
+        ))
+    ));
+
+    let mut runtime_owned = spec(BridgeIngressMode::Queue);
+    runtime_owned.bridge_id = "runtime-signal".into();
+    runtime_owned.package_id = "signal".into();
+    runtime_owned.display_name = "Signal".into();
+    runtime_owned.management = BridgeManagement::RuntimeConfigured;
+    runtime_owned.desired_running = false;
+    bridge_handle
+        .register_bridge(context(), runtime_owned)
+        .await
+        .expect("runtime bridge registers");
+    assert!(matches!(
+        bridge_handle
+            .unregister_bridge(
+                context(),
+                UnregisterBridgeRequest {
+                    bridge_id: "runtime-signal".into(),
+                    expected_generation: 1,
+                },
+            )
+            .await,
+        Err(boxology_contract::CallError::Domain(
+            BridgeHostError::ManagementConflict
+        ))
+    ));
+
+    let mut reactivated = spec(BridgeIngressMode::Queue);
+    reactivated.desired_running = false;
+    let reactivated = bridge_handle
+        .register_bridge(context(), reactivated)
+        .await
+        .expect("a retired ID can register as a fresh generation");
+    assert_eq!(reactivated.lifecycle, BridgeLifecycle::Registered);
+    assert_eq!(reactivated.generation, 4);
 }
 
 #[tokio::test]

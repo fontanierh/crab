@@ -61,6 +61,25 @@
     {
       "deprecation": null,
       "docs": [
+        " Retire an agent-managed registration and credential while preserving referenced history."
+      ],
+      "error": "BridgeHostError",
+      "id": "bridge-host.unregister_bridge",
+      "idempotency": "none",
+      "input": {
+        "name": "request",
+        "type": "UnregisterBridgeRequest"
+      },
+      "max_exposure": "code_only",
+      "name": "unregister_bridge",
+      "output": {
+        "type": "BridgeReceipt"
+      },
+      "shape": "unary"
+    },
+    {
+      "deprecation": null,
+      "docs": [
         " Converge observed lifecycle toward desired lifecycle using bounded recovery."
       ],
       "error": "BridgeHostError",
@@ -295,9 +314,9 @@
   "provenance": {
     "generator": "boxology-generator",
     "generator_version": "0.1.1",
-    "semantic_digest": "sha256:7d91033912b0e830c92bbf9b64c500d26772d0de06950364a857a24c27500332"
+    "semantic_digest": "sha256:ad8d56cf46c8d105c34c0c4ba74214ac5203dc8ea5a320fcd6a65091e85d19e6"
   },
-  "revision": "sha256:c65fa0ac55db94ce97d4892f7b1e187c6d0cfd8c23ac0fe7410dbf4539d90485",
+  "revision": "sha256:ca07fafec76f61af23aa1478f6bc28aca8685173c8d83599d7f816d2e760dc55",
   "schema_format": 1,
   "types": [
     {
@@ -340,6 +359,11 @@
           "deprecation": null,
           "docs": [],
           "name": "Stopped"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "Unregistered"
         },
         {
           "deprecation": null,
@@ -800,6 +824,28 @@
       ],
       "kind": "struct",
       "name": "ReplaceBridgeRequest"
+    },
+    {
+      "deprecation": null,
+      "docs": [
+        " Retire one agent-managed registration with compare-and-swap generation control."
+      ],
+      "fields": [
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "bridge_id",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "expected_generation",
+          "type": "u64"
+        }
+      ],
+      "kind": "struct",
+      "name": "UnregisterBridgeRequest"
     },
     {
       "deprecation": null,
@@ -1453,6 +1499,12 @@
           "deprecation": null,
           "docs": [],
           "name": "GenerationConflict",
+          "payload": "unit"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "ManagementConflict",
           "payload": "unit"
         },
         {
