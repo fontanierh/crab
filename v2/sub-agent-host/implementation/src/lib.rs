@@ -35,7 +35,8 @@ const MAX_AGENT_METADATA_BYTES: usize = 64 * 1024;
 const MAX_CHILD_MESSAGE_BYTES: usize = 1024 * 1024;
 const MAX_STOP_REASON_BYTES: usize = 16 * 1024;
 const MAX_NATIVE_PROMPT_BYTES: usize = 2 * 1024 * 1024;
-const MAX_SNAPSHOT_BYTES: usize = 4 * 1024 * 1024;
+const MAX_PORTABLE_BOOTSTRAP_BYTES: usize = 2 * 1024 * 1024;
+const PORTABLE_SNAPSHOT_EVENT_PAGE_LIMIT: u64 = 4;
 const MAX_GENERATED_SUB_AGENT_IDENTIFIER_BYTES: usize = "subagent_".len() + 36;
 const _: () = assert!(
     "subagent:".len()
@@ -56,6 +57,85 @@ const PUMP_FAILURE_LIMIT: u8 = 3;
 const INITIAL_TASK_MESSAGE_ID: &str = "__initial_task__";
 
 type Clock = Arc<dyn Fn() -> Result<u64, SubAgentHostError> + Send + Sync>;
+
+struct PortableSnapshotBuilder {
+    encoded: String,
+    limit: usize,
+}
+
+impl PortableSnapshotBuilder {
+    fn new(limit: usize) -> Self {
+        Self {
+            encoded: String::from("["),
+            limit,
+        }
+    }
+
+    fn push(
+        &mut self,
+        sequence: u64,
+        direction: &AcpEventDirection,
+        native_event_json: &str,
+    ) -> Result<(), SubAgentHostError> {
+        let reserved = self.encoded.len().saturating_add(1);
+        let remaining = self.limit.saturating_sub(reserved);
+        if native_event_json.len() > remaining {
+            return Err(SubAgentHostError::InvalidContextBoundary);
+        }
+        let direction = match direction {
+            AcpEventDirection::ClientToAgent => "client_to_agent",
+            AcpEventDirection::AgentToClient => "agent_to_client",
+            AcpEventDirection::Unknown { .. } => {
+                return Err(SubAgentHostError::InvalidNativePayload);
+            }
+        };
+        let item = serde_json::to_string(&json!({
+            "sequence": sequence,
+            "direction": direction,
+            "nativeEvent": parse_json(native_event_json)?,
+        }))
+        .map_err(|_| SubAgentHostError::InvalidNativePayload)?;
+        let separator = usize::from(self.encoded.len() > 1);
+        let final_len = self
+            .encoded
+            .len()
+            .checked_add(separator)
+            .and_then(|len| len.checked_add(item.len()))
+            .and_then(|len| len.checked_add(1))
+            .ok_or(SubAgentHostError::InvalidContextBoundary)?;
+        if final_len > self.limit {
+            return Err(SubAgentHostError::InvalidContextBoundary);
+        }
+        if separator == 1 {
+            self.encoded.push(',');
+        }
+        self.encoded.push_str(&item);
+        Ok(())
+    }
+
+    fn finish(mut self) -> Result<String, SubAgentHostError> {
+        if self.encoded.len().saturating_add(1) > self.limit {
+            return Err(SubAgentHostError::InvalidContextBoundary);
+        }
+        self.encoded.push(']');
+        Ok(self.encoded)
+    }
+}
+
+fn portable_snapshot_bootstrap(
+    snapshot: &str,
+    through_sequence: u64,
+    limit: usize,
+) -> Result<String, SubAgentHostError> {
+    let escaped = snapshot.replace("]]>", "]]]]><![CDATA[>");
+    let bootstrap = format!(
+        "<crab_parent_context realization=\"portable_snapshot\" through_sequence=\"{through_sequence}\"><![CDATA[{escaped}]]></crab_parent_context>"
+    );
+    if bootstrap.len() > limit {
+        return Err(SubAgentHostError::InvalidContextBoundary);
+    }
+    Ok(bootstrap)
+}
 
 #[derive(Default)]
 struct SpawnLocks {
@@ -272,7 +352,7 @@ impl SubAgentHost {
         through_sequence: u64,
     ) -> Result<String, SubAgentHostError> {
         let mut cursor = 0;
-        let mut visible = Vec::new();
+        let mut visible = PortableSnapshotBuilder::new(MAX_PORTABLE_BOOTSTRAP_BYTES);
         while cursor < through_sequence {
             let remaining = through_sequence - cursor;
             let page = self
@@ -282,7 +362,9 @@ impl SubAgentHost {
                     ReadEventsRequest {
                         session_id: parent_session_id.to_owned(),
                         after_sequence: cursor,
-                        limit: remaining.min(EVENT_PAGE_LIMIT),
+                        limit: remaining
+                            .min(EVENT_PAGE_LIMIT)
+                            .min(PORTABLE_SNAPSHOT_EVENT_PAGE_LIMIT),
                     },
                 )
                 .await
@@ -296,29 +378,12 @@ impl SubAgentHost {
                 .filter(|event| event.sequence <= through_sequence)
                 .filter(|event| matches!(event.kind, AcpEventKind::Message))
             {
-                visible.push(json!({
-                    "sequence": event.sequence,
-                    "direction": match event.direction {
-                        AcpEventDirection::ClientToAgent => "client_to_agent",
-                        AcpEventDirection::AgentToClient => "agent_to_client",
-                        AcpEventDirection::Unknown { .. } => {
-                            return Err(SubAgentHostError::InvalidNativePayload);
-                        }
-                    },
-                    "nativeEvent": parse_json(&event.native_event_json)?,
-                }));
+                visible.push(event.sequence, &event.direction, &event.native_event_json)?;
             }
             cursor = page.next_sequence.min(through_sequence);
         }
-        let snapshot =
-            serde_json::to_string(&visible).map_err(|_| SubAgentHostError::InvalidNativePayload)?;
-        if snapshot.len() > MAX_SNAPSHOT_BYTES {
-            return Err(SubAgentHostError::InvalidContextBoundary);
-        }
-        let escaped = snapshot.replace("]]>", "]]]]><![CDATA[>");
-        Ok(format!(
-            "<crab_parent_context realization=\"portable_snapshot\" through_sequence=\"{through_sequence}\"><![CDATA[{escaped}]]></crab_parent_context>"
-        ))
+        let snapshot = visible.finish()?;
+        portable_snapshot_bootstrap(&snapshot, through_sequence, MAX_PORTABLE_BOOTSTRAP_BYTES)
     }
 
     fn start_pump(&self, sub_agent_id: &str, child_session_id: &str) {
@@ -1357,11 +1422,12 @@ mod tests {
     use tokio::sync::oneshot;
 
     use super::{
-        MAX_AGENT_METADATA_BYTES, MAX_CHILD_MESSAGE_BYTES, MAX_CLIENT_MESSAGE_IDENTIFIER_BYTES,
-        MAX_NATIVE_PROMPT_BYTES, MAX_STOP_REASON_BYTES, MAX_SUB_AGENT_IDENTIFIER_BYTES,
-        MAX_SUB_AGENT_METADATA_BYTES, MAX_WORKING_DIRECTORY_BYTES, PumpRegistry,
-        SendToChildRequest, SendToParentRequest, SpawnSubAgentRequest, StopSubAgentRequest,
-        SubAgentContextMode, SubAgentHostError, SubAgentInputMode, SubAgentOperations, generated,
+        AcpEventDirection, MAX_AGENT_METADATA_BYTES, MAX_CHILD_MESSAGE_BYTES,
+        MAX_CLIENT_MESSAGE_IDENTIFIER_BYTES, MAX_NATIVE_PROMPT_BYTES, MAX_STOP_REASON_BYTES,
+        MAX_SUB_AGENT_IDENTIFIER_BYTES, MAX_SUB_AGENT_METADATA_BYTES, MAX_WORKING_DIRECTORY_BYTES,
+        PortableSnapshotBuilder, PumpRegistry, SendToChildRequest, SendToParentRequest,
+        SpawnSubAgentRequest, StopSubAgentRequest, SubAgentContextMode, SubAgentHostError,
+        SubAgentInputMode, SubAgentOperations, generated, portable_snapshot_bootstrap,
         sub_agent_metadata, validate_prompt, validate_send_to_child, validate_send_to_parent,
         validate_spawn, validate_stop,
     };
@@ -1635,6 +1701,47 @@ mod tests {
             validate_stop(&stop),
             Err(SubAgentHostError::InvalidNativePayload)
         );
+    }
+
+    #[test]
+    fn portable_snapshot_streaming_never_retains_more_than_its_budget() {
+        let mut snapshot = PortableSnapshotBuilder::new(192);
+        snapshot
+            .push(1, &AcpEventDirection::ClientToAgent, r#"{"text":"one"}"#)
+            .expect("first visible event fits");
+        let before_rejection = snapshot.encoded.len();
+
+        assert_eq!(
+            snapshot.push(
+                2,
+                &AcpEventDirection::AgentToClient,
+                &object_json_with_len(192)
+            ),
+            Err(SubAgentHostError::InvalidContextBoundary)
+        );
+        assert_eq!(snapshot.encoded.len(), before_rejection);
+        assert!(snapshot.finish().expect("bounded snapshot closes").len() <= 192);
+    }
+
+    #[test]
+    fn portable_snapshot_rejects_an_oversized_event_before_json_parsing() {
+        let mut snapshot = PortableSnapshotBuilder::new(32);
+        assert_eq!(
+            snapshot.push(1, &AcpEventDirection::ClientToAgent, &"x".repeat(32)),
+            Err(SubAgentHostError::InvalidContextBoundary)
+        );
+    }
+
+    #[test]
+    fn portable_snapshot_envelope_accounts_for_cdata_expansion() {
+        let snapshot = format!(r#"["{}"]"#, "]]>".repeat(16));
+        assert_eq!(
+            portable_snapshot_bootstrap(&snapshot, 1, 128),
+            Err(SubAgentHostError::InvalidContextBoundary)
+        );
+        let bootstrap =
+            portable_snapshot_bootstrap("[]", 1, 128).expect("small snapshot envelope fits");
+        assert!(bootstrap.len() <= 128);
     }
 
     fn valid_spawn_request() -> SpawnSubAgentRequest {

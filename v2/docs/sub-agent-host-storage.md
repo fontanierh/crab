@@ -11,7 +11,7 @@
 |---|---|---|
 | Fresh | `FreshSession` | Only explicit child bootstrap metadata and task are sent. |
 | Inherit parent | `NativeAcpFork` | At the exact idle head, an advertised native fork preserves opaque agent context in a separately supervised process. |
-| Inherit parent fallback | `PortableSnapshot` | When explicitly allowed, message events through an immutable parent cursor are injected, capped at 4 MiB. |
+| Inherit parent fallback | `PortableSnapshot` | When explicitly allowed, message events through an immutable parent cursor are streamed into a complete injected bootstrap capped at 2 MiB. |
 
 Native inheritance requires the same agent implementation, an advertised draft `session/fork`
 capability, and an unchanged idle parent cursor. Portable inheritance preserves the visible

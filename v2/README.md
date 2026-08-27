@@ -121,6 +121,8 @@ interrupt as a separate explicit action.
   children
   resume their exact native sessions within a durable restart budget; identities, journals and
   cursors stay continuous, while every non-resumable child fails explicitly without replacement.
+  Portable context is encoded incrementally, rejects oversized events before parsing, and includes
+  its CDATA envelope inside the agent-host 2 MiB bootstrap budget.
   Unrelated client IDs spawn concurrently; retries for one ID serialize, and startup recovery is an
   exclusive barrier that neither races nor permanently retains identity locks.
   Spawn and duplex control inputs are byte-bounded before JSON parsing, fingerprinting, identity
