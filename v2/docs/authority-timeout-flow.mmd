@@ -3,18 +3,22 @@ flowchart LR
     CALL["preflight · open<br/>resume · fork"]
     TOTAL{"Authority verifier<br/>30s total deadline"}
     FS["Canonical workspace<br/>write probe"]
-    SUDO["sudo -n id -u<br/>10s · 64 KiB / stream"]
-    PROBE["Agent policy probe<br/>10s · 64 KiB / stream"]
+    SUDO["sudo -n id -u<br/>10s · 64 KiB / stream<br/>residual group KILL"]
+    PROBE["Agent policy probe<br/>10s outer · 64 KiB / stream<br/>residual group KILL"]
+    NESTED["Adapter + policy commands<br/>8s each · 64 KiB / stream"]
     READY["Verified authority<br/>session may start"]
     STOP["Cancel verifier<br/>TERM process group<br/>1s grace → KILL"]
+    NESTED_STOP["Stop nested child<br/>TERM · 500ms grace → KILL"]
     REJECT["AuthorityUnavailable<br/>no session row created"]
 
     CALL --> TOTAL
-    TOTAL --> FS --> SUDO --> PROBE --> READY
+    TOTAL --> FS --> SUDO --> PROBE --> NESTED --> READY
     TOTAL -. "total timeout" .-> STOP
     SUDO -. "timeout / failure" .-> STOP
     PROBE -. "timeout / failure" .-> STOP
+    NESTED -. "timeout / overflow" .-> NESTED_STOP
     STOP --> REJECT
+    NESTED_STOP --> REJECT
 
     classDef caller fill:#f8fafc,stroke:#64748b,stroke-width:1.5px,color:#172033;
     classDef gate fill:#fef3c7,stroke:#d97706,stroke-width:2px,color:#78350f;
@@ -24,6 +28,6 @@ flowchart LR
 
     class CALL caller;
     class TOTAL gate;
-    class FS,SUDO,PROBE probe;
+    class FS,SUDO,PROBE,NESTED probe;
     class READY ready;
-    class STOP,REJECT failure;
+    class STOP,NESTED_STOP,REJECT failure;

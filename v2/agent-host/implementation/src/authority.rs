@@ -168,6 +168,10 @@ async fn command_output(mut command: Command, timeout: Duration) -> io::Result<O
 
     let error = match result {
         Ok(Ok(output)) => {
+            // The direct child is reaped, but a probe may have daemonized descendants after
+            // closing its pipes. A completed authority command owns no surviving processes.
+            #[cfg(unix)]
+            process_group.terminate(Signal::SIGKILL);
             #[cfg(unix)]
             process_group.disarm();
             return Ok(output);
@@ -308,6 +312,27 @@ mod tests {
             assert_eq!(error.kind(), io::ErrorKind::InvalidData, "{stream}");
             assert_process_terminated(&child_pid_path).await;
         }
+    }
+
+    #[tokio::test]
+    async fn successful_command_terminates_daemonized_descendants() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let child_pid_path = directory.path().join("success.pid");
+        let mut command = Command::new("/bin/sh");
+        command.args([
+            "-c",
+            "/bin/sleep 60 >/dev/null 2>&1 & child=$!; printf '%s' \"$child\" > \"$1\"; \
+             printf ok",
+            "authority-success-test",
+            &child_pid_path.to_string_lossy(),
+        ]);
+
+        let output = command_output(command, Duration::from_secs(5))
+            .await
+            .expect("bounded command succeeds");
+        assert!(output.status.success());
+        assert_eq!(output.stdout, b"ok");
+        assert_process_terminated(&child_pid_path).await;
     }
 }
 
