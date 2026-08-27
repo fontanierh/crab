@@ -120,6 +120,9 @@ interrupt as a separate explicit action.
   whole-file allocation. The configured runtime and standalone ACP channel facade share the same
   bootstrap reader. See the [rendered startup boundary](docs/startup-input-boundary.png).
 - `trigger-inbox` is implemented with durable deduplication, FIFO leases and restart recovery.
+  It rejects messages above 1 MiB, more than 64 attachments, oversized attachment metadata,
+  identities and settlement diagnostics before SQLite persistence. See the
+  [rendered durable envelope](docs/trigger-envelope-boundary.png).
   `crab-v2-trigger` exposes its enqueue capability through owner-only authenticated local IPC for
   cron, self-work and operator ingress. Its
   [storage contract](docs/trigger-inbox-storage.md) is schema-versioned from day one.

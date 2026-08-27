@@ -12,6 +12,19 @@ use crate::{
 
 const SCHEMA_VERSION: i64 = 1;
 const MAX_CLAIM_LIMIT: u64 = 1_024;
+pub(crate) const MAX_TRIGGER_MESSAGE_BYTES: usize = 1024 * 1024;
+pub(crate) const MAX_TRIGGER_ATTACHMENTS: usize = 64;
+const MAX_SOURCE_ID_BYTES: usize = 512;
+const MAX_DEDUPLICATION_KEY_BYTES: usize = 1024;
+const MAX_CHANNEL_ID_BYTES: usize = 512;
+const MAX_LANE_BYTES: usize = 512;
+const MAX_ATTACHMENT_MEDIA_TYPE_BYTES: usize = 255;
+const MAX_ATTACHMENT_NAME_BYTES: usize = 1024;
+const MAX_CONTENT_HANDLE_BYTES: usize = 4096;
+const MAX_WORKER_ID_BYTES: usize = 512;
+const MAX_TRIGGER_ID_BYTES: usize = 128;
+const MAX_LEASE_TOKEN_BYTES: usize = 128;
+pub(crate) const MAX_SETTLEMENT_DETAIL_BYTES: usize = 16 * 1024;
 
 const RECORD_COLUMNS: &str = "
     sequence, trigger_id, source, source_id, deduplication_key, target_channel_id, lane, mode,
@@ -237,8 +250,8 @@ impl TriggerStore {
         &self,
         request: ExtendLease,
     ) -> Result<TriggerLease, TriggerInboxError> {
-        if request.trigger_id.trim().is_empty()
-            || request.lease_token.trim().is_empty()
+        if !valid_required(&request.trigger_id, MAX_TRIGGER_ID_BYTES)
+            || !valid_required(&request.lease_token, MAX_LEASE_TOKEN_BYTES)
             || request.extend_by_ms == 0
         {
             return Err(TriggerInboxError::InvalidLease);
@@ -291,7 +304,13 @@ impl TriggerStore {
         &self,
         request: SettleTrigger,
     ) -> Result<TriggerReceipt, TriggerInboxError> {
-        if request.trigger_id.trim().is_empty() || request.lease_token.trim().is_empty() {
+        if !valid_required(&request.trigger_id, MAX_TRIGGER_ID_BYTES)
+            || !valid_required(&request.lease_token, MAX_LEASE_TOKEN_BYTES)
+            || request
+                .detail
+                .as_ref()
+                .is_some_and(|detail| detail.len() > MAX_SETTLEMENT_DETAIL_BYTES)
+        {
             return Err(TriggerInboxError::InvalidSettlement);
         }
         let settled_at = input_i64(request.settled_at_ms, TriggerInboxError::InvalidSettlement)?;
@@ -358,7 +377,7 @@ impl TriggerStore {
         &self,
         request: TriggerReference,
     ) -> Result<TriggerRecord, TriggerInboxError> {
-        if request.trigger_id.trim().is_empty() {
+        if !valid_required(&request.trigger_id, MAX_TRIGGER_ID_BYTES) {
             return Err(TriggerInboxError::UnknownTrigger);
         }
         let connection = self.lock()?;
@@ -415,21 +434,33 @@ fn migrate_v0_to_v1(connection: &mut Connection) -> Result<(), TriggerInboxError
 }
 
 fn validate_enqueue(request: &EnqueueTrigger) -> Result<(), TriggerInboxError> {
-    if request.source_id.trim().is_empty() || request.deduplication_key.trim().is_empty() {
+    if !valid_required(&request.source_id, MAX_SOURCE_ID_BYTES)
+        || !valid_required(&request.deduplication_key, MAX_DEDUPLICATION_KEY_BYTES)
+    {
         return Err(TriggerInboxError::InvalidSource);
     }
     source_tag(&request.source)?;
-    if request.target_channel_id.trim().is_empty() {
+    if !valid_required(&request.target_channel_id, MAX_CHANNEL_ID_BYTES) {
         return Err(TriggerInboxError::InvalidTarget);
     }
-    if request.lane.trim().is_empty() {
+    if !valid_required(&request.lane, MAX_LANE_BYTES) {
         return Err(TriggerInboxError::InvalidLane);
     }
     mode_tag(&request.mode)?;
+    if request.message_json.len() > MAX_TRIGGER_MESSAGE_BYTES
+        || request.attachments.len() > MAX_TRIGGER_ATTACHMENTS
+    {
+        return Err(TriggerInboxError::InvalidPayload);
+    }
     serde_json::from_str::<serde_json::Value>(&request.message_json)
         .map_err(|_| TriggerInboxError::InvalidPayload)?;
     if request.attachments.iter().any(|attachment| {
-        attachment.media_type.trim().is_empty() || attachment.content_handle.trim().is_empty()
+        !valid_required(&attachment.media_type, MAX_ATTACHMENT_MEDIA_TYPE_BYTES)
+            || !valid_required(&attachment.content_handle, MAX_CONTENT_HANDLE_BYTES)
+            || attachment
+                .name
+                .as_ref()
+                .is_some_and(|name| !valid_required(name, MAX_ATTACHMENT_NAME_BYTES))
     }) {
         return Err(TriggerInboxError::InvalidPayload);
     }
@@ -437,14 +468,19 @@ fn validate_enqueue(request: &EnqueueTrigger) -> Result<(), TriggerInboxError> {
 }
 
 fn validate_claim(request: &ClaimTriggers) -> Result<(), TriggerInboxError> {
-    if request.worker_id.trim().is_empty()
-        || request.lane.trim().is_empty()
+    if !valid_required(&request.worker_id, MAX_WORKER_ID_BYTES)
+        || !valid_required(&request.lane, MAX_LANE_BYTES)
+        || request.limit == 0
         || request.limit > MAX_CLAIM_LIMIT
         || request.lease_duration_ms == 0
     {
         return Err(TriggerInboxError::InvalidClaim);
     }
     Ok(())
+}
+
+fn valid_required(value: &str, limit: usize) -> bool {
+    value.len() <= limit && !value.trim().is_empty()
 }
 
 fn query_by_deduplication_key(

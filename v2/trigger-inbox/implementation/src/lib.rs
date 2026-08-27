@@ -114,6 +114,9 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
+    use crate::store::{
+        MAX_SETTLEMENT_DETAIL_BYTES, MAX_TRIGGER_ATTACHMENTS, MAX_TRIGGER_MESSAGE_BYTES,
+    };
 
     struct Fixture {
         directory: TempDir,
@@ -396,6 +399,112 @@ mod tests {
                 )
                 .await,
             Err(TriggerInboxError::LeaseExpired)
+        );
+    }
+
+    #[tokio::test]
+    async fn durable_envelope_limits_reject_oversized_inputs_before_persistence() {
+        let exact = TriggerInbox::open_in_memory().expect("exact-boundary inbox opens");
+        let mut exact_message = trigger("exact-message", 0);
+        let prefix = r#"{"text":""#;
+        let suffix = r#""}"#;
+        exact_message.message_json = format!(
+            "{prefix}{}{suffix}",
+            "x".repeat(MAX_TRIGGER_MESSAGE_BYTES - prefix.len() - suffix.len())
+        );
+        assert_eq!(exact_message.message_json.len(), MAX_TRIGGER_MESSAGE_BYTES);
+        exact
+            .enqueue(context(), exact_message)
+            .await
+            .expect("exact message boundary persists");
+
+        let mut exact_attachments = trigger("exact-attachments", 0);
+        exact_attachments.attachments = (0..MAX_TRIGGER_ATTACHMENTS)
+            .map(|index| TriggerAttachment {
+                media_type: "text/plain".into(),
+                name: Some(format!("{index}.txt")),
+                content_handle: format!("content:{index}"),
+            })
+            .collect();
+        exact
+            .enqueue(context(), exact_attachments)
+            .await
+            .expect("exact attachment boundary persists");
+
+        let inbox = TriggerInbox::open_in_memory().expect("in-memory inbox opens");
+
+        let mut message = trigger("large-message", 0);
+        message.message_json = format!(r#"{{"text":"{}"}}"#, "x".repeat(MAX_TRIGGER_MESSAGE_BYTES));
+        assert_eq!(
+            inbox.enqueue(context(), message).await,
+            Err(TriggerInboxError::InvalidPayload)
+        );
+
+        let mut attachments = trigger("many-attachments", 0);
+        attachments.attachments = (0..=MAX_TRIGGER_ATTACHMENTS)
+            .map(|index| TriggerAttachment {
+                media_type: "text/plain".into(),
+                name: Some(format!("{index}.txt")),
+                content_handle: format!("content:{index}"),
+            })
+            .collect();
+        assert_eq!(
+            inbox.enqueue(context(), attachments).await,
+            Err(TriggerInboxError::InvalidPayload)
+        );
+
+        let mut source = trigger("large-source", 0);
+        source.source_id = "x".repeat(513);
+        assert_eq!(
+            inbox.enqueue(context(), source).await,
+            Err(TriggerInboxError::InvalidSource)
+        );
+        assert_eq!(
+            inbox
+                .claim(
+                    context(),
+                    ClaimTriggers {
+                        worker_id: "worker-1".into(),
+                        lane: "primary".into(),
+                        limit: 0,
+                        lease_duration_ms: 10,
+                        now_ms: 0,
+                    },
+                )
+                .await,
+            Err(TriggerInboxError::InvalidClaim)
+        );
+
+        let receipt = enqueue(&inbox, "settlement", 0).await;
+        let lease = claim(&inbox, 0, 10).await.leases.remove(0);
+        assert_eq!(
+            inbox
+                .settle(
+                    context(),
+                    SettleTrigger {
+                        trigger_id: receipt.trigger_id.clone(),
+                        lease_token: lease.lease_token,
+                        outcome: SettlementOutcome::DeadLetter,
+                        detail: Some("x".repeat(MAX_SETTLEMENT_DETAIL_BYTES + 1)),
+                        retry_not_before_ms: None,
+                        settled_at_ms: 1,
+                    },
+                )
+                .await,
+            Err(TriggerInboxError::InvalidSettlement)
+        );
+        assert_eq!(
+            inbox
+                .inspect(
+                    context(),
+                    TriggerReference {
+                        trigger_id: receipt.trigger_id,
+                    },
+                )
+                .await
+                .expect("rejected settlement does not mutate the trigger")
+                .state,
+            TriggerState::Leased
         );
     }
 }

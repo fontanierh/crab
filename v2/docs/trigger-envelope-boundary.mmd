@@ -1,0 +1,41 @@
+%%{init: {"theme": "base", "themeVariables": {"fontFamily": "ui-sans-serif, system-ui, sans-serif", "primaryTextColor": "#172033", "lineColor": "#64748b", "edgeLabelBackground": "#ffffff"}, "flowchart": {"curve": "basis", "nodeSpacing": 50, "rankSpacing": 64}}}%%
+flowchart LR
+    subgraph CALLERS["Callers"]
+        direction TB
+        PRODUCERS["Bridge · cron · self-work · operator"]
+        WORKERS["Lane workers"]
+    end
+
+    subgraph BOUNDARIES["Trigger-inbox boundaries"]
+        direction TB
+        ENQUEUE{"Enqueue<br/>message ≤ 1 MiB · attachments ≤ 64<br/>bounded identities + metadata"}
+        LEASE{"Claim · extend · settle<br/>nonzero claim<br/>bounded worker · token · detail"}
+    end
+
+    subgraph REJECTIONS["Rejected before persistence"]
+        direction TB
+        ENQUEUE_REJECT["Invalid enqueue<br/>no durable write"]
+        LEASE_REJECT["Invalid lifecycle call<br/>no durable mutation"]
+    end
+
+    SQLITE[("Transactional SQLite<br/>dedupe + FIFO + leases")]
+    ROUTER["Turn router"]
+    ACP["Bounded ACP prompt"]
+
+    PRODUCERS --> ENQUEUE
+    WORKERS --> LEASE
+    ENQUEUE -->|"accepted"| SQLITE
+    LEASE -->|"accepted"| SQLITE
+    ENQUEUE -->|"oversized / invalid"| ENQUEUE_REJECT
+    LEASE -->|"oversized / invalid"| LEASE_REJECT
+    SQLITE --> ROUTER --> ACP
+
+    classDef source fill:#f8fafc,stroke:#64748b,stroke-width:1.5px,color:#172033;
+    classDef boundary fill:#fef3c7,stroke:#d97706,stroke-width:2px,color:#78350f;
+    classDef durable fill:#dbeafe,stroke:#2563eb,stroke-width:2px,color:#172554;
+    classDef failure fill:#fee2e2,stroke:#dc2626,stroke-width:2px,color:#7f1d1d;
+
+    class PRODUCERS,WORKERS source;
+    class ENQUEUE,LEASE boundary;
+    class SQLITE,ROUTER,ACP durable;
+    class ENQUEUE_REJECT,LEASE_REJECT failure;
