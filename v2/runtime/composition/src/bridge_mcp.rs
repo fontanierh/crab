@@ -2,7 +2,7 @@
 
 use std::{collections::HashSet, env, fmt, path::PathBuf};
 
-use agent_client_protocol::{ConnectTo as _, Error, Stdio, mcp_server::McpServer, role::mcp};
+use agent_client_protocol::{ConnectTo as _, Error, mcp_server::McpServer, role::mcp};
 use agent_client_protocol_rmcp::{McpServerExt as _, McpTool};
 use agent_host_implementation::CRAB_STATE_DIRECTORY_ENV;
 use bridge_host_contract::{
@@ -17,7 +17,7 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
 
-use crate::{ChannelIpcClient, ChannelIpcClientError};
+use crate::{ChannelIpcClient, ChannelIpcClientError, native_stdio};
 
 const SERVER_NAME: &str = "crab-bridges";
 
@@ -81,7 +81,7 @@ pub async fn run_bridge_mcp_stdio() -> Result<(), BridgeMcpError> {
         .tool(ReferenceTool::new(context, ReferenceOperation::Stop))
         .build();
     server
-        .connect_to(Stdio::new())
+        .connect_to(native_stdio())
         .await
         .map_err(|_| BridgeMcpError::Transport)
 }

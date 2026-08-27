@@ -11,6 +11,13 @@ extern crate agent_host_contract as boxology_generated_contract;
 
 use std::{path::Path, sync::Arc};
 
+const MAX_NATIVE_STDIO_FRAME_BYTES: usize = 16 * 1024 * 1024;
+const _: () = assert!(MAX_NATIVE_STDIO_FRAME_BYTES == agent_client_protocol::DEFAULT_LINE_LIMIT);
+
+fn native_stdio() -> agent_client_protocol::Stdio {
+    agent_client_protocol::Stdio::new().with_stdin_line_limit(MAX_NATIVE_STDIO_FRAME_BYTES)
+}
+
 mod acp_channel;
 mod bridge_mcp;
 mod channel_ipc;

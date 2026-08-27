@@ -2,7 +2,7 @@
 
 use std::{env, fmt, path::PathBuf};
 
-use agent_client_protocol::{ConnectTo as _, Error, Stdio, mcp_server::McpServer, role::mcp};
+use agent_client_protocol::{ConnectTo as _, Error, mcp_server::McpServer, role::mcp};
 use agent_client_protocol_rmcp::{McpServerExt as _, McpTool};
 use agent_host_contract::{SessionReference, SessionStatus};
 use agent_host_implementation::{
@@ -19,7 +19,7 @@ use sub_agent_host_contract::{
     SubAgentLifecycle, SubAgentReceipt, SubAgentRecord, SubAgentReference, SubAgentStatus,
 };
 
-use crate::{ChannelIpcClient, ChannelIpcClientError};
+use crate::{ChannelIpcClient, ChannelIpcClientError, native_stdio};
 
 const SERVER_NAME: &str = "crab-sub-agents";
 const MAX_EVENT_PAGE: u64 = 1_000;
@@ -63,7 +63,7 @@ pub async fn run_sub_agent_mcp_stdio() -> Result<(), SubAgentMcpError> {
         .tool(StopTool(context))
         .build();
     server
-        .connect_to(Stdio::new())
+        .connect_to(native_stdio())
         .await
         .map_err(|_| SubAgentMcpError::Transport)
 }

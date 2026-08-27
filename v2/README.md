@@ -113,6 +113,9 @@ interrupt as a separate explicit action.
 - Every configured ACP session can receive Crab's six native sub-agent tools through a first-party
   stdio MCP server. Parents and children share the toolset; child-to-parent delivery is enabled only
   when Crab injects child identity. See the [native tool boundary](docs/native-sub-agent-tools.md).
+- Every Crab-owned ACP/MCP stdio server rejects incoming frames above 16 MiB before UTF-8 or JSON
+  parsing. This covers the native channel facade, bridge tools and sub-agent tools through one
+  shared transport constructor. See the [rendered stdio boundary](docs/native-stdio-boundary.png).
 - `trigger-inbox` is implemented with durable deduplication, FIFO leases and restart recovery.
   `crab-v2-trigger` exposes its enqueue capability through owner-only authenticated local IPC for
   cron, self-work and operator ingress. Its
@@ -167,9 +170,9 @@ cargo install boxology-cli --git https://github.com/fontanierh/boxology \
   --rev 4dd00888445c6506704a3e3f69932a3c4bc32efa --locked
 ```
 
-The published ACP SDK 2.0.0 is patched at reviewed fork revision `8490e50` until upstream
-[rust-sdk #340](https://github.com/agentclientprotocol/rust-sdk/issues/340) ships. The patch changes
-only stdout framing; Crab keeps the exact 2.0.0 API and schema dependency closure.
+The published ACP SDK 2.0.0 is patched at reviewed fork revision `3722fbf` until upstream
+[rust-sdk #341](https://github.com/agentclientprotocol/rust-sdk/pull/341) ships. The patch bounds
+newline-delimited input framing; Crab keeps the exact 2.0.0 API and schema dependency closure.
 
 A vertical slice that changes a box, its composition and the platform lockfile still triggers the
 known single-owner limitation tracked in
