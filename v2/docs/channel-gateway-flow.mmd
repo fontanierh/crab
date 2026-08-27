@@ -1,6 +1,8 @@
 %%{init: {"theme": "base", "themeVariables": {"fontFamily": "ui-sans-serif, system-ui, sans-serif", "primaryTextColor": "#172033", "lineColor": "#64748b", "edgeLabelBackground": "#ffffff"}, "flowchart": {"curve": "basis", "nodeSpacing": 42, "rankSpacing": 58}}}%%
 flowchart TB
     REQUEST["attach intent<br/>agent · cwd · adapter metadata"]
+    VALIDATE["validate + fingerprint<br/>before lane admission"]
+    LANE["weak keyed lane<br/>(adapter, channel)"]
     FIND{"binding state"}
     REUSE["reuse live session"]
     CONFLICT["reject changed live intent"]
@@ -13,7 +15,8 @@ flowchart TB
     REPLACE["atomic session + metadata replace"]
     BIND["create binding"]
 
-    REQUEST --> FIND
+    REQUEST --> VALIDATE --> LANE
+    LANE -->|"same identity serialized<br/>unrelated identities parallel"| FIND
     FIND -->|"live + same"| REUSE
     FIND -->|"live + changed"| CONFLICT
     FIND -->|"unavailable"| SAME
@@ -33,5 +36,5 @@ flowchart TB
     classDef conflict fill:#fee2e2,stroke:#dc2626,stroke-width:2px,color:#7f1d1d;
     class REQUEST request;
     class REUSE,RECOVER,REPLACE,BIND safe;
-    class FIND,SAME,RESUME,FALLBACK,OPEN runtime;
+    class VALIDATE,LANE,FIND,SAME,RESUME,FALLBACK,OPEN runtime;
     class CONFLICT,FAIL conflict;
