@@ -116,6 +116,9 @@ interrupt as a separate explicit action.
 - Every Crab-owned ACP/MCP stdio server rejects incoming frames above 16 MiB before UTF-8 or JSON
   parsing. This covers the native channel facade, bridge tools and sub-agent tools through one
   shared transport constructor. See the [rendered stdio boundary](docs/native-stdio-boundary.png).
+- Startup rejects runtime configuration above 8 MiB and bootstrap prompts above 2 MiB before
+  whole-file allocation. The configured runtime and standalone ACP channel facade share the same
+  bootstrap reader. See the [rendered startup boundary](docs/startup-input-boundary.png).
 - `trigger-inbox` is implemented with durable deduplication, FIFO leases and restart recovery.
   `crab-v2-trigger` exposes its enqueue capability through owner-only authenticated local IPC for
   cron, self-work and operator ingress. Its
