@@ -28,11 +28,12 @@ printf '%s' '{"nativeTaskPrompt":[{"type":"text","text":"Research X"}],"metadata
       spawn child-1 parent-session claude /path/to/workspace inherit 42 true stdin
 ```
 
-Receipts acknowledge durable acceptance, not model completion. Poll `events` with the returned
-cursor to receive lifecycle, interaction and full native ACP events in order without blocking the
-parent. `crashRestartLimit` defaults to one and bounds exact-session recovery across later runtime
-crashes; zero disables recovery. Spawn and message IDs make retries idempotent; `stop` is
-idempotent too.
+Receipts acknowledge durable acceptance, not model completion. Interrupt-and-steer is one
+cancel-and-queue operation at the destination actor, so a completion race cannot start older queued
+work before the new input is accepted. Poll `events` with the returned cursor to receive lifecycle,
+interaction and full native ACP events in order without blocking the parent. `crashRestartLimit`
+defaults to one and bounds exact-session recovery across later runtime crashes; zero disables
+recovery. Spawn and message IDs make retries idempotent; `stop` is idempotent too.
 
 This CLI remains the stable operator control-plane. Parent and child ACP sessions receive the same
 capabilities automatically through Crab's [native stdio-MCP tools](native-sub-agent-tools.md).

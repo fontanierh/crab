@@ -2,7 +2,7 @@
 flowchart LR
     SOURCE["Bridge · scheduler<br/>self-work · operator"]
     INBOX[("trigger-inbox<br/>lease + retry state")]
-    ROUTER["turn-router<br/>route lookup · lane lock<br/>queue · steer · interrupt"]
+    ROUTER["turn-router<br/>route lookup · lane lock<br/>queue · steer · atomic interrupt"]
     ROUTES[("route SQLite<br/>target → binding")]
     CHANNEL["native-channel<br/>durable turn acceptance"]
     ACP["ACP session"]
@@ -10,7 +10,7 @@ flowchart LR
     SOURCE -->|"durable enqueue"| INBOX
     INBOX <-->|"claim · settle"| ROUTER
     ROUTER <-->|"CAS routes"| ROUTES
-    ROUTER -->|"non-blocking input"| CHANNEL
+    ROUTER -->|"queue · steer<br/>accept_interrupting_turn"| CHANNEL
     CHANNEL <-->|"complete native view"| ACP
 
     classDef external fill:#f8fafc,stroke:#64748b,stroke-width:1.5px,color:#172033;

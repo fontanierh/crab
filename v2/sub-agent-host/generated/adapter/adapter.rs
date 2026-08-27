@@ -9,7 +9,7 @@ pub fn implementation_descriptor() -> ::boxology_contract::ImplementationDescrip
                         ::boxology_contract::BoxId::new("agent-host")
                             .expect("generated import package id is valid"),
                         ::boxology_contract::ContractRevision::new(
-                                "sha256:71d1650ce348f47d6fe90a1b719d7dd00e6d4fedb4111d6428a0864feee3f84e",
+                                "sha256:a2e3701742bd201e79f923b3cc3b1218b65b7d876ff68f0e13d3dde44d08f5bb",
                             )
                             .expect("generated import revision is valid"),
                         [
@@ -861,8 +861,29 @@ impl AgentHostImport {
                                 ::boxology_contract::VariantPayload::Unit,
                                 None,
                             ),
+                            ::boxology_contract::VariantDescriptor::new(
+                                "CancelRequestedThenQueued",
+                                ::boxology_contract::VariantPayload::Unit,
+                                None,
+                            ),
                         ])
                         .expect("generated imported enum descriptor is valid"),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
+                    "interrupted_run_id",
+                    ::boxology_contract::TypeDescriptor::optional(
+                            ::boxology_contract::TypeDescriptor::string(),
+                        )
+                        .expect("generated imported optional descriptor is valid"),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
+                    "cancel_requested_at_ms",
+                    ::boxology_contract::TypeDescriptor::optional(
+                            ::boxology_contract::TypeDescriptor::u64(),
+                        )
+                        .expect("generated imported optional descriptor is valid"),
                     None,
                 ),
             ])

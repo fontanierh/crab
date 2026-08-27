@@ -10,7 +10,7 @@ use crate::{
     NativeChannelEvent, PublishReceipt,
 };
 
-const SCHEMA_VERSION: i64 = 1;
+const SCHEMA_VERSION: i64 = 2;
 
 pub(crate) struct ChannelStore {
     connection: Mutex<Connection>,
@@ -38,7 +38,11 @@ impl ChannelStore {
             .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
             .map_err(storage_error)?;
         match version {
-            0 => migrate_v0_to_v1(&mut connection)?,
+            0 => {
+                migrate_v0_to_v1(&mut connection)?;
+                migrate_v1_to_v2(&mut connection)?;
+            }
+            1 => migrate_v1_to_v2(&mut connection)?,
             SCHEMA_VERSION => {}
             _ => return Err(NativeChannelError::StorageUnavailable),
         }
@@ -145,11 +149,14 @@ impl ChannelStore {
         &self,
         request: &ChannelTurn,
         session_id: &str,
+        interrupt_reason: Option<&str>,
     ) -> Result<Option<AcceptedTurn>, NativeChannelError> {
         let connection = self.lock()?;
         let existing = connection
             .query_row(
-                "SELECT mode, native_prompt_json, run_id, disposition, accepted_at_ms
+                "SELECT mode, native_prompt_json, run_id, disposition, accepted_at_ms,
+                        interrupted_run_id, cancel_requested_at_ms, interrupting,
+                        interrupt_reason
                  FROM turns
                  WHERE binding_id = ?1 AND session_id = ?2 AND client_turn_id = ?3",
                 params![request.binding_id, session_id, request.client_turn_id],
@@ -160,15 +167,34 @@ impl ChannelStore {
                         row.get::<_, String>(2)?,
                         row.get::<_, String>(3)?,
                         row.get::<_, i64>(4)?,
+                        row.get::<_, Option<String>>(5)?,
+                        row.get::<_, Option<i64>>(6)?,
+                        row.get::<_, bool>(7)?,
+                        row.get::<_, Option<String>>(8)?,
                     ))
                 },
             )
             .optional()
             .map_err(storage_error)?;
-        let Some((mode, prompt, run_id, disposition, accepted_at_ms)) = existing else {
+        let Some((
+            mode,
+            prompt,
+            run_id,
+            disposition,
+            accepted_at_ms,
+            interrupted_run_id,
+            cancel_requested_at_ms,
+            stored_interrupting,
+            stored_interrupt_reason,
+        )) = existing
+        else {
             return Ok(None);
         };
-        if mode != input_mode_tag(&request.mode)? || prompt != request.native_prompt_json {
+        if mode != input_mode_tag(&request.mode)?
+            || prompt != request.native_prompt_json
+            || stored_interrupting != interrupt_reason.is_some()
+            || stored_interrupt_reason.as_deref() != interrupt_reason
+        {
             return Err(NativeChannelError::DuplicateTurnConflict);
         }
         Ok(Some(AcceptedTurn {
@@ -179,6 +205,8 @@ impl ChannelStore {
             mode: request.mode.clone(),
             run_id,
             disposition: parse_disposition(&disposition)?,
+            interrupted_run_id,
+            cancel_requested_at_ms: cancel_requested_at_ms.map(db_u64).transpose()?,
         }))
     }
 
@@ -187,13 +215,59 @@ impl ChannelStore {
         request: &ChannelTurn,
         accepted: &AcceptedTurn,
     ) -> Result<AcceptedTurn, NativeChannelError> {
-        let connection = self.lock()?;
-        connection
+        self.record_turn_inner(request, accepted, None)
+    }
+
+    pub(crate) fn record_interrupting_turn(
+        &self,
+        request: &ChannelTurn,
+        accepted: &AcceptedTurn,
+        requested_at_ms: u64,
+        reason: &str,
+    ) -> Result<AcceptedTurn, NativeChannelError> {
+        self.record_turn_inner(request, accepted, Some((requested_at_ms, reason)))
+    }
+
+    fn record_turn_inner(
+        &self,
+        request: &ChannelTurn,
+        accepted: &AcceptedTurn,
+        interruption: Option<(u64, &str)>,
+    ) -> Result<AcceptedTurn, NativeChannelError> {
+        let mut connection = self.lock()?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(storage_error)?;
+        let is_interrupting = interruption.is_some();
+        let is_pending = matches!(
+            accepted.disposition,
+            ChannelTurnDisposition::QueuedForTurnBoundary
+                | ChannelTurnDisposition::CancelRequestedThenQueued
+        );
+        let has_cancellation =
+            accepted.interrupted_run_id.is_some() && accepted.cancel_requested_at_ms.is_some();
+        let valid_interruption = match (is_interrupting, &accepted.disposition, has_cancellation) {
+            (true, ChannelTurnDisposition::StartedForegroundWork, false)
+            | (true, ChannelTurnDisposition::CancelRequestedThenQueued, true) => true,
+            (false, ChannelTurnDisposition::CancelRequestedThenQueued, _) | (false, _, true) => {
+                false
+            }
+            (false, _, false) => true,
+            (true, _, _) => false,
+        };
+        if accepted.interrupted_run_id.is_some() != accepted.cancel_requested_at_ms.is_some()
+            || !valid_interruption
+        {
+            return Err(NativeChannelError::StorageUnavailable);
+        }
+        transaction
             .execute(
                 "INSERT INTO turns (
                     binding_id, session_id, client_turn_id, mode, native_prompt_json,
-                    run_id, disposition, state, received_at_ms, accepted_at_ms
-                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                    run_id, disposition, state, received_at_ms, accepted_at_ms,
+                    interrupted_run_id, cancel_requested_at_ms, interrupting,
+                    interrupt_reason
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
                 params![
                     request.binding_id,
                     accepted.session_id,
@@ -202,19 +276,52 @@ impl ChannelStore {
                     request.native_prompt_json,
                     accepted.run_id,
                     disposition_tag(&accepted.disposition)?,
-                    if matches!(
-                        accepted.disposition,
-                        ChannelTurnDisposition::QueuedForTurnBoundary
-                    ) {
-                        "Pending"
-                    } else {
-                        "Active"
-                    },
+                    if is_pending { "Pending" } else { "Active" },
                     db_i64(request.received_at_ms)?,
                     db_i64(accepted.accepted_at_ms)?,
+                    accepted.interrupted_run_id,
+                    accepted.cancel_requested_at_ms.map(db_i64).transpose()?,
+                    is_interrupting,
+                    interruption.map(|(_, reason)| reason),
                 ],
             )
             .map_err(storage_error)?;
+        if let (
+            Some(interrupted_run_id),
+            Some(cancel_requested_at_ms),
+            Some((requested_at_ms, reason)),
+        ) = (
+            accepted.interrupted_run_id.as_deref(),
+            accepted.cancel_requested_at_ms,
+            interruption,
+        ) {
+            let pending_input_count = transaction
+                .query_row(
+                    "SELECT COUNT(*) FROM turns
+                     WHERE binding_id = ?1 AND session_id = ?2 AND state = 'Pending'",
+                    params![request.binding_id, accepted.session_id],
+                    |row| row.get::<_, i64>(0),
+                )
+                .map_err(storage_error)?;
+            transaction
+                .execute(
+                    "INSERT INTO interrupts (
+                        binding_id, session_id, run_id, requested_at_ms, reason,
+                        cancelled_at_ms, pending_input_count
+                     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                    params![
+                        request.binding_id,
+                        accepted.session_id,
+                        interrupted_run_id,
+                        db_i64(requested_at_ms)?,
+                        reason,
+                        db_i64(cancel_requested_at_ms)?,
+                        pending_input_count,
+                    ],
+                )
+                .map_err(storage_error)?;
+        }
+        transaction.commit().map_err(storage_error)?;
         Ok(accepted.clone())
     }
 
@@ -616,6 +723,22 @@ fn migrate_v0_to_v1(connection: &mut Connection) -> Result<(), NativeChannelErro
     transaction.commit().map_err(storage_error)
 }
 
+fn migrate_v1_to_v2(connection: &mut Connection) -> Result<(), NativeChannelError> {
+    let transaction = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(storage_error)?;
+    transaction
+        .execute_batch(
+            "ALTER TABLE turns ADD COLUMN interrupted_run_id TEXT;
+             ALTER TABLE turns ADD COLUMN cancel_requested_at_ms INTEGER;
+             ALTER TABLE turns ADD COLUMN interrupting INTEGER NOT NULL DEFAULT 0;
+             ALTER TABLE turns ADD COLUMN interrupt_reason TEXT;
+             PRAGMA user_version = 2;",
+        )
+        .map_err(storage_error)?;
+    transaction.commit().map_err(storage_error)
+}
+
 fn validate_binding(request: &BindChannelRequest) -> Result<(), NativeChannelError> {
     if request.channel_id.trim().is_empty()
         || request.adapter_id.trim().is_empty()
@@ -685,6 +808,7 @@ fn disposition_tag(
         ChannelTurnDisposition::StartedForegroundWork => Ok("StartedForegroundWork"),
         ChannelTurnDisposition::ContributedToActiveWork => Ok("ContributedToActiveWork"),
         ChannelTurnDisposition::QueuedForTurnBoundary => Ok("QueuedForTurnBoundary"),
+        ChannelTurnDisposition::CancelRequestedThenQueued => Ok("CancelRequestedThenQueued"),
         ChannelTurnDisposition::Unknown { .. } => Err(NativeChannelError::StorageUnavailable),
     }
 }
@@ -694,6 +818,7 @@ fn parse_disposition(value: &str) -> Result<ChannelTurnDisposition, NativeChanne
         "StartedForegroundWork" => Ok(ChannelTurnDisposition::StartedForegroundWork),
         "ContributedToActiveWork" => Ok(ChannelTurnDisposition::ContributedToActiveWork),
         "QueuedForTurnBoundary" => Ok(ChannelTurnDisposition::QueuedForTurnBoundary),
+        "CancelRequestedThenQueued" => Ok(ChannelTurnDisposition::CancelRequestedThenQueued),
         _ => Err(NativeChannelError::StorageUnavailable),
     }
 }
@@ -725,7 +850,7 @@ fn storage_error(_: rusqlite::Error) -> NativeChannelError {
 mod tests {
     use rusqlite::Connection;
 
-    use super::ChannelStore;
+    use super::{ChannelStore, SCHEMA_VERSION, migrate_v0_to_v1};
     use crate::{BindChannelRequest, ChannelLifecycle, LocateBindingRequest, NativeChannelError};
 
     fn request() -> BindChannelRequest {
@@ -795,5 +920,36 @@ mod tests {
             ChannelStore::open(&path),
             Err(NativeChannelError::StorageUnavailable)
         ));
+    }
+
+    #[test]
+    fn schema_one_migrates_additive_interrupting_turn_columns() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let path = directory.path().join("native-channel-v1.sqlite");
+        let mut connection = Connection::open(&path).expect("database opens");
+        migrate_v0_to_v1(&mut connection).expect("schema one is created");
+        drop(connection);
+
+        let store = ChannelStore::open(&path).expect("schema one migrates");
+        let connection = store.lock().expect("migrated database locks");
+        let version = connection
+            .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
+            .expect("schema version reads");
+        assert_eq!(version, SCHEMA_VERSION);
+        let columns = connection
+            .prepare("PRAGMA table_info(turns)")
+            .expect("turn columns prepare")
+            .query_map([], |row| row.get::<_, String>(1))
+            .expect("turn columns query")
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .expect("turn columns collect");
+        for expected in [
+            "interrupted_run_id",
+            "cancel_requested_at_ms",
+            "interrupting",
+            "interrupt_reason",
+        ] {
+            assert!(columns.contains(&expected.to_owned()));
+        }
     }
 }

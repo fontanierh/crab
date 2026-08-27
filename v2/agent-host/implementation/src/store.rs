@@ -11,7 +11,7 @@ use crate::{
     SessionStatus, SteeringSupport,
 };
 
-const SCHEMA_VERSION: i64 = 1;
+const SCHEMA_VERSION: i64 = 2;
 const MAX_EVENT_PAGE: u64 = 1_000;
 
 pub(crate) struct AgentStore {
@@ -48,7 +48,11 @@ impl AgentStore {
             .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
             .map_err(storage_error)?;
         match version {
-            0 => migrate_v0_to_v1(&mut connection)?,
+            0 => {
+                migrate_v0_to_v1(&mut connection)?;
+                migrate_v1_to_v2(&mut connection)?;
+            }
+            1 => migrate_v1_to_v2(&mut connection)?,
             SCHEMA_VERSION => {}
             _ => return Err(AgentHostError::StorageUnavailable),
         }
@@ -325,6 +329,7 @@ impl AgentStore {
         run_id: &str,
         disposition: &PromptDisposition,
         activate_run: bool,
+        interruption: Option<(&str, u64)>,
         now_ms: u64,
     ) -> Result<(PromptAccepted, bool), AgentHostError> {
         let mut connection = self.lock()?;
@@ -345,17 +350,30 @@ impl AgentStore {
         }
 
         let state = match disposition {
-            PromptDisposition::QueuedForTurnBoundary => "Queued",
+            PromptDisposition::QueuedForTurnBoundary
+            | PromptDisposition::CancelRequestedThenQueued => "Queued",
             PromptDisposition::StartedForegroundWork
             | PromptDisposition::ContributedToActiveWork => "Running",
             PromptDisposition::Unknown { .. } => return Err(AgentHostError::StorageUnavailable),
         };
+        let expects_interruption =
+            matches!(disposition, PromptDisposition::CancelRequestedThenQueued);
+        if expects_interruption != interruption.is_some()
+            || (activate_run && interruption.is_some())
+        {
+            return Err(AgentHostError::StorageUnavailable);
+        }
+        let interrupted_run_id = interruption.map(|(run_id, _)| run_id);
+        let cancel_requested_at_ms = interruption
+            .map(|(_, requested_at_ms)| db_i64(requested_at_ms))
+            .transpose()?;
         transaction
             .execute(
                 "INSERT INTO prompts (
                     session_id, client_turn_id, run_id, mode, native_prompt_json,
-                    disposition, state, accepted_at_ms
-                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                    disposition, state, accepted_at_ms, interrupted_run_id,
+                    cancel_requested_at_ms
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
                 params![
                     request.session_id,
                     request.client_turn_id,
@@ -365,6 +383,8 @@ impl AgentStore {
                     disposition_tag(disposition)?,
                     state,
                     db_i64(now_ms)?,
+                    interrupted_run_id,
+                    cancel_requested_at_ms,
                 ],
             )
             .map_err(storage_error)?;
@@ -387,6 +407,8 @@ impl AgentStore {
                 run_id: run_id.to_owned(),
                 accepted_at_ms: now_ms,
                 disposition: disposition.clone(),
+                interrupted_run_id: interrupted_run_id.map(str::to_owned),
+                cancel_requested_at_ms: cancel_requested_at_ms.map(db_u64).transpose()?,
             },
             true,
         ))
@@ -791,6 +813,8 @@ struct StoredPrompt {
     native_prompt_json: String,
     disposition: String,
     accepted_at_ms: i64,
+    interrupted_run_id: Option<String>,
+    cancel_requested_at_ms: Option<i64>,
 }
 
 impl StoredPrompt {
@@ -800,6 +824,8 @@ impl StoredPrompt {
             run_id: self.run_id,
             accepted_at_ms: db_u64(self.accepted_at_ms)?,
             disposition: parse_disposition(&self.disposition)?,
+            interrupted_run_id: self.interrupted_run_id,
+            cancel_requested_at_ms: self.cancel_requested_at_ms.map(db_u64).transpose()?,
         })
     }
 }
@@ -811,7 +837,8 @@ fn query_prompt(
 ) -> Result<Option<StoredPrompt>, AgentHostError> {
     transaction
         .query_row(
-            "SELECT run_id, mode, native_prompt_json, disposition, accepted_at_ms
+            "SELECT run_id, mode, native_prompt_json, disposition, accepted_at_ms,
+                    interrupted_run_id, cancel_requested_at_ms
              FROM prompts WHERE session_id = ?1 AND client_turn_id = ?2",
             params![session_id, client_turn_id],
             |row| {
@@ -821,6 +848,8 @@ fn query_prompt(
                     native_prompt_json: row.get(2)?,
                     disposition: row.get(3)?,
                     accepted_at_ms: row.get(4)?,
+                    interrupted_run_id: row.get(5)?,
+                    cancel_requested_at_ms: row.get(6)?,
                 })
             },
         )
@@ -888,6 +917,20 @@ fn migrate_v0_to_v1(connection: &mut Connection) -> Result<(), AgentHostError> {
                 FOREIGN KEY(session_id) REFERENCES sessions(session_id)
              );
              PRAGMA user_version = 1;",
+        )
+        .map_err(storage_error)?;
+    transaction.commit().map_err(storage_error)
+}
+
+fn migrate_v1_to_v2(connection: &mut Connection) -> Result<(), AgentHostError> {
+    let transaction = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(storage_error)?;
+    transaction
+        .execute_batch(
+            "ALTER TABLE prompts ADD COLUMN interrupted_run_id TEXT;
+             ALTER TABLE prompts ADD COLUMN cancel_requested_at_ms INTEGER;
+             PRAGMA user_version = 2;",
         )
         .map_err(storage_error)?;
     transaction.commit().map_err(storage_error)
@@ -1122,6 +1165,7 @@ fn input_mode_tag(value: &AgentInputMode) -> Result<&'static str, AgentHostError
     match value {
         AgentInputMode::Queue => Ok("Queue"),
         AgentInputMode::Steer => Ok("Steer"),
+        AgentInputMode::InterruptAndQueue => Ok("InterruptAndQueue"),
         AgentInputMode::Unknown { .. } => Err(AgentHostError::InvalidNativePayload),
     }
 }
@@ -1131,6 +1175,7 @@ fn disposition_tag(value: &PromptDisposition) -> Result<&'static str, AgentHostE
         PromptDisposition::StartedForegroundWork => Ok("StartedForegroundWork"),
         PromptDisposition::ContributedToActiveWork => Ok("ContributedToActiveWork"),
         PromptDisposition::QueuedForTurnBoundary => Ok("QueuedForTurnBoundary"),
+        PromptDisposition::CancelRequestedThenQueued => Ok("CancelRequestedThenQueued"),
         PromptDisposition::Unknown { .. } => Err(AgentHostError::StorageUnavailable),
     }
 }
@@ -1140,6 +1185,7 @@ fn parse_disposition(value: &str) -> Result<PromptDisposition, AgentHostError> {
         "StartedForegroundWork" => Ok(PromptDisposition::StartedForegroundWork),
         "ContributedToActiveWork" => Ok(PromptDisposition::ContributedToActiveWork),
         "QueuedForTurnBoundary" => Ok(PromptDisposition::QueuedForTurnBoundary),
+        "CancelRequestedThenQueued" => Ok(PromptDisposition::CancelRequestedThenQueued),
         _ => Err(AgentHostError::StorageUnavailable),
     }
 }
@@ -1208,4 +1254,36 @@ fn db_u64(value: i64) -> Result<u64, AgentHostError> {
 
 fn storage_error(_: rusqlite::Error) -> AgentHostError {
     AgentHostError::StorageUnavailable
+}
+
+#[cfg(test)]
+mod tests {
+    use rusqlite::Connection;
+
+    use super::{AgentStore, SCHEMA_VERSION, migrate_v0_to_v1};
+
+    #[test]
+    fn schema_one_migrates_additive_interruption_receipt_columns() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let path = directory.path().join("agent-host-v1.sqlite");
+        let mut connection = Connection::open(&path).expect("database opens");
+        migrate_v0_to_v1(&mut connection).expect("schema one is created");
+        drop(connection);
+
+        let store = AgentStore::open(&path).expect("schema one migrates");
+        let connection = store.lock().expect("migrated database locks");
+        let version = connection
+            .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
+            .expect("schema version reads");
+        assert_eq!(version, SCHEMA_VERSION);
+        let columns = connection
+            .prepare("PRAGMA table_info(prompts)")
+            .expect("prompt columns prepare")
+            .query_map([], |row| row.get::<_, String>(1))
+            .expect("prompt columns query")
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .expect("prompt columns collect");
+        assert!(columns.contains(&"interrupted_run_id".to_owned()));
+        assert!(columns.contains(&"cancel_requested_at_ms".to_owned()));
+    }
 }

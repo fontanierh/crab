@@ -1013,6 +1013,34 @@ async fn accept_v1_prompt_inner(
     if matches!(request.mode, AgentInputMode::Unknown { .. }) {
         return Err(AgentHostError::InvalidNativePayload);
     }
+    if matches!(request.mode, AgentInputMode::InterruptAndQueue)
+        && let Some(interrupted_run_id) = state.active_run_id.clone()
+    {
+        // Actor command seriality keeps completion signals behind this durable enqueue.
+        let cancellation = cancel_v1(
+            connection,
+            store,
+            clock,
+            session_id,
+            native_session_id,
+            state,
+            &interrupted_run_id,
+        )?;
+        let run_id = new_run_id();
+        let disposition = PromptDisposition::CancelRequestedThenQueued;
+        let (accepted, inserted) = store.accept_prompt(
+            &request,
+            &run_id,
+            &disposition,
+            false,
+            Some((&interrupted_run_id, cancellation.recorded_at_ms)),
+            clock()?,
+        )?;
+        if inserted {
+            state.queued.push_back(QueuedPrompt { request, run_id });
+        }
+        return Ok(accepted);
+    }
     if matches!(request.mode, AgentInputMode::Steer) && state.active_run_id.is_some() {
         if !steering_enabled {
             return Err(AgentHostError::SteeringUnavailable);
@@ -1042,8 +1070,14 @@ async fn accept_v1_prompt_inner(
         match (response.outcome.as_str(), response.reason.as_deref()) {
             ("injected", _) => {
                 let disposition = PromptDisposition::ContributedToActiveWork;
-                let (accepted, _) =
-                    store.accept_prompt(&request, &active_run_id, &disposition, false, clock()?)?;
+                let (accepted, _) = store.accept_prompt(
+                    &request,
+                    &active_run_id,
+                    &disposition,
+                    false,
+                    None,
+                    clock()?,
+                )?;
                 return Ok(accepted);
             }
             ("promptRequired", Some("noRunningTurn")) => {
@@ -1064,7 +1098,7 @@ async fn accept_v1_prompt_inner(
         PromptDisposition::StartedForegroundWork
     };
     let (accepted, inserted) =
-        store.accept_prompt(&request, &run_id, &disposition, !busy, clock()?)?;
+        store.accept_prompt(&request, &run_id, &disposition, !busy, None, clock()?)?;
     if !inserted {
         return Ok(accepted);
     }
@@ -1121,7 +1155,38 @@ fn accept_v2_prompt_inner(
 ) -> Result<PromptAccepted, AgentHostError> {
     validate_prompt(session_id, &request)?;
     let content = parse_v2_prompt(&request.native_prompt_json)?;
+    if let Some(accepted) = store.existing_prompt(&request)? {
+        return Ok(accepted);
+    }
     let busy = state.active_run_id.is_some();
+    if matches!(request.mode, AgentInputMode::InterruptAndQueue)
+        && let Some(interrupted_run_id) = state.active_run_id.clone()
+    {
+        // Actor command seriality keeps completion signals behind this durable enqueue.
+        let cancellation = cancel_v2(
+            connection,
+            store,
+            clock,
+            session_id,
+            native_session_id,
+            state,
+            &interrupted_run_id,
+        )?;
+        let run_id = new_run_id();
+        let disposition = PromptDisposition::CancelRequestedThenQueued;
+        let (accepted, inserted) = store.accept_prompt(
+            &request,
+            &run_id,
+            &disposition,
+            false,
+            Some((&interrupted_run_id, cancellation.recorded_at_ms)),
+            clock()?,
+        )?;
+        if inserted {
+            state.queued.push_back(QueuedPrompt { request, run_id });
+        }
+        return Ok(accepted);
+    }
     let (run_id, disposition, activate, dispatch) = match (&request.mode, busy) {
         (AgentInputMode::Queue, true) => (
             new_run_id(),
@@ -1135,18 +1200,24 @@ fn accept_v2_prompt_inner(
             false,
             true,
         ),
-        (AgentInputMode::Queue | AgentInputMode::Steer, false) => (
+        (
+            AgentInputMode::Queue | AgentInputMode::Steer | AgentInputMode::InterruptAndQueue,
+            false,
+        ) => (
             new_run_id(),
             PromptDisposition::StartedForegroundWork,
             true,
             true,
         ),
+        (AgentInputMode::InterruptAndQueue, true) => {
+            return Err(AgentHostError::StorageUnavailable);
+        }
         (AgentInputMode::Unknown { .. }, _) => {
             return Err(AgentHostError::InvalidNativePayload);
         }
     };
     let (accepted, inserted) =
-        store.accept_prompt(&request, &run_id, &disposition, activate, clock()?)?;
+        store.accept_prompt(&request, &run_id, &disposition, activate, None, clock()?)?;
     if !inserted {
         return Ok(accepted);
     }

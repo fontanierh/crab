@@ -9,7 +9,7 @@ pub fn implementation_descriptor() -> ::boxology_contract::ImplementationDescrip
                         ::boxology_contract::BoxId::new("agent-host")
                             .expect("generated import package id is valid"),
                         ::boxology_contract::ContractRevision::new(
-                                "sha256:71d1650ce348f47d6fe90a1b719d7dd00e6d4fedb4111d6428a0864feee3f84e",
+                                "sha256:a2e3701742bd201e79f923b3cc3b1218b65b7d876ff68f0e13d3dde44d08f5bb",
                             )
                             .expect("generated import revision is valid"),
                         [
@@ -88,7 +88,7 @@ pub fn implementation_descriptor() -> ::boxology_contract::ImplementationDescrip
                         ::boxology_contract::BoxId::new("native-channel")
                             .expect("generated import package id is valid"),
                         ::boxology_contract::ContractRevision::new(
-                                "sha256:afe38948c3efd58720cd6b994c492070fde7c68e22165f56a7655935482cfa7e",
+                                "sha256:1179e37558c53fcb8f026c92b86d74e0c4ab833470a348593fcfc45dab92d20a",
                             )
                             .expect("generated import revision is valid"),
                         [
@@ -102,6 +102,14 @@ pub fn implementation_descriptor() -> ::boxology_contract::ImplementationDescrip
                                 ::boxology_contract::BoxId::new("native-channel")
                                     .expect("generated import package id is valid"),
                                 ::boxology_contract::CapabilityName::new("accept_turn")
+                                    .expect("generated import capability name is valid"),
+                            ),
+                            ::boxology_contract::CapabilityId::new(
+                                ::boxology_contract::BoxId::new("native-channel")
+                                    .expect("generated import package id is valid"),
+                                ::boxology_contract::CapabilityName::new(
+                                        "accept_interrupting_turn",
+                                    )
                                     .expect("generated import capability name is valid"),
                             ),
                             ::boxology_contract::CapabilityId::new(
@@ -944,8 +952,29 @@ impl AgentHostImport {
                                 ::boxology_contract::VariantPayload::Unit,
                                 None,
                             ),
+                            ::boxology_contract::VariantDescriptor::new(
+                                "CancelRequestedThenQueued",
+                                ::boxology_contract::VariantPayload::Unit,
+                                None,
+                            ),
                         ])
                         .expect("generated imported enum descriptor is valid"),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
+                    "interrupted_run_id",
+                    ::boxology_contract::TypeDescriptor::optional(
+                            ::boxology_contract::TypeDescriptor::string(),
+                        )
+                        .expect("generated imported optional descriptor is valid"),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
+                    "cancel_requested_at_ms",
+                    ::boxology_contract::TypeDescriptor::optional(
+                            ::boxology_contract::TypeDescriptor::u64(),
+                        )
+                        .expect("generated imported optional descriptor is valid"),
                     None,
                 ),
             ])
@@ -1660,8 +1689,154 @@ impl NativeChannelImport {
                                 ::boxology_contract::VariantPayload::Unit,
                                 None,
                             ),
+                            ::boxology_contract::VariantDescriptor::new(
+                                "CancelRequestedThenQueued",
+                                ::boxology_contract::VariantPayload::Unit,
+                                None,
+                            ),
                         ])
                         .expect("generated imported enum descriptor is valid"),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
+                    "interrupted_run_id",
+                    ::boxology_contract::TypeDescriptor::optional(
+                            ::boxology_contract::TypeDescriptor::string(),
+                        )
+                        .expect("generated imported optional descriptor is valid"),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
+                    "cancel_requested_at_ms",
+                    ::boxology_contract::TypeDescriptor::optional(
+                            ::boxology_contract::TypeDescriptor::u64(),
+                        )
+                        .expect("generated imported optional descriptor is valid"),
+                    None,
+                ),
+            ])
+            .expect("generated imported struct descriptor is valid")
+            .conform(::boxology_contract::DecodeRole::ConsumerOutput, output)
+            .map_err(|error| {
+                ::boxology_contract::ErasedCallError::InvalidResponse(
+                    conversion_detail("output_decode", error),
+                )
+            })?;
+        <::boxology_import_native_channel::AcceptedTurn as ::boxology_contract::ContractType>::decode(
+                &output,
+            )
+            .map_err(|error| {
+                ::boxology_contract::ErasedCallError::InvalidResponse(
+                    conversion_detail("output_decode", error),
+                )
+            })
+    }
+    pub async fn accept_interrupting_turn(
+        &self,
+        context: ::boxology_contract::CallContext,
+        input: ::boxology_import_native_channel::InterruptingTurnRequest,
+    ) -> Result<
+        ::boxology_import_native_channel::AcceptedTurn,
+        ::boxology_contract::ErasedCallError,
+    > {
+        let capability = ::boxology_contract::CapabilityId::new(
+            ::boxology_contract::BoxId::new("native-channel")
+                .expect("generated import package id is valid"),
+            ::boxology_contract::CapabilityName::new("accept_interrupting_turn")
+                .expect("generated import capability name is valid"),
+        );
+        let input = input
+            .encode()
+            .map_err(|error| {
+                ::boxology_contract::ErasedCallError::ContractViolation(
+                    conversion_detail("input_encode", error),
+                )
+            })?;
+        let output = self.handle.call(&capability, context, input).await?;
+        let output = ::boxology_contract::TypeDescriptor::structure([
+                ::boxology_contract::FieldDescriptor::new(
+                    "binding_id",
+                    ::boxology_contract::TypeDescriptor::string(),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
+                    "session_id",
+                    ::boxology_contract::TypeDescriptor::string(),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
+                    "client_turn_id",
+                    ::boxology_contract::TypeDescriptor::string(),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
+                    "accepted_at_ms",
+                    ::boxology_contract::TypeDescriptor::u64(),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
+                    "mode",
+                    ::boxology_contract::TypeDescriptor::enumeration([
+                            ::boxology_contract::VariantDescriptor::new(
+                                "Queue",
+                                ::boxology_contract::VariantPayload::Unit,
+                                None,
+                            ),
+                            ::boxology_contract::VariantDescriptor::new(
+                                "Steer",
+                                ::boxology_contract::VariantPayload::Unit,
+                                None,
+                            ),
+                        ])
+                        .expect("generated imported enum descriptor is valid"),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
+                    "run_id",
+                    ::boxology_contract::TypeDescriptor::string(),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
+                    "disposition",
+                    ::boxology_contract::TypeDescriptor::enumeration([
+                            ::boxology_contract::VariantDescriptor::new(
+                                "StartedForegroundWork",
+                                ::boxology_contract::VariantPayload::Unit,
+                                None,
+                            ),
+                            ::boxology_contract::VariantDescriptor::new(
+                                "ContributedToActiveWork",
+                                ::boxology_contract::VariantPayload::Unit,
+                                None,
+                            ),
+                            ::boxology_contract::VariantDescriptor::new(
+                                "QueuedForTurnBoundary",
+                                ::boxology_contract::VariantPayload::Unit,
+                                None,
+                            ),
+                            ::boxology_contract::VariantDescriptor::new(
+                                "CancelRequestedThenQueued",
+                                ::boxology_contract::VariantPayload::Unit,
+                                None,
+                            ),
+                        ])
+                        .expect("generated imported enum descriptor is valid"),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
+                    "interrupted_run_id",
+                    ::boxology_contract::TypeDescriptor::optional(
+                            ::boxology_contract::TypeDescriptor::string(),
+                        )
+                        .expect("generated imported optional descriptor is valid"),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
+                    "cancel_requested_at_ms",
+                    ::boxology_contract::TypeDescriptor::optional(
+                            ::boxology_contract::TypeDescriptor::u64(),
+                        )
+                        .expect("generated imported optional descriptor is valid"),
                     None,
                 ),
             ])

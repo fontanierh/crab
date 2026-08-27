@@ -51,6 +51,7 @@ boxology::contract! {
         StartedForegroundWork,
         ContributedToActiveWork,
         QueuedForTurnBoundary,
+        CancelRequestedThenQueued,
     }
 
     pub struct AcceptedTurn {
@@ -62,6 +63,15 @@ boxology::contract! {
         /// The durable run selected by `agent-host`.
         pub run_id: String,
         pub disposition: ChannelTurnDisposition,
+        pub interrupted_run_id: Option<String>,
+        pub cancel_requested_at_ms: Option<u64>,
+    }
+
+    /// Automatic interrupting ingress is distinct from the native UI's explicit interrupt action.
+    /// The turn is accepted durably in the same session operation that requests cancellation.
+    pub struct InterruptingTurnRequest {
+        pub turn: ChannelTurn,
+        pub reason: String,
     }
 
     /// The hint is useful for rendering; no event may be dropped because its hint is unknown.
@@ -201,6 +211,12 @@ boxology::contract! {
     /// Route a native user turn without translating it into bridge semantics.
     #[capability]
     pub async fn accept_turn(request: ChannelTurn) -> Result<AcceptedTurn, NativeChannelError>;
+
+    /// Accept an input and cooperatively cancel active work as one ordered session operation. An
+    /// idle session simply starts the accepted turn. This is the safe primitive for automatic
+    /// bridge and sub-system `InterruptAndSteer` policy; native UI interrupt stays explicit.
+    #[capability]
+    pub async fn accept_interrupting_turn(request: InterruptingTurnRequest) -> Result<AcceptedTurn, NativeChannelError>;
 
     /// Cancel current thinking/tool execution cooperatively and immediately drain accepted input.
     #[capability]

@@ -193,23 +193,51 @@ impl FakeAgentHost {
             .sessions
             .get_mut(&request.session_id)
             .ok_or(AgentHostError::UnknownSession)?;
-        let (run_id, disposition) = match (&request.mode, session.active_run_id.clone()) {
-            (AgentInputMode::Queue, None) => {
-                session.lifecycle = AgentLifecycle::Busy;
-                session.active_run_id = Some(new_run_id.clone());
-                (new_run_id, PromptDisposition::StartedForegroundWork)
-            }
-            (AgentInputMode::Queue, Some(_)) => {
-                (new_run_id, PromptDisposition::QueuedForTurnBoundary)
-            }
-            (AgentInputMode::Steer, Some(active)) => {
-                (active, PromptDisposition::ContributedToActiveWork)
-            }
-            (AgentInputMode::Steer, None) => return Err(AgentHostError::SteeringUnavailable),
-            (AgentInputMode::Unknown { .. }, _) => {
-                return Err(AgentHostError::InvalidNativePayload);
-            }
-        };
+        let (run_id, disposition, interrupted_run_id, cancel_requested_at_ms) =
+            match (&request.mode, session.active_run_id.clone()) {
+                (AgentInputMode::Queue, None) => {
+                    session.lifecycle = AgentLifecycle::Busy;
+                    session.active_run_id = Some(new_run_id.clone());
+                    (
+                        new_run_id,
+                        PromptDisposition::StartedForegroundWork,
+                        None,
+                        None,
+                    )
+                }
+                (AgentInputMode::Queue, Some(_)) => (
+                    new_run_id,
+                    PromptDisposition::QueuedForTurnBoundary,
+                    None,
+                    None,
+                ),
+                (AgentInputMode::Steer, Some(active)) => (
+                    active,
+                    PromptDisposition::ContributedToActiveWork,
+                    None,
+                    None,
+                ),
+                (AgentInputMode::Steer, None) => return Err(AgentHostError::SteeringUnavailable),
+                (AgentInputMode::InterruptAndQueue, None) => {
+                    session.lifecycle = AgentLifecycle::Busy;
+                    session.active_run_id = Some(new_run_id.clone());
+                    (
+                        new_run_id,
+                        PromptDisposition::StartedForegroundWork,
+                        None,
+                        None,
+                    )
+                }
+                (AgentInputMode::InterruptAndQueue, Some(active)) => (
+                    new_run_id,
+                    PromptDisposition::CancelRequestedThenQueued,
+                    Some(active),
+                    Some(3_000),
+                ),
+                (AgentInputMode::Unknown { .. }, _) => {
+                    return Err(AgentHostError::InvalidNativePayload);
+                }
+            };
         let sequence = session.events.len() as u64 + 1;
         session.events.push(AcpEvent {
             session_id: request.session_id.clone(),
@@ -231,6 +259,8 @@ impl FakeAgentHost {
             run_id,
             accepted_at_ms: 2_000 + state.next_run,
             disposition,
+            interrupted_run_id,
+            cancel_requested_at_ms,
         })
     }
 

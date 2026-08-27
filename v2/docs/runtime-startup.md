@@ -140,7 +140,8 @@ crab-v2-trigger \
 ```
 
 Use `--message-json` for a native payload and `--not-before-ms` for delayed delivery. Modes are
-`queue`, `steer` and `interrupt-and-steer`; queue is the default.
+`queue`, `steer` and `interrupt-and-steer`; queue is the default. Interrupt-and-steer atomically
+accepts the trigger before requesting cooperative cancellation of active work.
 
 ## Bridge operations
 

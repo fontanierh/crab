@@ -461,6 +461,119 @@ async fn wait_for_event(host: &AgentHost, session_id: &str, needle: &str) {
 }
 
 #[tokio::test]
+async fn interrupting_input_is_durable_before_cancellation_for_both_acp_profiles() {
+    for protocol in [AgentProtocol::V1, AgentProtocol::V2] {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let host = AgentHost::open_with_authority_verifier(
+            directory.path().join("agent-host.sqlite"),
+            vec![configured_agent(protocol)],
+            Arc::new(FixtureAuthority),
+        )
+        .expect("host opens");
+        let session = open_fixture(&host, protocol, directory.path()).await;
+        let held = host
+            .prompt(
+                context(),
+                prompt(
+                    &session.session_id,
+                    "interrupt-held",
+                    AgentInputMode::Queue,
+                    "hold",
+                ),
+            )
+            .await
+            .expect("active work starts");
+        let interrupting_request = prompt(
+            &session.session_id,
+            "interrupt-urgent",
+            AgentInputMode::InterruptAndQueue,
+            "urgent",
+        );
+        let accepted = host
+            .prompt(context(), interrupting_request.clone())
+            .await
+            .expect("interrupting input is accepted");
+        assert_eq!(
+            accepted.disposition,
+            PromptDisposition::CancelRequestedThenQueued
+        );
+        assert_eq!(accepted.interrupted_run_id.as_deref(), Some(&*held.run_id));
+        assert!(accepted.cancel_requested_at_ms.is_some());
+        assert_eq!(
+            host.prompt(context(), interrupting_request.clone())
+                .await
+                .expect("an exact retry is stable"),
+            accepted
+        );
+        let mut conflicting_retry = interrupting_request;
+        conflicting_retry.mode = AgentInputMode::Queue;
+        assert_eq!(
+            host.prompt(context(), conflicting_retry).await,
+            Err(AgentHostError::DuplicateTurnConflict)
+        );
+
+        wait_for_lifecycle(&host, &session.session_id, AgentLifecycle::Ready).await;
+        let page = host
+            .read_events(
+                context(),
+                ReadEventsRequest {
+                    session_id: session.session_id.clone(),
+                    after_sequence: 0,
+                    limit: 1_000,
+                },
+            )
+            .await
+            .expect("the interruption journal is readable");
+        let client_messages = page
+            .events
+            .iter()
+            .filter(|event| event.direction == AcpEventDirection::ClientToAgent)
+            .filter_map(|event| {
+                serde_json::from_str::<Value>(&event.native_event_json)
+                    .ok()
+                    .map(|message| (event.sequence, message))
+            })
+            .collect::<Vec<_>>();
+        let cancel_sequences = client_messages
+            .iter()
+            .filter(|(_, message)| message["method"] == "session/cancel")
+            .map(|(sequence, _)| *sequence)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            cancel_sequences.len(),
+            1,
+            "an exact retry does not recancel"
+        );
+        let urgent_sequence = client_messages
+            .iter()
+            .find(|(_, message)| {
+                message["method"] == "session/prompt"
+                    && message.pointer("/params/prompt/0/text") == Some(&Value::from("urgent"))
+            })
+            .map(|(sequence, _)| *sequence)
+            .expect("the urgent prompt is dispatched");
+        assert!(cancel_sequences[0] < urgent_sequence);
+        assert!(page.events.iter().any(|event| {
+            event.kind == AcpEventKind::Message && event.native_event_json.contains("echo:urgent")
+        }));
+        for run_id in [&held.run_id, &accepted.run_id] {
+            assert_eq!(
+                page.events
+                    .iter()
+                    .filter(|event| {
+                        event.run_id.as_deref() == Some(run_id.as_str())
+                            && event.kind == AcpEventKind::RunFinished
+                    })
+                    .count(),
+                1,
+                "interrupted and urgent runs each finish exactly once"
+            );
+        }
+        host.shutdown().await;
+    }
+}
+
+#[tokio::test]
 async fn failed_v1_and_v2_sessions_resume_native_identity_without_bootstrap_replay() {
     for protocol in [AgentProtocol::V1, AgentProtocol::V2] {
         let directory = tempfile::tempdir().expect("temporary directory");

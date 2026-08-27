@@ -756,6 +756,11 @@ static __BOXOLOGY_CONTRACT_DESCRIPTOR: ::std::sync::LazyLock<
                                 ::boxology_contract::VariantPayload::Unit,
                                 None,
                             ),
+                            ::boxology_contract::VariantDescriptor::new(
+                                "InterruptAndQueue",
+                                ::boxology_contract::VariantPayload::Unit,
+                                None,
+                            ),
                         ])
                         .expect("generated enum descriptor is valid"),
                     None,
@@ -801,8 +806,29 @@ static __BOXOLOGY_CONTRACT_DESCRIPTOR: ::std::sync::LazyLock<
                                 ::boxology_contract::VariantPayload::Unit,
                                 None,
                             ),
+                            ::boxology_contract::VariantDescriptor::new(
+                                "CancelRequestedThenQueued",
+                                ::boxology_contract::VariantPayload::Unit,
+                                None,
+                            ),
                         ])
                         .expect("generated enum descriptor is valid"),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
+                    "interrupted_run_id",
+                    ::boxology_contract::TypeDescriptor::optional(
+                            ::boxology_contract::TypeDescriptor::string(),
+                        )
+                        .expect("generated optional descriptor is valid"),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
+                    "cancel_requested_at_ms",
+                    ::boxology_contract::TypeDescriptor::optional(
+                            ::boxology_contract::TypeDescriptor::u64(),
+                        )
+                        .expect("generated optional descriptor is valid"),
                     None,
                 ),
             ])
@@ -1251,7 +1277,7 @@ static __BOXOLOGY_CONTRACT_DESCRIPTOR: ::std::sync::LazyLock<
                 capability_10,
             ],
             ::boxology_contract::ContractRevision::new(
-                    "sha256:71d1650ce348f47d6fe90a1b719d7dd00e6d4fedb4111d6428a0864feee3f84e",
+                    "sha256:a2e3701742bd201e79f923b3cc3b1218b65b7d876ff68f0e13d3dde44d08f5bb",
                 )
                 .expect("generated contract revision is non-empty"),
         )
@@ -2026,8 +2052,25 @@ impl AgentHostHandle {
                                 ::boxology_contract::VariantPayload::Unit,
                                 None,
                             ),
+                            ::boxology_contract::VariantDescriptor::new(
+                                "CancelRequestedThenQueued",
+                                ::boxology_contract::VariantPayload::Unit,
+                                None,
+                            ),
                         ])
                         .expect("generated enum descriptor is valid"),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
+                    "interrupted_run_id",
+                    TypeDescriptor::optional(TypeDescriptor::string())
+                        .expect("generated optional descriptor is valid"),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
+                    "cancel_requested_at_ms",
+                    TypeDescriptor::optional(TypeDescriptor::u64())
+                        .expect("generated optional descriptor is valid"),
                     None,
                 ),
             ])
@@ -4886,6 +4929,9 @@ pub enum AgentInputMode {
     Queue,
     /// Contribute to active work. Fail if ACP v2 or an equivalent extension was not negotiated.
     Steer,
+    /// Accept durably before cooperatively cancelling active work. The accepted input is then
+    /// the next queued run. If the session is idle, start it without issuing a cancellation.
+    InterruptAndQueue,
     Unknown { tag: ::std::string::String, payload: ::boxology_contract::OpaquePayload },
 }
 #[rustfmt::skip]
@@ -4899,6 +4945,9 @@ impl ::boxology_contract::ContractType for AgentInputMode {
         let (tag, payload) = match self {
             Self::Queue => ("Queue".into(), ::boxology_contract::SlotValue::Null),
             Self::Steer => ("Steer".into(), ::boxology_contract::SlotValue::Null),
+            Self::InterruptAndQueue => {
+                ("InterruptAndQueue".into(), ::boxology_contract::SlotValue::Null)
+            }
             Self::Unknown { tag, payload } => {
                 (
                     tag.clone(),
@@ -4936,6 +4985,17 @@ impl ::boxology_contract::ContractType for AgentInputMode {
                 Ok(Self::Steer)
             }
             "Steer" => {
+                Err(
+                    ::boxology_contract::DecodeError::new(
+                            ::boxology_contract::DecodeErrorKind::UnexpectedPayload,
+                        )
+                        .under(::boxology_contract::PathSegment::Variant(tag.into())),
+                )
+            }
+            "InterruptAndQueue" if matches!(
+                payload, ::boxology_contract::SlotValue::Null
+            ) => Ok(Self::InterruptAndQueue),
+            "InterruptAndQueue" => {
                 Err(
                     ::boxology_contract::DecodeError::new(
                             ::boxology_contract::DecodeErrorKind::UnexpectedPayload,
@@ -5123,6 +5183,7 @@ pub enum PromptDisposition {
     StartedForegroundWork,
     ContributedToActiveWork,
     QueuedForTurnBoundary,
+    CancelRequestedThenQueued,
     Unknown { tag: ::std::string::String, payload: ::boxology_contract::OpaquePayload },
 }
 #[rustfmt::skip]
@@ -5142,6 +5203,12 @@ impl ::boxology_contract::ContractType for PromptDisposition {
             }
             Self::QueuedForTurnBoundary => {
                 ("QueuedForTurnBoundary".into(), ::boxology_contract::SlotValue::Null)
+            }
+            Self::CancelRequestedThenQueued => {
+                (
+                    "CancelRequestedThenQueued".into(),
+                    ::boxology_contract::SlotValue::Null,
+                )
             }
             Self::Unknown { tag, payload } => {
                 (
@@ -5198,6 +5265,17 @@ impl ::boxology_contract::ContractType for PromptDisposition {
                         .under(::boxology_contract::PathSegment::Variant(tag.into())),
                 )
             }
+            "CancelRequestedThenQueued" if matches!(
+                payload, ::boxology_contract::SlotValue::Null
+            ) => Ok(Self::CancelRequestedThenQueued),
+            "CancelRequestedThenQueued" => {
+                Err(
+                    ::boxology_contract::DecodeError::new(
+                            ::boxology_contract::DecodeErrorKind::UnexpectedPayload,
+                        )
+                        .under(::boxology_contract::PathSegment::Variant(tag.into())),
+                )
+            }
             _ => {
                 match payload {
                     ::boxology_contract::SlotValue::Value(value) => {
@@ -5246,6 +5324,10 @@ pub struct PromptAccepted {
     pub run_id: ::std::string::String,
     pub accepted_at_ms: u64,
     pub disposition: PromptDisposition,
+    /// Active run cooperatively cancelled by `InterruptAndQueue`, otherwise absent.
+    pub interrupted_run_id: ::core::option::Option<::std::string::String>,
+    /// Time at which the cancellation notification was accepted for transport.
+    pub cancel_requested_at_ms: ::core::option::Option<u64>,
 }
 #[rustfmt::skip]
 impl ::boxology_contract::ContractType for PromptAccepted {
@@ -5296,6 +5378,34 @@ impl ::boxology_contract::ContractType for PromptAccepted {
         {
             fields.push(("disposition".into(), value));
         }
+        if let Some(value) = ::boxology_contract::ContractType::encode_field(
+                &self.interrupted_run_id,
+            )
+            .map_err(|error| {
+                error
+                    .under(
+                        ::boxology_contract::PathSegment::Field(
+                            "interrupted_run_id".into(),
+                        ),
+                    )
+            })?
+        {
+            fields.push(("interrupted_run_id".into(), value));
+        }
+        if let Some(value) = ::boxology_contract::ContractType::encode_field(
+                &self.cancel_requested_at_ms,
+            )
+            .map_err(|error| {
+                error
+                    .under(
+                        ::boxology_contract::PathSegment::Field(
+                            "cancel_requested_at_ms".into(),
+                        ),
+                    )
+            })?
+        {
+            fields.push(("cancel_requested_at_ms".into(), value));
+        }
         ::boxology_contract::ContractValue::object(fields)
             .map_err(|_| unreachable!("validated generated field identities are unique"))
     }
@@ -5311,7 +5421,8 @@ impl ::boxology_contract::ContractType for PromptAccepted {
         };
         for (field, _) in fields.entries() {
             match field {
-                "session_id" | "run_id" | "accepted_at_ms" | "disposition" => {}
+                "session_id" | "run_id" | "accepted_at_ms" | "disposition"
+                | "interrupted_run_id" | "cancel_requested_at_ms" => {}
                 _ => {
                     return Err(
                         ::boxology_contract::DecodeError::new(
@@ -5358,6 +5469,32 @@ impl ::boxology_contract::ContractType for PromptAccepted {
                     error
                         .under(
                             ::boxology_contract::PathSegment::Field("disposition".into()),
+                        )
+                })?,
+            interrupted_run_id: <::core::option::Option<
+                ::std::string::String,
+            > as ::boxology_contract::ContractType>::decode_field(
+                    fields.get("interrupted_run_id"),
+                )
+                .map_err(|error| {
+                    error
+                        .under(
+                            ::boxology_contract::PathSegment::Field(
+                                "interrupted_run_id".into(),
+                            ),
+                        )
+                })?,
+            cancel_requested_at_ms: <::core::option::Option<
+                u64,
+            > as ::boxology_contract::ContractType>::decode_field(
+                    fields.get("cancel_requested_at_ms"),
+                )
+                .map_err(|error| {
+                    error
+                        .under(
+                            ::boxology_contract::PathSegment::Field(
+                                "cancel_requested_at_ms".into(),
+                            ),
                         )
                 })?,
         })
@@ -7845,6 +7982,11 @@ pub mod test_support {
                                             ::boxology_contract::VariantPayload::Unit,
                                             None,
                                         ),
+                                        ::boxology_contract::VariantDescriptor::new(
+                                            "InterruptAndQueue",
+                                            ::boxology_contract::VariantPayload::Unit,
+                                            None,
+                                        ),
                                     ])
                                     .expect("generated enum descriptor is valid"),
                                 None,
@@ -8155,8 +8297,8 @@ pub mod test_support {
 #[rustfmt::skip]
 #[doc(hidden)]
 pub const __BOXOLOGY_SEMANTIC_DIGEST: [u8; 32] = [
-    20, 213, 53, 19, 3, 94, 90, 127, 78, 42, 118, 55, 118, 60, 22, 18, 76, 248, 230, 223,
-    29, 214, 62, 83, 168, 177, 232, 80, 184, 7, 99, 9,
+    42, 121, 226, 82, 227, 137, 13, 152, 254, 182, 166, 57, 122, 223, 171, 158, 106, 132,
+    130, 108, 51, 102, 228, 145, 127, 220, 220, 244, 60, 219, 122, 44,
 ];
 #[rustfmt::skip]
 #[doc(hidden)]

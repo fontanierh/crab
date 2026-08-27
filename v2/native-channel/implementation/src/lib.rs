@@ -203,7 +203,10 @@ impl NativeChannel {
         validate_turn(&request)?;
         let binding = self.store.binding(&request.binding_id)?;
         require_attached(&binding)?;
-        if let Some(existing) = self.store.existing_turn(&request, &binding.session_id)? {
+        if let Some(existing) = self
+            .store
+            .existing_turn(&request, &binding.session_id, None)?
+        {
             return Ok(existing);
         }
         let accepted = self
@@ -227,8 +230,61 @@ impl NativeChannel {
             mode: request.mode.clone(),
             run_id: accepted.run_id,
             disposition: map_disposition(accepted.disposition)?,
+            interrupted_run_id: accepted.interrupted_run_id,
+            cancel_requested_at_ms: accepted.cancel_requested_at_ms,
         };
         self.store.record_turn(&request, &accepted)
+    }
+
+    pub async fn accept_interrupting_turn(
+        &self,
+        context: CallContext,
+        request: InterruptingTurnRequest,
+    ) -> Result<AcceptedTurn, NativeChannelError> {
+        let _operation = self.operations.lock().await;
+        validate_turn(&request.turn)?;
+        if !matches!(request.turn.mode, ChannelInputMode::Queue) || request.reason.trim().is_empty()
+        {
+            return Err(NativeChannelError::InvalidNativePayload);
+        }
+        let binding = self.store.binding(&request.turn.binding_id)?;
+        require_attached(&binding)?;
+        if let Some(existing) =
+            self.store
+                .existing_turn(&request.turn, &binding.session_id, Some(&request.reason))?
+        {
+            return Ok(existing);
+        }
+        let accepted = self
+            .agent_host
+            .prompt(
+                context,
+                PromptRequest {
+                    session_id: binding.session_id.clone(),
+                    client_turn_id: request.turn.client_turn_id.clone(),
+                    mode: AgentInputMode::InterruptAndQueue,
+                    native_prompt_json: request.turn.native_prompt_json.clone(),
+                },
+            )
+            .await
+            .map_err(map_prompt_call)?;
+        let accepted = AcceptedTurn {
+            binding_id: binding.binding_id,
+            session_id: binding.session_id,
+            client_turn_id: request.turn.client_turn_id.clone(),
+            accepted_at_ms: accepted.accepted_at_ms,
+            mode: request.turn.mode.clone(),
+            run_id: accepted.run_id,
+            disposition: map_disposition(accepted.disposition)?,
+            interrupted_run_id: accepted.interrupted_run_id,
+            cancel_requested_at_ms: accepted.cancel_requested_at_ms,
+        };
+        self.store.record_interrupting_turn(
+            &request.turn,
+            &accepted,
+            request.turn.received_at_ms,
+            &request.reason,
+        )
     }
 
     pub async fn interrupt_and_drain(
@@ -460,6 +516,9 @@ fn map_disposition(
         PromptDisposition::QueuedForTurnBoundary => {
             Ok(ChannelTurnDisposition::QueuedForTurnBoundary)
         }
+        PromptDisposition::CancelRequestedThenQueued => {
+            Ok(ChannelTurnDisposition::CancelRequestedThenQueued)
+        }
         PromptDisposition::Unknown { .. } => Err(NativeChannelError::AdapterUnavailable),
     }
 }
@@ -584,6 +643,7 @@ mod tests {
             [
                 "bind_channel",
                 "accept_turn",
+                "accept_interrupting_turn",
                 "interrupt_and_drain",
                 "publish_native_event",
                 "replay_native_events",

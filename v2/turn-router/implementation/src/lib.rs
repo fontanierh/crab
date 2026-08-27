@@ -11,9 +11,7 @@ use std::{
 };
 
 use boxology_contract::{CallContext, ErasedCallError};
-use boxology_import_native_channel::{
-    BindingReference, ChannelInputMode, ChannelTurn, InterruptRequest,
-};
+use boxology_import_native_channel::{ChannelInputMode, ChannelTurn, InterruptingTurnRequest};
 use boxology_import_trigger_inbox::{
     ClaimTriggers, SettleTrigger, SettlementOutcome, TriggerAttachment, TriggerLease, TriggerMode,
     TriggerSource,
@@ -143,9 +141,7 @@ impl TurnRouter {
             Err(error) => return Err(error),
         };
 
-        let delivery = self
-            .deliver(context.clone(), &route, &lease, prompt, (self.clock)()?)
-            .await;
+        let delivery = self.deliver(context.clone(), &route, &lease, prompt).await;
         match delivery {
             Ok(()) => {
                 self.settle(
@@ -195,41 +191,30 @@ impl TurnRouter {
         route: &ChannelRoute,
         lease: &TriggerLease,
         native_prompt_json: String,
-        now_ms: u64,
     ) -> Result<(), ChannelFailure> {
+        if matches!(lease.trigger.mode, TriggerMode::InterruptAndSteer) {
+            self.native_channel
+                .accept_interrupting_turn(
+                    context,
+                    InterruptingTurnRequest {
+                        turn: ChannelTurn {
+                            binding_id: route.binding_id.clone(),
+                            client_turn_id: lease.trigger.trigger_id.clone(),
+                            received_at_ms: lease.trigger.enqueued_at_ms,
+                            mode: ChannelInputMode::Queue,
+                            native_prompt_json,
+                        },
+                        reason: format!("trigger:{}", lease.trigger.trigger_id),
+                    },
+                )
+                .await
+                .map_err(classify_channel_error)?;
+            return Ok(());
+        }
         let mode = match lease.trigger.mode {
             TriggerMode::Queue => ChannelInputMode::Queue,
             TriggerMode::Steer => ChannelInputMode::Steer,
-            TriggerMode::InterruptAndSteer => {
-                let status = self
-                    .native_channel
-                    .channel_status(
-                        context.clone(),
-                        BindingReference {
-                            binding_id: route.binding_id.clone(),
-                        },
-                    )
-                    .await
-                    .map_err(classify_channel_error)?;
-                let interrupted = self
-                    .native_channel
-                    .interrupt_and_drain(
-                        context.clone(),
-                        InterruptRequest {
-                            binding_id: route.binding_id.clone(),
-                            expected_session_id: status.binding.session_id,
-                            requested_at_ms: now_ms,
-                            reason: format!("trigger:{}", lease.trigger.trigger_id),
-                        },
-                    )
-                    .await;
-                if let Err(error) = interrupted
-                    && !is_domain_tag(&error, "NothingToInterrupt")
-                {
-                    return Err(classify_channel_error(error));
-                }
-                ChannelInputMode::Queue
-            }
+            TriggerMode::InterruptAndSteer => unreachable!("handled before mode mapping"),
             TriggerMode::Unknown { .. } => {
                 return Err(ChannelFailure::permanent("invalid_trigger_mode"));
             }
@@ -524,13 +509,6 @@ fn classify_channel_error(error: ErasedCallError) -> ChannelFailure {
         }
         _ => ChannelFailure::transient("native_channel_unavailable"),
     }
-}
-
-fn is_domain_tag(error: &ErasedCallError, expected: &str) -> bool {
-    matches!(
-        error,
-        ErasedCallError::Domain { error_tag, .. } if error_tag == expected
-    )
 }
 
 fn system_time_ms() -> Result<u64, TurnRouterError> {
