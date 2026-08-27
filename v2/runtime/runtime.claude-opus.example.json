@@ -26,6 +26,7 @@
         }
       ],
       "protocol": "v1",
+      "steeringExtension": "sessionSteeringV1",
       "authorityProbe": {
         "executable": "../target/release/crab-v2-claude-authority-probe",
         "arguments": [],

@@ -43,6 +43,7 @@ impl FixtureAgent {
             Some("session/resume") => self.resume_session(&message)?,
             Some("session/set_config_option") => self.set_config_option(&message)?,
             Some("session/prompt") => return self.prompt(&message),
+            Some("_session/steering") => self.steer(&message)?,
             Some("session/cancel") => self.cancel()?,
             Some("session/close") => {
                 self.respond(&message, json!({}))?;
@@ -68,12 +69,16 @@ impl FixtureAgent {
                 } else {
                     json!({ "sessionCapabilities": { "resume": {} } })
                 };
-                json!({
+                let mut result = json!({
                     "protocolVersion": 1,
                     "agentCapabilities": capabilities,
                     "authMethods": [],
                     "agentInfo": { "name": "crab-fixture", "version": "1" }
-                })
+                });
+                if std::env::var_os("ACP_FIXTURE_STEERING").is_some() {
+                    result["_meta"] = json!({ "steering": { "supported": true } });
+                }
+                result
             }
             Protocol::V2 => {
                 let capabilities = if std::env::var_os("ACP_FIXTURE_HIDE_STDIO_MCP").is_some() {
@@ -210,6 +215,43 @@ impl FixtureAgent {
             }
         }
         Ok(true)
+    }
+
+    fn steer(&mut self, request: &Value) -> io::Result<()> {
+        if self.protocol != Protocol::V1 || std::env::var_os("ACP_FIXTURE_STEERING").is_none() {
+            return self.respond_error(request, -32601, "steering unavailable");
+        }
+        let text = request
+            .pointer("/params/prompt")
+            .and_then(Value::as_array)
+            .and_then(|blocks| blocks.first())
+            .and_then(|block| block.get("text"))
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned();
+        let forced = std::env::var("ACP_FIXTURE_STEERING_OUTCOME").ok();
+        if forced.as_deref() == Some("promptRequired") {
+            self.finish_active(false)?;
+            return self.respond(
+                request,
+                json!({ "outcome": "promptRequired", "reason": "noRunningTurn" }),
+            );
+        }
+        if forced.as_deref() == Some("startedNewTurn") {
+            return self.respond(request, json!({ "outcome": "startedNewTurn" }));
+        }
+        if self.active_v1_request.is_some() {
+            self.message(&format!("steered:{text}"))?;
+            return self.respond(request, json!({ "outcome": "injected" }));
+        }
+        if request.pointer("/params/_meta/steering/idleBehavior") == Some(&json!("promptRequired"))
+        {
+            return self.respond(
+                request,
+                json!({ "outcome": "promptRequired", "reason": "noRunningTurn" }),
+            );
+        }
+        self.respond(request, json!({ "outcome": "startedNewTurn" }))
     }
 
     fn cancel(&mut self) -> io::Result<()> {

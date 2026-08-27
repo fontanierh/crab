@@ -40,7 +40,8 @@ interrupt as a separate explicit action.
 - ACP owns compaction. Crab preserves draft compaction lifecycle events when available but has no
   `compact` operation because ACP does not define one.
 - ACP v2 draft makes `session/prompt` non-blocking and allows new input during active work. ACP v1
-  can queue portably; true steering requires an advertised agent extension.
+  queues by default; configured adapters may negotiate `_session/steering`. Crab's Claude preset
+  enables it and retains ownership when a racing turn is already idle.
 - Crab owns sub-agents as separately supervised ACP subprocesses. Fresh sessions and inherited
   visible-history snapshots work now; the contract reserves truthful native ACP fork reporting.
   Parent and child exchange durable non-blocking queue, steer or interrupt messages in both

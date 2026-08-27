@@ -2,13 +2,13 @@ use std::{path::Path, sync::Arc, time::Duration};
 
 use agent_host_implementation::{
     AcpEventDirection, AcpEventKind, AgentHost, AgentHostError, AgentInputMode, AgentLifecycle,
-    AgentProtocol, AuthorityAttestation, AuthorityProbeConfig, AuthorityVerifier,
-    CRAB_AGENT_ID_ENV, CRAB_PARENT_SESSION_ID_ENV, CRAB_SESSION_ID_ENV, CRAB_STATE_DIRECTORY_ENV,
-    CRAB_SUB_AGENT_ID_ENV, CRAB_WORKING_DIRECTORY_ENV, ConfiguredAgent, ConfiguredMcpServer,
-    DetachSessionsRequest, DiscoverAgentsRequest, FilesystemAuthority, NetworkAuthority,
-    OpenSessionRequest, PermissionAuthority, PermissionRequest, PreflightRequest,
+    AgentProtocol, AgentSteeringExtension, AuthorityAttestation, AuthorityProbeConfig,
+    AuthorityVerifier, CRAB_AGENT_ID_ENV, CRAB_PARENT_SESSION_ID_ENV, CRAB_SESSION_ID_ENV,
+    CRAB_STATE_DIRECTORY_ENV, CRAB_SUB_AGENT_ID_ENV, CRAB_WORKING_DIRECTORY_ENV, ConfiguredAgent,
+    ConfiguredMcpServer, DetachSessionsRequest, DiscoverAgentsRequest, FilesystemAuthority,
+    NetworkAuthority, OpenSessionRequest, PermissionAuthority, PermissionRequest, PreflightRequest,
     PromptDisposition, PromptRequest, ReadEventsRequest, ResumeSessionRequest, RootAuthority,
-    RunReference, SandboxAuthority, SessionReference, generated,
+    RunReference, SandboxAuthority, SessionReference, SteeringSupport, generated,
 };
 use async_trait::async_trait;
 use boxology_contract::{CallContext, Caller, CancelToken, TraceContext};
@@ -75,6 +75,15 @@ fn configured_agent_with_mcp(protocol: AgentProtocol) -> ConfiguredAgent {
     )
     .arguments(["mcp"])
     .environment([("MCP_MARKER", "visible")])])
+}
+
+fn configured_steering_agent() -> ConfiguredAgent {
+    configured_agent(AgentProtocol::V1)
+        .environment([
+            ("FIXTURE_SECRET", "not-exposed"),
+            ("ACP_FIXTURE_STEERING", "1"),
+        ])
+        .steering_extension(AgentSteeringExtension::SessionSteeringV1)
 }
 
 fn prompt(session_id: &str, turn: &str, mode: AgentInputMode, text: &str) -> PromptRequest {
@@ -904,19 +913,23 @@ async fn v1_queue_cancel_permission_and_restart_are_end_to_end() {
 
     let session = open_fixture(&host, AgentProtocol::V1, directory.path()).await;
     assert_eq!(session.native_session_id, "fixture-native-session");
-    assert_eq!(
-        host.prompt(
+    let idle_steer = host
+        .prompt(
             context(),
             prompt(
                 &session.session_id,
-                "v1-steer",
+                "v1-idle-steer",
                 AgentInputMode::Steer,
-                "unsupported",
+                "ordinary idle turn",
             ),
         )
-        .await,
-        Err(AgentHostError::SteeringUnavailable)
+        .await
+        .expect("steer on an idle v1 session is an ordinary prompt");
+    assert_eq!(
+        idle_steer.disposition,
+        PromptDisposition::StartedForegroundWork
     );
+    wait_for_lifecycle(&host, &session.session_id, AgentLifecycle::Ready).await;
     let held = host
         .prompt(
             context(),
@@ -930,6 +943,19 @@ async fn v1_queue_cancel_permission_and_restart_are_end_to_end() {
         .await
         .expect("first prompt starts");
     assert_eq!(held.disposition, PromptDisposition::StartedForegroundWork);
+    assert_eq!(
+        host.prompt(
+            context(),
+            prompt(
+                &session.session_id,
+                "v1-steer",
+                AgentInputMode::Steer,
+                "unsupported",
+            ),
+        )
+        .await,
+        Err(AgentHostError::SteeringUnavailable)
+    );
     let queued_request = prompt(
         &session.session_id,
         "turn-queued",
@@ -1084,6 +1110,199 @@ async fn v1_queue_cancel_permission_and_restart_are_end_to_end() {
             .await,
         Err(AgentHostError::SessionClosed)
     );
+}
+
+#[tokio::test]
+async fn negotiated_v1_extension_steers_the_active_run() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let host = AgentHost::open_with_authority_verifier(
+        directory.path().join("agent-host.sqlite"),
+        vec![configured_steering_agent()],
+        Arc::new(FixtureAuthority),
+    )
+    .expect("host opens");
+    let session = open_fixture(&host, AgentProtocol::V1, directory.path()).await;
+    assert_eq!(
+        session.negotiation.steering,
+        SteeringSupport::AgentExtension
+    );
+
+    let held = host
+        .prompt(
+            context(),
+            prompt(
+                &session.session_id,
+                "extension-hold",
+                AgentInputMode::Queue,
+                "hold",
+            ),
+        )
+        .await
+        .expect("foreground work starts");
+    let steer_request = prompt(
+        &session.session_id,
+        "extension-steer",
+        AgentInputMode::Steer,
+        "follow up now",
+    );
+    let steered = host
+        .prompt(context(), steer_request.clone())
+        .await
+        .expect("extension contributes immediately");
+    assert_eq!(steered.run_id, held.run_id);
+    assert_eq!(
+        steered.disposition,
+        PromptDisposition::ContributedToActiveWork
+    );
+    assert_eq!(
+        host.prompt(context(), steer_request)
+            .await
+            .expect("identical retry deduplicates"),
+        steered
+    );
+
+    let page = host
+        .read_events(
+            context(),
+            ReadEventsRequest {
+                session_id: session.session_id.clone(),
+                after_sequence: 0,
+                limit: 1_000,
+            },
+        )
+        .await
+        .expect("native extension events are readable");
+    assert!(page.events.iter().any(|event| {
+        event.direction == AcpEventDirection::ClientToAgent
+            && event.native_event_json.contains("_session/steering")
+            && event.native_event_json.contains("promptRequired")
+    }));
+    assert_eq!(
+        page.events
+            .iter()
+            .filter(|event| {
+                event.direction == AcpEventDirection::ClientToAgent
+                    && event.native_event_json.contains("_session/steering")
+            })
+            .count(),
+        1,
+        "the durable retry does not reinject"
+    );
+    assert!(page.events.iter().any(|event| {
+        event.direction == AcpEventDirection::AgentToClient
+            && event.native_event_json.contains("steered:follow up now")
+    }));
+
+    host.cancel_run(
+        context(),
+        RunReference {
+            session_id: session.session_id.clone(),
+            run_id: held.run_id,
+        },
+    )
+    .await
+    .expect("active turn cancels");
+    wait_for_lifecycle(&host, &session.session_id, AgentLifecycle::Ready).await;
+    host.shutdown().await;
+}
+
+#[tokio::test]
+async fn v1_steering_negotiation_and_idle_fallback_fail_closed() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let unadvertised = configured_agent(AgentProtocol::V1)
+        .steering_extension(AgentSteeringExtension::SessionSteeringV1);
+    let host = AgentHost::open_with_authority_verifier(
+        directory.path().join("unadvertised.sqlite"),
+        vec![unadvertised],
+        Arc::new(FixtureAuthority),
+    )
+    .expect("host opens");
+    assert_eq!(
+        host.open_session(
+            context(),
+            OpenSessionRequest {
+                agent_id: "fixture-v1".into(),
+                working_directory: directory.path().to_string_lossy().into_owned(),
+                bootstrap_prompt: None,
+                metadata_json: "{}".into(),
+            },
+        )
+        .await,
+        Err(AgentHostError::ProtocolNegotiationFailed)
+    );
+
+    let fallback_agent = configured_steering_agent().environment([
+        ("FIXTURE_SECRET", "not-exposed"),
+        ("ACP_FIXTURE_STEERING", "1"),
+        ("ACP_FIXTURE_STEERING_OUTCOME", "promptRequired"),
+    ]);
+    let fallback = AgentHost::open_with_authority_verifier(
+        directory.path().join("fallback.sqlite"),
+        vec![fallback_agent],
+        Arc::new(FixtureAuthority),
+    )
+    .expect("fallback host opens");
+    let session = open_fixture(&fallback, AgentProtocol::V1, directory.path()).await;
+    let held = fallback
+        .prompt(
+            context(),
+            prompt(
+                &session.session_id,
+                "fallback-hold",
+                AgentInputMode::Queue,
+                "hold",
+            ),
+        )
+        .await
+        .expect("foreground work starts");
+    let continued = fallback
+        .prompt(
+            context(),
+            prompt(
+                &session.session_id,
+                "fallback-steer",
+                AgentInputMode::Steer,
+                "continue through prompt",
+            ),
+        )
+        .await
+        .expect("idle extension result falls back through session/prompt");
+    assert_ne!(continued.run_id, held.run_id);
+    assert_eq!(
+        continued.disposition,
+        PromptDisposition::StartedForegroundWork
+    );
+    wait_for_lifecycle(&fallback, &session.session_id, AgentLifecycle::Ready).await;
+    let page = fallback
+        .read_events(
+            context(),
+            ReadEventsRequest {
+                session_id: session.session_id.clone(),
+                after_sequence: 0,
+                limit: 1_000,
+            },
+        )
+        .await
+        .expect("fallback lifecycle is readable");
+    assert!(page.events.iter().any(|event| {
+        event.run_id.as_deref() == Some(continued.run_id.as_str())
+            && event
+                .native_event_json
+                .contains("echo:continue through prompt")
+    }));
+    for run_id in [&held.run_id, &continued.run_id] {
+        assert_eq!(
+            page.events
+                .iter()
+                .filter(|event| {
+                    event.run_id.as_deref() == Some(run_id.as_str())
+                        && event.kind == AcpEventKind::RunFinished
+                })
+                .count(),
+            1
+        );
+    }
+    fallback.shutdown().await;
 }
 
 #[tokio::test]

@@ -392,6 +392,29 @@ impl AgentStore {
         ))
     }
 
+    pub(crate) fn existing_prompt(
+        &self,
+        request: &crate::PromptRequest,
+    ) -> Result<Option<PromptAccepted>, AgentHostError> {
+        let mut connection = self.lock()?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Deferred)
+            .map_err(storage_error)?;
+        let Some(existing) =
+            query_prompt(&transaction, &request.session_id, &request.client_turn_id)?
+        else {
+            return Ok(None);
+        };
+        if existing.mode != input_mode_tag(&request.mode)?
+            || existing.native_prompt_json != request.native_prompt_json
+        {
+            return Err(AgentHostError::DuplicateTurnConflict);
+        }
+        let accepted = existing.accepted(&request.session_id)?;
+        transaction.commit().map_err(storage_error)?;
+        Ok(Some(accepted))
+    }
+
     pub(crate) fn activate_queued_run(
         &self,
         session_id: &str,

@@ -37,9 +37,10 @@ Verification needs only Python 3. Runtime needs Node 22+, but never Rust, npm, `
 step, or a package fetch. The manifest rejects missing, altered, extra, special, absolute-symlink,
 and escaping-symlink entries. It does not contain credentials or runtime state.
 
-The supplied launch preset pins Claude Opus 5 with `bypassPermissions`, verifies the vendored ACP
-adapter without `npx`, and registers the bundled WhatsApp bridge in queue mode with QR and phone
-authentication. The first-party authority probe currently makes this preset macOS-specific.
+The supplied launch preset pins Claude Opus 5 with `bypassPermissions`, negotiates the vendored
+adapter's `_session/steering` extension, verifies that adapter without `npx`, and registers the
+bundled WhatsApp bridge in queue mode with QR and phone authentication. The first-party authority
+probe currently makes this preset macOS-specific.
 
 ## Deploy and update
 

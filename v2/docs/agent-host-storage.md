@@ -4,6 +4,8 @@
 the connection to exactly one supervised ACP subprocess; the database is the durable operator/UI
 view.
 
+![Negotiated ACP v1 steering](acp-v1-steering-flow.png)
+
 ## Schema lifecycle
 
 - `PRAGMA user_version = 1` creates `sessions`, `prompts`, `events`, and `permissions` atomically.
@@ -24,7 +26,10 @@ view.
   idle update remains authoritative; if a prompt instead returns a JSON-RPC error, Crab preserves
   that error and atomically appends a minimal `crab/run_finished` lifecycle notification before
   clearing the active run.
-- ACP v1 has one foreground run; queued prompts drain FIFO after its prompt response.
+- ACP v1 has one foreground run; queued prompts drain FIFO after its prompt response. A configured
+  `_session/steering` extension may contribute to that run only after `initialize` advertises it.
+  Crab requests `promptRequired` on an idle race and starts the continuation itself through normal
+  `session/prompt`, so no detached turn escapes the durable lifecycle.
 - ACP v2 steering contributes to the active run; queued prompts wait for an `idle` state update.
 - Permission requests and the automatically selected strongest allow response are audit records,
   never human-gated work.
