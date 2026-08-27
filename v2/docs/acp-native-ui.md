@@ -8,14 +8,14 @@ web, desktop, mobile and remote clients; Crab remains the only owner of agent se
 
 ![T3 Code attach architecture](t3code-channel-flow.png)
 
-The decision was validated against `pingdotgg/t3code@a3a8cbd` and
-`deepseek-ai/deepseek-harness@b150a55` on 2026-08-26.
+The decision was validated against `pingdotgg/t3code@64ca3b6`, the Crab fork at
+`fontanierh/t3code@eca0f39`, and `deepseek-ai/deepseek-harness@b150a55` on 2026-08-27.
 
 ## Fit
 
-| Candidate | Reusable strengths | Blocking mismatch |
+| Candidate | Reusable strengths | Crab adaptation or mismatch |
 |---|---|---|
-| T3 Code | Multi-surface product, remote transport, rich tool/session UI, reusable ACP client runtime and provider drivers | ACP providers currently own their subprocesses; active follow-ups do not expose Crab's explicit queue/steer choice |
+| T3 Code | Multi-surface product, remote transport, rich tool/session UI, reusable ACP client runtime and provider drivers | The Crab provider launches an attach-only facade instead of an agent, and exposes Queue, Steer and Interrupt across web, desktop and mobile |
 | DeepSeek Harness | Rich plugin UI and a tested ACP agent server | Its ACP endpoint is explicitly automation-only and its UI is coupled to the DeepSeek Harness runtime |
 | ACP UI | Direct ACP client with a smaller integration surface | Less complete remote/mobile control surface than T3 Code |
 | acp-components | Good typed components for a future custom client | Requires Crab to own and finish the surrounding product |
@@ -28,7 +28,8 @@ versioned local IPC transport. It must never launch or own the underlying ACP ag
 
 The complete attach slice is implemented. Crab supplies the authenticated local Boxology transport
 and ACP stdio facade; the Crab fork of T3 ships a built-in provider across web, desktop and mobile.
-The compatibility point is `fontanierh/t3code@aacb957`.
+The tested compatibility point is `fontanierh/t3code@eca0f39`, which contains the Crab delivery
+controls and upstream `pingdotgg/t3code@64ca3b6`.
 
 ![ACP stdio facade flow](acp-channel-facade-flow.png)
 
