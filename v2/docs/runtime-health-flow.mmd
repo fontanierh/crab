@@ -1,0 +1,24 @@
+flowchart LR
+    CONFIG["runtime.json<br/>configured expectations"] --> HEALTH["crab-v2-health<br/>owner-only aggregation"]
+
+    IPC["Authenticated local<br/>Boxology IPC"] --> CHANNELS["Channel bindings<br/>+ ACP session status"]
+    IPC --> BRIDGES["Bridge catalog<br/>+ live health"]
+    CHANNELS --> HEALTH
+    BRIDGES --> HEALTH
+
+    HEALTH --> READY{"ready?"}
+    READY -->|yes| DEPLOY["Deployment may keep<br/>the new release"]
+    READY -->|no| ROLLBACK["Deployment rolls back"]
+
+    HEALTH --> HEALTHY{"healthy?"}
+    HEALTHY -->|yes| STATUS["Status succeeds"]
+    HEALTHY -->|no| ACTION["Status fails<br/>needsAction explains why"]
+
+    classDef source fill:#eef2ff,stroke:#4f46e5,color:#111827;
+    classDef action fill:#ecfeff,stroke:#0891b2,color:#111827;
+    classDef success fill:#ecfdf5,stroke:#059669,color:#111827;
+    classDef failure fill:#fff7ed,stroke:#ea580c,color:#111827;
+    class CONFIG,IPC source;
+    class CHANNELS,BRIDGES,HEALTH action;
+    class DEPLOY,STATUS success;
+    class ROLLBACK,ACTION failure;

@@ -125,6 +125,11 @@ unrestricted-host authority. First deployment defaults to Claude; pass `--agent 
 the vendored Codex adapter. It does not need Rust, npm, network package access, or a runtime
 installation step.
 
+`crab-v2-health` reconciles the durable config with live bindings, ACP sessions and configured
+bridges over owner-authenticated IPC. Deployment requires its `ready` signal; service status
+requires `healthy` and preserves explicit bridge authentication/degradation actions. See the
+[runtime health contract](runtime-health.md).
+
 ## Trigger ingress
 
 `crab-v2-trigger` is the single supported recipe for cron, self-work and operator ingress. It reads

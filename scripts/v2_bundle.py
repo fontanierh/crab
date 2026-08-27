@@ -34,6 +34,7 @@ PUBLIC_HELP_BINARIES = (
     "crab-v2-bridge",
     "crab-v2-bridge-mcp",
     "crab-v2-channel",
+    "crab-v2-health",
     "crab-v2-sub-agent",
     "crab-v2-sub-agent-mcp",
     "crab-v2-trigger",
@@ -50,6 +51,7 @@ BUNDLE_AGENT_PRESETS = {
 DEFAULT_BUNDLE_AGENT_PRESET = "claude-opus"
 MANIFEST_NAME = "bundle-manifest.json"
 SERVICE_SCHEMA_VERSION = 1
+HEALTH_SCHEMA_VERSION = 1
 SERVICE_LABEL = "com.crab.v2.runtime"
 SERVICE_LINKS = ("bin", "agents", "bridges", "libexec")
 DEFAULT_READINESS_TIMEOUT_SECONDS = 30.0
@@ -1141,11 +1143,70 @@ def ensure_stable_links(paths: ServicePaths) -> list[Path]:
     return created
 
 
+def parse_runtime_health(raw: str) -> dict[str, Any]:
+    try:
+        report = json.loads(raw)
+    except json.JSONDecodeError as error:
+        raise BundleError("runtime health output is invalid") from error
+    report = require_exact_keys(
+        report,
+        {
+            "schemaVersion",
+            "observedAtMs",
+            "ready",
+            "healthy",
+            "channels",
+            "bridges",
+            "errors",
+            "needsAction",
+        },
+        "runtime health output",
+    )
+    if (
+        report["schemaVersion"] != HEALTH_SCHEMA_VERSION
+        or isinstance(report["observedAtMs"], bool)
+        or not isinstance(report["observedAtMs"], int)
+        or report["observedAtMs"] < 0
+        or not isinstance(report["ready"], bool)
+        or not isinstance(report["healthy"], bool)
+        or not isinstance(report["channels"], list)
+        or not all(isinstance(channel, dict) for channel in report["channels"])
+        or not isinstance(report["bridges"], list)
+        or not all(isinstance(bridge, dict) for bridge in report["bridges"])
+        or not isinstance(report["errors"], list)
+        or not all(isinstance(error, str) for error in report["errors"])
+        or not isinstance(report["needsAction"], list)
+        or not all(isinstance(action, str) for action in report["needsAction"])
+        or (report["healthy"] and not report["ready"])
+    ):
+        raise BundleError("runtime health output has invalid values")
+    return report
+
+
+def production_runtime_health(paths: ServicePaths) -> dict[str, Any]:
+    result = run(
+        (
+            str(paths.root / "bin" / "crab-v2-health"),
+            "--config",
+            str(paths.config),
+            "--state-dir",
+            str(paths.state),
+        ),
+        cwd=paths.root,
+        capture=True,
+    )
+    return parse_runtime_health(result.stdout)
+
+
+RuntimeHealthProbe = Callable[[ServicePaths], dict[str, Any]]
+
+
 def production_readiness(
     paths: ServicePaths,
     launchd: LaunchdController,
     *,
     timeout_seconds: float,
+    health: RuntimeHealthProbe = production_runtime_health,
 ) -> int:
     deadline = time.monotonic() + timeout_seconds
     last_error = "runtime did not start"
@@ -1160,16 +1221,13 @@ def production_readiness(
                         + ", ".join(str(pid) for pid in processes)
                     )
                 verify_bundle(paths.current)
-                run(
-                    (
-                        str(paths.root / "bin" / "crab-v2-bridge"),
-                        "--state-dir",
-                        str(paths.state),
-                        "list",
-                    ),
-                    cwd=paths.root,
-                    capture=True,
-                )
+                topology = health(paths)
+                if not topology["ready"]:
+                    detail = (
+                        "; ".join(topology["errors"][:3])
+                        or "configured topology is not ready"
+                    )
+                    raise BundleError(detail)
                 return state.pid
             except BundleError as error:
                 last_error = str(error)
@@ -1282,6 +1340,7 @@ def service_status(
     launchd: LaunchdController,
     launch_agents: Path | None = None,
     processes: Callable[[], list[int]] = runtime_processes,
+    health: RuntimeHealthProbe = production_runtime_health,
 ) -> dict[str, Any]:
     paths = service_paths(root, launch_agents=launch_agents)
     errors: list[str] = []
@@ -1329,19 +1388,13 @@ def service_status(
     except BundleError as error:
         errors.append(str(error))
     ipc_ready = False
+    topology: dict[str, Any] | None = None
     if state.running and state.pid is not None and bundle_verified:
         try:
-            run(
-                (
-                    str(paths.root / "bin" / "crab-v2-bridge"),
-                    "--state-dir",
-                    str(paths.state),
-                    "list",
-                ),
-                cwd=paths.root,
-                capture=True,
-            )
+            topology = health(paths)
             ipc_ready = True
+            if not topology["ready"]:
+                errors.append("configured runtime topology is not ready")
         except BundleError as error:
             errors.append(str(error))
     elif not state.running:
@@ -1358,7 +1411,11 @@ def service_status(
         "pid": state.pid,
         "processCount": len(process_ids),
         "ipcReady": ipc_ready,
-        "healthy": not errors and ipc_ready,
+        "topologyReady": topology is not None and topology["ready"],
+        "topologyHealthy": topology is not None and topology["healthy"],
+        "needsAction": topology["needsAction"] if topology is not None else [],
+        "topology": topology,
+        "healthy": not errors and ipc_ready and topology is not None and topology["healthy"],
         "errors": errors,
     }
 
