@@ -10,7 +10,8 @@ selected outbound delivery. Service-specific behavior stays in agent-installable
 ```text
 runtime-state/
 ├── bridge-host.sqlite       specs, generations, health, auth metadata, ingress, deliveries
-└── bridge-credentials/      opaque-handle JSON files; directory 0700, files 0600
+├── bridge-credentials/      opaque-handle JSON files; directory 0700, files 0600
+└── bridge-content/          host-named media + metadata; directory 0700, files 0600
 ```
 
 - SQLite schema v1 uses WAL, foreign keys, full synchronous writes and fail-closed version checks.
@@ -24,6 +25,10 @@ runtime-state/
 - Inbound deduplication is `(bridge_id, external_event_id)`; acknowledgement follows durable
   `trigger-inbox.enqueue`. The registered generation—not the event—selects queue, steer or
   interrupt-and-steer.
+- Content uploads are capped at 8 MiB and deterministically deduplicated by bridge, external event,
+  metadata and bytes. The host chooses the private path and returns a percent-encoded `file://`
+  handle. Ingress accepts that handle only for the originating bridge with the exact stored media
+  type/name and rechecks the file size/hash before it becomes an ACP resource link.
 - Outbound deduplication is `(bridge_id, message_id)` with a stable package idempotency key.
 
 ## Process protocol
@@ -35,11 +40,12 @@ variables, and fails launch when a named variable is unavailable.
 | Direction | Methods |
 |---|---|
 | Host → package | `bridge/initialize`, `bridge/health`, `bridge/auth/*`, `bridge/deliver`, `bridge/shutdown` |
-| Package → host | `bridge/inbound`, `bridge/credential/update` |
+| Package → host | `bridge/content/put`, `bridge/inbound`, `bridge/credential/update` |
 
 The transport multiplexes responses and ordered inbound calls without blocking health or delivery
-RPCs. `bridge/inbound` receives a success response only after durable trigger enqueue; packages can
-safely retry the same external event ID after a crash or timeout.
+RPCs. Media bytes cross only the private bounded stdio protocol: `bridge/content/put` fsyncs content
+before returning its handle, and `bridge/inbound` receives success only after durable trigger
+enqueue. Both operations are idempotent for a retried external event.
 
 Authentication completion is two-phase: Crab stores the initial secret under an opaque handle,
 then `bridge/auth/committed` permits live credential updates. Each update supplies the previous

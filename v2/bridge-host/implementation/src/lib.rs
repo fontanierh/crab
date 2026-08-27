@@ -1,8 +1,13 @@
+mod content;
 mod contract;
 mod credentials;
 mod package;
 mod store;
 
+pub use content::{
+    ContentStore, ContentStoreError, ContentUpload, FileContentStore, InMemoryContentStore,
+    MAX_CONTENT_BYTES, StoredContent,
+};
 pub use contract::*;
 pub use credentials::{
     CredentialStore, CredentialStoreError, FileCredentialStore, InMemoryCredentialStore,
@@ -39,13 +44,20 @@ type Clock = Arc<dyn Fn() -> Result<u64, BridgeHostError> + Send + Sync>;
 /// Opened durable state waiting for composition-owned imports and package services.
 pub struct BridgeHostState {
     store: BridgeStore,
+    content: Arc<dyn ContentStore>,
 }
 
 impl BridgeHostState {
     /// Open file-backed bridge state before assembling the Boxology graph.
     pub fn open(path: impl AsRef<Path>) -> Result<Self, BridgeHostError> {
+        let content_path = path
+            .as_ref()
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join("bridge-content");
         Ok(Self {
             store: BridgeStore::open(path)?,
+            content: Arc::new(FileContentStore::open(content_path).map_err(map_content_error)?),
         })
     }
 
@@ -53,6 +65,7 @@ impl BridgeHostState {
     pub fn open_in_memory() -> Result<Self, BridgeHostError> {
         Ok(Self {
             store: BridgeStore::open_in_memory()?,
+            content: Arc::new(InMemoryContentStore::default()),
         })
     }
 
@@ -68,6 +81,7 @@ impl BridgeHostState {
             trigger_inbox: Arc::new(trigger_inbox),
             packages,
             credentials,
+            content: self.content,
             store: Arc::new(self.store),
             connections: Arc::new(RwLock::new(HashMap::new())),
             active_package_instances: Arc::new(RwLock::new(HashMap::new())),
@@ -92,6 +106,7 @@ pub struct BridgeHost {
     trigger_inbox: Arc<TriggerInboxImport>,
     packages: Arc<dyn BridgePackageFactory>,
     credentials: Arc<dyn CredentialStore>,
+    content: Arc<dyn ContentStore>,
     store: Arc<BridgeStore>,
     connections: Arc<RwLock<HashMap<String, Arc<dyn BridgePackage>>>>,
     active_package_instances: Arc<RwLock<HashMap<String, String>>>,
@@ -107,6 +122,7 @@ impl BridgeHost {
             trigger_inbox: self.trigger_inbox.clone(),
             packages: self.packages.clone(),
             credentials: self.credentials.clone(),
+            content: self.content.clone(),
             store: self.store.clone(),
             connections: self.connections.clone(),
             active_package_instances: self.active_package_instances.clone(),
@@ -121,6 +137,7 @@ impl BridgeHost {
             bridge_id: bridge_id.to_owned(),
             trigger_inbox: self.trigger_inbox.clone(),
             store: self.store.clone(),
+            content: self.content.clone(),
             operations: self.operations.clone(),
             clock: self.clock.clone(),
         })
@@ -342,6 +359,7 @@ struct SupervisorContext {
     trigger_inbox: Arc<TriggerInboxImport>,
     packages: Arc<dyn BridgePackageFactory>,
     credentials: Arc<dyn CredentialStore>,
+    content: Arc<dyn ContentStore>,
     store: Arc<BridgeStore>,
     connections: Arc<RwLock<HashMap<String, Arc<dyn BridgePackage>>>>,
     active_package_instances: Arc<RwLock<HashMap<String, String>>>,
@@ -399,6 +417,7 @@ impl SupervisorContext {
                 bridge_id: bridge_id.to_owned(),
                 trigger_inbox: self.trigger_inbox.clone(),
                 store: self.store.clone(),
+                content: self.content.clone(),
                 operations: self.operations.clone(),
                 clock: self.clock.clone(),
             });
@@ -567,6 +586,7 @@ struct BridgeIngressRouter {
     bridge_id: String,
     trigger_inbox: Arc<TriggerInboxImport>,
     store: Arc<BridgeStore>,
+    content: Arc<dyn ContentStore>,
     operations: Arc<Mutex<()>>,
     clock: Clock,
 }
@@ -589,6 +609,7 @@ impl BridgeInboundSink for BridgeIngressRouter {
         route_inbound(
             &self.trigger_inbox,
             &self.store,
+            &self.content,
             &self.operations,
             &self.clock,
             CallContext::new(
@@ -601,6 +622,16 @@ impl BridgeInboundSink for BridgeIngressRouter {
             request,
         )
         .await
+    }
+
+    async fn store_content(
+        &self,
+        request: ContentUpload,
+    ) -> Result<StoredContent, BridgeHostError> {
+        if request.bridge_id != self.bridge_id {
+            return Err(BridgeHostError::InvalidSpec);
+        }
+        self.content.put(request).await.map_err(map_content_error)
     }
 }
 
@@ -925,6 +956,7 @@ impl BridgeHost {
         route_inbound(
             &self.trigger_inbox,
             &self.store,
+            &self.content,
             &self.operations,
             &self.clock,
             context,
@@ -1032,6 +1064,7 @@ impl BridgeHost {
 async fn route_inbound(
     trigger_inbox: &TriggerInboxImport,
     store: &BridgeStore,
+    content: &Arc<dyn ContentStore>,
     operations: &Mutex<()>,
     clock: &Clock,
     context: CallContext,
@@ -1039,6 +1072,12 @@ async fn route_inbound(
 ) -> Result<TriggerIntent, BridgeHostError> {
     let _operation = operations.lock().await;
     validate_inbound(&request)?;
+    for attachment in &request.attachments {
+        content
+            .owns(&request.bridge_id, attachment)
+            .await
+            .map_err(map_content_error)?;
+    }
     let spec = store.spec(&request.bridge_id)?;
     let status = store.status(&request.bridge_id, clock()?)?;
     if !spec.desired_running
@@ -1198,6 +1237,15 @@ fn map_credential_error(error: CredentialStoreError) -> BridgeHostError {
             BridgeHostError::CredentialRejected
         }
         CredentialStoreError::Unavailable => BridgeHostError::StorageUnavailable,
+    }
+}
+
+fn map_content_error(error: ContentStoreError) -> BridgeHostError {
+    match error {
+        ContentStoreError::UnknownHandle | ContentStoreError::InvalidContent => {
+            BridgeHostError::InvalidSpec
+        }
+        ContentStoreError::Unavailable => BridgeHostError::StorageUnavailable,
     }
 }
 

@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import test from 'node:test';
 
 import { WhatsAppBridgeService } from '../src/bridge-service.js';
@@ -130,6 +131,113 @@ test('phone pairing, inbound routing, and deterministic text delivery use no loc
   });
   assert.equal(first.externalDeliveryId, second.externalDeliveryId);
   assert.equal(sockets[0].sent[0].options.messageId, sockets[0].sent[1].options.messageId);
+});
+
+test('inbound media is durably stored before its trigger references the host handle', async () => {
+  const calls = [];
+  const bytes = Buffer.from('private image bytes');
+  const { sockets, options } = dependencies({
+    downloadMedia: async ({ downloadType, maximumBytes }) => {
+      assert.equal(downloadType, 'image');
+      assert.equal(maximumBytes, 8 * 1024 * 1024);
+      return bytes;
+    },
+    callHost: async (method, params) => {
+      calls.push({ method, params });
+      if (method === 'bridge/content/put') {
+        return {
+          contentHandle: 'file:///private/crab/content_1.blob',
+          size: bytes.length,
+          sha256: createHash('sha256').update(bytes).digest('hex'),
+        };
+      }
+      return { triggerId: 'trigger-media-1' };
+    },
+    onFatal: (error) => { throw error; },
+  });
+  const service = new WhatsAppBridgeService(options);
+  await initialize(service);
+  await service.health({ credential: credential() });
+  sockets[0].ev.emit('connection.update', { connection: 'open' });
+  sockets[0].ev.emit('messages.upsert', {
+    type: 'notify',
+    messages: [{
+      key: { id: 'image-1', remoteJid: 'alice@s.whatsapp.net' },
+      message: {
+        imageMessage: {
+          caption: 'diagram',
+          mimetype: 'image/jpeg',
+          fileLength: bytes.length,
+          mediaKey: Buffer.from('not-forwarded'),
+        },
+      },
+    }],
+  });
+  await flush();
+  assert.deepEqual(calls.map((call) => call.method), [
+    'bridge/content/put',
+    'bridge/inbound',
+  ]);
+  assert.equal(calls[0].params.bytesBase64, bytes.toString('base64'));
+  assert.deepEqual(calls[1].params.attachments, [{
+    mediaType: 'image/jpeg',
+    name: null,
+    contentHandle: 'file:///private/crab/content_1.blob',
+  }]);
+  assert.equal(calls[1].params.message.mediaKey, undefined);
+});
+
+test('oversized media keeps truthful metadata without downloading bytes', async () => {
+  const calls = [];
+  const { sockets, options } = dependencies({
+    downloadMedia: async () => { throw new Error('must not download oversized media'); },
+    callHost: async (method, params) => {
+      calls.push({ method, params });
+      return { triggerId: 'trigger-large-1' };
+    },
+    onFatal: (error) => { throw error; },
+  });
+  const service = new WhatsAppBridgeService(options);
+  await initialize(service);
+  await service.health({ credential: credential() });
+  sockets[0].ev.emit('connection.update', { connection: 'open' });
+  sockets[0].ev.emit('messages.upsert', {
+    type: 'notify',
+    messages: [{
+      key: { id: 'video-1', remoteJid: 'alice@s.whatsapp.net' },
+      message: { videoMessage: { mimetype: 'video/mp4', fileLength: 8 * 1024 * 1024 + 1 } },
+    }],
+  });
+  await flush();
+  assert.deepEqual(calls.map((call) => call.method), ['bridge/inbound']);
+  assert.equal(calls[0].params.message.mediaUnavailable, 'tooLarge');
+  assert.deepEqual(calls[0].params.attachments, []);
+});
+
+test('a failed media download preserves the inbound message and bridge process', async () => {
+  const calls = [];
+  const { sockets, options } = dependencies({
+    downloadMedia: async () => { throw new Error('network unavailable'); },
+    callHost: async (method, params) => {
+      calls.push({ method, params });
+      return { triggerId: 'trigger-download-failed' };
+    },
+    onFatal: (error) => { throw error; },
+  });
+  const service = new WhatsAppBridgeService(options);
+  await initialize(service);
+  await service.health({ credential: credential() });
+  sockets[0].ev.emit('connection.update', { connection: 'open' });
+  sockets[0].ev.emit('messages.upsert', {
+    type: 'notify',
+    messages: [{
+      key: { id: 'audio-1', remoteJid: 'alice@s.whatsapp.net' },
+      message: { audioMessage: { mimetype: 'audio/ogg', fileLength: 20 } },
+    }],
+  });
+  await flush();
+  assert.deepEqual(calls.map((call) => call.method), ['bridge/inbound']);
+  assert.equal(calls[0].params.message.mediaUnavailable, 'downloadFailed');
 });
 
 test('a server-side logout makes credential health fail closed', async () => {

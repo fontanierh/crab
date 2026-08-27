@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { normalizeInbound } from '../src/message.js';
+import { mediaDescriptor, normalizeInbound } from '../src/message.js';
 
 const options = { bridgeId: 'whatsapp', targetChannelId: 'primary', now: () => 99 };
 
@@ -24,15 +24,30 @@ test('normalizes inbound text with stable deduplication and sender metadata', ()
   assert.deepEqual(inbound.attachments, []);
 });
 
-test('emits media metadata without downloading or creating local content handles', () => {
-  const inbound = normalizeInbound({
+test('emits media metadata and a private download descriptor', () => {
+  const message = {
     key: { id: 'image-1', remoteJid: 'alice@s.whatsapp.net' },
-    message: { imageMessage: { caption: 'diagram', mimetype: 'image/jpeg' } },
-  }, options);
+    message: {
+      imageMessage: {
+        caption: 'diagram',
+        mimetype: 'image/jpeg',
+        fileLength: 42,
+        mediaKey: Buffer.from('private'),
+      },
+    },
+  };
+  const inbound = normalizeInbound(message, options);
   assert.equal(inbound.message.type, 'image');
   assert.equal(inbound.message.caption, 'diagram');
   assert.equal(inbound.message.mimeType, 'image/jpeg');
   assert.deepEqual(inbound.attachments, []);
+  assert.deepEqual(mediaDescriptor(message.message), {
+    payload: message.message.imageMessage,
+    downloadType: 'image',
+    mediaType: 'image/jpeg',
+    name: null,
+    size: 42,
+  });
 });
 
 test('drops own, status, and protocol traffic', () => {

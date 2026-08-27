@@ -13,9 +13,9 @@ use bridge_host_contract::{
 };
 use bridge_host_implementation::{
     BridgeCredentialReceipt, BridgeCredentialSink, BridgeCredentialUpdate, BridgeHostState,
-    BridgeInboundSink, BridgePackage, BridgePackageError, BridgePackageFactory, CredentialStore,
-    InMemoryCredentialStore, PackageChallenge, PackageCredential, PackageCredentialValidation,
-    PackageDelivery, PackageHealth, generated as bridge_host,
+    BridgeInboundSink, BridgePackage, BridgePackageError, BridgePackageFactory, ContentUpload,
+    CredentialStore, InMemoryCredentialStore, PackageChallenge, PackageCredential,
+    PackageCredentialValidation, PackageDelivery, PackageHealth, generated as bridge_host,
 };
 use sha2::{Digest, Sha256};
 use trigger_inbox_contract::{TriggerMode, TriggerReference};
@@ -120,6 +120,7 @@ impl BridgePackage for FakePackage {
 struct FakeFactory {
     package: Arc<FakePackage>,
     launches: Arc<AtomicUsize>,
+    inbound_sink: Arc<Mutex<Option<Arc<dyn BridgeInboundSink>>>>,
     credential_sink: Arc<Mutex<Option<Arc<dyn BridgeCredentialSink>>>>,
 }
 
@@ -149,10 +150,11 @@ impl BridgePackageFactory for FakeFactory {
     async fn launch(
         &self,
         _spec: &BridgeSpec,
-        _inbound: Arc<dyn BridgeInboundSink>,
+        inbound: Arc<dyn BridgeInboundSink>,
         credentials: Arc<dyn BridgeCredentialSink>,
     ) -> Result<Arc<dyn BridgePackage>, BridgePackageError> {
         self.launches.fetch_add(1, Ordering::SeqCst);
+        *self.inbound_sink.lock().expect("inbound sink lock") = Some(inbound);
         *self.credential_sink.lock().expect("credential sink lock") = Some(credentials);
         Ok(self.package.clone())
     }
@@ -190,6 +192,7 @@ async fn bridge_host_owns_auth_ingress_delivery_and_generations() {
     let package = Arc::new(FakePackage::default());
     let observed_package = package.clone();
     let launches = Arc::new(AtomicUsize::new(0));
+    let inbound_sink = Arc::new(Mutex::new(None));
     let credential_sink = Arc::new(Mutex::new(None));
     let credential_store = Arc::new(InMemoryCredentialStore::default());
     let bridge_state = BridgeHostState::open_in_memory().expect("bridge state opens");
@@ -198,6 +201,7 @@ async fn bridge_host_owns_auth_ingress_delivery_and_generations() {
     let trigger = trigger_inbox::register(&mut builder, trigger_store);
     let trigger_handle = builder.handle::<trigger_inbox_contract::TriggerInboxHandle>(&trigger);
     let factory_credential_sink = credential_sink.clone();
+    let factory_inbound_sink = inbound_sink.clone();
     let host_credential_store = credential_store.clone();
     let bridge = bridge_host::register(&mut builder, move |imports| {
         bridge_state.connect(
@@ -205,6 +209,7 @@ async fn bridge_host_owns_auth_ingress_delivery_and_generations() {
             Arc::new(FakeFactory {
                 package: package.clone(),
                 launches: launches.clone(),
+                inbound_sink: factory_inbound_sink.clone(),
                 credential_sink: factory_credential_sink.clone(),
             }),
             host_credential_store.clone(),
@@ -327,6 +332,21 @@ async fn bridge_host_owns_auth_ingress_delivery_and_generations() {
     .await
     .expect("supervisor actively revalidates credentials");
 
+    let captured_inbound = inbound_sink
+        .lock()
+        .expect("inbound sink lock")
+        .clone()
+        .expect("inbound sink captured");
+    let stored = captured_inbound
+        .store_content(ContentUpload {
+            bridge_id: "whatsapp".into(),
+            external_event_id: "event-1".into(),
+            media_type: "image/jpeg".into(),
+            name: Some("diagram.jpg".into()),
+            bytes: b"private image".to_vec(),
+        })
+        .await
+        .expect("package content persists");
     let inbound = BridgeInbound {
         bridge_id: "whatsapp".into(),
         external_event_id: "event-1".into(),
@@ -334,7 +354,7 @@ async fn bridge_host_owns_auth_ingress_delivery_and_generations() {
         target_channel_id: "jim".into(),
         sender_json: r#"{"phone":"redacted"}"#.into(),
         message_json: r#"{"text":"hello"}"#.into(),
-        attachments: Vec::new(),
+        attachments: vec![stored.attachment.clone()],
     };
     let intent = bridge_handle
         .accept_inbound(context(), inbound.clone())
@@ -353,11 +373,35 @@ async fn bridge_host_owns_auth_ingress_delivery_and_generations() {
     assert_eq!(trigger_record.mode, TriggerMode::InterruptAndSteer);
     assert!(trigger_record.message_json.contains("externalEventId"));
     assert_eq!(
+        trigger_record.attachments[0].content_handle,
+        stored.attachment.content_handle
+    );
+    assert_eq!(
         bridge_handle
             .accept_inbound(context(), inbound)
             .await
             .expect("inbound retry returns original intent"),
         intent
+    );
+    let forged = BridgeInbound {
+        bridge_id: "whatsapp".into(),
+        external_event_id: "event-forged".into(),
+        received_at_ms: 11,
+        target_channel_id: "jim".into(),
+        sender_json: r#"{"phone":"redacted"}"#.into(),
+        message_json: r#"{"text":"forged"}"#.into(),
+        attachments: vec![bridge_host_contract::BridgeAttachment {
+            media_type: "image/jpeg".into(),
+            name: Some("diagram.jpg".into()),
+            content_handle: "file:///tmp/untrusted.jpg".into(),
+        }],
+    };
+    assert!(
+        bridge_handle
+            .accept_inbound(context(), forged)
+            .await
+            .is_err(),
+        "ingress rejects handles the host did not issue"
     );
 
     let outbound = BridgeOutbound {

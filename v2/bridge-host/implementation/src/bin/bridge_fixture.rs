@@ -18,6 +18,19 @@ fn main() {
         let method = request.get("method").and_then(Value::as_str).unwrap_or("");
         let params = request.get("params").cloned().unwrap_or_else(|| json!({}));
         if method == "bridge/initialize" {
+            let content = json!({
+                "jsonrpc": "2.0",
+                "id": "fixture-content-1",
+                "method": "bridge/content/put",
+                "params": {
+                    "bridgeId": "fixture-bridge",
+                    "externalEventId": "fixture-event-1",
+                    "mediaType": "text/plain",
+                    "name": "note.txt",
+                    "bytesBase64": "Zml4dHVyZSBjb250ZW50"
+                }
+            });
+            writeln!(stdout, "{content}").expect("fixture writes content request");
             let inbound = json!({
                 "jsonrpc": "2.0",
                 "id": "fixture-inbound-1",

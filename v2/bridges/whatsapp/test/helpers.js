@@ -58,6 +58,7 @@ export function dependencies(overrides = {}) {
       appStateSyncKeyFromObject: (value) => ({ ...value, revived: true }),
       disconnectStatus: (error) => error?.status ?? null,
       loggedOutStatus: 401,
+      downloadMedia: async () => Buffer.from('fixture media'),
       authTimeoutMs: 1_000,
       now: () => 10_000,
       ...overrides,

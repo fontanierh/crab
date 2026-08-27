@@ -331,6 +331,7 @@ name = "bridge-host-implementation"
 version = "0.0.0"
 dependencies = [
  "async-trait",
+ "base64",
  "boxology",
  "boxology-contract",
  "boxology-runtime",

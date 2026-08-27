@@ -6,6 +6,7 @@ publish = false
 
 [dependencies]
 async-trait = { workspace = true }
+base64 = { workspace = true }
 boxology = { workspace = true }
 boxology-contract = { workspace = true }
 boxology-runtime = { workspace = true }

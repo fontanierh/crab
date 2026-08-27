@@ -4,14 +4,15 @@ use async_trait::async_trait;
 use bridge_host_implementation::{
     AuthenticationMethod, BridgeAttachment, BridgeCredentialReceipt, BridgeCredentialSink,
     BridgeCredentialUpdate, BridgeHostError, BridgeInbound, BridgeInboundSink, BridgeIngressMode,
-    BridgeOutbound, BridgePackageError, BridgePackageFactory, BridgeSpec,
-    ProcessBridgePackageFactory, TriggerIntent,
+    BridgeOutbound, BridgePackageError, BridgePackageFactory, BridgeSpec, ContentUpload,
+    ProcessBridgePackageFactory, StoredContent, TriggerIntent,
 };
 use sha2::{Digest, Sha256};
 
 #[derive(Default)]
 struct RecordingSink {
     events: Mutex<Vec<String>>,
+    content: Mutex<Vec<Vec<u8>>>,
 }
 
 #[derive(Default)]
@@ -36,6 +37,25 @@ impl BridgeInboundSink for RecordingSink {
             trigger_id: "trigger-fixture-1".into(),
             deduplicated: false,
             recorded_at_ms: 2,
+        })
+    }
+
+    async fn store_content(
+        &self,
+        request: ContentUpload,
+    ) -> Result<StoredContent, BridgeHostError> {
+        self.content
+            .lock()
+            .expect("recording content lock")
+            .push(request.bytes);
+        Ok(StoredContent {
+            attachment: BridgeAttachment {
+                media_type: request.media_type,
+                name: request.name,
+                content_handle: "file:///fixture/content.txt".into(),
+            },
+            size: 15,
+            sha256: "a".repeat(64),
         })
     }
 }
@@ -97,14 +117,20 @@ async fn real_process_protocol_handles_health_auth_delivery_and_shutdown() {
         .expect("fixture process launches");
     tokio::time::timeout(std::time::Duration::from_secs(1), async {
         loop {
-            if sink.events.lock().expect("recording sink lock").len() == 1 {
+            if sink.events.lock().expect("recording sink lock").len() == 1
+                && sink.content.lock().expect("recording content lock").len() == 1
+            {
                 break;
             }
             tokio::task::yield_now().await;
         }
     })
     .await
-    .expect("fixture package can invoke durable host ingress");
+    .expect("fixture package can invoke durable host content and ingress");
+    assert_eq!(
+        sink.content.lock().expect("recording content lock")[0],
+        b"fixture content"
+    );
     let initial = package
         .health(None)
         .await
