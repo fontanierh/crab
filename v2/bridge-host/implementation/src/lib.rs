@@ -965,6 +965,36 @@ impl BridgeHost {
         .await
     }
 
+    pub async fn import_content(
+        &self,
+        context: CallContext,
+        request: ImportBridgeContentRequest,
+    ) -> Result<ImportedBridgeContent, BridgeHostError> {
+        let _ = context;
+        let source_path = validate_content_import(&request)?;
+        let _operation = self.operations.lock().await;
+        self.store.record(&request.bridge_id)?;
+        let bytes = content::read_import_source(&source_path)
+            .await
+            .map_err(map_content_error)?;
+        let stored = self
+            .content
+            .put(ContentUpload {
+                bridge_id: request.bridge_id,
+                external_event_id: format!("agent-import:{}", request.import_id),
+                media_type: request.media_type,
+                name: request.name,
+                bytes,
+            })
+            .await
+            .map_err(map_content_error)?;
+        Ok(ImportedBridgeContent {
+            attachment: stored.attachment,
+            size_bytes: stored.size,
+            sha256: stored.sha256,
+        })
+    }
+
     pub async fn deliver_message(
         &self,
         context: CallContext,
@@ -1184,6 +1214,31 @@ fn validate_outbound(request: &BridgeOutbound) -> Result<(), BridgeHostError> {
     validate_attachments(&request.attachments)
 }
 
+fn validate_content_import(
+    request: &ImportBridgeContentRequest,
+) -> Result<std::path::PathBuf, BridgeHostError> {
+    if request.bridge_id.trim().is_empty()
+        || request.bridge_id.len() > 512
+        || request.import_id.trim().is_empty()
+        || request.import_id.len() > 1024
+        || request.source_path.trim().is_empty()
+        || request.source_path.len() > 4096
+        || request.media_type.trim().is_empty()
+        || request.media_type.len() > 255
+        || request
+            .name
+            .as_ref()
+            .is_some_and(|name| name.trim().is_empty() || name.len() > 1024)
+    {
+        return Err(BridgeHostError::InvalidSpec);
+    }
+    let source_path = std::path::PathBuf::from(&request.source_path);
+    if !source_path.is_absolute() {
+        return Err(BridgeHostError::InvalidSpec);
+    }
+    Ok(source_path)
+}
+
 fn validate_attachments(attachments: &[BridgeAttachment]) -> Result<(), BridgeHostError> {
     if attachments.iter().any(|attachment| {
         attachment.media_type.trim().is_empty() || attachment.content_handle.trim().is_empty()
@@ -1322,6 +1377,7 @@ mod tests {
             "begin_authentication",
             "validate_credentials",
             "accept_inbound",
+            "import_content",
             "deliver_message",
         ] {
             assert!(

@@ -22,6 +22,7 @@ operators never open Crab's databases or credential store.
 | `bridge-host.submit_authentication` | `bridge-host` |
 | `bridge-host.validate_credentials` | `bridge-host` |
 | `bridge-host.invalidate_credentials` | `bridge-host` |
+| `bridge-host.import_content` | `bridge-host` |
 | `bridge-host.deliver_message` | `bridge-host` |
 | `bridge-host.delivery_status` | `bridge-host` |
 | `bridge-host.bridge_status` | `bridge-host` |

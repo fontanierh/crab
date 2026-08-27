@@ -25,10 +25,12 @@ runtime-state/
 - Inbound deduplication is `(bridge_id, external_event_id)`; acknowledgement follows durable
   `trigger-inbox.enqueue`. The registered generation—not the event—selects queue, steer or
   interrupt-and-steer.
-- Content uploads are capped at 8 MiB and deterministically deduplicated by bridge, external event,
-  metadata and bytes. The host chooses the private path and returns a percent-encoded `file://`
-  handle. Ingress accepts that handle only for the originating bridge with the exact stored media
-  type/name and rechecks the file size/hash before it becomes an ACP resource link.
+- Package uploads and agent-requested local-file imports are capped at 8 MiB and deterministically
+  deduplicated by bridge, stable source identity, metadata and bytes. Agent imports require an
+  absolute regular non-symlink source and a stable read. The host copies into a private path and
+  returns a percent-encoded `file://` handle. Ingress and delivery accept that handle only for the
+  originating bridge with the exact stored media type/name and recheck the file size/hash before
+  use.
 - Outbound deduplication is `(bridge_id, message_id)` with a stable package idempotency key.
 
 ## Process protocol

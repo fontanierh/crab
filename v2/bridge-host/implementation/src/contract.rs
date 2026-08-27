@@ -170,6 +170,23 @@ boxology::contract! {
         pub content_handle: String,
     }
 
+    /// Stage one agent-readable local file into Crab-owned content before external delivery.
+    pub struct ImportBridgeContentRequest {
+        pub bridge_id: String,
+        /// Stable caller identity. Repeating the same import with the same bytes is idempotent.
+        pub import_id: String,
+        /// Absolute source path. Crab copies it; packages never receive this path.
+        pub source_path: String,
+        pub media_type: String,
+        pub name: Option<String>,
+    }
+
+    pub struct ImportedBridgeContent {
+        pub attachment: BridgeAttachment,
+        pub size_bytes: u64,
+        pub sha256: String,
+    }
+
     /// One external event normalized just enough to create a durable Crab trigger.
     pub struct BridgeInbound {
         pub bridge_id: String,
@@ -282,6 +299,10 @@ boxology::contract! {
 
     #[capability]
     pub async fn accept_inbound(request: BridgeInbound) -> Result<TriggerIntent, BridgeHostError>;
+
+    /// Copy bounded local content into the private bridge store before selected delivery.
+    #[capability]
+    pub async fn import_content(request: ImportBridgeContentRequest) -> Result<ImportedBridgeContent, BridgeHostError>;
 
     #[capability]
     pub async fn deliver_message(request: BridgeOutbound) -> Result<DeliveryReceipt, BridgeHostError>;

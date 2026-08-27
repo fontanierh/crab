@@ -187,6 +187,25 @@
     },
     {
       "deprecation": null,
+      "docs": [
+        " Copy bounded local content into the private bridge store before selected delivery."
+      ],
+      "error": "BridgeHostError",
+      "id": "bridge-host.import_content",
+      "idempotency": "none",
+      "input": {
+        "name": "request",
+        "type": "ImportBridgeContentRequest"
+      },
+      "max_exposure": "code_only",
+      "name": "import_content",
+      "output": {
+        "type": "ImportedBridgeContent"
+      },
+      "shape": "unary"
+    },
+    {
+      "deprecation": null,
       "docs": [],
       "error": "BridgeHostError",
       "id": "bridge-host.deliver_message",
@@ -276,9 +295,9 @@
   "provenance": {
     "generator": "boxology-generator",
     "generator_version": "0.1.1",
-    "semantic_digest": "sha256:82fa6595378b2380a263c9016f93a8e4c4f210d530cb623beb3838b0af8a5ac7"
+    "semantic_digest": "sha256:4f7a565731e2f28fdb82a93b080008d4940c967f628e94d8a1ccc53510f58ac5"
   },
-  "revision": "sha256:631ac36bc009a6f8b8014c78f21d706111f7c6956e329e234b0d7bcf9b414501",
+  "revision": "sha256:b66a7692a957d38d7cba393d60d4248f612fc79835e130b036c8ed8280bb3f21",
   "schema_format": 1,
   "types": [
     {
@@ -1002,6 +1021,76 @@
       ],
       "kind": "struct",
       "name": "BridgeAttachment"
+    },
+    {
+      "deprecation": null,
+      "docs": [
+        " Stage one agent-readable local file into Crab-owned content before external delivery."
+      ],
+      "fields": [
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "bridge_id",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [
+            " Stable caller identity. Repeating the same import with the same bytes is idempotent."
+          ],
+          "name": "import_id",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [
+            " Absolute source path. Crab copies it; packages never receive this path."
+          ],
+          "name": "source_path",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "media_type",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "name",
+          "type": "Option<String>"
+        }
+      ],
+      "kind": "struct",
+      "name": "ImportBridgeContentRequest"
+    },
+    {
+      "deprecation": null,
+      "docs": [],
+      "fields": [
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "attachment",
+          "type": "BridgeAttachment"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "size_bytes",
+          "type": "u64"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "sha256",
+          "type": "String"
+        }
+      ],
+      "kind": "struct",
+      "name": "ImportedBridgeContent"
     },
     {
       "deprecation": null,

@@ -9,8 +9,9 @@ use bridge_host_contract::{
     AuthenticationChallenge, AuthenticationMethod, BeginAuthenticationRequest, BridgeAttachment,
     BridgeCatalog, BridgeIngressMode, BridgeLifecycle, BridgeOutbound, BridgeReceipt, BridgeRecord,
     BridgeReference, BridgeSpec, BridgeStatus, CredentialLifecycle, CredentialStatus,
-    DeliveryLifecycle, DeliveryReceipt, DeliveryReference, ReconcileBridgeRequest,
-    ReplaceBridgeRequest, SubmitAuthenticationRequest,
+    DeliveryLifecycle, DeliveryReceipt, DeliveryReference, ImportBridgeContentRequest,
+    ImportedBridgeContent, ReconcileBridgeRequest, ReplaceBridgeRequest,
+    SubmitAuthenticationRequest,
 };
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -69,6 +70,7 @@ pub async fn run_bridge_mcp_stdio() -> Result<(), BridgeMcpError> {
             context.clone(),
             ReferenceOperation::InvalidateCredentials,
         ))
+        .tool(ImportContentTool(context.clone()))
         .tool(DeliverTool(context.clone()))
         .tool(DeliveryStatusTool(context.clone()))
         .tool(ReferenceTool::new(
@@ -317,6 +319,17 @@ struct DeliverInput {
     /// Omitted defaults to the stable message ID.
     #[serde(default)]
     idempotency_key: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ImportContentInput {
+    bridge_id: String,
+    import_id: String,
+    source_path: PathBuf,
+    media_type: String,
+    #[serde(default)]
+    name: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -616,6 +629,52 @@ impl McpTool<mcp::Client> for SubmitAuthenticationTool {
 #[derive(Clone)]
 struct DeliverTool(BridgeContext);
 
+#[derive(Clone)]
+struct ImportContentTool(BridgeContext);
+
+impl McpTool<mcp::Client> for ImportContentTool {
+    type Input = ImportContentInput;
+    type Output = Value;
+
+    fn name(&self) -> String {
+        "import_bridge_content".into()
+    }
+
+    fn description(&self) -> String {
+        "Copy one bounded regular local file into Crab-owned content. Use the returned attachment unchanged with deliver_bridge_message.".into()
+    }
+
+    async fn call_tool(
+        &self,
+        input: Self::Input,
+        _connection: agent_client_protocol::mcp_server::McpConnectionTo<mcp::Client>,
+    ) -> Result<Self::Output, Error> {
+        validate_text(&input.bridge_id)?;
+        validate_text(&input.import_id)?;
+        validate_text(&input.media_type)?;
+        if !input.source_path.is_absolute()
+            || input
+                .name
+                .as_ref()
+                .is_some_and(|name| name.trim().is_empty())
+        {
+            return Err(invalid_input());
+        }
+        self.0
+            .client()?
+            .import_bridge_content(ImportBridgeContentRequest {
+                bridge_id: input.bridge_id,
+                import_id: input.import_id,
+                source_path: input.source_path.to_string_lossy().into_owned(),
+                media_type: input.media_type,
+                name: input.name,
+            })
+            .await
+            .map(imported_content_json)
+            .map_err(ipc_error)
+    }
+}
+
 impl McpTool<mcp::Client> for DeliverTool {
     type Input = DeliverInput;
     type Output = Value;
@@ -803,6 +862,18 @@ fn delivery_json(receipt: DeliveryReceipt) -> Result<Value, Error> {
         "updatedAtMs": receipt.updated_at_ms,
         "detail": embedded_json(&receipt.detail_json)?,
     }))
+}
+
+fn imported_content_json(content: ImportedBridgeContent) -> Value {
+    json!({
+        "attachment": {
+            "mediaType": content.attachment.media_type,
+            "name": content.attachment.name,
+            "contentHandle": content.attachment.content_handle,
+        },
+        "sizeBytes": content.size_bytes,
+        "sha256": content.sha256,
+    })
 }
 
 fn receipt_json(receipt: BridgeReceipt) -> Value {

@@ -1677,6 +1677,87 @@ static __BOXOLOGY_CONTRACT_DESCRIPTOR: ::std::sync::LazyLock<
     let capability_10 = ::boxology_contract::CapabilityDescriptor::new(
         ::boxology_contract::CapabilityId::new(
             box_id.clone(),
+            ::boxology_contract::CapabilityName::new("import_content")
+                .expect("generated capability name is valid"),
+        ),
+        ::boxology_contract::TypeDescriptor::structure([
+                ::boxology_contract::FieldDescriptor::new(
+                    "bridge_id",
+                    ::boxology_contract::TypeDescriptor::string(),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
+                    "import_id",
+                    ::boxology_contract::TypeDescriptor::string(),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
+                    "source_path",
+                    ::boxology_contract::TypeDescriptor::string(),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
+                    "media_type",
+                    ::boxology_contract::TypeDescriptor::string(),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
+                    "name",
+                    ::boxology_contract::TypeDescriptor::optional(
+                            ::boxology_contract::TypeDescriptor::string(),
+                        )
+                        .expect("generated optional descriptor is valid"),
+                    None,
+                ),
+            ])
+            .expect("generated struct descriptor is valid"),
+        ::boxology_contract::TypeDescriptor::structure([
+                ::boxology_contract::FieldDescriptor::new(
+                    "attachment",
+                    ::boxology_contract::TypeDescriptor::structure([
+                            ::boxology_contract::FieldDescriptor::new(
+                                "media_type",
+                                ::boxology_contract::TypeDescriptor::string(),
+                                None,
+                            ),
+                            ::boxology_contract::FieldDescriptor::new(
+                                "name",
+                                ::boxology_contract::TypeDescriptor::optional(
+                                        ::boxology_contract::TypeDescriptor::string(),
+                                    )
+                                    .expect("generated optional descriptor is valid"),
+                                None,
+                            ),
+                            ::boxology_contract::FieldDescriptor::new(
+                                "content_handle",
+                                ::boxology_contract::TypeDescriptor::string(),
+                                None,
+                            ),
+                        ])
+                        .expect("generated struct descriptor is valid"),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
+                    "size_bytes",
+                    ::boxology_contract::TypeDescriptor::u64(),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
+                    "sha256",
+                    ::boxology_contract::TypeDescriptor::string(),
+                    None,
+                ),
+            ])
+            .expect("generated struct descriptor is valid"),
+        error.clone(),
+        ::boxology_contract::CapabilityShape::Unary,
+        ::boxology_contract::ExposureLevel::CodeOnly,
+        ::boxology_contract::Idempotency::None,
+        None,
+    );
+    let capability_11 = ::boxology_contract::CapabilityDescriptor::new(
+        ::boxology_contract::CapabilityId::new(
+            box_id.clone(),
             ::boxology_contract::CapabilityName::new("deliver_message")
                 .expect("generated capability name is valid"),
         ),
@@ -1815,7 +1896,7 @@ static __BOXOLOGY_CONTRACT_DESCRIPTOR: ::std::sync::LazyLock<
         ::boxology_contract::Idempotency::None,
         None,
     );
-    let capability_11 = ::boxology_contract::CapabilityDescriptor::new(
+    let capability_12 = ::boxology_contract::CapabilityDescriptor::new(
         ::boxology_contract::CapabilityId::new(
             box_id.clone(),
             ::boxology_contract::CapabilityName::new("delivery_status")
@@ -1913,7 +1994,7 @@ static __BOXOLOGY_CONTRACT_DESCRIPTOR: ::std::sync::LazyLock<
         ::boxology_contract::Idempotency::None,
         None,
     );
-    let capability_12 = ::boxology_contract::CapabilityDescriptor::new(
+    let capability_13 = ::boxology_contract::CapabilityDescriptor::new(
         ::boxology_contract::CapabilityId::new(
             box_id.clone(),
             ::boxology_contract::CapabilityName::new("bridge_status")
@@ -2106,7 +2187,7 @@ static __BOXOLOGY_CONTRACT_DESCRIPTOR: ::std::sync::LazyLock<
         ::boxology_contract::Idempotency::None,
         None,
     );
-    let capability_13 = ::boxology_contract::CapabilityDescriptor::new(
+    let capability_14 = ::boxology_contract::CapabilityDescriptor::new(
         ::boxology_contract::CapabilityId::new(
             box_id.clone(),
             ::boxology_contract::CapabilityName::new("stop_bridge")
@@ -2139,7 +2220,7 @@ static __BOXOLOGY_CONTRACT_DESCRIPTOR: ::std::sync::LazyLock<
         ::boxology_contract::Idempotency::None,
         None,
     );
-    let capability_14 = ::boxology_contract::CapabilityDescriptor::new(
+    let capability_15 = ::boxology_contract::CapabilityDescriptor::new(
         ::boxology_contract::CapabilityId::new(
             box_id.clone(),
             ::boxology_contract::CapabilityName::new("suspend_bridge")
@@ -2350,9 +2431,10 @@ static __BOXOLOGY_CONTRACT_DESCRIPTOR: ::std::sync::LazyLock<
                 capability_12,
                 capability_13,
                 capability_14,
+                capability_15,
             ],
             ::boxology_contract::ContractRevision::new(
-                    "sha256:631ac36bc009a6f8b8014c78f21d706111f7c6956e329e234b0d7bcf9b414501",
+                    "sha256:b66a7692a957d38d7cba393d60d4248f612fc79835e130b036c8ed8280bb3f21",
                 )
                 .expect("generated contract revision is non-empty"),
         )
@@ -2449,6 +2531,17 @@ pub trait BridgeHostDispatch: Send + Sync + 'static {
         request: BridgeInbound,
     ) -> Pin<
         Box<dyn Future<Output = Result<TriggerIntent, BridgeHostError>> + Send + 'a>,
+    >;
+    fn import_content<'a>(
+        &'a self,
+        context: CallContext,
+        request: ImportBridgeContentRequest,
+    ) -> Pin<
+        Box<
+            dyn Future<
+                Output = Result<ImportedBridgeContent, BridgeHostError>,
+            > + Send + 'a,
+        >,
     >;
     fn deliver_message<'a>(
         &'a self,
@@ -3679,6 +3772,65 @@ impl BridgeHostHandle {
             .map_err(|error| conversion_detail("output_decode", error))
             .map_err(CallError::InvalidResponse)
     }
+    pub async fn import_content(
+        &self,
+        context: CallContext,
+        request: ImportBridgeContentRequest,
+    ) -> Result<ImportedBridgeContent, CallError<BridgeHostError>> {
+        let input = request
+            .encode()
+            .map_err(|error| conversion_detail("input_encode", error))
+            .map_err(CallError::ContractViolation)?;
+        let output = self
+            .target
+            .call(&BRIDGE_HOST_IMPORT_CONTENT, context, input)
+            .await
+            .map_err(|error| {
+                error.into_typed::<BridgeHostError>(&BRIDGE_HOST_ERROR_DESCRIPTOR)
+            })?;
+        let output = TypeDescriptor::structure([
+                ::boxology_contract::FieldDescriptor::new(
+                    "attachment",
+                    TypeDescriptor::structure([
+                            ::boxology_contract::FieldDescriptor::new(
+                                "media_type",
+                                TypeDescriptor::string(),
+                                None,
+                            ),
+                            ::boxology_contract::FieldDescriptor::new(
+                                "name",
+                                TypeDescriptor::optional(TypeDescriptor::string())
+                                    .expect("generated optional descriptor is valid"),
+                                None,
+                            ),
+                            ::boxology_contract::FieldDescriptor::new(
+                                "content_handle",
+                                TypeDescriptor::string(),
+                                None,
+                            ),
+                        ])
+                        .expect("generated struct descriptor is valid"),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
+                    "size_bytes",
+                    TypeDescriptor::u64(),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
+                    "sha256",
+                    TypeDescriptor::string(),
+                    None,
+                ),
+            ])
+            .expect("generated struct descriptor is valid")
+            .conform(DecodeRole::ConsumerOutput, output)
+            .map_err(|error| conversion_detail("output_decode", error))
+            .map_err(CallError::InvalidResponse)?;
+        <ImportedBridgeContent as ContractType>::decode(&output)
+            .map_err(|error| conversion_detail("output_decode", error))
+            .map_err(CallError::InvalidResponse)
+    }
     pub async fn deliver_message(
         &self,
         context: CallContext,
@@ -4369,6 +4521,14 @@ static BRIDGE_HOST_ACCEPT_INBOUND: LazyLock<CapabilityId> = LazyLock::new(|| {
     CapabilityId::new(
         BoxId::new("bridge-host").expect("generated box identity is valid"),
         CapabilityName::new("accept_inbound")
+            .expect("generated capability name is valid"),
+    )
+});
+#[rustfmt::skip]
+static BRIDGE_HOST_IMPORT_CONTENT: LazyLock<CapabilityId> = LazyLock::new(|| {
+    CapabilityId::new(
+        BoxId::new("bridge-host").expect("generated box identity is valid"),
+        CapabilityName::new("import_content")
             .expect("generated capability name is valid"),
     )
 });
@@ -7373,6 +7533,244 @@ impl ::boxology_contract::ContractType for BridgeAttachment {
     }
 }
 #[rustfmt::skip]
+/// Stage one agent-readable local file into Crab-owned content before external delivery.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Default)]
+pub struct ImportBridgeContentRequest {
+    pub bridge_id: ::std::string::String,
+    /// Stable caller identity. Repeating the same import with the same bytes is idempotent.
+    pub import_id: ::std::string::String,
+    /// Absolute source path. Crab copies it; packages never receive this path.
+    pub source_path: ::std::string::String,
+    pub media_type: ::std::string::String,
+    pub name: ::core::option::Option<::std::string::String>,
+}
+#[rustfmt::skip]
+impl ::boxology_contract::ContractType for ImportBridgeContentRequest {
+    fn encode_value(
+        &self,
+    ) -> ::core::result::Result<
+        ::boxology_contract::ContractValue,
+        ::boxology_contract::EncodeError,
+    > {
+        let mut fields = ::std::vec::Vec::new();
+        if let Some(value) = ::boxology_contract::ContractType::encode_field(
+                &self.bridge_id,
+            )
+            .map_err(|error| {
+                error.under(::boxology_contract::PathSegment::Field("bridge_id".into()))
+            })?
+        {
+            fields.push(("bridge_id".into(), value));
+        }
+        if let Some(value) = ::boxology_contract::ContractType::encode_field(
+                &self.import_id,
+            )
+            .map_err(|error| {
+                error.under(::boxology_contract::PathSegment::Field("import_id".into()))
+            })?
+        {
+            fields.push(("import_id".into(), value));
+        }
+        if let Some(value) = ::boxology_contract::ContractType::encode_field(
+                &self.source_path,
+            )
+            .map_err(|error| {
+                error
+                    .under(::boxology_contract::PathSegment::Field("source_path".into()))
+            })?
+        {
+            fields.push(("source_path".into(), value));
+        }
+        if let Some(value) = ::boxology_contract::ContractType::encode_field(
+                &self.media_type,
+            )
+            .map_err(|error| {
+                error.under(::boxology_contract::PathSegment::Field("media_type".into()))
+            })?
+        {
+            fields.push(("media_type".into(), value));
+        }
+        if let Some(value) = ::boxology_contract::ContractType::encode_field(&self.name)
+            .map_err(|error| {
+                error.under(::boxology_contract::PathSegment::Field("name".into()))
+            })?
+        {
+            fields.push(("name".into(), value));
+        }
+        ::boxology_contract::ContractValue::object(fields)
+            .map_err(|_| unreachable!("validated generated field identities are unique"))
+    }
+    fn decode_value(
+        value: &::boxology_contract::ContractValue,
+    ) -> ::core::result::Result<Self, ::boxology_contract::DecodeError> {
+        let ::boxology_contract::ValueRef::Object(fields) = value.view() else {
+            return Err(
+                ::boxology_contract::DecodeError::new(
+                    ::boxology_contract::DecodeErrorKind::KindMismatch,
+                ),
+            );
+        };
+        for (field, _) in fields.entries() {
+            match field {
+                "bridge_id" | "import_id" | "source_path" | "media_type" | "name" => {}
+                _ => {
+                    return Err(
+                        ::boxology_contract::DecodeError::new(
+                                ::boxology_contract::DecodeErrorKind::UnknownField(
+                                    field.into(),
+                                ),
+                            )
+                            .under(::boxology_contract::PathSegment::Field(field.into())),
+                    );
+                }
+            }
+        }
+        Ok(Self {
+            bridge_id: <::std::string::String as ::boxology_contract::ContractType>::decode_field(
+                    fields.get("bridge_id"),
+                )
+                .map_err(|error| {
+                    error
+                        .under(
+                            ::boxology_contract::PathSegment::Field("bridge_id".into()),
+                        )
+                })?,
+            import_id: <::std::string::String as ::boxology_contract::ContractType>::decode_field(
+                    fields.get("import_id"),
+                )
+                .map_err(|error| {
+                    error
+                        .under(
+                            ::boxology_contract::PathSegment::Field("import_id".into()),
+                        )
+                })?,
+            source_path: <::std::string::String as ::boxology_contract::ContractType>::decode_field(
+                    fields.get("source_path"),
+                )
+                .map_err(|error| {
+                    error
+                        .under(
+                            ::boxology_contract::PathSegment::Field("source_path".into()),
+                        )
+                })?,
+            media_type: <::std::string::String as ::boxology_contract::ContractType>::decode_field(
+                    fields.get("media_type"),
+                )
+                .map_err(|error| {
+                    error
+                        .under(
+                            ::boxology_contract::PathSegment::Field("media_type".into()),
+                        )
+                })?,
+            name: <::core::option::Option<
+                ::std::string::String,
+            > as ::boxology_contract::ContractType>::decode_field(fields.get("name"))
+                .map_err(|error| {
+                    error.under(::boxology_contract::PathSegment::Field("name".into()))
+                })?,
+        })
+    }
+}
+#[rustfmt::skip]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Default)]
+pub struct ImportedBridgeContent {
+    pub attachment: BridgeAttachment,
+    pub size_bytes: u64,
+    pub sha256: ::std::string::String,
+}
+#[rustfmt::skip]
+impl ::boxology_contract::ContractType for ImportedBridgeContent {
+    fn encode_value(
+        &self,
+    ) -> ::core::result::Result<
+        ::boxology_contract::ContractValue,
+        ::boxology_contract::EncodeError,
+    > {
+        let mut fields = ::std::vec::Vec::new();
+        if let Some(value) = ::boxology_contract::ContractType::encode_field(
+                &self.attachment,
+            )
+            .map_err(|error| {
+                error.under(::boxology_contract::PathSegment::Field("attachment".into()))
+            })?
+        {
+            fields.push(("attachment".into(), value));
+        }
+        if let Some(value) = ::boxology_contract::ContractType::encode_field(
+                &self.size_bytes,
+            )
+            .map_err(|error| {
+                error.under(::boxology_contract::PathSegment::Field("size_bytes".into()))
+            })?
+        {
+            fields.push(("size_bytes".into(), value));
+        }
+        if let Some(value) = ::boxology_contract::ContractType::encode_field(
+                &self.sha256,
+            )
+            .map_err(|error| {
+                error.under(::boxology_contract::PathSegment::Field("sha256".into()))
+            })?
+        {
+            fields.push(("sha256".into(), value));
+        }
+        ::boxology_contract::ContractValue::object(fields)
+            .map_err(|_| unreachable!("validated generated field identities are unique"))
+    }
+    fn decode_value(
+        value: &::boxology_contract::ContractValue,
+    ) -> ::core::result::Result<Self, ::boxology_contract::DecodeError> {
+        let ::boxology_contract::ValueRef::Object(fields) = value.view() else {
+            return Err(
+                ::boxology_contract::DecodeError::new(
+                    ::boxology_contract::DecodeErrorKind::KindMismatch,
+                ),
+            );
+        };
+        for (field, _) in fields.entries() {
+            match field {
+                "attachment" | "size_bytes" | "sha256" => {}
+                _ => {
+                    return Err(
+                        ::boxology_contract::DecodeError::new(
+                                ::boxology_contract::DecodeErrorKind::UnknownField(
+                                    field.into(),
+                                ),
+                            )
+                            .under(::boxology_contract::PathSegment::Field(field.into())),
+                    );
+                }
+            }
+        }
+        Ok(Self {
+            attachment: <BridgeAttachment as ::boxology_contract::ContractType>::decode_field(
+                    fields.get("attachment"),
+                )
+                .map_err(|error| {
+                    error
+                        .under(
+                            ::boxology_contract::PathSegment::Field("attachment".into()),
+                        )
+                })?,
+            size_bytes: <u64 as ::boxology_contract::ContractType>::decode_field(
+                    fields.get("size_bytes"),
+                )
+                .map_err(|error| {
+                    error
+                        .under(
+                            ::boxology_contract::PathSegment::Field("size_bytes".into()),
+                        )
+                })?,
+            sha256: <::std::string::String as ::boxology_contract::ContractType>::decode_field(
+                    fields.get("sha256"),
+                )
+                .map_err(|error| {
+                    error.under(::boxology_contract::PathSegment::Field("sha256".into()))
+                })?,
+        })
+    }
+}
+#[rustfmt::skip]
 /// One external event normalized just enough to create a durable Crab trigger.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Default)]
 pub struct BridgeInbound {
@@ -8733,9 +9131,9 @@ pub mod test_support {
         BRIDGE_HOST_REPORT_HEALTH, BRIDGE_HOST_BEGIN_AUTHENTICATION,
         BRIDGE_HOST_SUBMIT_AUTHENTICATION, BRIDGE_HOST_VALIDATE_CREDENTIALS,
         BRIDGE_HOST_INVALIDATE_CREDENTIALS, BRIDGE_HOST_ACCEPT_INBOUND,
-        BRIDGE_HOST_DELIVER_MESSAGE, BRIDGE_HOST_DELIVERY_STATUS,
-        BRIDGE_HOST_BRIDGE_STATUS, BRIDGE_HOST_STOP_BRIDGE, BRIDGE_HOST_SUSPEND_BRIDGE,
-        BridgeHostHandle, conversion_detail,
+        BRIDGE_HOST_IMPORT_CONTENT, BRIDGE_HOST_DELIVER_MESSAGE,
+        BRIDGE_HOST_DELIVERY_STATUS, BRIDGE_HOST_BRIDGE_STATUS, BRIDGE_HOST_STOP_BRIDGE,
+        BRIDGE_HOST_SUSPEND_BRIDGE, BridgeHostHandle, conversion_detail,
     };
     type RegisterBridgeFuture = Pin<
         Box<
@@ -8847,6 +9245,17 @@ pub mod test_support {
         CallContext,
         super::BridgeInbound,
     ) -> AcceptInboundFuture + Send + Sync + 'static;
+    type ImportContentFuture = Pin<
+        Box<
+            dyn Future<
+                Output = Result<super::ImportedBridgeContent, BridgeHostError>,
+            > + Send + 'static,
+        >,
+    >;
+    type ImportContentResponder = dyn Fn(
+        CallContext,
+        super::ImportBridgeContentRequest,
+    ) -> ImportContentFuture + Send + Sync + 'static;
     type DeliverMessageFuture = Pin<
         Box<
             dyn Future<
@@ -8914,6 +9323,7 @@ pub mod test_support {
         validate_credentials: Option<Arc<ValidateCredentialsResponder>>,
         invalidate_credentials: Option<Arc<InvalidateCredentialsResponder>>,
         accept_inbound: Option<Arc<AcceptInboundResponder>>,
+        import_content: Option<Arc<ImportContentResponder>>,
         deliver_message: Option<Arc<DeliverMessageResponder>>,
         delivery_status: Option<Arc<DeliveryStatusResponder>>,
         bridge_status: Option<Arc<BridgeStatusResponder>>,
@@ -9052,6 +9462,20 @@ pub mod test_support {
                 + 'static,
         {
             self.accept_inbound = Some(
+                Arc::new(move |context, request| {
+                    Box::pin(responder(context, request))
+                }),
+            );
+            self
+        }
+        pub fn with_import_content<F, Fut>(mut self, responder: F) -> Self
+        where
+            F: Fn(CallContext, super::ImportBridgeContentRequest) -> Fut + Send + Sync
+                + 'static,
+            Fut: Future<Output = Result<super::ImportedBridgeContent, BridgeHostError>>
+                + Send + 'static,
+        {
+            self.import_content = Some(
                 Arc::new(move |context, request| {
                     Box::pin(responder(context, request))
                 }),
@@ -9950,6 +10374,68 @@ pub mod test_support {
                     }
                 });
             }
+            if capability == &*BRIDGE_HOST_IMPORT_CONTENT {
+                let Some(responder) = self.import_content.clone() else {
+                    return Box::pin(ready(Err(unprogrammed())));
+                };
+                return Box::pin(async move {
+                    let input = TypeDescriptor::structure([
+                            ::boxology_contract::FieldDescriptor::new(
+                                "bridge_id",
+                                TypeDescriptor::string(),
+                                None,
+                            ),
+                            ::boxology_contract::FieldDescriptor::new(
+                                "import_id",
+                                TypeDescriptor::string(),
+                                None,
+                            ),
+                            ::boxology_contract::FieldDescriptor::new(
+                                "source_path",
+                                TypeDescriptor::string(),
+                                None,
+                            ),
+                            ::boxology_contract::FieldDescriptor::new(
+                                "media_type",
+                                TypeDescriptor::string(),
+                                None,
+                            ),
+                            ::boxology_contract::FieldDescriptor::new(
+                                "name",
+                                TypeDescriptor::optional(TypeDescriptor::string())
+                                    .expect("generated optional descriptor is valid"),
+                                None,
+                            ),
+                        ])
+                        .expect("generated struct descriptor is valid")
+                        .conform(DecodeRole::ProviderInput, input)
+                        .map_err(|error| {
+                            ErasedCallError::ContractViolation(
+                                conversion_detail("input_decode", error),
+                            )
+                        })?;
+                    let request = <super::ImportBridgeContentRequest as ContractType>::decode(
+                            &input,
+                        )
+                        .map_err(|error| {
+                            ErasedCallError::ContractViolation(
+                                conversion_detail("input_decode", error),
+                            )
+                        })?;
+                    match responder(context, request).await {
+                        Ok(output) => {
+                            output
+                                .encode()
+                                .map_err(|error| {
+                                    ErasedCallError::InvalidResponse(
+                                        conversion_detail("output_encode", error),
+                                    )
+                                })
+                        }
+                        Err(error) => Err(ErasedCallError::from_domain(&error)),
+                    }
+                });
+            }
             if capability == &*BRIDGE_HOST_DELIVER_MESSAGE {
                 let Some(responder) = self.deliver_message.clone() else {
                     return Box::pin(ready(Err(unprogrammed())));
@@ -10214,8 +10700,8 @@ pub mod test_support {
 #[rustfmt::skip]
 #[doc(hidden)]
 pub const __BOXOLOGY_SEMANTIC_DIGEST: [u8; 32] = [
-    130, 250, 101, 149, 55, 139, 35, 128, 162, 99, 201, 1, 111, 147, 168, 228, 196, 242,
-    16, 213, 48, 203, 98, 59, 235, 56, 56, 176, 175, 138, 90, 199,
+    79, 122, 86, 87, 49, 226, 242, 143, 219, 130, 169, 59, 8, 0, 8, 212, 148, 12, 150,
+    127, 98, 142, 148, 216, 161, 204, 197, 53, 16, 245, 138, 197,
 ];
 #[rustfmt::skip]
 #[doc(hidden)]
@@ -10237,15 +10723,16 @@ macro_rules! __boxology_check_implementation {
         $crate::__boxology_check_implementation!(@ find_invalidate_credentials $receiver;
         $($method $validity;)*); $crate::__boxology_check_implementation!(@
         find_accept_inbound $receiver; $($method $validity;)*);
-        $crate::__boxology_check_implementation!(@ find_deliver_message $receiver;
+        $crate::__boxology_check_implementation!(@ find_import_content $receiver;
         $($method $validity;)*); $crate::__boxology_check_implementation!(@
-        find_delivery_status $receiver; $($method $validity;)*);
-        $crate::__boxology_check_implementation!(@ find_bridge_status $receiver;
+        find_deliver_message $receiver; $($method $validity;)*);
+        $crate::__boxology_check_implementation!(@ find_delivery_status $receiver;
         $($method $validity;)*); $crate::__boxology_check_implementation!(@
-        find_stop_bridge $receiver; $($method $validity;)*);
-        $crate::__boxology_check_implementation!(@ find_suspend_bridge $receiver;
-        $($method $validity;)*); impl $crate::BridgeHostDispatch for $receiver { fn
-        register_bridge <'a > (&'a self, context : ::boxology::CallContext, input :
+        find_bridge_status $receiver; $($method $validity;)*);
+        $crate::__boxology_check_implementation!(@ find_stop_bridge $receiver; $($method
+        $validity;)*); $crate::__boxology_check_implementation!(@ find_suspend_bridge
+        $receiver; $($method $validity;)*); impl $crate::BridgeHostDispatch for $receiver
+        { fn register_bridge <'a > (&'a self, context : ::boxology::CallContext, input :
         $crate::BridgeSpec,) -> ::std::pin::Pin < ::std::boxed::Box < dyn
         ::core::future::Future < Output = ::core::result::Result <$crate::BridgeRecord,
         $crate::BridgeHostError >, > + ::core::marker::Send + 'a, >, > {
@@ -10295,10 +10782,15 @@ macro_rules! __boxology_check_implementation {
         $crate::BridgeInbound,) -> ::std::pin::Pin < ::std::boxed::Box < dyn
         ::core::future::Future < Output = ::core::result::Result <$crate::TriggerIntent,
         $crate::BridgeHostError >, > + ::core::marker::Send + 'a, >, > {
-        ::std::boxed::Box::pin(self.accept_inbound(context, input)) } fn deliver_message
+        ::std::boxed::Box::pin(self.accept_inbound(context, input)) } fn import_content
         <'a > (&'a self, context : ::boxology::CallContext, input :
-        $crate::BridgeOutbound,) -> ::std::pin::Pin < ::std::boxed::Box < dyn
+        $crate::ImportBridgeContentRequest,) -> ::std::pin::Pin < ::std::boxed::Box < dyn
         ::core::future::Future < Output = ::core::result::Result
+        <$crate::ImportedBridgeContent, $crate::BridgeHostError >, > +
+        ::core::marker::Send + 'a, >, > { ::std::boxed::Box::pin(self
+        .import_content(context, input)) } fn deliver_message <'a > (&'a self, context :
+        ::boxology::CallContext, input : $crate::BridgeOutbound,) -> ::std::pin::Pin <
+        ::std::boxed::Box < dyn ::core::future::Future < Output = ::core::result::Result
         <$crate::DeliveryReceipt, $crate::BridgeHostError >, > + ::core::marker::Send +
         'a, >, > { ::std::boxed::Box::pin(self.deliver_message(context, input)) } fn
         delivery_status <'a > (&'a self, context : ::boxology::CallContext, input :
@@ -10550,6 +11042,25 @@ macro_rules! __boxology_check_implementation {
         $($rest)*);
     };
     (@ find_accept_inbound $receiver:ty;) => {
+        compile_error!("Boxology capability implementation is missing");
+    };
+    (@ find_import_content $receiver:ty; import_content valid; $($rest:tt)*) => {
+        const _ : () = { fn require_service < T : ::core::marker::Send +
+        ::core::marker::Sync + 'static > () {} fn require_future < F :
+        ::core::future::Future < Output = ::core::result::Result
+        <$crate::ImportedBridgeContent, $crate::BridgeHostError >> + ::core::marker::Send
+        > (_ : F) {} fn check(receiver : &$receiver, context : ::boxology::CallContext,
+        input : $crate::ImportBridgeContentRequest) { require_service::<$receiver > ();
+        require_future(receiver.import_content(context, input)); } };
+    };
+    (@ find_import_content $receiver:ty; import_content invalid; $($rest:tt)*) => {
+        compile_error!("Boxology capability has an invalid structural signature");
+    };
+    (@ find_import_content $receiver:ty; $other:ident $validity:ident; $($rest:tt)*) => {
+        $crate::__boxology_check_implementation!(@ find_import_content $receiver;
+        $($rest)*);
+    };
+    (@ find_import_content $receiver:ty;) => {
         compile_error!("Boxology capability implementation is missing");
     };
     (@ find_deliver_message $receiver:ty; deliver_message valid; $($rest:tt)*) => {

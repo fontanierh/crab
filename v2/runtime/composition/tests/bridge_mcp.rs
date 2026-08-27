@@ -153,13 +153,21 @@ fn register_arguments(state: &Path) -> Value {
 }
 
 #[tokio::test]
-async fn real_stdio_server_lists_thirteen_strict_agent_bridge_tools() {
+async fn real_stdio_server_lists_fourteen_strict_agent_bridge_tools() {
     let (_temporary, state) = state_directory();
     let mut process = McpProcess::start(&state, false).await;
     let listed = process.request(2, "tools/list", json!({})).await;
-    let mut names = listed["result"]["tools"]
-        .as_array()
-        .expect("tool catalog")
+    let tools = listed["result"]["tools"].as_array().expect("tool catalog");
+    let import = tools
+        .iter()
+        .find(|tool| tool["name"] == "import_bridge_content")
+        .expect("content import tool");
+    assert_eq!(
+        import["inputSchema"]["required"],
+        json!(["bridgeId", "importId", "sourcePath", "mediaType"])
+    );
+    assert_eq!(import["inputSchema"]["additionalProperties"], false);
+    let mut names = tools
         .iter()
         .map(|tool| tool["name"].as_str().expect("tool name"))
         .collect::<Vec<_>>();
@@ -171,6 +179,7 @@ async fn real_stdio_server_lists_thirteen_strict_agent_bridge_tools() {
             "bridge_delivery_status",
             "bridge_status",
             "deliver_bridge_message",
+            "import_bridge_content",
             "invalidate_bridge_credentials",
             "list_bridges",
             "reconcile_bridge",
@@ -203,7 +212,11 @@ async fn child_session_bridge_calls_use_authenticated_boxology_ipc() {
     let listener = UnixListener::bind(&socket).expect("fixture IPC listener");
     fs::set_permissions(&socket, fs::Permissions::from_mode(0o600)).expect("owner-only IPC socket");
     let fixture = tokio::spawn(async move {
-        for expected in ["bridge-host.register_bridge", "bridge-host.deliver_message"] {
+        for expected in [
+            "bridge-host.register_bridge",
+            "bridge-host.import_content",
+            "bridge-host.deliver_message",
+        ] {
             let (stream, _) = listener.accept().await.expect("MCP IPC connection");
             let (reader, mut writer) = stream.into_split();
             let mut lines = BufReader::new(reader).lines();
@@ -242,9 +255,26 @@ async fn child_session_bridge_calls_use_authenticated_boxology_ipc() {
         )
         .await;
     assert!(registered.to_string().contains("FixtureRejected"));
-    let delivered = process
+    let imported = process
         .request(
             3,
+            "tools/call",
+            json!({
+                "name": "import_bridge_content",
+                "arguments": {
+                    "bridgeId": "signal",
+                    "importId": "selected-file-1",
+                    "sourcePath": "/tmp/selected-file.txt",
+                    "mediaType": "text/plain",
+                    "name": "selected-file.txt"
+                }
+            }),
+        )
+        .await;
+    assert!(imported.to_string().contains("FixtureRejected"));
+    let delivered = process
+        .request(
+            4,
             "tools/call",
             json!({
                 "name": "deliver_bridge_message",

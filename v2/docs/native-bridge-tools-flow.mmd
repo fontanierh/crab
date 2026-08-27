@@ -1,18 +1,20 @@
 %%{init: {"theme": "base", "themeVariables": {"fontFamily": "ui-sans-serif, system-ui, sans-serif", "primaryTextColor": "#172033", "lineColor": "#64748b", "edgeLabelBackground": "#ffffff"}, "flowchart": {"curve": "basis", "nodeSpacing": 44, "rankSpacing": 58}}}%%
 flowchart LR
     ACP["parent or child<br/>ACP session"]
-    MCP["crab-v2-bridge-mcp<br/>13 strict tools"]
+    MCP["crab-v2-bridge-mcp<br/>14 strict tools"]
     IPC["owner-only local IPC<br/>0600 token + socket"]
     HOST["bridge-host<br/>generation + supervision"]
     PACKAGE["agent-installed package<br/>JSON-lines protocol"]
     CREDS["private credential store<br/>opaque handles"]
     INGRESS["trigger-inbox<br/>durable external ingress"]
     DELIVERY["selected outbound<br/>idempotent delivery"]
+    CONTENT[("private content<br/>bounded durable copy")]
 
     ACP <-->|"MCP stdio"| MCP
     MCP -->|"authenticated calls"| IPC --> HOST
     HOST <-->|"health + auth"| PACKAGE
     HOST --> CREDS
+    HOST --> CONTENT
     PACKAGE --> INGRESS
     HOST --> DELIVERY
 
@@ -25,4 +27,4 @@ flowchart LR
     class MCP,IPC boundary;
     class HOST host;
     class PACKAGE package;
-    class CREDS,INGRESS,DELIVERY durable;
+    class CREDS,INGRESS,DELIVERY,CONTENT durable;
