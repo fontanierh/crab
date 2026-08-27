@@ -1739,7 +1739,7 @@ static __BOXOLOGY_CONTRACT_DESCRIPTOR: ::std::sync::LazyLock<
                 capability_13,
             ],
             ::boxology_contract::ContractRevision::new(
-                    "sha256:63cb45f413ae2a41f38e2ba35229bcb274d58ec5ad41bfa4221f61d9670fe7ff",
+                    "sha256:1e1444b2417edd0e85db64323f8db54f76e3eddba0be9652e8e5c6537b902459",
                 )
                 .expect("generated contract revision is non-empty"),
         )
@@ -4785,7 +4785,9 @@ impl ::boxology_contract::ContractType for DiscoverAgentsRequest {
 #[rustfmt::skip]
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Default)]
 pub struct PreflightRequest {
+    /// Configured agent identifier, capped at 256 bytes.
     pub agent_id: ::std::string::String,
+    /// Absolute host path, capped at 4 KiB before filesystem access.
     pub working_directory: ::std::string::String,
 }
 #[rustfmt::skip]
@@ -5500,10 +5502,14 @@ impl ::boxology_contract::ContractType for AcpNegotiation {
 #[rustfmt::skip]
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Default)]
 pub struct OpenSessionRequest {
+    /// Configured agent identifier, capped at 256 bytes.
     pub agent_id: ::std::string::String,
+    /// Absolute host path, capped at 4 KiB before filesystem access.
     pub working_directory: ::std::string::String,
-    /// Crab may bootstrap identity/memory, but it does not own compaction or token arithmetic.
+    /// Crab may bootstrap identity/memory up to 2 MiB, but it does not own compaction or token
+    /// arithmetic.
     pub bootstrap_prompt: ::core::option::Option<::std::string::String>,
+    /// Non-secret JSON object capped at 64 KiB before parsing or durable storage.
     pub metadata_json: ::std::string::String,
 }
 #[rustfmt::skip]
@@ -5646,6 +5652,7 @@ impl ::boxology_contract::ContractType for OpenSessionRequest {
 /// working directory, metadata and native session identity come only from durable host state.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Default)]
 pub struct ResumeSessionRequest {
+    /// Durable Crab session identifier, capped at 256 bytes.
     pub session_id: ::std::string::String,
 }
 #[rustfmt::skip]
@@ -5712,11 +5719,14 @@ impl ::boxology_contract::ContractType for ResumeSessionRequest {
 /// makes the inherited context boundary immutable rather than racing new parent work.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Default)]
 pub struct ForkSessionRequest {
+    /// Durable Crab session identifier, capped at 256 bytes.
     pub parent_session_id: ::std::string::String,
     pub expected_parent_sequence: u64,
     /// Native forks cannot cross agent implementations; this must match the parent.
     pub agent_id: ::std::string::String,
+    /// Absolute host path, capped at 4 KiB before filesystem access.
     pub working_directory: ::std::string::String,
+    /// Non-secret JSON object capped at 64 KiB before parsing or durable storage.
     pub metadata_json: ::std::string::String,
 }
 #[rustfmt::skip]
@@ -6155,7 +6165,7 @@ impl ::boxology_contract::ContractType for AgentInputMode {
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct PromptRequest {
     pub session_id: ::std::string::String,
-    /// Stable caller key used to deduplicate a retried turn.
+    /// Stable caller key used to deduplicate a retried turn, capped at 256 bytes.
     pub client_turn_id: ::std::string::String,
     pub mode: AgentInputMode,
     /// Exact JSON array carried in ACP's `prompt` field, capped at 2 MiB. Crab must not narrow
@@ -10601,8 +10611,8 @@ pub mod test_support {
 #[rustfmt::skip]
 #[doc(hidden)]
 pub const __BOXOLOGY_SEMANTIC_DIGEST: [u8; 32] = [
-    136, 152, 112, 96, 1, 183, 177, 210, 190, 7, 220, 113, 214, 121, 71, 218, 10, 38,
-    213, 111, 131, 50, 213, 146, 29, 109, 66, 125, 75, 203, 218, 248,
+    58, 174, 21, 246, 74, 77, 49, 43, 8, 239, 93, 222, 194, 101, 90, 150, 230, 128, 92,
+    206, 33, 22, 154, 187, 112, 158, 15, 69, 148, 0, 32, 224,
 ];
 #[rustfmt::skip]
 #[doc(hidden)]

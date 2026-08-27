@@ -74,7 +74,9 @@ boxology::contract! {
     pub struct DiscoverAgentsRequest {}
 
     pub struct PreflightRequest {
+        /// Configured agent identifier, capped at 256 bytes.
         pub agent_id: String,
+        /// Absolute host path, capped at 4 KiB before filesystem access.
         pub working_directory: String,
     }
 
@@ -121,27 +123,35 @@ boxology::contract! {
     }
 
     pub struct OpenSessionRequest {
+        /// Configured agent identifier, capped at 256 bytes.
         pub agent_id: String,
+        /// Absolute host path, capped at 4 KiB before filesystem access.
         pub working_directory: String,
-        /// Crab may bootstrap identity/memory, but it does not own compaction or token arithmetic.
+        /// Crab may bootstrap identity/memory up to 2 MiB, but it does not own compaction or token
+        /// arithmetic.
         pub bootstrap_prompt: Option<String>,
+        /// Non-secret JSON object capped at 64 KiB before parsing or durable storage.
         pub metadata_json: String,
     }
 
     /// Reconnect one failed durable Crab session to the same native ACP session. Agent identity,
     /// working directory, metadata and native session identity come only from durable host state.
     pub struct ResumeSessionRequest {
+        /// Durable Crab session identifier, capped at 256 bytes.
         pub session_id: String,
     }
 
     /// Fork one idle live session into a separately supervised ACP process. The expected cursor
     /// makes the inherited context boundary immutable rather than racing new parent work.
     pub struct ForkSessionRequest {
+        /// Durable Crab session identifier, capped at 256 bytes.
         pub parent_session_id: String,
         pub expected_parent_sequence: u64,
         /// Native forks cannot cross agent implementations; this must match the parent.
         pub agent_id: String,
+        /// Absolute host path, capped at 4 KiB before filesystem access.
         pub working_directory: String,
+        /// Non-secret JSON object capped at 64 KiB before parsing or durable storage.
         pub metadata_json: String,
     }
 
@@ -167,7 +177,7 @@ boxology::contract! {
 
     pub struct PromptRequest {
         pub session_id: String,
-        /// Stable caller key used to deduplicate a retried turn.
+        /// Stable caller key used to deduplicate a retried turn, capped at 256 bytes.
         pub client_turn_id: String,
         pub mode: AgentInputMode,
         /// Exact JSON array carried in ACP's `prompt` field, capped at 2 MiB. Crab must not narrow
@@ -380,7 +390,8 @@ boxology::contract! {
     #[capability]
     pub async fn discover_agents(request: DiscoverAgentsRequest) -> Result<AgentCatalog, AgentHostError>;
 
-    /// Fail closed unless every mandatory authority probe succeeds in this working directory.
+    /// Fail closed unless every mandatory authority probe succeeds in this working directory. The
+    /// host admits at most 16 concurrent authority preflights.
     #[capability]
     pub async fn preflight(request: PreflightRequest) -> Result<PreflightReport, AgentHostError>;
 

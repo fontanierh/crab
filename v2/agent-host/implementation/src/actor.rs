@@ -1780,6 +1780,7 @@ fn persist_permission<Request: Serialize, Response: Serialize>(
 fn validate_prompt(session_id: &str, request: &PromptRequest) -> Result<(), AgentHostError> {
     if request.session_id != session_id
         || request.client_turn_id.trim().is_empty()
+        || request.client_turn_id.len() > crate::MAX_AGENT_IDENTIFIER_BYTES
         || request.native_prompt_json.trim().is_empty()
         || request.native_prompt_json.len() > MAX_NATIVE_PROMPT_BYTES
     {
@@ -1847,7 +1848,7 @@ mod signal_tests {
         ACTOR_SIGNAL_QUEUE_CAPACITY, ActorSignal, MAX_NATIVE_PROMPT_BYTES, SessionActorLease,
         actor_signal_channel, validate_prompt,
     };
-    use crate::{AgentHostError, AgentInputMode, PromptRequest};
+    use crate::{AgentHostError, AgentInputMode, MAX_AGENT_IDENTIFIER_BYTES, PromptRequest};
     use tokio::sync::Semaphore;
 
     fn fill_event_queue(sender: &super::ActorSignalSender) {
@@ -1906,6 +1907,21 @@ mod signal_tests {
             client_turn_id: "turn-1".into(),
             mode: AgentInputMode::Queue,
             native_prompt_json: "x".repeat(MAX_NATIVE_PROMPT_BYTES + 1),
+        };
+
+        assert_eq!(
+            validate_prompt("session-1", &request),
+            Err(AgentHostError::InvalidNativePayload)
+        );
+    }
+
+    #[test]
+    fn prompt_idempotency_key_is_bounded() {
+        let request = PromptRequest {
+            session_id: "session-1".into(),
+            client_turn_id: "x".repeat(MAX_AGENT_IDENTIFIER_BYTES + 1),
+            mode: AgentInputMode::Queue,
+            native_prompt_json: "[]".into(),
         };
 
         assert_eq!(

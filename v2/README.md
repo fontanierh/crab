@@ -59,8 +59,10 @@ interrupt as a separate explicit action.
 - `agent-host` runs real ACP v1/v2 subprocesses with mandatory authority preflight, durable
   prompts/events/permissions, queue/steer/cancel, explicit native resume, and process-group
   shutdown. A host-wide 128-actor budget covers pending and live open/resume/fork work; actor-owned
-  leases release on actual exit and generation-safe reapers discard stale handles. Recovery
-  preserves both session IDs and the event cursor while revalidating authority,
+  leases release on actual exit and generation-safe reapers discard stale handles. Sixteen
+  concurrent authority probes are admitted fail-fast, and identifiers, paths, metadata and
+  bootstrap prompts are bounded before expensive work. Recovery preserves both session IDs and the
+  event cursor while revalidating authority,
   MCP tools and required policy; it never replays bootstrap or owns compaction. Graceful runtime
   shutdown detaches the host-owned live set without native close, while explicit close remains
   destructive. ACP stdout frames are rejected above 16 MiB before parsing or journaling; bounded
