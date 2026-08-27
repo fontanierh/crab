@@ -4,7 +4,7 @@ flowchart TB
         direction LR
         CONFIG["Configured agent<br/>command · ACP profile · probe"]
         PREFLIGHT{"Authority preflight<br/>no sandbox · yolo · sudo"}
-        ACTOR["Session actor<br/>one durable FIFO"]
+        ACTOR["Session actor<br/>active run only"]
         MAILBOX["Actor signal mailbox<br/>128 events · async backpressure<br/>fatal watch bypass"]
         ACP["ACP subprocess<br/>one process group"]
         CONFIG --> PREFLIGHT
@@ -17,7 +17,7 @@ flowchart TB
         direction LR
         ENDED{"Run ended<br/>native terminal stored?"}
         FALLBACK["Crab lifecycle fallback<br/>crab/run_finished"]
-        DB[("SQLite journal<br/>sessions · prompts<br/>events · permissions")]
+        DB[("SQLite journal + prompt FIFO<br/>sessions · prompts<br/>events · permissions")]
         UI["Native channel / UI<br/>lossless event view"]
         ENDED -->|"yes"| DB
         ENDED -->|"no · error"| FALLBACK
@@ -26,7 +26,7 @@ flowchart TB
     end
 
     ACTOR --> ENDED
-    ACTOR <-->|"transactional state"| DB
+    ACTOR <-->|"transactional state · next queued"| DB
     ACP -->|"raw output stored first"| DB
     UI -->|"non-blocking input"| ACTOR
 

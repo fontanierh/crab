@@ -1,8 +1,8 @@
 # Agent host state
 
 `agent-host` owns one SQLite database and one in-memory actor per live ACP session. The actor owns
-the connection to exactly one supervised ACP subprocess; the database is the durable operator/UI
-view.
+the connection to exactly one supervised ACP subprocess; queued prompt payloads live only in the
+database, which is also the durable operator/UI view.
 
 ![Negotiated ACP v1 steering](acp-v1-steering-flow.png)
 
@@ -34,6 +34,8 @@ view.
   idle update remains authoritative; if a prompt instead returns a JSON-RPC error, Crab preserves
   that error and atomically appends a minimal `crab/run_finished` lifecycle notification before
   clearing the active run.
+- SQLite is the live prompt FIFO, not a shadow in-memory queue. The actor loads only the next
+  committed prompt at a turn boundary, and queued cancellation updates the same durable row.
 - ACP v1 has one foreground run; queued prompts drain FIFO after its prompt response. A configured
   `_session/steering` extension may contribute to that run only after `initialize` advertises it.
   Crab requests `promptRequired` on an idle race and starts the continuation itself through normal
