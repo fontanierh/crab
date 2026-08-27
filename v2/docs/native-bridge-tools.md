@@ -21,6 +21,8 @@ bounds are non-zero. Native registration is durably marked `AgentManaged`, so re
 runtime JSON cannot stop it and a restart restores its desired state. Alert targets receive
 deduplicated incident and recovery turns in queue mode. Start a new package with
 `desiredRunning: false`; install and inspect it, then reconcile its current generation to running.
+Replacement first reads the durable catalog, preserves that registration's management owner, and
+then delegates the expected generation to the host CAS; a concurrent change cannot be overwritten.
 
 Authentication presentations such as QR images, phone codes, or URLs are ephemeral MCP results.
 Crab stores resulting credentials behind a private handle; tool output reveals only whether a

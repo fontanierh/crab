@@ -10,6 +10,10 @@ use agent_host_implementation::{
     CRAB_AGENT_ID_ENV, CRAB_PARENT_SESSION_ID_ENV, CRAB_SESSION_ID_ENV, CRAB_STATE_DIRECTORY_ENV,
     CRAB_SUB_AGENT_ID_ENV, CRAB_WORKING_DIRECTORY_ENV,
 };
+use boxology_contract::{ContractType as _, json as contract_json};
+use bridge_host_contract::{
+    BridgeCatalog, BridgeIngressMode, BridgeLifecycle, BridgeManagement, BridgeRecord,
+};
 use serde_json::{Value, json};
 use tokio::{
     io::{AsyncBufReadExt as _, AsyncWriteExt as _, BufReader, Lines},
@@ -35,7 +39,7 @@ impl McpProcess {
             .env(CRAB_WORKING_DIRECTORY_ENV, state)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null())
+            .stderr(Stdio::inherit())
             .kill_on_drop(true);
         if child_context {
             command
@@ -151,6 +155,32 @@ fn register_arguments(state: &Path) -> Value {
         "restartLimit": 3,
         "restartWindowMs": 300000
     })
+}
+
+fn encoded_catalog(management: BridgeManagement) -> Value {
+    let catalog = BridgeCatalog {
+        bridges: vec![BridgeRecord {
+            bridge_id: "signal".into(),
+            package_id: "agent.signal".into(),
+            display_name: "Signal".into(),
+            lifecycle: BridgeLifecycle::Stopped,
+            ingress_mode: BridgeIngressMode::Queue,
+            management,
+            alert_target: None,
+            desired_running: false,
+            generation: 7,
+            registered_at_ms: 1,
+        }],
+    };
+    let descriptor = bridge_host_contract::contract_descriptor();
+    let capability = descriptor
+        .capabilities()
+        .iter()
+        .find(|capability| capability.name().as_str() == "list_bridges")
+        .expect("list capability exists");
+    let slot = catalog.encode().expect("catalog encodes");
+    let encoded = contract_json::encode(&slot, capability.output()).expect("catalog JSON encodes");
+    serde_json::from_slice(&encoded).expect("catalog JSON parses")
 }
 
 #[tokio::test]
@@ -292,6 +322,71 @@ async fn child_session_bridge_calls_use_authenticated_boxology_ipc() {
         )
         .await;
     assert!(delivered.to_string().contains("FixtureRejected"));
+    fixture.await.expect("IPC fixture completes");
+    process.finish().await;
+}
+
+#[tokio::test]
+async fn replacement_preserves_runtime_configured_management_on_the_ipc_wire() {
+    let (_temporary, state) = state_directory();
+    let socket = state.join("channel-ipc.sock");
+    let listener = UnixListener::bind(&socket).expect("fixture IPC listener");
+    fs::set_permissions(&socket, fs::Permissions::from_mode(0o600)).expect("owner-only IPC socket");
+    let fixture = tokio::spawn(async move {
+        for expected in ["bridge-host.list_bridges", "bridge-host.replace_bridge"] {
+            let (stream, _) = listener.accept().await.expect("MCP IPC connection");
+            let (reader, mut writer) = stream.into_split();
+            let mut lines = BufReader::new(reader).lines();
+            let request: Value = serde_json::from_str(
+                &lines
+                    .next_line()
+                    .await
+                    .expect("read IPC")
+                    .expect("IPC request"),
+            )
+            .expect("IPC request JSON");
+            assert_eq!(request["capability"], expected);
+            let response = if expected == "bridge-host.list_bridges" {
+                json!({
+                    "protocolVersion": 1,
+                    "requestId": request["requestId"],
+                    "status": "ok",
+                    "output": encoded_catalog(BridgeManagement::RuntimeConfigured)
+                })
+            } else {
+                assert_eq!(request["input"]["expected_generation"], "7");
+                assert_eq!(
+                    request["input"]["spec"]["management"]["tag"],
+                    "RuntimeConfigured"
+                );
+                json!({
+                    "protocolVersion": 1,
+                    "requestId": request["requestId"],
+                    "status": "error",
+                    "error": { "kind": "domain", "code": "FixtureRejected" }
+                })
+            };
+            writer
+                .write_all(format!("{response}\n").as_bytes())
+                .await
+                .expect("write IPC response");
+        }
+    });
+    let mut process = McpProcess::start(&state, false).await;
+    let replaced = process
+        .request(
+            2,
+            "tools/call",
+            json!({
+                "name": "replace_bridge",
+                "arguments": {
+                    "expectedGeneration": 7,
+                    "spec": register_arguments(&state)
+                }
+            }),
+        )
+        .await;
+    assert!(replaced.to_string().contains("FixtureRejected"));
     fixture.await.expect("IPC fixture completes");
     process.finish().await;
 }
