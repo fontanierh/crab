@@ -1291,6 +1291,7 @@ mod tests {
             configuration: json!({"targetChannelId":"primary"}),
             authentication_methods: Vec::new(),
             ingress_mode: BridgeIngressConfig::Queue,
+            alert_target: None,
             desired_running: true,
             health_interval_ms: 60_000,
             credential_validation_interval_ms: 60_000,

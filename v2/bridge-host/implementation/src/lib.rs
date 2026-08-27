@@ -32,7 +32,7 @@ use boxology_import_trigger_inbox::{
 use generated::TriggerInboxImport;
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
-use store::BridgeStore;
+use store::{BridgeIncidentEpisode, BridgeStore};
 use tokio::{
     sync::{Mutex, RwLock},
     task::JoinHandle,
@@ -40,6 +40,31 @@ use tokio::{
 use uuid::Uuid;
 
 type Clock = Arc<dyn Fn() -> Result<u64, BridgeHostError> + Send + Sync>;
+
+#[derive(Clone, Copy)]
+enum BridgeIncidentKind {
+    AuthenticationRequired,
+    CredentialRejected,
+    CredentialStoreUnavailable,
+    CredentialValidationUnavailable,
+    PackageUnavailable,
+    RestartBudgetExhausted,
+    ServiceUnavailable,
+}
+
+impl BridgeIncidentKind {
+    fn tag(self) -> &'static str {
+        match self {
+            Self::AuthenticationRequired => "authentication-required",
+            Self::CredentialRejected => "credential-rejected",
+            Self::CredentialStoreUnavailable => "credential-store-unavailable",
+            Self::CredentialValidationUnavailable => "credential-validation-unavailable",
+            Self::PackageUnavailable => "package-unavailable",
+            Self::RestartBudgetExhausted => "restart-budget-exhausted",
+            Self::ServiceUnavailable => "service-unavailable",
+        }
+    }
+}
 
 /// Opened durable state waiting for composition-owned imports and package services.
 pub struct BridgeHostState {
@@ -214,10 +239,17 @@ impl BridgeHost {
         if !spec.desired_running {
             return self.stop_connection(bridge_id).await;
         }
-        if self.connections.read().await.contains_key(bridge_id) {
-            return self.probe_health(bridge_id).await;
-        }
         let now_ms = (self.clock)()?;
+        if self.connections.read().await.contains_key(bridge_id) {
+            let result = self.probe_health(bridge_id).await;
+            if result.is_err() {
+                let _ = self
+                    .supervisor_context()
+                    .notify_incident(bridge_id, BridgeIncidentKind::PackageUnavailable, now_ms)
+                    .await;
+            }
+            return result;
+        }
         let status = self.store.status(bridge_id, now_ms)?;
         if status.next_restart_at_ms.is_some_and(|next| next > now_ms) {
             return Ok(status);
@@ -229,6 +261,14 @@ impl BridgeHost {
                 Some("restart budget exhausted"),
                 None,
             )?;
+            let _ = self
+                .supervisor_context()
+                .notify_incident(
+                    bridge_id,
+                    BridgeIncidentKind::RestartBudgetExhausted,
+                    now_ms,
+                )
+                .await;
             return Err(error);
         }
         self.store
@@ -246,6 +286,10 @@ impl BridgeHost {
             Ok(package) => package,
             Err(_) => {
                 self.schedule_backoff(bridge_id, &spec)?;
+                let _ = self
+                    .supervisor_context()
+                    .notify_incident(bridge_id, BridgeIncidentKind::PackageUnavailable, now_ms)
+                    .await;
                 return Err(BridgeHostError::PackageProtocolFailed);
             }
         };
@@ -260,7 +304,14 @@ impl BridgeHost {
             .write()
             .await
             .insert(bridge_id.to_owned(), package);
-        self.probe_health(bridge_id).await
+        let result = self.probe_health(bridge_id).await;
+        if result.is_err() {
+            let _ = self
+                .supervisor_context()
+                .notify_incident(bridge_id, BridgeIncidentKind::PackageUnavailable, now_ms)
+                .await;
+        }
+        result
     }
 
     fn schedule_backoff(&self, bridge_id: &str, spec: &BridgeSpec) -> Result<(), BridgeHostError> {
@@ -380,6 +431,106 @@ impl SupervisorContext {
         }
     }
 
+    async fn notify_incident(
+        &self,
+        bridge_id: &str,
+        kind: BridgeIncidentKind,
+        now_ms: u64,
+    ) -> Result<(), BridgeHostError> {
+        let spec = self.store.spec(bridge_id)?;
+        let Some(target) = spec.alert_target else {
+            return Ok(());
+        };
+        let episode = self
+            .store
+            .begin_incident(bridge_id, kind.tag(), &target, now_ms)?;
+        if episode.incident_trigger_id.is_some() {
+            return Ok(());
+        }
+        let receipt = self
+            .enqueue_incident(
+                &episode,
+                "crab.bridge.incident",
+                episode.started_at_ms,
+                None,
+            )
+            .await?;
+        self.store
+            .mark_incident_enqueued(bridge_id, episode.sequence, &receipt.trigger_id)
+    }
+
+    async fn notify_recovery(&self, bridge_id: &str, now_ms: u64) -> Result<(), BridgeHostError> {
+        let Some(episode) = self.store.recover_incident(bridge_id, now_ms)? else {
+            return Ok(());
+        };
+        if episode.recovery_trigger_id.is_some() {
+            return Ok(());
+        }
+        let recovered_at_ms = episode
+            .recovered_at_ms
+            .ok_or(BridgeHostError::StorageUnavailable)?;
+        let receipt = self
+            .enqueue_incident(
+                &episode,
+                "crab.bridge.recovered",
+                recovered_at_ms,
+                Some(recovered_at_ms),
+            )
+            .await?;
+        self.store
+            .mark_recovery_enqueued(bridge_id, episode.sequence, &receipt.trigger_id)
+    }
+
+    async fn enqueue_incident(
+        &self,
+        episode: &BridgeIncidentEpisode,
+        event: &str,
+        not_before_ms: u64,
+        recovered_at_ms: Option<u64>,
+    ) -> Result<boxology_import_trigger_inbox::TriggerReceipt, BridgeHostError> {
+        let phase = if recovered_at_ms.is_some() {
+            "recovery"
+        } else {
+            "incident"
+        };
+        let message_json = json!({
+            "kind": event,
+            "bridgeId": episode.bridge_id,
+            "generation": episode.generation,
+            "incidentSequence": episode.sequence,
+            "incident": episode.kind,
+            "startedAtMs": episode.started_at_ms,
+            "recoveredAtMs": recovered_at_ms,
+        })
+        .to_string();
+        self.trigger_inbox
+            .enqueue(
+                CallContext::new(
+                    Caller::System("bridge-supervisor"),
+                    None,
+                    CancelToken::new(),
+                    TraceContext::empty(),
+                    None,
+                ),
+                EnqueueTrigger {
+                    source: TriggerSource::Bridge,
+                    source_id: episode.bridge_id.clone(),
+                    deduplication_key: format!(
+                        "crab-supervisor:{}:{}:{phase}",
+                        episode.generation, episode.sequence
+                    ),
+                    target_channel_id: episode.target_channel_id.clone(),
+                    lane: episode.lane.clone(),
+                    mode: TriggerMode::Queue,
+                    not_before_ms,
+                    message_json,
+                    attachments: Vec::new(),
+                },
+            )
+            .await
+            .map_err(map_trigger_error)
+    }
+
     async fn tick(&self, bridge_id: &str) {
         let _operation = self.operations.lock().await;
         let Ok(spec) = self.store.spec(bridge_id) else {
@@ -408,6 +559,13 @@ impl SupervisorContext {
                     Some("restart budget exhausted"),
                     None,
                 );
+                let _ = self
+                    .notify_incident(
+                        bridge_id,
+                        BridgeIncidentKind::RestartBudgetExhausted,
+                        now_ms,
+                    )
+                    .await;
                 return;
             }
             let _ = self
@@ -437,6 +595,9 @@ impl SupervisorContext {
                 .await
             else {
                 self.backoff(bridge_id, &spec, now_ms);
+                let _ = self
+                    .notify_incident(bridge_id, BridgeIncidentKind::PackageUnavailable, now_ms)
+                    .await;
                 return;
             };
             activate_package_instance(
@@ -457,10 +618,12 @@ impl SupervisorContext {
             Ok(status) => status,
             Err(_) => return,
         };
+        let mut credential_override = None;
         let credential = match credential_status.credential_handle.as_deref() {
             Some(handle) => match self.credentials.get(handle).await {
                 Ok(credential) => Some(credential),
                 Err(CredentialStoreError::UnknownHandle) => {
+                    credential_override = Some(CredentialLifecycle::Missing);
                     let _ = self.store.clear_credential_reference(
                         bridge_id,
                         &CredentialLifecycle::Missing,
@@ -469,6 +632,7 @@ impl SupervisorContext {
                     None
                 }
                 Err(CredentialStoreError::InvalidCredential) => {
+                    credential_override = Some(CredentialLifecycle::Rejected);
                     let _ = self.store.clear_credential_reference(
                         bridge_id,
                         &CredentialLifecycle::Rejected,
@@ -483,6 +647,13 @@ impl SupervisorContext {
                         Some("credential provider unavailable"),
                         None,
                     );
+                    let _ = self
+                        .notify_incident(
+                            bridge_id,
+                            BridgeIncidentKind::CredentialStoreUnavailable,
+                            now_ms,
+                        )
+                        .await;
                     return;
                 }
             },
@@ -499,25 +670,61 @@ impl SupervisorContext {
                 .await;
                 self.connections.write().await.remove(bridge_id);
                 self.backoff(bridge_id, &spec, now_ms);
+                let _ = self
+                    .notify_incident(bridge_id, BridgeIncidentKind::PackageUnavailable, now_ms)
+                    .await;
                 return;
             }
         };
         let no_auth = spec.authentication_methods.is_empty();
-        let credential_lifecycle = if no_auth || health.credential_valid {
+        let mut credential_lifecycle = if no_auth {
+            CredentialLifecycle::Valid
+        } else if let Some(lifecycle) = credential_override {
+            lifecycle
+        } else if health.credential_valid {
             CredentialLifecycle::Valid
         } else if credential.is_some() {
             CredentialLifecycle::Rejected
         } else {
             CredentialLifecycle::Missing
         };
+        let mut validation_unavailable = false;
+        if let (Some(secret), Some(_)) = (
+            credential.as_deref(),
+            credential_status.credential_handle.as_ref(),
+        ) && now_ms.saturating_sub(credential_status.validated_at_ms.unwrap_or(0))
+            >= spec.credential_validation_interval_ms
+        {
+            match package.validate_credentials(secret).await {
+                Ok(validation) => {
+                    credential_lifecycle = if validation.valid {
+                        CredentialLifecycle::Valid
+                    } else {
+                        CredentialLifecycle::Rejected
+                    };
+                    let _ = self.store.update_validation(
+                        bridge_id,
+                        &credential_lifecycle,
+                        now_ms,
+                        validation.expires_at_ms,
+                        validation.account_hint.as_deref(),
+                        &validation.detail_json,
+                    );
+                }
+                Err(_) => validation_unavailable = true,
+            }
+        }
         let process_alive = health.process_alive;
+        let service_connected = health.service_connected;
+        let can_receive = health.can_receive;
+        let can_send = health.can_send;
         let _ = self.store.report_health(&HealthObservation {
             bridge_id: bridge_id.to_owned(),
             observed_at_ms: now_ms,
             process_alive: health.process_alive,
-            service_connected: health.service_connected,
-            can_receive: health.can_receive,
-            can_send: health.can_send,
+            service_connected,
+            can_receive,
+            can_send,
             credential_lifecycle: credential_lifecycle.clone(),
             detail_json: health.detail_json,
         });
@@ -530,6 +737,25 @@ impl SupervisorContext {
             .await;
             self.connections.write().await.remove(bridge_id);
             self.backoff(bridge_id, &spec, now_ms);
+            let _ = self
+                .notify_incident(bridge_id, BridgeIncidentKind::PackageUnavailable, now_ms)
+                .await;
+            return;
+        }
+        if validation_unavailable {
+            let _ = self.store.set_lifecycle(
+                bridge_id,
+                &BridgeLifecycle::Degraded,
+                Some("active credential validation failed"),
+                None,
+            );
+            let _ = self
+                .notify_incident(
+                    bridge_id,
+                    BridgeIncidentKind::CredentialValidationUnavailable,
+                    now_ms,
+                )
+                .await;
             return;
         }
         if matches!(credential_lifecycle, CredentialLifecycle::Missing) && !no_auth {
@@ -539,29 +765,28 @@ impl SupervisorContext {
                 None,
                 None,
             );
+            let _ = self
+                .notify_incident(
+                    bridge_id,
+                    BridgeIncidentKind::AuthenticationRequired,
+                    now_ms,
+                )
+                .await;
+            return;
         }
-
-        if let (Some(secret), Some(_)) = (
-            credential.as_deref(),
-            credential_status.credential_handle.as_ref(),
-        ) && now_ms.saturating_sub(credential_status.validated_at_ms.unwrap_or(0))
-            >= spec.credential_validation_interval_ms
-            && let Ok(validation) = package.validate_credentials(secret).await
-        {
-            let lifecycle = if validation.valid {
-                CredentialLifecycle::Valid
-            } else {
-                CredentialLifecycle::Rejected
-            };
-            let _ = self.store.update_validation(
-                bridge_id,
-                &lifecycle,
-                now_ms,
-                validation.expires_at_ms,
-                validation.account_hint.as_deref(),
-                &validation.detail_json,
-            );
+        if matches!(credential_lifecycle, CredentialLifecycle::Rejected) && !no_auth {
+            let _ = self
+                .notify_incident(bridge_id, BridgeIncidentKind::CredentialRejected, now_ms)
+                .await;
+            return;
         }
+        if !service_connected || !can_receive || !can_send {
+            let _ = self
+                .notify_incident(bridge_id, BridgeIncidentKind::ServiceUnavailable, now_ms)
+                .await;
+            return;
+        }
+        let _ = self.notify_recovery(bridge_id, now_ms).await;
     }
 
     fn backoff(&self, bridge_id: &str, spec: &BridgeSpec, now_ms: u64) {
@@ -1174,6 +1399,12 @@ fn validate_spec(spec: &BridgeSpec) -> Result<(), BridgeHostError> {
         || spec.credential_validation_interval_ms == 0
         || spec.restart_limit == 0
         || spec.restart_window_ms == 0
+        || spec.alert_target.as_ref().is_some_and(|target| {
+            target.channel_id.trim().is_empty()
+                || target.channel_id.len() > 512
+                || target.lane.trim().is_empty()
+                || target.lane.len() > 512
+        })
     {
         return Err(BridgeHostError::InvalidSpec);
     }

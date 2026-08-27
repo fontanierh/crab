@@ -144,6 +144,7 @@ fn register_arguments(state: &Path) -> Value {
         "configuration": { "targetChannelId": "primary" },
         "authenticationMethods": ["qr-code"],
         "ingressMode": "queue",
+        "alertTarget": {"channelId":"primary","lane":"primary"},
         "desiredRunning": false,
         "healthIntervalMs": 5000,
         "credentialValidationIntervalMs": 60000,

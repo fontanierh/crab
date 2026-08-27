@@ -325,6 +325,10 @@ fn catalog_json(catalog: BridgeCatalog) -> Value {
             "displayName": bridge.display_name,
             "lifecycle": lifecycle_name(&bridge.lifecycle),
             "ingressMode": ingress_name(&bridge.ingress_mode),
+            "alertTarget": bridge.alert_target.map(|target| json!({
+                "channelId": target.channel_id,
+                "lane": target.lane,
+            })),
             "desiredRunning": bridge.desired_running,
             "generation": bridge.generation,
             "registeredAtMs": bridge.registered_at_ms,

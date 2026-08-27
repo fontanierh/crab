@@ -52,6 +52,12 @@ boxology::contract! {
         InterruptAndSteer,
     }
 
+    /// Agent channel that receives actionable supervisor incidents in queue mode.
+    pub struct BridgeAlertTarget {
+        pub channel_id: String,
+        pub lane: String,
+    }
+
     /// Installation metadata for a bridge package. The agent may add new packages at runtime.
     pub struct BridgeSpec {
         pub bridge_id: String,
@@ -64,6 +70,8 @@ boxology::contract! {
         pub configuration_json: String,
         pub authentication_methods: Vec<AuthenticationMethod>,
         pub ingress_mode: BridgeIngressMode,
+        /// Optional and generation-fixed. When absent, supervision remains silent.
+        pub alert_target: Option<BridgeAlertTarget>,
         pub desired_running: bool,
         pub health_interval_ms: u64,
         pub credential_validation_interval_ms: u64,
@@ -78,6 +86,7 @@ boxology::contract! {
         pub display_name: String,
         pub lifecycle: BridgeLifecycle,
         pub ingress_mode: BridgeIngressMode,
+        pub alert_target: Option<BridgeAlertTarget>,
         pub desired_running: bool,
         pub generation: u64,
         pub registered_at_ms: u64,

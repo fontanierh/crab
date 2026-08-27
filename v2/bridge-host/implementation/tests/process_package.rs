@@ -94,6 +94,7 @@ fn spec(directory: &std::path::Path) -> BridgeSpec {
         configuration_json: "{}".into(),
         authentication_methods: vec![AuthenticationMethod::PhoneCode],
         ingress_mode: BridgeIngressMode::Queue,
+        alert_target: None,
         desired_running: true,
         health_interval_ms: 1_000,
         credential_validation_interval_ms: 1_000,

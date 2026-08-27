@@ -179,6 +179,26 @@ static __BOXOLOGY_CONTRACT_DESCRIPTOR: ::std::sync::LazyLock<
                     None,
                 ),
                 ::boxology_contract::FieldDescriptor::new(
+                    "alert_target",
+                    ::boxology_contract::TypeDescriptor::optional(
+                            ::boxology_contract::TypeDescriptor::structure([
+                                    ::boxology_contract::FieldDescriptor::new(
+                                        "channel_id",
+                                        ::boxology_contract::TypeDescriptor::string(),
+                                        None,
+                                    ),
+                                    ::boxology_contract::FieldDescriptor::new(
+                                        "lane",
+                                        ::boxology_contract::TypeDescriptor::string(),
+                                        None,
+                                    ),
+                                ])
+                                .expect("generated struct descriptor is valid"),
+                        )
+                        .expect("generated optional descriptor is valid"),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
                     "desired_running",
                     ::boxology_contract::TypeDescriptor::bool(),
                     None,
@@ -288,6 +308,26 @@ static __BOXOLOGY_CONTRACT_DESCRIPTOR: ::std::sync::LazyLock<
                             ),
                         ])
                         .expect("generated enum descriptor is valid"),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
+                    "alert_target",
+                    ::boxology_contract::TypeDescriptor::optional(
+                            ::boxology_contract::TypeDescriptor::structure([
+                                    ::boxology_contract::FieldDescriptor::new(
+                                        "channel_id",
+                                        ::boxology_contract::TypeDescriptor::string(),
+                                        None,
+                                    ),
+                                    ::boxology_contract::FieldDescriptor::new(
+                                        "lane",
+                                        ::boxology_contract::TypeDescriptor::string(),
+                                        None,
+                                    ),
+                                ])
+                                .expect("generated struct descriptor is valid"),
+                        )
+                        .expect("generated optional descriptor is valid"),
                     None,
                 ),
                 ::boxology_contract::FieldDescriptor::new(
@@ -408,6 +448,26 @@ static __BOXOLOGY_CONTRACT_DESCRIPTOR: ::std::sync::LazyLock<
                                                 ),
                                             ])
                                             .expect("generated enum descriptor is valid"),
+                                        None,
+                                    ),
+                                    ::boxology_contract::FieldDescriptor::new(
+                                        "alert_target",
+                                        ::boxology_contract::TypeDescriptor::optional(
+                                                ::boxology_contract::TypeDescriptor::structure([
+                                                        ::boxology_contract::FieldDescriptor::new(
+                                                            "channel_id",
+                                                            ::boxology_contract::TypeDescriptor::string(),
+                                                            None,
+                                                        ),
+                                                        ::boxology_contract::FieldDescriptor::new(
+                                                            "lane",
+                                                            ::boxology_contract::TypeDescriptor::string(),
+                                                            None,
+                                                        ),
+                                                    ])
+                                                    .expect("generated struct descriptor is valid"),
+                                            )
+                                            .expect("generated optional descriptor is valid"),
                                         None,
                                     ),
                                     ::boxology_contract::FieldDescriptor::new(
@@ -542,6 +602,26 @@ static __BOXOLOGY_CONTRACT_DESCRIPTOR: ::std::sync::LazyLock<
                                 None,
                             ),
                             ::boxology_contract::FieldDescriptor::new(
+                                "alert_target",
+                                ::boxology_contract::TypeDescriptor::optional(
+                                        ::boxology_contract::TypeDescriptor::structure([
+                                                ::boxology_contract::FieldDescriptor::new(
+                                                    "channel_id",
+                                                    ::boxology_contract::TypeDescriptor::string(),
+                                                    None,
+                                                ),
+                                                ::boxology_contract::FieldDescriptor::new(
+                                                    "lane",
+                                                    ::boxology_contract::TypeDescriptor::string(),
+                                                    None,
+                                                ),
+                                            ])
+                                            .expect("generated struct descriptor is valid"),
+                                    )
+                                    .expect("generated optional descriptor is valid"),
+                                None,
+                            ),
+                            ::boxology_contract::FieldDescriptor::new(
                                 "desired_running",
                                 ::boxology_contract::TypeDescriptor::bool(),
                                 None,
@@ -655,6 +735,26 @@ static __BOXOLOGY_CONTRACT_DESCRIPTOR: ::std::sync::LazyLock<
                             ),
                         ])
                         .expect("generated enum descriptor is valid"),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
+                    "alert_target",
+                    ::boxology_contract::TypeDescriptor::optional(
+                            ::boxology_contract::TypeDescriptor::structure([
+                                    ::boxology_contract::FieldDescriptor::new(
+                                        "channel_id",
+                                        ::boxology_contract::TypeDescriptor::string(),
+                                        None,
+                                    ),
+                                    ::boxology_contract::FieldDescriptor::new(
+                                        "lane",
+                                        ::boxology_contract::TypeDescriptor::string(),
+                                        None,
+                                    ),
+                                ])
+                                .expect("generated struct descriptor is valid"),
+                        )
+                        .expect("generated optional descriptor is valid"),
                     None,
                 ),
                 ::boxology_contract::FieldDescriptor::new(
@@ -2434,7 +2534,7 @@ static __BOXOLOGY_CONTRACT_DESCRIPTOR: ::std::sync::LazyLock<
                 capability_15,
             ],
             ::boxology_contract::ContractRevision::new(
-                    "sha256:b66a7692a957d38d7cba393d60d4248f612fc79835e130b036c8ed8280bb3f21",
+                    "sha256:a1708ebe3dd71369b16a5018187bcf669d7c393539bc0b6a4f0794ad86c113f8",
                 )
                 .expect("generated contract revision is non-empty"),
         )
@@ -2692,6 +2792,26 @@ impl BridgeHostHandle {
                     None,
                 ),
                 ::boxology_contract::FieldDescriptor::new(
+                    "alert_target",
+                    TypeDescriptor::optional(
+                            TypeDescriptor::structure([
+                                    ::boxology_contract::FieldDescriptor::new(
+                                        "channel_id",
+                                        TypeDescriptor::string(),
+                                        None,
+                                    ),
+                                    ::boxology_contract::FieldDescriptor::new(
+                                        "lane",
+                                        TypeDescriptor::string(),
+                                        None,
+                                    ),
+                                ])
+                                .expect("generated struct descriptor is valid"),
+                        )
+                        .expect("generated optional descriptor is valid"),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
                     "desired_running",
                     TypeDescriptor::bool(),
                     None,
@@ -2818,6 +2938,26 @@ impl BridgeHostHandle {
                                                 ),
                                             ])
                                             .expect("generated enum descriptor is valid"),
+                                        None,
+                                    ),
+                                    ::boxology_contract::FieldDescriptor::new(
+                                        "alert_target",
+                                        TypeDescriptor::optional(
+                                                TypeDescriptor::structure([
+                                                        ::boxology_contract::FieldDescriptor::new(
+                                                            "channel_id",
+                                                            TypeDescriptor::string(),
+                                                            None,
+                                                        ),
+                                                        ::boxology_contract::FieldDescriptor::new(
+                                                            "lane",
+                                                            TypeDescriptor::string(),
+                                                            None,
+                                                        ),
+                                                    ])
+                                                    .expect("generated struct descriptor is valid"),
+                                            )
+                                            .expect("generated optional descriptor is valid"),
                                         None,
                                     ),
                                     ::boxology_contract::FieldDescriptor::new(
@@ -2949,6 +3089,26 @@ impl BridgeHostHandle {
                             ),
                         ])
                         .expect("generated enum descriptor is valid"),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
+                    "alert_target",
+                    TypeDescriptor::optional(
+                            TypeDescriptor::structure([
+                                    ::boxology_contract::FieldDescriptor::new(
+                                        "channel_id",
+                                        TypeDescriptor::string(),
+                                        None,
+                                    ),
+                                    ::boxology_contract::FieldDescriptor::new(
+                                        "lane",
+                                        TypeDescriptor::string(),
+                                        None,
+                                    ),
+                                ])
+                                .expect("generated struct descriptor is valid"),
+                        )
+                        .expect("generated optional descriptor is valid"),
                     None,
                 ),
                 ::boxology_contract::FieldDescriptor::new(
@@ -5454,6 +5614,85 @@ impl ::boxology_contract::ContractType for BridgeIngressMode {
     }
 }
 #[rustfmt::skip]
+/// Agent channel that receives actionable supervisor incidents in queue mode.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Default)]
+pub struct BridgeAlertTarget {
+    pub channel_id: ::std::string::String,
+    pub lane: ::std::string::String,
+}
+#[rustfmt::skip]
+impl ::boxology_contract::ContractType for BridgeAlertTarget {
+    fn encode_value(
+        &self,
+    ) -> ::core::result::Result<
+        ::boxology_contract::ContractValue,
+        ::boxology_contract::EncodeError,
+    > {
+        let mut fields = ::std::vec::Vec::new();
+        if let Some(value) = ::boxology_contract::ContractType::encode_field(
+                &self.channel_id,
+            )
+            .map_err(|error| {
+                error.under(::boxology_contract::PathSegment::Field("channel_id".into()))
+            })?
+        {
+            fields.push(("channel_id".into(), value));
+        }
+        if let Some(value) = ::boxology_contract::ContractType::encode_field(&self.lane)
+            .map_err(|error| {
+                error.under(::boxology_contract::PathSegment::Field("lane".into()))
+            })?
+        {
+            fields.push(("lane".into(), value));
+        }
+        ::boxology_contract::ContractValue::object(fields)
+            .map_err(|_| unreachable!("validated generated field identities are unique"))
+    }
+    fn decode_value(
+        value: &::boxology_contract::ContractValue,
+    ) -> ::core::result::Result<Self, ::boxology_contract::DecodeError> {
+        let ::boxology_contract::ValueRef::Object(fields) = value.view() else {
+            return Err(
+                ::boxology_contract::DecodeError::new(
+                    ::boxology_contract::DecodeErrorKind::KindMismatch,
+                ),
+            );
+        };
+        for (field, _) in fields.entries() {
+            match field {
+                "channel_id" | "lane" => {}
+                _ => {
+                    return Err(
+                        ::boxology_contract::DecodeError::new(
+                                ::boxology_contract::DecodeErrorKind::UnknownField(
+                                    field.into(),
+                                ),
+                            )
+                            .under(::boxology_contract::PathSegment::Field(field.into())),
+                    );
+                }
+            }
+        }
+        Ok(Self {
+            channel_id: <::std::string::String as ::boxology_contract::ContractType>::decode_field(
+                    fields.get("channel_id"),
+                )
+                .map_err(|error| {
+                    error
+                        .under(
+                            ::boxology_contract::PathSegment::Field("channel_id".into()),
+                        )
+                })?,
+            lane: <::std::string::String as ::boxology_contract::ContractType>::decode_field(
+                    fields.get("lane"),
+                )
+                .map_err(|error| {
+                    error.under(::boxology_contract::PathSegment::Field("lane".into()))
+                })?,
+        })
+    }
+}
+#[rustfmt::skip]
 /// Installation metadata for a bridge package. The agent may add new packages at runtime.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct BridgeSpec {
@@ -5467,6 +5706,8 @@ pub struct BridgeSpec {
     pub configuration_json: ::std::string::String,
     pub authentication_methods: ::std::vec::Vec<AuthenticationMethod>,
     pub ingress_mode: BridgeIngressMode,
+    /// Optional and generation-fixed. When absent, supervision remains silent.
+    pub alert_target: ::core::option::Option<BridgeAlertTarget>,
     pub desired_running: bool,
     pub health_interval_ms: u64,
     pub credential_validation_interval_ms: u64,
@@ -5564,6 +5805,18 @@ impl ::boxology_contract::ContractType for BridgeSpec {
             fields.push(("ingress_mode".into(), value));
         }
         if let Some(value) = ::boxology_contract::ContractType::encode_field(
+                &self.alert_target,
+            )
+            .map_err(|error| {
+                error
+                    .under(
+                        ::boxology_contract::PathSegment::Field("alert_target".into()),
+                    )
+            })?
+        {
+            fields.push(("alert_target".into(), value));
+        }
+        if let Some(value) = ::boxology_contract::ContractType::encode_field(
                 &self.desired_running,
             )
             .map_err(|error| {
@@ -5646,7 +5899,7 @@ impl ::boxology_contract::ContractType for BridgeSpec {
             match field {
                 "bridge_id" | "package_id" | "display_name" | "launch_json"
                 | "configuration_json" | "authentication_methods" | "ingress_mode"
-                | "desired_running" | "health_interval_ms"
+                | "alert_target" | "desired_running" | "health_interval_ms"
                 | "credential_validation_interval_ms" | "restart_limit"
                 | "restart_window_ms" => {}
                 _ => {
@@ -5735,6 +5988,19 @@ impl ::boxology_contract::ContractType for BridgeSpec {
                             ),
                         )
                 })?,
+            alert_target: <::core::option::Option<
+                BridgeAlertTarget,
+            > as ::boxology_contract::ContractType>::decode_field(
+                    fields.get("alert_target"),
+                )
+                .map_err(|error| {
+                    error
+                        .under(
+                            ::boxology_contract::PathSegment::Field(
+                                "alert_target".into(),
+                            ),
+                        )
+                })?,
             desired_running: <bool as ::boxology_contract::ContractType>::decode_field(
                     fields.get("desired_running"),
                 )
@@ -5801,6 +6067,7 @@ pub struct BridgeRecord {
     pub display_name: ::std::string::String,
     pub lifecycle: BridgeLifecycle,
     pub ingress_mode: BridgeIngressMode,
+    pub alert_target: ::core::option::Option<BridgeAlertTarget>,
     pub desired_running: bool,
     pub generation: u64,
     pub registered_at_ms: u64,
@@ -5866,6 +6133,18 @@ impl ::boxology_contract::ContractType for BridgeRecord {
             fields.push(("ingress_mode".into(), value));
         }
         if let Some(value) = ::boxology_contract::ContractType::encode_field(
+                &self.alert_target,
+            )
+            .map_err(|error| {
+                error
+                    .under(
+                        ::boxology_contract::PathSegment::Field("alert_target".into()),
+                    )
+            })?
+        {
+            fields.push(("alert_target".into(), value));
+        }
+        if let Some(value) = ::boxology_contract::ContractType::encode_field(
                 &self.desired_running,
             )
             .map_err(|error| {
@@ -5916,7 +6195,7 @@ impl ::boxology_contract::ContractType for BridgeRecord {
         for (field, _) in fields.entries() {
             match field {
                 "bridge_id" | "package_id" | "display_name" | "lifecycle"
-                | "ingress_mode" | "desired_running" | "generation"
+                | "ingress_mode" | "alert_target" | "desired_running" | "generation"
                 | "registered_at_ms" => {}
                 _ => {
                     return Err(
@@ -5977,6 +6256,19 @@ impl ::boxology_contract::ContractType for BridgeRecord {
                         .under(
                             ::boxology_contract::PathSegment::Field(
                                 "ingress_mode".into(),
+                            ),
+                        )
+                })?,
+            alert_target: <::core::option::Option<
+                BridgeAlertTarget,
+            > as ::boxology_contract::ContractType>::decode_field(
+                    fields.get("alert_target"),
+                )
+                .map_err(|error| {
+                    error
+                        .under(
+                            ::boxology_contract::PathSegment::Field(
+                                "alert_target".into(),
                             ),
                         )
                 })?,
@@ -9654,6 +9946,26 @@ pub mod test_support {
                                 None,
                             ),
                             ::boxology_contract::FieldDescriptor::new(
+                                "alert_target",
+                                TypeDescriptor::optional(
+                                        TypeDescriptor::structure([
+                                                ::boxology_contract::FieldDescriptor::new(
+                                                    "channel_id",
+                                                    TypeDescriptor::string(),
+                                                    None,
+                                                ),
+                                                ::boxology_contract::FieldDescriptor::new(
+                                                    "lane",
+                                                    TypeDescriptor::string(),
+                                                    None,
+                                                ),
+                                            ])
+                                            .expect("generated struct descriptor is valid"),
+                                    )
+                                    .expect("generated optional descriptor is valid"),
+                                None,
+                            ),
+                            ::boxology_contract::FieldDescriptor::new(
                                 "desired_running",
                                 TypeDescriptor::bool(),
                                 None,
@@ -9840,6 +10152,26 @@ pub mod test_support {
                                                     ),
                                                 ])
                                                 .expect("generated enum descriptor is valid"),
+                                            None,
+                                        ),
+                                        ::boxology_contract::FieldDescriptor::new(
+                                            "alert_target",
+                                            TypeDescriptor::optional(
+                                                    TypeDescriptor::structure([
+                                                            ::boxology_contract::FieldDescriptor::new(
+                                                                "channel_id",
+                                                                TypeDescriptor::string(),
+                                                                None,
+                                                            ),
+                                                            ::boxology_contract::FieldDescriptor::new(
+                                                                "lane",
+                                                                TypeDescriptor::string(),
+                                                                None,
+                                                            ),
+                                                        ])
+                                                        .expect("generated struct descriptor is valid"),
+                                                )
+                                                .expect("generated optional descriptor is valid"),
                                             None,
                                         ),
                                         ::boxology_contract::FieldDescriptor::new(
@@ -10700,8 +11032,8 @@ pub mod test_support {
 #[rustfmt::skip]
 #[doc(hidden)]
 pub const __BOXOLOGY_SEMANTIC_DIGEST: [u8; 32] = [
-    79, 122, 86, 87, 49, 226, 242, 143, 219, 130, 169, 59, 8, 0, 8, 212, 148, 12, 150,
-    127, 98, 142, 148, 216, 161, 204, 197, 53, 16, 245, 138, 197,
+    19, 2, 54, 163, 67, 235, 56, 60, 73, 128, 221, 63, 78, 45, 51, 153, 118, 26, 232,
+    172, 5, 254, 44, 94, 137, 242, 175, 234, 202, 17, 102, 74,
 ];
 #[rustfmt::skip]
 #[doc(hidden)]
