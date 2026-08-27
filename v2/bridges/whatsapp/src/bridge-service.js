@@ -4,6 +4,7 @@ import { createAuthState, validCredentialSnapshot } from './auth-state.js';
 import { credentialFingerprint, outboundMessageId } from './canonical-json.js';
 import { MAX_MEDIA_BYTES } from './media-policy.js';
 import { mediaDescriptor, normalizeInbound } from './message.js';
+import { outboundContent } from './outbound-media.js';
 
 const PROTOCOL_VERSION = 2;
 const DEFAULT_AUTH_TIMEOUT_MS = 120_000;
@@ -246,20 +247,16 @@ export class WhatsAppBridgeService {
       !object(params.destination) ||
       typeof params.destination.chatId !== 'string' ||
       params.destination.chatId.trim() === '' ||
-      !object(params.message) ||
-      typeof params.message.text !== 'string' ||
-      params.message.text.trim() === '' ||
-      !Array.isArray(params.attachments) ||
-      params.attachments.length !== 0 ||
       typeof params.idempotencyKey !== 'string' ||
       params.idempotencyKey.trim() === ''
     ) {
       throw new Error('invalid delivery');
     }
     const messageId = outboundMessageId(params.idempotencyKey);
+    const content = await outboundContent(params.message, params.attachments);
     const sent = await this.socket.sendMessage(
       params.destination.chatId,
-      { text: params.message.text },
+      content,
       { messageId },
     );
     return {

@@ -26,8 +26,11 @@ The package supports `qrCode` and `phoneCode` authentication. Configuration is s
 }
 ```
 
-Outbound delivery currently accepts selected text messages with `destination.chatId`. Crab's
-idempotency key becomes a deterministic WhatsApp message ID, so a retry uses the same external ID.
+Outbound delivery accepts selected text or one host-owned attachment with `destination.chatId`.
+Image, video and document payloads may carry a caption; audio and sticker payloads remain native
+captionless messages. The provider reads only regular `file://` content handles, caps reads at
+8 MiB, and rejects missing, changing, ambiguous or multi-attachment requests. Crab's idempotency
+key becomes a deterministic WhatsApp message ID, so a retry uses the same external ID.
 
 Inbound image, video, audio, document and sticker streams are capped at 8 MiB and sent directly to
 the host's private content store before trigger acknowledgement. The package never chooses a path
