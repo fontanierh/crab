@@ -2,7 +2,8 @@ import { EventEmitter } from 'node:events';
 
 import { createAuthState, validCredentialSnapshot } from './auth-state.js';
 import { credentialFingerprint, outboundMessageId } from './canonical-json.js';
-import { normalizeInbound } from './message.js';
+import { MAX_MEDIA_BYTES } from './media-policy.js';
+import { mediaDescriptor, normalizeInbound } from './message.js';
 
 const PROTOCOL_VERSION = 2;
 const DEFAULT_AUTH_TIMEOUT_MS = 120_000;
@@ -65,6 +66,7 @@ export class WhatsAppBridgeService {
     appStateSyncKeyFromObject,
     disconnectStatus,
     loggedOutStatus,
+    downloadMedia,
     callHost,
     onFatal,
     authTimeoutMs = DEFAULT_AUTH_TIMEOUT_MS,
@@ -74,6 +76,7 @@ export class WhatsAppBridgeService {
     this.authDependencies = { initAuthCreds, bufferJson, appStateSyncKeyFromObject };
     this.disconnectStatus = disconnectStatus;
     this.loggedOutStatus = loggedOutStatus;
+    this.downloadMedia = downloadMedia;
     this.callHost = callHost;
     this.onFatal = onFatal;
     this.authTimeoutMs = authTimeoutMs;
@@ -348,17 +351,76 @@ export class WhatsAppBridgeService {
       });
       if (!inbound) continue;
       this.inboundTail = this.inboundTail
-        .then(() => this.#persistInbound(inbound))
+        .then(() => this.#persistInbound(inbound, message))
         .catch((error) => this.onFatal(error));
     }
   }
 
-  async #persistInbound(inbound) {
+  async #persistInbound(inbound, rawMessage) {
+    await this.#storeMedia(inbound, rawMessage);
+    await this.#callHostWithRetry('bridge/inbound', inbound);
+  }
+
+  async #storeMedia(inbound, rawMessage) {
+    const descriptor = mediaDescriptor(rawMessage.message);
+    if (!descriptor) return;
+    if (descriptor.size !== null && descriptor.size > MAX_MEDIA_BYTES) {
+      inbound.message.mediaUnavailable = 'tooLarge';
+      return;
+    }
+    let bytes;
+    try {
+      bytes = await this.downloadMedia({
+        payload: descriptor.payload,
+        downloadType: descriptor.downloadType,
+        maximumBytes: MAX_MEDIA_BYTES,
+      });
+    } catch (error) {
+      inbound.message.mediaUnavailable = error?.code === 'MEDIA_TOO_LARGE'
+        ? 'tooLarge'
+        : 'downloadFailed';
+      return;
+    }
+    if (!Buffer.isBuffer(bytes) || bytes.length === 0 || bytes.length > MAX_MEDIA_BYTES) {
+      inbound.message.mediaUnavailable = bytes?.length > MAX_MEDIA_BYTES
+        ? 'tooLarge'
+        : 'downloadFailed';
+      return;
+    }
+    let receipt;
+    try {
+      receipt = await this.#callHostWithRetry('bridge/content/put', {
+        bridgeId: this.bridgeId,
+        externalEventId: inbound.externalEventId,
+        mediaType: descriptor.mediaType,
+        name: descriptor.name,
+        bytesBase64: bytes.toString('base64'),
+      });
+    } catch {
+      inbound.message.mediaUnavailable = 'storageFailed';
+      return;
+    }
+    if (
+      typeof receipt?.contentHandle !== 'string' ||
+      !receipt.contentHandle.startsWith('file://') ||
+      receipt.size !== bytes.length ||
+      typeof receipt.sha256 !== 'string' ||
+      !/^[0-9a-f]{64}$/.test(receipt.sha256)
+    ) {
+      throw new Error('invalid content acknowledgement');
+    }
+    inbound.attachments.push({
+      mediaType: descriptor.mediaType,
+      name: descriptor.name,
+      contentHandle: receipt.contentHandle,
+    });
+  }
+
+  async #callHostWithRetry(method, params) {
     let lastError;
     for (let attempt = 0; attempt < 3; attempt += 1) {
       try {
-        await this.callHost('bridge/inbound', inbound);
-        return;
+        return await this.callHost(method, params);
       } catch (error) {
         lastError = error;
         await delay(100 * (2 ** attempt));

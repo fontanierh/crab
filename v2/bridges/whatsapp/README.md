@@ -28,8 +28,13 @@ The package supports `qrCode` and `phoneCode` authentication. Configuration is s
 
 Outbound delivery currently accepts selected text messages with `destination.chatId`. Crab's
 idempotency key becomes a deterministic WhatsApp message ID, so a retry uses the same external ID.
-Inbound text and media metadata go directly to the host callback; media bytes and message history
-are not downloaded or retained locally.
+
+Inbound image, video, audio, document and sticker streams are capped at 8 MiB and sent directly to
+the host's private content store before trigger acknowledgement. The package never chooses a path
+or writes local media. Crab returns a durable `file://` handle which becomes an ACP resource link;
+only the originating bridge can attach it with the exact stored metadata. Oversized, failed, or
+unstorable downloads preserve their message metadata with a truthful `mediaUnavailable` reason.
+Full history is never synchronized.
 
 ## Credential safety
 

@@ -1,9 +1,28 @@
-flowchart LR
-    WA[WhatsApp] <-->|Baileys websocket| PKG[WhatsApp provider]
-    PKG -->|inbound event| HOST[Crab bridge host]
-    HOST -->|selected text| PKG
-    PKG -->|credential snapshot<br/>previous hash| CAS{active instance<br/>and hash match?}
-    CAS -->|yes| FILE[(opaque credential file)]
-    FILE -->|durable ack| PKG
-    CAS -->|no| STOP[reject and restart]
-    HOST --> INBOX[(durable trigger inbox)]
+flowchart TB
+    WA["WhatsApp"] <-->|"Baileys websocket<br/>no history sync"| PKG["WhatsApp provider"]
+    WA -->|"image · video · audio<br/>document · sticker"| LIMIT{"≤ 8 MiB?"}
+    LIMIT -->|yes| STREAM["package reads a bounded<br/>in-memory stream"]
+    STREAM -->|"bridge/content/put<br/>base64 over private stdio"| HOST["Crab bridge host"]
+    HOST --> PRIVATE[("0600 content file")]
+    PRIVATE --> HANDLE["host returns durable<br/>file:// handle"]
+    HANDLE -->|"bridge/inbound<br/>message + handle"| VALIDATE{"same bridge +<br/>exact metadata?"}
+    VALIDATE -->|yes| INBOX[("durable trigger inbox")]
+    INBOX --> ACP["ACP resource link<br/>agent can open"]
+    LIMIT -->|no| META["metadata +<br/>mediaUnavailable"]
+    META --> VALIDATE
+    VALIDATE -->|no| REJECT["reject forged handle"]
+
+    HOST -->|"selected outbound text"| PKG
+    PKG -->|"credential snapshot<br/>previous hash"| CAS{"active instance<br/>and hash match?"}
+    CAS -->|yes| CREDS[("opaque credential file")]
+    CREDS -->|"durable ack"| PKG
+    CAS -->|no| REJECT
+
+    classDef service fill:#eef2ff,stroke:#4f46e5,color:#111827;
+    classDef action fill:#ecfeff,stroke:#0891b2,color:#111827;
+    classDef durable fill:#ecfdf5,stroke:#059669,color:#111827;
+    classDef guard fill:#fff7ed,stroke:#ea580c,color:#111827;
+    class WA,PKG,ACP service;
+    class STREAM,HOST,META action;
+    class PRIVATE,INBOX,CREDS durable;
+    class LIMIT,VALIDATE,CAS,REJECT guard;

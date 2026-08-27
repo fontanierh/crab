@@ -100,6 +100,30 @@ function extractContent(message) {
   return result;
 }
 
+const MEDIA_TYPES = {
+  imageMessage: { downloadType: 'image', defaultMediaType: 'image/jpeg' },
+  videoMessage: { downloadType: 'video', defaultMediaType: 'video/mp4' },
+  audioMessage: { downloadType: 'audio', defaultMediaType: 'audio/ogg' },
+  documentMessage: { downloadType: 'document', defaultMediaType: 'application/octet-stream' },
+  stickerMessage: { downloadType: 'sticker', defaultMediaType: 'image/webp' },
+};
+
+export function mediaDescriptor(message) {
+  const inner = unwrapMessage(message);
+  const type = contentType(inner);
+  const media = MEDIA_TYPES[type];
+  const payload = inner?.[type];
+  if (!media || !payload || typeof payload !== 'object') return null;
+  const rawSize = Number(payload.fileLength);
+  return {
+    payload,
+    downloadType: media.downloadType,
+    mediaType: payload.mimetype || media.defaultMediaType,
+    name: type === 'documentMessage' ? payload.fileName || null : null,
+    size: Number.isSafeInteger(rawSize) && rawSize >= 0 ? rawSize : null,
+  };
+}
+
 export function normalizeInbound(message, { bridgeId, targetChannelId, now = Date.now }) {
   const remoteJid = message?.key?.remoteJid;
   const messageId = message?.key?.id;

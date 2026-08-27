@@ -75,9 +75,11 @@ interrupt as a separate explicit action.
 - `bridge-host` supervises agent-installed JSON-lines packages, brokers private file-backed
   credentials, actively probes health and credential validity, and applies bounded restart
   backoff. Package-originated ingress is acknowledged only after the generated `trigger-inbox`
-  import commits it; mutable service credentials use fingerprint-CAS atomic snapshots; selected
-  outbound delivery is durable and idempotent. `crab-v2-bridge` exposes its complete operator
-  lifecycle through authenticated local IPC without disclosing credential material. See the
+  import commits it. Bounded inbound media is fsynced into host-owned private content and only
+  validated handles become ACP resource links; mutable service credentials use fingerprint-CAS
+  atomic snapshots; selected outbound delivery is durable and idempotent. `crab-v2-bridge` exposes
+  its complete operator lifecycle through authenticated local IPC without disclosing credential
+  material. See the
   [operator flow](docs/bridge-operations.md),
   [state contract](docs/bridge-host-storage.md) and [rendered flow](docs/bridge-host-flow.png).
 - Every configured ACP parent and child receives 13 strict native bridge tools. An agent can install

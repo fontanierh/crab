@@ -31,6 +31,7 @@ boxology-runtime = { git = "https://github.com/fontanierh/boxology", rev = "4dd0
 agent-client-protocol = { version = "=2.0.0", features = ["unstable_protocol_v2"] }
 agent-client-protocol-rmcp = "=3.0.0"
 async-trait = "0.1.89"
+base64 = "0.22.1"
 nix = { version = "0.30.1", features = ["process", "signal"] }
 rusqlite = { version = "0.40.2", features = ["bundled"] }
 serde = { version = "1.0.229", features = ["derive"] }

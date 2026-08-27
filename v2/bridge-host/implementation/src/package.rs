@@ -10,6 +10,7 @@ use std::{
 };
 
 use async_trait::async_trait;
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use nix::{
     sys::signal::{Signal, killpg},
     unistd::Pid,
@@ -26,7 +27,7 @@ use uuid::Uuid;
 
 use crate::{
     AuthenticationMethod, BridgeAttachment, BridgeHostError, BridgeInbound, BridgeIngressMode,
-    BridgeOutbound, BridgeSpec, TriggerIntent,
+    BridgeOutbound, BridgeSpec, ContentUpload, MAX_CONTENT_BYTES, StoredContent, TriggerIntent,
 };
 
 const RPC_TIMEOUT: Duration = Duration::from_secs(30);
@@ -145,6 +146,14 @@ pub trait BridgePackage: Send + Sync {
 #[async_trait]
 pub trait BridgeInboundSink: Send + Sync {
     async fn accept(&self, request: BridgeInbound) -> Result<TriggerIntent, BridgeHostError>;
+
+    /// Persist private package bytes before an inbound event references the returned handle.
+    async fn store_content(
+        &self,
+        _request: ContentUpload,
+    ) -> Result<StoredContent, BridgeHostError> {
+        Err(BridgeHostError::StorageUnavailable)
+    }
 }
 
 /// Durable package-to-host credential callback. Success means the opaque store atomically
@@ -500,6 +509,7 @@ impl Drop for ProcessBridgePackage {
 
 enum PackageCall {
     Inbound { id: String, params: Value },
+    ContentPut { id: String, params: Value },
     CredentialUpdate { id: String, params: Value },
 }
 
@@ -528,6 +538,10 @@ async fn read_messages(
         let params = message.get("params").cloned().unwrap_or(Value::Null);
         let call = match message.get("method").and_then(Value::as_str) {
             Some("bridge/inbound") => Some(PackageCall::Inbound {
+                id: id.clone(),
+                params,
+            }),
+            Some("bridge/content/put") => Some(PackageCall::ContentPut {
                 id: id.clone(),
                 params,
             }),
@@ -596,6 +610,21 @@ async fn process_package_calls(
                     Err(_) => package_call_error(id, "CredentialUpdateRejected"),
                 }
             }
+            PackageCall::ContentPut { id, params } => match decode_content_upload(params) {
+                Ok(request) => match inbound.store_content(request).await {
+                    Ok(content) => json!({
+                        "jsonrpc": "2.0",
+                        "id": id,
+                        "result": {
+                            "contentHandle": content.attachment.content_handle,
+                            "size": content.size,
+                            "sha256": content.sha256,
+                        },
+                    }),
+                    Err(_) => package_call_error(id, "ContentRejected"),
+                },
+                Err(_) => package_call_error(id, "ContentRejected"),
+            },
         };
         if write_message(&writer, &response).await.is_err() {
             break;
@@ -705,6 +734,27 @@ fn decode_credential_update(value: Value) -> Result<BridgeCredentialUpdate, Brid
     })
 }
 
+fn decode_content_upload(value: Value) -> Result<ContentUpload, BridgePackageError> {
+    let upload: WireContentUpload = decode(value)?;
+    let maximum_encoded = MAX_CONTENT_BYTES.div_ceil(3) * 4;
+    if upload.bytes_base64.len() > maximum_encoded {
+        return Err(BridgePackageError::ProtocolFailed);
+    }
+    let bytes = BASE64
+        .decode(upload.bytes_base64)
+        .map_err(|_| BridgePackageError::ProtocolFailed)?;
+    if bytes.len() > MAX_CONTENT_BYTES {
+        return Err(BridgePackageError::ProtocolFailed);
+    }
+    Ok(ContentUpload {
+        bridge_id: upload.bridge_id,
+        external_event_id: upload.external_event_id,
+        media_type: upload.media_type,
+        name: upload.name,
+        bytes,
+    })
+}
+
 fn encode_trigger_intent(intent: &TriggerIntent) -> Value {
     json!({
         "sourceId": intent.source_id,
@@ -808,6 +858,16 @@ struct WireCredentialUpdate {
     bridge_id: String,
     previous_fingerprint: String,
     credential: Value,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct WireContentUpload {
+    bridge_id: String,
+    external_event_id: String,
+    media_type: String,
+    name: Option<String>,
+    bytes_base64: String,
 }
 
 #[derive(Deserialize)]
