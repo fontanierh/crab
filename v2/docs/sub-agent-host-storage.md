@@ -39,7 +39,9 @@ runtime-state/
   cancel-then-queue. The interrupting input is accepted before completion can drain older work;
   delivery never waits for model completion.
 - A background cursor pump copies every child ACP event, including tool calls and agent-owned
-  compaction events, into the sub-agent journal without narrowing the native JSON.
+  compaction events, into the sub-agent journal without narrowing the native JSON. Natural
+  completion removes the token-matched task entry; a stale pump cannot remove its replacement, and
+  explicit stop or host drop removes then aborts the current task.
 - On reopen, active records become explicit recovery candidates and transport-ambiguous pending
   interactions become failed so they can be retried with the same caller ID. Delivered
   interactions, the ordered event journal and the exact child ACP cursor remain unchanged.
@@ -49,4 +51,5 @@ runtime-state/
 - Recovery never opens a replacement child, replays inherited/bootstrap context or resends the
   initial task. Disabled or exhausted budgets, unavailable parents/sessions, identity drift and
   hard failures remain inspectable as `Failed`. See the
-  [rendered recovery flow](sub-agent-recovery-flow.png).
+  [rendered recovery flow](sub-agent-recovery-flow.png) and
+  [rendered pump lifecycle](sub-agent-pump-lifecycle.png).

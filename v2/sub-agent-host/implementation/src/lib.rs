@@ -5,8 +5,9 @@ pub use contract::*;
 
 use std::{
     collections::HashMap,
+    future::Future,
     path::Path,
-    sync::{Arc, Mutex as StdMutex},
+    sync::{Arc, Mutex as StdMutex, MutexGuard, PoisonError, Weak},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
@@ -19,7 +20,11 @@ use boxology_import_agent_host::{
 use generated::AgentHostImport;
 use serde_json::{Value, json};
 use store::{InteractionDirection, RecoveryCandidate, SubAgentStore, spawn_fingerprint};
-use tokio::{sync::Mutex, task::JoinHandle};
+use tokio::{
+    sync::{Mutex, oneshot},
+    task::JoinHandle,
+};
+use uuid::Uuid;
 
 const EVENT_PAGE_LIMIT: u64 = 1_000;
 const MAX_NATIVE_PROMPT_BYTES: usize = 2 * 1024 * 1024;
@@ -29,6 +34,81 @@ const PUMP_FAILURE_LIMIT: u8 = 3;
 const INITIAL_TASK_MESSAGE_ID: &str = "__initial_task__";
 
 type Clock = Arc<dyn Fn() -> Result<u64, SubAgentHostError> + Send + Sync>;
+
+struct PumpTask {
+    token: Uuid,
+    handle: JoinHandle<()>,
+}
+
+#[derive(Default)]
+struct PumpRegistry {
+    tasks: StdMutex<HashMap<String, PumpTask>>,
+}
+
+impl PumpRegistry {
+    fn lock_tasks(&self) -> MutexGuard<'_, HashMap<String, PumpTask>> {
+        self.tasks.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn spawn<F>(self: &Arc<Self>, key: String, pump: F)
+    where
+        F: Future<Output = ()> + Send + 'static,
+    {
+        let token = Uuid::new_v4();
+        let cleanup_token = token;
+        let cleanup_key = key.clone();
+        let registry: Weak<Self> = Arc::downgrade(self);
+        let (registered, registration) = oneshot::channel();
+        let handle = tokio::spawn(async move {
+            if registration.await.is_err() {
+                return;
+            }
+            pump.await;
+            let Some(registry) = registry.upgrade() else {
+                return;
+            };
+            registry.remove_if_current(&cleanup_key, cleanup_token);
+        });
+        let previous = self.lock_tasks().insert(key, PumpTask { token, handle });
+        if let Some(previous) = previous {
+            previous.handle.abort();
+        }
+        let _ = registered.send(());
+    }
+
+    fn remove_if_current(&self, key: &str, token: Uuid) {
+        let mut tasks = self.lock_tasks();
+        if tasks.get(key).is_some_and(|task| task.token == token) {
+            tasks.remove(key);
+        }
+    }
+
+    fn abort(&self, key: &str) -> bool {
+        let task = self.lock_tasks().remove(key);
+        if let Some(task) = task {
+            task.handle.abort();
+            true
+        } else {
+            false
+        }
+    }
+
+    fn abort_all(&self) {
+        for (_, task) in self.lock_tasks().drain() {
+            task.handle.abort();
+        }
+    }
+
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.lock_tasks().len()
+    }
+
+    #[cfg(test)]
+    fn token(&self, key: &str) -> Option<Uuid> {
+        self.lock_tasks().get(key).map(|task| task.token)
+    }
+}
 
 /// Opened durable state waiting for composition-owned `agent-host` import injection.
 pub struct SubAgentHostState {
@@ -57,7 +137,7 @@ impl SubAgentHostState {
             agent_host: Arc::new(agent_host),
             store: Arc::new(self.store),
             spawn_operations: Arc::new(Mutex::new(())),
-            pumps: Arc::new(StdMutex::new(HashMap::new())),
+            pumps: Arc::new(PumpRegistry::default()),
             clock: Arc::new(system_time_ms),
         }
     }
@@ -68,7 +148,7 @@ pub struct SubAgentHost {
     agent_host: Arc<AgentHostImport>,
     store: Arc<SubAgentStore>,
     spawn_operations: Arc<Mutex<()>>,
-    pumps: Arc<StdMutex<HashMap<String, JoinHandle<()>>>>,
+    pumps: Arc<PumpRegistry>,
     clock: Clock,
 }
 
@@ -170,7 +250,7 @@ impl SubAgentHost {
         let sub_agent_id = sub_agent_id.to_owned();
         let child_session_id = child_session_id.to_owned();
         let pump_key = sub_agent_id.clone();
-        let handle = tokio::spawn(async move {
+        self.pumps.spawn(pump_key, async move {
             let mut consecutive_failures = 0_u8;
             while let Ok(cursor) = store.child_cursor(&sub_agent_id) {
                 let page = agent_host
@@ -287,10 +367,6 @@ impl SubAgentHost {
                 }
             }
         });
-        let mut pumps = self.pumps.lock().expect("sub-agent pump lock poisoned");
-        if let Some(previous) = pumps.insert(pump_key, handle) {
-            previous.abort();
-        }
     }
 
     async fn dispatch_input(
@@ -528,11 +604,7 @@ impl SubAgentHost {
 
 impl Drop for SubAgentHost {
     fn drop(&mut self) {
-        if let Ok(mut pumps) = self.pumps.lock() {
-            for (_, handle) in pumps.drain() {
-                handle.abort();
-            }
-        }
+        self.pumps.abort_all();
     }
 }
 
@@ -879,11 +951,7 @@ impl SubAgentHost {
                         if !matches!(recovery.disposition, SubAgentRecoveryDisposition::Resumed) {
                             continue;
                         }
-                        if let Ok(mut pumps) = self.pumps.lock()
-                            && let Some(handle) = pumps.remove(&recovery.sub_agent_id)
-                        {
-                            handle.abort();
-                        }
+                        self.pumps.abort(&recovery.sub_agent_id);
                         let _ = self
                             .agent_host
                             .close_session(
@@ -943,14 +1011,7 @@ impl SubAgentHost {
             )
             .await
             .map_err(map_child_call)?;
-        if let Some(handle) = self
-            .pumps
-            .lock()
-            .map_err(|_| SubAgentHostError::StorageUnavailable)?
-            .remove(&request.sub_agent_id)
-        {
-            handle.abort();
-        }
+        self.pumps.abort(&request.sub_agent_id);
         let recorded_at_ms = (self.clock)()?;
         self.store.stop(&request.sub_agent_id, recorded_at_ms)?;
         Ok(SubAgentReceipt {
@@ -1171,10 +1232,64 @@ pub mod generated {
 
 #[cfg(test)]
 mod tests {
+    use std::{sync::Arc, time::Duration};
+
+    use tokio::sync::oneshot;
+
     use super::{
-        MAX_NATIVE_PROMPT_BYTES, SubAgentContextMode, SubAgentHostError, SubAgentInputMode,
-        generated, validate_prompt,
+        MAX_NATIVE_PROMPT_BYTES, PumpRegistry, SubAgentContextMode, SubAgentHostError,
+        SubAgentInputMode, generated, validate_prompt,
     };
+
+    async fn wait_until_empty(registry: &PumpRegistry) {
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if registry.len() == 0 {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("completed pump removes itself");
+    }
+
+    #[tokio::test]
+    async fn completed_pumps_self_clean_without_a_registration_race() {
+        let registry = Arc::new(PumpRegistry::default());
+        for index in 0..128 {
+            registry.spawn(format!("sub-agent-{index}"), async {});
+        }
+        wait_until_empty(&registry).await;
+    }
+
+    #[tokio::test]
+    async fn stale_pump_cleanup_cannot_remove_its_replacement() {
+        let registry = Arc::new(PumpRegistry::default());
+        let (_first_release, first_wait) = oneshot::channel::<()>();
+        registry.spawn("sub-agent-1".into(), async move {
+            let _ = first_wait.await;
+        });
+        let first_token = registry.token("sub-agent-1").expect("first token reads");
+
+        let (_replacement_release, replacement_wait) = oneshot::channel::<()>();
+        registry.spawn("sub-agent-1".into(), async move {
+            let _ = replacement_wait.await;
+        });
+        let replacement_token = registry
+            .token("sub-agent-1")
+            .expect("replacement token reads");
+        assert_ne!(first_token, replacement_token);
+
+        registry.remove_if_current("sub-agent-1", first_token);
+        assert_eq!(registry.len(), 1);
+        assert_eq!(
+            registry.token("sub-agent-1").expect("current token reads"),
+            replacement_token
+        );
+        assert!(registry.abort("sub-agent-1"));
+        assert_eq!(registry.len(), 0);
+    }
 
     #[test]
     fn contract_is_non_blocking_bidirectional_and_supervised() {

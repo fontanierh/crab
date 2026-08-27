@@ -111,11 +111,14 @@ interrupt as a separate explicit action.
   children
   resume their exact native sessions within a durable restart budget; identities, journals and
   cursors stay continuous, while every non-resumable child fails explicitly without replacement.
+  Completed event pumps remove their own token-matched task entries; replacement, stop and host
+  drop abort only the task they own.
   `crab-v2-sub-agent` exposes spawn, bidirectional messaging, cursor events, status and idempotent
   stop through the owner-only local IPC. See the
   [control flow](docs/sub-agent-control.md), [state contract](docs/sub-agent-host-storage.md) and
   [rendered host flow](docs/sub-agent-host-flow.png), [context flow](docs/sub-agent-context-flow.png)
-  and [recovery flow](docs/sub-agent-recovery-flow.png).
+  and [recovery flow](docs/sub-agent-recovery-flow.png), plus the
+  [pump lifecycle](docs/sub-agent-pump-lifecycle.png).
 - Every configured ACP session can receive Crab's six native sub-agent tools through a first-party
   stdio MCP server. Parents and children share the toolset; child-to-parent delivery is enabled only
   when Crab injects child identity. See the [native tool boundary](docs/native-sub-agent-tools.md).
