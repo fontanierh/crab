@@ -4,11 +4,12 @@ flowchart TB
         direction LR
         CONFIG["Configured agent<br/>command · ACP profile · probe"]
         PREFLIGHT{"Authority preflight<br/>no sandbox · yolo · sudo"}
+        CONTROL{"Control deadline · 30s<br/>lock · bounded queue · receipt"}
         ACTOR["Session actor<br/>active run only"]
         MAILBOX["Actor signal mailbox<br/>128 events · async backpressure<br/>fatal watch bypass"]
         ACP["ACP subprocess<br/>one process group"]
         CONFIG --> PREFLIGHT
-        PREFLIGHT -->|"verified"| ACTOR
+        PREFLIGHT -->|"verified"| CONTROL --> ACTOR
         ACTOR -->|"ACP requests"| ACP
         ACP -->|"responses · idle"| MAILBOX --> ACTOR
         ACTOR -->|"queue · steer · cancel"| ACP
@@ -28,7 +29,7 @@ flowchart TB
     ACTOR --> ENDED
     ACTOR <-->|"transactional state · next queued"| DB
     ACP -->|"raw output stored first"| DB
-    UI -->|"non-blocking input<br/>2 MiB native prompt cap"| ACTOR
+    UI -->|"non-blocking input<br/>2 MiB native prompt cap"| CONTROL
 
     classDef config fill:#f8fafc,stroke:#64748b,stroke-width:1.5px,color:#172033;
     classDef gate fill:#fef3c7,stroke:#d97706,stroke-width:2px,color:#78350f;
@@ -38,7 +39,7 @@ flowchart TB
     classDef ui fill:#f3e8ff,stroke:#9333ea,stroke-width:2px,color:#581c87;
 
     class CONFIG config;
-    class PREFLIGHT gate;
+    class PREFLIGHT,CONTROL gate;
     class ACTOR,MAILBOX,ACP runtime;
     class FALLBACK fallback;
     class ENDED gate;

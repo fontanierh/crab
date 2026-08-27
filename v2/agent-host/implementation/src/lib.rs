@@ -13,7 +13,7 @@ pub use config::{
 pub use contract::*;
 
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap},
     path::{Path, PathBuf},
     sync::Arc,
     time::{Duration, SystemTime, UNIX_EPOCH},
@@ -23,7 +23,10 @@ use actor::{SessionCommand, SessionHandle, SessionLaunch, spawn_session};
 use authority::SharedAuthorityVerifier;
 use serde_json::{Map, Value};
 use store::AgentStore;
-use tokio::sync::{RwLock, oneshot};
+use tokio::{
+    sync::{RwLock, oneshot},
+    task::JoinSet,
+};
 use uuid::Uuid;
 
 const CONTROL_TIMEOUT: Duration = Duration::from_secs(30);
@@ -40,6 +43,7 @@ pub struct AgentHost {
     state_directory: Option<PathBuf>,
     clock: Clock,
     authority_timeout: Duration,
+    control_timeout: Duration,
 }
 
 impl AgentHost {
@@ -118,6 +122,7 @@ impl AgentHost {
             state_directory,
             clock: Arc::new(system_time_ms),
             authority_timeout: AUTHORITY_TIMEOUT,
+            control_timeout: CONTROL_TIMEOUT,
         })
     }
 
@@ -128,33 +133,41 @@ impl AgentHost {
     }
 
     async fn detach_live_sessions(&self) -> DetachSessionsReport {
-        let mut handles = {
+        let handles = {
             let mut sessions = self.sessions.write().await;
             sessions.drain().collect::<Vec<_>>()
         };
-        handles.sort_by(|left, right| left.0.cmp(&right.0));
+        let mut pending = handles
+            .iter()
+            .map(|(session_id, _)| session_id.clone())
+            .collect::<BTreeSet<_>>();
+        let mut detachments = JoinSet::new();
+        for (session_id, handle) in handles {
+            let timeout = self.control_timeout;
+            detachments.spawn(async move {
+                let result =
+                    session_control(&handle, timeout, |reply| SessionCommand::Detach { reply })
+                        .await;
+                (session_id, result)
+            });
+        }
         let mut report = DetachSessionsReport {
-            detached_session_ids: Vec::with_capacity(handles.len()),
+            detached_session_ids: Vec::new(),
             failed_session_ids: Vec::new(),
         };
-        for (session_id, handle) in handles {
-            let _control = handle.control.lock().await;
-            let (reply, response) = oneshot::channel();
-            let detached = handle
-                .commands
-                .send(SessionCommand::Detach { reply })
-                .await
-                .is_ok()
-                && matches!(
-                    tokio::time::timeout(CONTROL_TIMEOUT, response).await,
-                    Ok(Ok(Ok(_)))
-                );
-            if detached {
-                report.detached_session_ids.push(session_id);
-            } else {
-                report.failed_session_ids.push(session_id);
+        while let Some(completion) = detachments.join_next().await {
+            if let Ok((session_id, result)) = completion {
+                pending.remove(&session_id);
+                if result.is_ok() {
+                    report.detached_session_ids.push(session_id);
+                } else {
+                    report.failed_session_ids.push(session_id);
+                }
             }
         }
+        report.failed_session_ids.extend(pending);
+        report.detached_session_ids.sort();
+        report.failed_session_ids.sort();
         report
     }
 
@@ -440,17 +453,10 @@ impl AgentHost {
     ) -> Result<PromptAccepted, AgentHostError> {
         let _ = context;
         let handle = self.live_session(&request.session_id).await?;
-        let _control = handle.control.lock().await;
-        let (reply, response) = oneshot::channel();
-        handle
-            .commands
-            .send(SessionCommand::Prompt { request, reply })
-            .await
-            .map_err(|_| AgentHostError::SessionClosed)?;
-        tokio::time::timeout(CONTROL_TIMEOUT, response)
-            .await
-            .map_err(|_| AgentHostError::TransportFailed)?
-            .map_err(|_| AgentHostError::SessionClosed)?
+        session_control(&handle, self.control_timeout, |reply| {
+            SessionCommand::Prompt { request, reply }
+        })
+        .await
     }
 
     pub async fn read_events(
@@ -511,20 +517,13 @@ impl AgentHost {
     ) -> Result<OperationReceipt, AgentHostError> {
         let _ = context;
         let handle = self.live_session(&request.session_id).await?;
-        let _control = handle.control.lock().await;
-        let (reply, response) = oneshot::channel();
-        handle
-            .commands
-            .send(SessionCommand::Cancel {
+        session_control(&handle, self.control_timeout, |reply| {
+            SessionCommand::Cancel {
                 run_id: request.run_id,
                 reply,
-            })
-            .await
-            .map_err(|_| AgentHostError::SessionClosed)?;
-        tokio::time::timeout(CONTROL_TIMEOUT, response)
-            .await
-            .map_err(|_| AgentHostError::TransportFailed)?
-            .map_err(|_| AgentHostError::SessionClosed)?
+            }
+        })
+        .await
     }
 
     pub async fn detach_sessions(
@@ -543,20 +542,32 @@ impl AgentHost {
     ) -> Result<OperationReceipt, AgentHostError> {
         let _ = context;
         let handle = self.live_session(&request.session_id).await?;
+        let result = session_control(&handle, self.control_timeout, |reply| {
+            SessionCommand::Close { reply }
+        })
+        .await?;
+        self.sessions.write().await.remove(&request.session_id);
+        Ok(result)
+    }
+}
+
+async fn session_control<T>(
+    handle: &SessionHandle,
+    timeout: Duration,
+    command: impl FnOnce(oneshot::Sender<Result<T, AgentHostError>>) -> SessionCommand,
+) -> Result<T, AgentHostError> {
+    tokio::time::timeout(timeout, async {
         let _control = handle.control.lock().await;
         let (reply, response) = oneshot::channel();
         handle
             .commands
-            .send(SessionCommand::Close { reply })
+            .send(command(reply))
             .await
             .map_err(|_| AgentHostError::SessionClosed)?;
-        let result = tokio::time::timeout(CONTROL_TIMEOUT, response)
-            .await
-            .map_err(|_| AgentHostError::TransportFailed)?
-            .map_err(|_| AgentHostError::SessionClosed)?;
-        self.sessions.write().await.remove(&request.session_id);
-        result
-    }
+        response.await.map_err(|_| AgentHostError::SessionClosed)?
+    })
+    .await
+    .map_err(|_| AgentHostError::TransportFailed)?
 }
 
 impl Drop for AgentHost {
@@ -596,8 +607,9 @@ mod tests {
     use super::{
         AgentHost, AgentHostError, AgentProtocol, AuthorityAttestation, AuthorityProbeConfig,
         AuthorityVerifier, ConfiguredAgent, ListAgentSessionsRequest, OpenSessionRequest,
-        generated,
+        SessionCommand, SessionHandle, generated, session_control,
     };
+    use tokio::sync::{Mutex, mpsc, oneshot};
 
     struct HangingAuthority;
 
@@ -696,5 +708,77 @@ mod tests {
             .expect("session catalog remains readable");
         assert_eq!(catalog.total_sessions, 0);
         assert!(catalog.sessions.is_empty());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn control_deadline_includes_serialization_lock() {
+        let (commands, _receiver) = mpsc::channel(1);
+        let handle = SessionHandle {
+            commands,
+            control: Arc::new(Mutex::new(())),
+        };
+        let _held = handle.control.clone().lock_owned().await;
+        let timeout = Duration::from_secs(30);
+        let started = tokio::time::Instant::now();
+
+        let result =
+            session_control(&handle, timeout, |reply| SessionCommand::Close { reply }).await;
+
+        assert_eq!(result, Err(AgentHostError::TransportFailed));
+        assert_eq!(started.elapsed(), timeout);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn control_deadline_includes_saturated_queue_admission() {
+        let (commands, _receiver) = mpsc::channel(1);
+        let (blocking_reply, _) = oneshot::channel();
+        assert!(
+            commands
+                .try_send(SessionCommand::Close {
+                    reply: blocking_reply,
+                })
+                .is_ok()
+        );
+        let handle = SessionHandle {
+            commands,
+            control: Arc::new(Mutex::new(())),
+        };
+        let timeout = Duration::from_secs(30);
+        let started = tokio::time::Instant::now();
+
+        let result =
+            session_control(&handle, timeout, |reply| SessionCommand::Close { reply }).await;
+
+        assert_eq!(result, Err(AgentHostError::TransportFailed));
+        assert_eq!(started.elapsed(), timeout);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn shutdown_times_out_stalled_sessions_concurrently() {
+        let mut host = AgentHost::open_in_memory(Vec::new()).expect("empty host opens");
+        host.control_timeout = Duration::from_secs(30);
+        let mut held = Vec::new();
+        for session_id in ["session-c", "session-a", "session-b"] {
+            let (commands, _receiver) = mpsc::channel(1);
+            let handle = SessionHandle {
+                commands,
+                control: Arc::new(Mutex::new(())),
+            };
+            held.push(handle.control.clone().lock_owned().await);
+            host.sessions
+                .write()
+                .await
+                .insert(session_id.into(), handle);
+        }
+        let started = tokio::time::Instant::now();
+
+        let report = host.detach_live_sessions().await;
+
+        assert_eq!(started.elapsed(), host.control_timeout);
+        assert!(report.detached_session_ids.is_empty());
+        assert_eq!(
+            report.failed_session_ids,
+            ["session-a", "session-b", "session-c"]
+        );
     }
 }

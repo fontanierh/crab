@@ -38,6 +38,9 @@ database, which is also the durable operator/UI view.
   clearing the active run.
 - SQLite is the live prompt FIFO, not a shadow in-memory queue. The actor loads only the next
   committed prompt at a turn boundary, and queued cancellation updates the same durable row.
+- One 30-second control deadline covers per-session serialization, admission to the bounded actor
+  queue and the actor receipt. A stalled actor therefore cannot hold prompt, cancel, close or
+  runtime detach forever.
 - ACP v1 has one foreground run; queued prompts drain FIFO after its prompt response. A configured
   `_session/steering` extension may contribute to that run only after `initialize` advertises it.
   Crab requests `promptRequired` on an idle race and starts the continuation itself through normal
@@ -51,6 +54,7 @@ database, which is also the durable operator/UI view.
 - Configured stdio MCP declarations are attached to every `session/new` and `session/resume`. Crab
   injects canonical state/workspace paths and session identity; draft ACP v2 must advertise
   `session.mcp.stdio`.
-- Host-wide detach cancels active work, waits for acknowledgement, fails unfinished prompts and
-  tears down ACP process groups without sending `session/close`.
+- Host-wide detach attempts every live session concurrently under that control deadline, cancels
+  active work, waits for acknowledgement, fails unfinished prompts and tears down ACP process
+  groups without sending `session/close`.
 - Explicit close sends native `session/close`, commits `Stopped` and is never resumable.
