@@ -21,7 +21,7 @@ pub use package::{
 use std::{
     collections::HashMap,
     path::Path,
-    sync::{Arc, Mutex as StdMutex},
+    sync::{Arc, Mutex as StdMutex, Weak},
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -34,12 +34,45 @@ use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 use store::{BridgeIncidentEpisode, BridgeStore};
 use tokio::{
-    sync::{Mutex, RwLock},
+    sync::{Mutex, OwnedMutexGuard, RwLock},
     task::JoinHandle,
 };
 use uuid::Uuid;
 
 type Clock = Arc<dyn Fn() -> Result<u64, BridgeHostError> + Send + Sync>;
+
+#[derive(Default)]
+struct BridgeOperationLocks {
+    locks: StdMutex<HashMap<String, Weak<Mutex<()>>>>,
+}
+
+impl BridgeOperationLocks {
+    async fn lock(&self, bridge_id: &str) -> Result<OwnedMutexGuard<()>, BridgeHostError> {
+        let lock = {
+            let mut locks = self
+                .locks
+                .lock()
+                .map_err(|_| BridgeHostError::StorageUnavailable)?;
+            locks.retain(|_, lock| lock.strong_count() > 0);
+            if let Some(lock) = locks.get(bridge_id).and_then(Weak::upgrade) {
+                lock
+            } else {
+                let lock = Arc::new(Mutex::new(()));
+                locks.insert(bridge_id.to_owned(), Arc::downgrade(&lock));
+                lock
+            }
+        };
+        Ok(lock.lock_owned().await)
+    }
+
+    #[cfg(test)]
+    fn registry_len(&self) -> Result<usize, BridgeHostError> {
+        self.locks
+            .lock()
+            .map(|locks| locks.len())
+            .map_err(|_| BridgeHostError::StorageUnavailable)
+    }
+}
 
 #[derive(Clone, Copy)]
 enum BridgeIncidentKind {
@@ -112,7 +145,7 @@ impl BridgeHostState {
             active_package_instances: Arc::new(RwLock::new(HashMap::new())),
             credential_updates: Arc::new(Mutex::new(())),
             supervisors: Arc::new(StdMutex::new(HashMap::new())),
-            operations: Arc::new(Mutex::new(())),
+            operations: Arc::new(BridgeOperationLocks::default()),
             clock: Arc::new(system_time_ms),
         };
         if tokio::runtime::Handle::try_current().is_ok()
@@ -137,7 +170,7 @@ pub struct BridgeHost {
     active_package_instances: Arc<RwLock<HashMap<String, String>>>,
     credential_updates: Arc<Mutex<()>>,
     supervisors: Arc<StdMutex<HashMap<String, JoinHandle<()>>>>,
-    operations: Arc<Mutex<()>>,
+    operations: Arc<BridgeOperationLocks>,
     clock: Clock,
 }
 
@@ -415,7 +448,7 @@ struct SupervisorContext {
     connections: Arc<RwLock<HashMap<String, Arc<dyn BridgePackage>>>>,
     active_package_instances: Arc<RwLock<HashMap<String, String>>>,
     credential_updates: Arc<Mutex<()>>,
-    operations: Arc<Mutex<()>>,
+    operations: Arc<BridgeOperationLocks>,
     clock: Clock,
 }
 
@@ -532,7 +565,9 @@ impl SupervisorContext {
     }
 
     async fn tick(&self, bridge_id: &str) {
-        let _operation = self.operations.lock().await;
+        let Ok(_operation) = self.operations.lock(bridge_id).await else {
+            return;
+        };
         let Ok(spec) = self.store.spec(bridge_id) else {
             return;
         };
@@ -812,7 +847,7 @@ struct BridgeIngressRouter {
     trigger_inbox: Arc<TriggerInboxImport>,
     store: Arc<BridgeStore>,
     content: Arc<dyn ContentStore>,
-    operations: Arc<Mutex<()>>,
+    operations: Arc<BridgeOperationLocks>,
     clock: Clock,
 }
 
@@ -919,7 +954,7 @@ impl BridgeHost {
         request: BridgeSpec,
     ) -> Result<BridgeRecord, BridgeHostError> {
         let _ = context;
-        let _operation = self.operations.lock().await;
+        let _operation = self.operations.lock(&request.bridge_id).await?;
         validate_spec(&request)?;
         let (record, _) = self.store.register(&request, (self.clock)()?)?;
         if record.desired_running {
@@ -946,7 +981,7 @@ impl BridgeHost {
         request: ReplaceBridgeRequest,
     ) -> Result<BridgeRecord, BridgeHostError> {
         let _ = context;
-        let _operation = self.operations.lock().await;
+        let _operation = self.operations.lock(&request.spec.bridge_id).await?;
         validate_spec(&request.spec)?;
         let existing = self.store.record(&request.spec.bridge_id)?;
         if existing.generation != request.expected_generation {
@@ -983,7 +1018,7 @@ impl BridgeHost {
         request: UnregisterBridgeRequest,
     ) -> Result<BridgeReceipt, BridgeHostError> {
         let _ = context;
-        let _operation = self.operations.lock().await;
+        let _operation = self.operations.lock(&request.bridge_id).await?;
         self.store
             .validate_unregister(&request.bridge_id, request.expected_generation)?;
         let credential = self.store.credential(&request.bridge_id)?;
@@ -1025,7 +1060,7 @@ impl BridgeHost {
         request: ReconcileBridgeRequest,
     ) -> Result<BridgeStatus, BridgeHostError> {
         let _ = context;
-        let _operation = self.operations.lock().await;
+        let _operation = self.operations.lock(&request.bridge_id).await?;
         let record = self.store.set_desired(
             &request.bridge_id,
             request.expected_generation,
@@ -1047,7 +1082,7 @@ impl BridgeHost {
         request: HealthObservation,
     ) -> Result<BridgeStatus, BridgeHostError> {
         let _ = context;
-        let _operation = self.operations.lock().await;
+        let _operation = self.operations.lock(&request.bridge_id).await?;
         self.store.report_health(&request)
     }
 
@@ -1057,7 +1092,7 @@ impl BridgeHost {
         request: BeginAuthenticationRequest,
     ) -> Result<AuthenticationChallenge, BridgeHostError> {
         let _ = context;
-        let _operation = self.operations.lock().await;
+        let _operation = self.operations.lock(&request.bridge_id).await?;
         validate_json_object(&request.context_json)?;
         let spec = self.store.spec(&request.bridge_id)?;
         if let Some(method) = &request.preferred_method
@@ -1086,7 +1121,7 @@ impl BridgeHost {
         request: SubmitAuthenticationRequest,
     ) -> Result<CredentialStatus, BridgeHostError> {
         let _ = context;
-        let _operation = self.operations.lock().await;
+        let _operation = self.operations.lock(&request.bridge_id).await?;
         validate_json(&request.response_json)?;
         let now_ms = (self.clock)()?;
         self.store
@@ -1162,7 +1197,7 @@ impl BridgeHost {
         request: BridgeReference,
     ) -> Result<CredentialStatus, BridgeHostError> {
         let _ = context;
-        let _operation = self.operations.lock().await;
+        let _operation = self.operations.lock(&request.bridge_id).await?;
         let status = self.store.credential(&request.bridge_id)?;
         let handle = status
             .credential_handle
@@ -1198,7 +1233,7 @@ impl BridgeHost {
         request: BridgeReference,
     ) -> Result<BridgeReceipt, BridgeHostError> {
         let _ = context;
-        let _operation = self.operations.lock().await;
+        let _operation = self.operations.lock(&request.bridge_id).await?;
         let status = self.store.credential(&request.bridge_id)?;
         if let Some(handle) = status.credential_handle {
             if let Ok(secret) = self.credentials.get(&handle).await
@@ -1239,7 +1274,7 @@ impl BridgeHost {
     ) -> Result<ImportedBridgeContent, BridgeHostError> {
         let _ = context;
         let source_path = validate_content_import(&request)?;
-        let _operation = self.operations.lock().await;
+        let _operation = self.operations.lock(&request.bridge_id).await?;
         self.store.record(&request.bridge_id)?;
         let bytes = content::read_import_source(&source_path)
             .await
@@ -1268,7 +1303,7 @@ impl BridgeHost {
         request: BridgeOutbound,
     ) -> Result<DeliveryReceipt, BridgeHostError> {
         let _ = context;
-        let _operation = self.operations.lock().await;
+        let _operation = self.operations.lock(&request.bridge_id).await?;
         validate_outbound(&request)?;
         let status = self.store.status(&request.bridge_id, (self.clock)()?)?;
         if !matches!(status.lifecycle, BridgeLifecycle::Healthy)
@@ -1332,7 +1367,7 @@ impl BridgeHost {
         request: BridgeReference,
     ) -> Result<BridgeReceipt, BridgeHostError> {
         let _ = context;
-        let _operation = self.operations.lock().await;
+        let _operation = self.operations.lock(&request.bridge_id).await?;
         self.stop_supervisor(&request.bridge_id);
         deactivate_package_instance(
             &self.active_package_instances,
@@ -1352,7 +1387,7 @@ impl BridgeHost {
         request: BridgeReference,
     ) -> Result<BridgeStatus, BridgeHostError> {
         let _ = context;
-        let _operation = self.operations.lock().await;
+        let _operation = self.operations.lock(&request.bridge_id).await?;
         self.stop_supervisor(&request.bridge_id);
         self.stop_connection(&request.bridge_id).await
     }
@@ -1362,12 +1397,12 @@ async fn route_inbound(
     trigger_inbox: &TriggerInboxImport,
     store: &BridgeStore,
     content: &Arc<dyn ContentStore>,
-    operations: &Mutex<()>,
+    operations: &BridgeOperationLocks,
     clock: &Clock,
     context: CallContext,
     request: BridgeInbound,
 ) -> Result<TriggerIntent, BridgeHostError> {
-    let _operation = operations.lock().await;
+    let _operation = operations.lock(&request.bridge_id).await?;
     validate_inbound(&request)?;
     for attachment in &request.attachments {
         content
@@ -1629,9 +1664,47 @@ pub mod generated {
 
 #[cfg(test)]
 mod tests {
+    use std::{sync::Arc, time::Duration};
+
     use boxology_contract::{BoxId, CapabilityId};
 
-    use super::{BridgeIngressMode, generated};
+    use super::{BridgeIngressMode, BridgeOperationLocks, generated};
+
+    #[tokio::test]
+    async fn bridge_operations_serialize_per_bridge_without_global_blocking() {
+        let operations = Arc::new(BridgeOperationLocks::default());
+        let bridge_a = operations.lock("bridge-a").await.expect("bridge A locks");
+
+        let bridge_b =
+            tokio::time::timeout(Duration::from_millis(100), operations.lock("bridge-b"))
+                .await
+                .expect("bridge B is not blocked by bridge A")
+                .expect("bridge B locks");
+        drop(bridge_b);
+
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), operations.lock("bridge-a"))
+                .await
+                .is_err(),
+            "the same bridge must remain serialized"
+        );
+        drop(bridge_a);
+
+        let bridge_a =
+            tokio::time::timeout(Duration::from_millis(100), operations.lock("bridge-a"))
+                .await
+                .expect("bridge A resumes after its operation completes")
+                .expect("bridge A relocks");
+        drop(bridge_a);
+
+        let bridge_c = operations.lock("bridge-c").await.expect("bridge C locks");
+        assert_eq!(
+            operations.registry_len().expect("registry reads"),
+            1,
+            "idle weak lock entries are pruned"
+        );
+        drop(bridge_c);
+    }
 
     #[test]
     fn contract_covers_supervision_auth_ingress_and_selected_delivery() {
