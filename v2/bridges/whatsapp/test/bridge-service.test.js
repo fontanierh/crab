@@ -11,7 +11,14 @@ async function initialize(service) {
     protocolVersion: 2,
     bridgeId: 'whatsapp',
     packageId: 'first-party-whatsapp',
-    configuration: { targetChannelId: 'primary', browserName: 'Crab' },
+    configuration: {
+      targetChannelId: 'primary',
+      browserName: 'Crab',
+      inboundPolicy: {
+        directChatIds: ['alice@s.whatsapp.net'],
+        groups: [{ chatId: 'group@g.us', senderIds: ['alice@s.whatsapp.net'] }],
+      },
+    },
   });
 }
 
@@ -238,6 +245,65 @@ test('a failed media download preserves the inbound message and bridge process',
   await flush();
   assert.deepEqual(calls.map((call) => call.method), ['bridge/inbound']);
   assert.equal(calls[0].params.message.mediaUnavailable, 'downloadFailed');
+});
+
+test('unauthorized traffic is dropped before media download or any host call', async () => {
+  const calls = [];
+  let downloads = 0;
+  const { sockets, options } = dependencies({
+    downloadMedia: async () => {
+      downloads += 1;
+      return Buffer.from('must not be read');
+    },
+    callHost: async (method, params) => {
+      calls.push({ method, params });
+      return { triggerId: 'unexpected' };
+    },
+    onFatal: (error) => { throw error; },
+  });
+  const service = new WhatsAppBridgeService(options);
+  await service.initialize({
+    protocolVersion: 2,
+    bridgeId: 'whatsapp',
+    packageId: 'first-party-whatsapp',
+    configuration: { targetChannelId: 'primary' },
+  });
+  await service.health({ credential: credential() });
+  sockets[0].ev.emit('connection.update', { connection: 'open' });
+  sockets[0].ev.emit('messages.upsert', {
+    type: 'notify',
+    messages: [{
+      key: { id: 'blocked-1', remoteJid: 'alice@s.whatsapp.net' },
+      message: { imageMessage: { mimetype: 'image/jpeg', fileLength: 10 } },
+    }, {
+      key: {
+        id: 'blocked-2',
+        remoteJid: 'group@g.us',
+        participant: 'alice@s.whatsapp.net',
+      },
+      message: { conversation: 'ignore this' },
+    }],
+  });
+  await flush();
+  assert.equal(downloads, 0);
+  assert.deepEqual(calls, []);
+});
+
+test('initialization rejects malformed inbound policy instead of starting permissively', async () => {
+  const { options } = dependencies({
+    callHost: async () => { throw new Error('unexpected host call'); },
+    onFatal: (error) => { throw error; },
+  });
+  const service = new WhatsAppBridgeService(options);
+  await assert.rejects(service.initialize({
+    protocolVersion: 2,
+    bridgeId: 'whatsapp',
+    packageId: 'first-party-whatsapp',
+    configuration: {
+      targetChannelId: 'primary',
+      inboundPolicy: { groups: [{ chatId: 'team@g.us', senderIds: [] }] },
+    },
+  }), /group policy requires a sender/);
 });
 
 test('a server-side logout makes credential health fail closed', async () => {

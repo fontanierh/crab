@@ -622,7 +622,10 @@ mod tests {
                 "displayName": "WhatsApp", "executable": "../bridges/whatsapp/src/index.js",
                 "arguments": [], "environmentFrom": ["PATH"],
                 "workingDirectory": "../bridges/whatsapp",
-                "configuration": {"targetChannelId":"primary","browserName":"Crab"},
+                "configuration": {
+                  "targetChannelId":"primary", "browserName":"Crab",
+                  "inboundPolicy":{"directChatIds":[],"groups":[]}
+                },
                 "authenticationMethods": ["qrCode", "phoneCode"],
                 "ingressMode": "queue",
                 "alertTarget": {"channelId":"primary","lane":"primary"},

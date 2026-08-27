@@ -2,6 +2,11 @@ import { EventEmitter } from 'node:events';
 
 import { createAuthState, validCredentialSnapshot } from './auth-state.js';
 import { credentialFingerprint, outboundMessageId } from './canonical-json.js';
+import {
+  inboundAllowed,
+  inboundPolicySummary,
+  parseInboundPolicy,
+} from './inbound-policy.js';
 import { MAX_MEDIA_BYTES } from './media-policy.js';
 import { mediaDescriptor, normalizeInbound } from './message.js';
 import { outboundContent } from './outbound-media.js';
@@ -89,6 +94,7 @@ export class WhatsAppBridgeService {
     this.bridgeId = null;
     this.targetChannelId = null;
     this.browserName = 'Crab';
+    this.inboundPolicy = parseInboundPolicy(undefined);
     this.socket = null;
     this.socketGeneration = 0;
     this.auth = null;
@@ -114,12 +120,13 @@ export class WhatsAppBridgeService {
     ) {
       throw new Error('invalid initialization');
     }
-    const allowed = new Set(['targetChannelId', 'browserName']);
+    const allowed = new Set(['targetChannelId', 'browserName', 'inboundPolicy']);
     if (Object.keys(params.configuration).some((key) => !allowed.has(key))) {
       throw new Error('unknown configuration');
     }
     this.bridgeId = params.bridgeId;
     this.targetChannelId = params.configuration.targetChannelId;
+    this.inboundPolicy = parseInboundPolicy(params.configuration.inboundPolicy);
     if (params.configuration.browserName !== undefined) {
       if (
         typeof params.configuration.browserName !== 'string' ||
@@ -153,6 +160,7 @@ export class WhatsAppBridgeService {
       detail: {
         connection: this.connection,
         pairingAvailable: !this.connected,
+        inboundPolicy: inboundPolicySummary(this.inboundPolicy),
       },
     };
   }
@@ -341,6 +349,7 @@ export class WhatsAppBridgeService {
   #messagesUpsert(generation, event) {
     if (generation !== this.socketGeneration || event.type !== 'notify') return;
     for (const message of event.messages ?? []) {
+      if (!inboundAllowed(message, this.inboundPolicy)) continue;
       const inbound = normalizeInbound(message, {
         bridgeId: this.bridgeId,
         targetChannelId: this.targetChannelId,
