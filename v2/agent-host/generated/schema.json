@@ -180,6 +180,45 @@
     },
     {
       "deprecation": null,
+      "docs": [
+        " List non-secret session identity and cursors for owner diagnostics."
+      ],
+      "error": "AgentHostError",
+      "id": "agent-host.list_sessions",
+      "idempotency": "none",
+      "input": {
+        "name": "request",
+        "type": "ListAgentSessionsRequest"
+      },
+      "max_exposure": "code_only",
+      "name": "list_sessions",
+      "output": {
+        "type": "AgentSessionCatalog"
+      },
+      "shape": "unary"
+    },
+    {
+      "deprecation": null,
+      "docs": [
+        " Read the bounded private process journal. Runtime composition exposes this only through its",
+        " owner-authenticated operator transport; native channels and agent MCP servers do not import it."
+      ],
+      "error": "AgentHostError",
+      "id": "agent-host.read_diagnostics",
+      "idempotency": "none",
+      "input": {
+        "name": "request",
+        "type": "ReadAgentDiagnosticsRequest"
+      },
+      "max_exposure": "code_only",
+      "name": "read_diagnostics",
+      "output": {
+        "type": "AgentDiagnosticPage"
+      },
+      "shape": "unary"
+    },
+    {
+      "deprecation": null,
       "docs": [],
       "error": "AgentHostError",
       "id": "agent-host.cancel_run",
@@ -239,9 +278,9 @@
   "provenance": {
     "generator": "boxology-generator",
     "generator_version": "0.1.1",
-    "semantic_digest": "sha256:fb6535d34f38c56f6f2ce8a2b8140d76f89c9ddd6409da55c53a0fe7194c4b79"
+    "semantic_digest": "sha256:f3bfbdaa9a266d5afb70ff58ccb36c65ebef8ac0005bbcdfd6ea05f4d2ea86a6"
   },
-  "revision": "sha256:df36c72216cb7cb12a43fe7bd63b997f4d075d685aadc3cc3d754a83cd750411",
+  "revision": "sha256:bef07aa4e7b9e2033d2056da616eb203c8b27dfa0285421e117118128e86d2b0",
   "schema_format": 1,
   "types": [
     {
@@ -1328,6 +1367,234 @@
       ],
       "kind": "struct",
       "name": "SessionStatus"
+    },
+    {
+      "deprecation": null,
+      "docs": [],
+      "fields": [
+        {
+          "deprecation": null,
+          "docs": [
+            " Most recently active sessions first; bounded to 256 by the host."
+          ],
+          "name": "limit",
+          "type": "u64"
+        }
+      ],
+      "kind": "struct",
+      "name": "ListAgentSessionsRequest"
+    },
+    {
+      "deprecation": null,
+      "docs": [
+        " Owner-facing session identity and cursors, ordered by most recent durable activity."
+      ],
+      "fields": [
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "session_id",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "native_session_id",
+          "type": "Option<String>"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "agent_id",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "working_directory",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "lifecycle",
+          "type": "AgentLifecycle"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "last_event_sequence",
+          "type": "u64"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "last_diagnostic_sequence",
+          "type": "u64"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "active_run_id",
+          "type": "Option<String>"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "updated_at_ms",
+          "type": "u64"
+        }
+      ],
+      "kind": "struct",
+      "name": "AgentSessionSummary"
+    },
+    {
+      "deprecation": null,
+      "docs": [],
+      "fields": [
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "sessions",
+          "type": "Vec<AgentSessionSummary>"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "total_sessions",
+          "type": "u64"
+        }
+      ],
+      "kind": "struct",
+      "name": "AgentSessionCatalog"
+    },
+    {
+      "deprecation": null,
+      "docs": [
+        " Operator-only process diagnostics. These records never enter the native ACP event stream,",
+        " channel replay, bridge delivery or agent MCP tools because adapter stderr may be sensitive."
+      ],
+      "kind": "enum",
+      "name": "AgentDiagnosticKind",
+      "variants": [
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "AdapterStderr"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "ActorFailure"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "RestartInterruption"
+        }
+      ]
+    },
+    {
+      "deprecation": null,
+      "docs": [],
+      "fields": [
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "session_id",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "sequence",
+          "type": "u64"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "observed_at_ms",
+          "type": "u64"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "kind",
+          "type": "AgentDiagnosticKind"
+        },
+        {
+          "deprecation": null,
+          "docs": [
+            " Bounded raw adapter stderr or a stable Crab-authored terminal cause."
+          ],
+          "name": "message",
+          "type": "String"
+        }
+      ],
+      "kind": "struct",
+      "name": "AgentDiagnostic"
+    },
+    {
+      "deprecation": null,
+      "docs": [],
+      "fields": [
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "session_id",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [
+            " Exclusive diagnostic cursor. Retention may make the first returned sequence non-adjacent."
+          ],
+          "name": "after_sequence",
+          "type": "u64"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "limit",
+          "type": "u64"
+        }
+      ],
+      "kind": "struct",
+      "name": "ReadAgentDiagnosticsRequest"
+    },
+    {
+      "deprecation": null,
+      "docs": [],
+      "fields": [
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "diagnostics",
+          "type": "Vec<AgentDiagnostic>"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "next_sequence",
+          "type": "u64"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "caught_up",
+          "type": "bool"
+        },
+        {
+          "deprecation": null,
+          "docs": [
+            " Oldest retained sequence, or the next sequence when the journal is empty."
+          ],
+          "name": "oldest_retained_sequence",
+          "type": "u64"
+        }
+      ],
+      "kind": "struct",
+      "name": "AgentDiagnosticPage"
     },
     {
       "deprecation": null,

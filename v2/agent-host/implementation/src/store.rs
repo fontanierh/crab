@@ -4,15 +4,20 @@ use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, 
 use serde_json::Value;
 
 use crate::{
-    AcpEvent, AcpEventDirection, AcpEventKind, AcpNegotiation, AcpProtocolProfile, AgentHostError,
-    AgentInputMode, AgentLifecycle, AgentSession, AuthorityAttestation, CompactionReporting,
-    EventPage, FilesystemAuthority, NetworkAuthority, PermissionAuthority, PermissionDecision,
-    PermissionResolution, PromptAccepted, PromptDisposition, RootAuthority, SandboxAuthority,
-    SessionStatus, SteeringSupport,
+    AcpEvent, AcpEventDirection, AcpEventKind, AcpNegotiation, AcpProtocolProfile, AgentDiagnostic,
+    AgentDiagnosticKind, AgentDiagnosticPage, AgentHostError, AgentInputMode, AgentLifecycle,
+    AgentSession, AgentSessionCatalog, AgentSessionSummary, AuthorityAttestation,
+    CompactionReporting, EventPage, FilesystemAuthority, NetworkAuthority, PermissionAuthority,
+    PermissionDecision, PermissionResolution, PromptAccepted, PromptDisposition, RootAuthority,
+    SandboxAuthority, SessionStatus, SteeringSupport,
 };
 
-const SCHEMA_VERSION: i64 = 2;
+const SCHEMA_VERSION: i64 = 3;
 const MAX_EVENT_PAGE: u64 = 1_000;
+const MAX_DIAGNOSTIC_PAGE: u64 = 256;
+const MAX_RETAINED_DIAGNOSTICS: u64 = 512;
+const MAX_DIAGNOSTIC_MESSAGE_BYTES: usize = 16 * 1024;
+const MAX_SESSION_CATALOG: u64 = 256;
 
 pub(crate) struct AgentStore {
     connection: Mutex<Connection>,
@@ -51,8 +56,13 @@ impl AgentStore {
             0 => {
                 migrate_v0_to_v1(&mut connection)?;
                 migrate_v1_to_v2(&mut connection)?;
+                migrate_v2_to_v3(&mut connection)?;
             }
-            1 => migrate_v1_to_v2(&mut connection)?,
+            1 => {
+                migrate_v1_to_v2(&mut connection)?;
+                migrate_v2_to_v3(&mut connection)?;
+            }
+            2 => migrate_v2_to_v3(&mut connection)?,
             SCHEMA_VERSION => {}
             _ => return Err(AgentHostError::StorageUnavailable),
         }
@@ -77,6 +87,12 @@ impl AgentStore {
                 .map_err(storage_error)?
         };
         for (session_id, updated_at_ms) in interrupted_sessions {
+            store.record_diagnostic(
+                &session_id,
+                &AgentDiagnosticKind::RestartInterruption,
+                "runtime reopened before the ACP adapter detached",
+                db_u64(updated_at_ms)?,
+            )?;
             store.set_lifecycle(&session_id, &AgentLifecycle::Failed, db_u64(updated_at_ms)?)?;
         }
         Ok(store)
@@ -321,6 +337,76 @@ impl AgentStore {
                     active_run_id,
                 })
             })
+    }
+
+    pub(crate) fn list_sessions(&self, limit: u64) -> Result<AgentSessionCatalog, AgentHostError> {
+        if limit == 0 || limit > MAX_SESSION_CATALOG {
+            return Err(AgentHostError::InvalidCursor);
+        }
+        let connection = self.lock()?;
+        let total_sessions = connection
+            .query_row("SELECT COUNT(*) FROM sessions", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .map_err(storage_error)
+            .and_then(db_u64)?;
+        let mut statement = connection
+            .prepare(
+                "SELECT session_id, native_session_id, agent_id, working_directory, lifecycle,
+                        last_sequence, last_diagnostic_sequence, active_run_id, updated_at_ms
+                 FROM sessions ORDER BY updated_at_ms DESC, session_id ASC LIMIT ?1",
+            )
+            .map_err(storage_error)?;
+        let rows = statement
+            .query_map(params![db_i64(limit)?], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, i64>(5)?,
+                    row.get::<_, i64>(6)?,
+                    row.get::<_, Option<String>>(7)?,
+                    row.get::<_, i64>(8)?,
+                ))
+            })
+            .map_err(storage_error)?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(storage_error)?;
+        let sessions = rows
+            .into_iter()
+            .map(
+                |(
+                    session_id,
+                    native_session_id,
+                    agent_id,
+                    working_directory,
+                    lifecycle,
+                    last_event_sequence,
+                    last_diagnostic_sequence,
+                    active_run_id,
+                    updated_at_ms,
+                )| {
+                    Ok(AgentSessionSummary {
+                        session_id,
+                        native_session_id: (!native_session_id.is_empty())
+                            .then_some(native_session_id),
+                        agent_id,
+                        working_directory,
+                        lifecycle: parse_lifecycle(&lifecycle)?,
+                        last_event_sequence: db_u64(last_event_sequence)?,
+                        last_diagnostic_sequence: db_u64(last_diagnostic_sequence)?,
+                        active_run_id,
+                        updated_at_ms: db_u64(updated_at_ms)?,
+                    })
+                },
+            )
+            .collect::<Result<Vec<_>, AgentHostError>>()?;
+        Ok(AgentSessionCatalog {
+            sessions,
+            total_sessions,
+        })
     }
 
     pub(crate) fn accept_prompt(
@@ -739,6 +825,135 @@ impl AgentStore {
         })
     }
 
+    pub(crate) fn record_diagnostic(
+        &self,
+        session_id: &str,
+        kind: &AgentDiagnosticKind,
+        message: &str,
+        now_ms: u64,
+    ) -> Result<(), AgentHostError> {
+        let mut connection = self.lock()?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(storage_error)?;
+        let last_sequence = transaction
+            .query_row(
+                "SELECT last_diagnostic_sequence FROM sessions WHERE session_id = ?1",
+                params![session_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()
+            .map_err(storage_error)?
+            .ok_or(AgentHostError::UnknownSession)?;
+        let sequence = last_sequence
+            .checked_add(1)
+            .ok_or(AgentHostError::StorageUnavailable)?;
+        transaction
+            .execute(
+                "INSERT INTO diagnostics (session_id, sequence, observed_at_ms, kind, message)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![
+                    session_id,
+                    sequence,
+                    db_i64(now_ms)?,
+                    diagnostic_kind_tag(kind)?,
+                    bounded_diagnostic_message(message),
+                ],
+            )
+            .map_err(storage_error)?;
+        transaction
+            .execute(
+                "UPDATE sessions SET last_diagnostic_sequence = ?2 WHERE session_id = ?1",
+                params![session_id, sequence],
+            )
+            .map_err(storage_error)?;
+        let first_retained = sequence.saturating_sub(db_i64(MAX_RETAINED_DIAGNOSTICS)?) + 1;
+        transaction
+            .execute(
+                "DELETE FROM diagnostics WHERE session_id = ?1 AND sequence < ?2",
+                params![session_id, first_retained],
+            )
+            .map_err(storage_error)?;
+        transaction.commit().map_err(storage_error)
+    }
+
+    pub(crate) fn read_diagnostics(
+        &self,
+        session_id: &str,
+        after_sequence: u64,
+        limit: u64,
+    ) -> Result<AgentDiagnosticPage, AgentHostError> {
+        if limit == 0 || limit > MAX_DIAGNOSTIC_PAGE {
+            return Err(AgentHostError::InvalidCursor);
+        }
+        let connection = self.lock()?;
+        let last_sequence = connection
+            .query_row(
+                "SELECT last_diagnostic_sequence FROM sessions WHERE session_id = ?1",
+                params![session_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()
+            .map_err(storage_error)?
+            .ok_or(AgentHostError::UnknownSession)
+            .and_then(db_u64)?;
+        if after_sequence > last_sequence {
+            return Err(AgentHostError::InvalidCursor);
+        }
+        let oldest_retained_sequence = connection
+            .query_row(
+                "SELECT MIN(sequence) FROM diagnostics WHERE session_id = ?1",
+                params![session_id],
+                |row| row.get::<_, Option<i64>>(0),
+            )
+            .map_err(storage_error)?
+            .map(db_u64)
+            .transpose()?
+            .unwrap_or_else(|| last_sequence.saturating_add(1));
+        let mut statement = connection
+            .prepare(
+                "SELECT sequence, observed_at_ms, kind, message FROM diagnostics
+                 WHERE session_id = ?1 AND sequence > ?2 ORDER BY sequence ASC LIMIT ?3",
+            )
+            .map_err(storage_error)?;
+        let rows = statement
+            .query_map(
+                params![session_id, db_i64(after_sequence)?, db_i64(limit)?],
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                    ))
+                },
+            )
+            .map_err(storage_error)?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(storage_error)?;
+        let diagnostics = rows
+            .into_iter()
+            .map(|(sequence, observed_at_ms, kind, message)| {
+                Ok(AgentDiagnostic {
+                    session_id: session_id.to_owned(),
+                    sequence: db_u64(sequence)?,
+                    observed_at_ms: db_u64(observed_at_ms)?,
+                    kind: parse_diagnostic_kind(&kind)?,
+                    message,
+                })
+            })
+            .collect::<Result<Vec<_>, AgentHostError>>()?;
+        let next_sequence = diagnostics
+            .last()
+            .map_or(after_sequence, |diagnostic| diagnostic.sequence);
+        Ok(AgentDiagnosticPage {
+            diagnostics,
+            next_sequence,
+            caught_up: next_sequence == last_sequence,
+            oldest_retained_sequence,
+        })
+    }
+
     pub(crate) fn record_permission_resolution(
         &self,
         session_id: &str,
@@ -931,6 +1146,28 @@ fn migrate_v1_to_v2(connection: &mut Connection) -> Result<(), AgentHostError> {
             "ALTER TABLE prompts ADD COLUMN interrupted_run_id TEXT;
              ALTER TABLE prompts ADD COLUMN cancel_requested_at_ms INTEGER;
              PRAGMA user_version = 2;",
+        )
+        .map_err(storage_error)?;
+    transaction.commit().map_err(storage_error)
+}
+
+fn migrate_v2_to_v3(connection: &mut Connection) -> Result<(), AgentHostError> {
+    let transaction = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(storage_error)?;
+    transaction
+        .execute_batch(
+            "ALTER TABLE sessions ADD COLUMN last_diagnostic_sequence INTEGER NOT NULL DEFAULT 0;
+             CREATE TABLE diagnostics (
+                session_id TEXT NOT NULL,
+                sequence INTEGER NOT NULL,
+                observed_at_ms INTEGER NOT NULL,
+                kind TEXT NOT NULL,
+                message TEXT NOT NULL,
+                PRIMARY KEY(session_id, sequence),
+                FOREIGN KEY(session_id) REFERENCES sessions(session_id)
+             );
+             PRAGMA user_version = 3;",
         )
         .map_err(storage_error)?;
     transaction.commit().map_err(storage_error)
@@ -1244,6 +1481,35 @@ fn parse_direction(value: &str) -> Result<AcpEventDirection, AgentHostError> {
     }
 }
 
+fn diagnostic_kind_tag(value: &AgentDiagnosticKind) -> Result<&'static str, AgentHostError> {
+    match value {
+        AgentDiagnosticKind::AdapterStderr => Ok("AdapterStderr"),
+        AgentDiagnosticKind::ActorFailure => Ok("ActorFailure"),
+        AgentDiagnosticKind::RestartInterruption => Ok("RestartInterruption"),
+        AgentDiagnosticKind::Unknown { .. } => Err(AgentHostError::StorageUnavailable),
+    }
+}
+
+fn parse_diagnostic_kind(value: &str) -> Result<AgentDiagnosticKind, AgentHostError> {
+    match value {
+        "AdapterStderr" => Ok(AgentDiagnosticKind::AdapterStderr),
+        "ActorFailure" => Ok(AgentDiagnosticKind::ActorFailure),
+        "RestartInterruption" => Ok(AgentDiagnosticKind::RestartInterruption),
+        _ => Err(AgentHostError::StorageUnavailable),
+    }
+}
+
+fn bounded_diagnostic_message(message: &str) -> String {
+    if message.len() <= MAX_DIAGNOSTIC_MESSAGE_BYTES {
+        return message.to_owned();
+    }
+    let mut end = MAX_DIAGNOSTIC_MESSAGE_BYTES.saturating_sub('…'.len_utf8());
+    while !message.is_char_boundary(end) {
+        end = end.saturating_sub(1);
+    }
+    format!("{}…", &message[..end])
+}
+
 fn db_i64(value: u64) -> Result<i64, AgentHostError> {
     i64::try_from(value).map_err(|_| AgentHostError::StorageUnavailable)
 }
@@ -1260,10 +1526,14 @@ fn storage_error(_: rusqlite::Error) -> AgentHostError {
 mod tests {
     use rusqlite::Connection;
 
-    use super::{AgentStore, SCHEMA_VERSION, migrate_v0_to_v1};
+    use crate::{AcpProtocolProfile, AgentDiagnosticKind, AgentLifecycle};
+
+    use super::{
+        AgentStore, MAX_DIAGNOSTIC_MESSAGE_BYTES, SCHEMA_VERSION, authority, migrate_v0_to_v1,
+    };
 
     #[test]
-    fn schema_one_migrates_additive_interruption_receipt_columns() {
+    fn schema_one_migrates_additive_receipts_and_private_diagnostics() {
         let directory = tempfile::tempdir().expect("temporary directory");
         let path = directory.path().join("agent-host-v1.sqlite");
         let mut connection = Connection::open(&path).expect("database opens");
@@ -1285,5 +1555,115 @@ mod tests {
             .expect("prompt columns collect");
         assert!(columns.contains(&"interrupted_run_id".to_owned()));
         assert!(columns.contains(&"cancel_requested_at_ms".to_owned()));
+        let session_columns = connection
+            .prepare("PRAGMA table_info(sessions)")
+            .expect("session columns prepare")
+            .query_map([], |row| row.get::<_, String>(1))
+            .expect("session columns query")
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .expect("session columns collect");
+        assert!(session_columns.contains(&"last_diagnostic_sequence".to_owned()));
+        let diagnostic_table: String = connection
+            .query_row(
+                "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'diagnostics'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("diagnostics table exists");
+        assert_eq!(diagnostic_table, "diagnostics");
+    }
+
+    #[test]
+    fn diagnostics_are_bounded_and_report_retention_gaps() {
+        let store = AgentStore::open_in_memory().expect("store opens");
+        store
+            .create_starting_session(
+                "session-1",
+                "agent-1",
+                "/workspace",
+                "{}",
+                &AcpProtocolProfile::V1Stable,
+                &authority(1, "{}".into()),
+                1,
+            )
+            .expect("session starts");
+        for sequence in 1..520 {
+            store
+                .record_diagnostic(
+                    "session-1",
+                    &AgentDiagnosticKind::AdapterStderr,
+                    &format!("line-{sequence}"),
+                    sequence,
+                )
+                .expect("diagnostic records");
+        }
+        store
+            .record_diagnostic(
+                "session-1",
+                &AgentDiagnosticKind::AdapterStderr,
+                &"ø".repeat(MAX_DIAGNOSTIC_MESSAGE_BYTES),
+                520,
+            )
+            .expect("long diagnostic records");
+
+        let first = store
+            .read_diagnostics("session-1", 0, 256)
+            .expect("first retained page reads");
+        assert_eq!(first.oldest_retained_sequence, 9);
+        assert_eq!(first.diagnostics.len(), 256);
+        assert_eq!(first.diagnostics[0].sequence, 9);
+        assert_eq!(first.next_sequence, 264);
+        assert!(!first.caught_up);
+        let second = store
+            .read_diagnostics("session-1", first.next_sequence, 256)
+            .expect("second retained page reads");
+        assert_eq!(second.diagnostics.len(), 256);
+        assert_eq!(second.next_sequence, 520);
+        assert!(second.caught_up);
+        let last = second.diagnostics.last().expect("last diagnostic");
+        assert!(last.message.ends_with('…'));
+        assert!(last.message.len() <= MAX_DIAGNOSTIC_MESSAGE_BYTES);
+        let catalog = store.list_sessions(10).expect("session catalog reads");
+        assert_eq!(catalog.total_sessions, 1);
+        assert_eq!(catalog.sessions[0].session_id, "session-1");
+        assert_eq!(catalog.sessions[0].last_event_sequence, 0);
+        assert_eq!(catalog.sessions[0].last_diagnostic_sequence, 520);
+    }
+
+    #[test]
+    fn reopening_an_active_session_records_the_restart_interruption() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let path = directory.path().join("agent-host.sqlite");
+        let store = AgentStore::open(&path).expect("store opens");
+        store
+            .create_starting_session(
+                "session-1",
+                "agent-1",
+                "/workspace",
+                "{}",
+                &AcpProtocolProfile::V1Stable,
+                &authority(1, "{}".into()),
+                10,
+            )
+            .expect("session starts");
+        drop(store);
+
+        let reopened = AgentStore::open(&path).expect("store reopens");
+        assert_eq!(
+            reopened.status("session-1").expect("status").lifecycle,
+            AgentLifecycle::Failed
+        );
+        let page = reopened
+            .read_diagnostics("session-1", 0, 10)
+            .expect("restart diagnostic reads");
+        assert_eq!(page.diagnostics.len(), 1);
+        assert_eq!(
+            page.diagnostics[0].kind,
+            AgentDiagnosticKind::RestartInterruption
+        );
+        assert_eq!(
+            page.diagnostics[0].message,
+            "runtime reopened before the ACP adapter detached"
+        );
     }
 }

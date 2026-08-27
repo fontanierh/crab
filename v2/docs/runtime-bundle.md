@@ -8,7 +8,7 @@ platform-specific directory and refuses a dirty source tree. Development builds 
 
 ```text
 crab-v2-<commit>-<platform>/
-├── bin/                  nine production binaries; no test fixtures
+├── bin/                  ten production binaries; no test fixtures
 ├── agents/
 │   ├── claude/           Claude ACP adapter 0.70.0 + locked production closure
 │   └── codex/            Codex ACP adapter 1.6.2 + locked production closure
@@ -103,3 +103,7 @@ python3 ~/.crab-v2/libexec/v2_bundle.py status
 Status checks the release, stable links, exact managed plist, provenance, singleton PID and local
 IPC. Its JSON never includes environment values. This v2 label and service root are separate from
 the live v1 `com.crab.runtime` service.
+
+`~/.crab-v2/bin/crab-v2-agent` reads bounded session status and private adapter diagnostics through
+the same owner-authenticated IPC. It never opens SQLite directly; diagnostic output is emitted only
+for an explicit operator request and may contain sensitive stderr.

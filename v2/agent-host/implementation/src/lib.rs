@@ -477,6 +477,25 @@ impl AgentHost {
         self.store.status(&request.session_id)
     }
 
+    pub async fn list_sessions(
+        &self,
+        context: boxology::CallContext,
+        request: ListAgentSessionsRequest,
+    ) -> Result<AgentSessionCatalog, AgentHostError> {
+        let _ = context;
+        self.store.list_sessions(request.limit)
+    }
+
+    pub async fn read_diagnostics(
+        &self,
+        context: boxology::CallContext,
+        request: ReadAgentDiagnosticsRequest,
+    ) -> Result<AgentDiagnosticPage, AgentHostError> {
+        let _ = context;
+        self.store
+            .read_diagnostics(&request.session_id, request.after_sequence, request.limit)
+    }
+
     pub async fn cancel_run(
         &self,
         context: boxology::CallContext,
@@ -589,6 +608,8 @@ mod tests {
                 "read_events",
                 "resolve_permission",
                 "session_status",
+                "list_sessions",
+                "read_diagnostics",
                 "cancel_run",
                 "detach_sessions",
                 "close_session",

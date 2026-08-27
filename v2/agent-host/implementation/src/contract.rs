@@ -289,6 +289,61 @@ boxology::contract! {
         pub active_run_id: Option<String>,
     }
 
+    pub struct ListAgentSessionsRequest {
+        /// Most recently active sessions first; bounded to 256 by the host.
+        pub limit: u64,
+    }
+
+    /// Owner-facing session identity and cursors, ordered by most recent durable activity.
+    pub struct AgentSessionSummary {
+        pub session_id: String,
+        pub native_session_id: Option<String>,
+        pub agent_id: String,
+        pub working_directory: String,
+        pub lifecycle: AgentLifecycle,
+        pub last_event_sequence: u64,
+        pub last_diagnostic_sequence: u64,
+        pub active_run_id: Option<String>,
+        pub updated_at_ms: u64,
+    }
+
+    pub struct AgentSessionCatalog {
+        pub sessions: Vec<AgentSessionSummary>,
+        pub total_sessions: u64,
+    }
+
+    /// Operator-only process diagnostics. These records never enter the native ACP event stream,
+    /// channel replay, bridge delivery or agent MCP tools because adapter stderr may be sensitive.
+    pub enum AgentDiagnosticKind {
+        AdapterStderr,
+        ActorFailure,
+        RestartInterruption,
+    }
+
+    pub struct AgentDiagnostic {
+        pub session_id: String,
+        pub sequence: u64,
+        pub observed_at_ms: u64,
+        pub kind: AgentDiagnosticKind,
+        /// Bounded raw adapter stderr or a stable Crab-authored terminal cause.
+        pub message: String,
+    }
+
+    pub struct ReadAgentDiagnosticsRequest {
+        pub session_id: String,
+        /// Exclusive diagnostic cursor. Retention may make the first returned sequence non-adjacent.
+        pub after_sequence: u64,
+        pub limit: u64,
+    }
+
+    pub struct AgentDiagnosticPage {
+        pub diagnostics: Vec<AgentDiagnostic>,
+        pub next_sequence: u64,
+        pub caught_up: bool,
+        /// Oldest retained sequence, or the next sequence when the journal is empty.
+        pub oldest_retained_sequence: u64,
+    }
+
     pub struct OperationReceipt {
         pub accepted: bool,
         pub recorded_at_ms: u64,
@@ -361,6 +416,15 @@ boxology::contract! {
 
     #[capability]
     pub async fn session_status(request: SessionReference) -> Result<SessionStatus, AgentHostError>;
+
+    /// List non-secret session identity and cursors for owner diagnostics.
+    #[capability]
+    pub async fn list_sessions(request: ListAgentSessionsRequest) -> Result<AgentSessionCatalog, AgentHostError>;
+
+    /// Read the bounded private process journal. Runtime composition exposes this only through its
+    /// owner-authenticated operator transport; native channels and agent MCP servers do not import it.
+    #[capability]
+    pub async fn read_diagnostics(request: ReadAgentDiagnosticsRequest) -> Result<AgentDiagnosticPage, AgentHostError>;
 
     #[capability]
     pub async fn cancel_run(request: RunReference) -> Result<OperationReceipt, AgentHostError>;

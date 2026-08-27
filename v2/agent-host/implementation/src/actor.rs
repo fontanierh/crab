@@ -9,6 +9,7 @@ use agent_client_protocol::{
     AcpAgent, Agent, ConnectionTo, JsonRpcRequest, JsonRpcResponse, LineDirection, Responder,
     schema::{ProtocolVersion, v1, v2},
 };
+use boxology_contract::ContractError as _;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use tokio::sync::{Mutex, mpsc, oneshot};
@@ -16,11 +17,11 @@ use uuid::Uuid;
 
 use crate::Clock;
 use crate::{
-    AcpEventDirection, AcpNegotiation, AgentHostError, AgentInputMode, AgentLifecycle,
-    AgentSession, CRAB_AGENT_ID_ENV, CRAB_PARENT_SESSION_ID_ENV, CRAB_SESSION_ID_ENV,
-    CRAB_STATE_DIRECTORY_ENV, CRAB_SUB_AGENT_ID_ENV, CRAB_WORKING_DIRECTORY_ENV, ConfiguredAgent,
-    ConfiguredMcpServer, OperationReceipt, PromptAccepted, PromptDisposition, PromptRequest,
-    store::AgentStore,
+    AcpEventDirection, AcpNegotiation, AgentDiagnosticKind, AgentHostError, AgentInputMode,
+    AgentLifecycle, AgentSession, CRAB_AGENT_ID_ENV, CRAB_PARENT_SESSION_ID_ENV,
+    CRAB_SESSION_ID_ENV, CRAB_STATE_DIRECTORY_ENV, CRAB_SUB_AGENT_ID_ENV,
+    CRAB_WORKING_DIRECTORY_ENV, ConfiguredAgent, ConfiguredMcpServer, OperationReceipt,
+    PromptAccepted, PromptDisposition, PromptRequest, store::AgentStore,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonRpcRequest)]
@@ -160,6 +161,15 @@ pub(crate) fn spawn_session(
                 .await
             }
         };
+        if let Err(error) = &result {
+            let now_ms = clock().unwrap_or_default();
+            let _ = store.record_diagnostic(
+                &session_id,
+                &AgentDiagnosticKind::ActorFailure,
+                &format!("agent actor failed: {}", error.error_tag()),
+                now_ms,
+            );
+        }
         if result.is_err()
             && !matches!(
                 store.status(&session_id).map(|status| status.lifecycle),
@@ -373,7 +383,20 @@ fn instrumented_process(
         let direction = match direction {
             LineDirection::Stdin => AcpEventDirection::ClientToAgent,
             LineDirection::Stdout => AcpEventDirection::AgentToClient,
-            LineDirection::Stderr => return,
+            LineDirection::Stderr => {
+                let recorded = clock().and_then(|now_ms| {
+                    store.record_diagnostic(
+                        &session_id,
+                        &AgentDiagnosticKind::AdapterStderr,
+                        line,
+                        now_ms,
+                    )
+                });
+                if recorded.is_err() {
+                    let _ = signals.send(ActorSignal::Fatal);
+                }
+                return;
+            }
         };
         let recorded = clock()
             .and_then(|now_ms| store.record_native_line(&session_id, direction, line, now_ms));

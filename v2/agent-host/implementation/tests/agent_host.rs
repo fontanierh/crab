@@ -1,13 +1,14 @@
 use std::{path::Path, sync::Arc, time::Duration};
 
 use agent_host_implementation::{
-    AcpEventDirection, AcpEventKind, AgentHost, AgentHostError, AgentInputMode, AgentLifecycle,
-    AgentProtocol, AgentSteeringExtension, AuthorityAttestation, AuthorityProbeConfig,
-    AuthorityVerifier, CRAB_AGENT_ID_ENV, CRAB_PARENT_SESSION_ID_ENV, CRAB_SESSION_ID_ENV,
-    CRAB_STATE_DIRECTORY_ENV, CRAB_SUB_AGENT_ID_ENV, CRAB_WORKING_DIRECTORY_ENV, ConfiguredAgent,
-    ConfiguredMcpServer, DetachSessionsRequest, DiscoverAgentsRequest, FilesystemAuthority,
-    ForkSessionRequest, NetworkAuthority, OpenSessionRequest, PermissionAuthority,
-    PermissionRequest, PreflightRequest, PromptDisposition, PromptRequest, ReadEventsRequest,
+    AcpEventDirection, AcpEventKind, AgentDiagnosticKind, AgentHost, AgentHostError,
+    AgentInputMode, AgentLifecycle, AgentProtocol, AgentSteeringExtension, AuthorityAttestation,
+    AuthorityProbeConfig, AuthorityVerifier, CRAB_AGENT_ID_ENV, CRAB_PARENT_SESSION_ID_ENV,
+    CRAB_SESSION_ID_ENV, CRAB_STATE_DIRECTORY_ENV, CRAB_SUB_AGENT_ID_ENV,
+    CRAB_WORKING_DIRECTORY_ENV, ConfiguredAgent, ConfiguredMcpServer, DetachSessionsRequest,
+    DiscoverAgentsRequest, FilesystemAuthority, ForkSessionRequest, NetworkAuthority,
+    OpenSessionRequest, PermissionAuthority, PermissionRequest, PreflightRequest,
+    PromptDisposition, PromptRequest, ReadAgentDiagnosticsRequest, ReadEventsRequest,
     ResumeSessionRequest, RootAuthority, RunReference, SandboxAuthority, SessionReference,
     SteeringSupport, generated,
 };
@@ -92,6 +93,13 @@ fn configured_fork_agent(protocol: AgentProtocol) -> ConfiguredAgent {
         .environment([("FIXTURE_SECRET", "not-exposed"), ("ACP_FIXTURE_FORK", "1")])
 }
 
+fn configured_diagnostic_agent(protocol: AgentProtocol) -> ConfiguredAgent {
+    configured_agent(protocol).environment([
+        ("FIXTURE_SECRET", "not-exposed"),
+        ("ACP_FIXTURE_STDERR", "fixture adapter diagnostic"),
+    ])
+}
+
 fn prompt(session_id: &str, turn: &str, mode: AgentInputMode, text: &str) -> PromptRequest {
     PromptRequest {
         session_id: session_id.into(),
@@ -124,6 +132,79 @@ async fn open_fixture(
     )
     .await
     .expect("real ACP subprocess opens")
+}
+
+#[tokio::test]
+async fn adapter_stderr_and_terminal_cause_are_private_durable_diagnostics() {
+    for protocol in [AgentProtocol::V1, AgentProtocol::V2] {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let host = AgentHost::open_with_authority_verifier(
+            directory.path().join("agent-host.sqlite"),
+            vec![configured_diagnostic_agent(protocol)],
+            Arc::new(FixtureAuthority),
+        )
+        .expect("host opens");
+        let session = open_fixture(&host, protocol, directory.path()).await;
+
+        host.prompt(
+            context(),
+            prompt(
+                &session.session_id,
+                "diagnostic-crash",
+                AgentInputMode::Queue,
+                "crash",
+            ),
+        )
+        .await
+        .expect("crashing work is durably accepted");
+        wait_for_lifecycle(&host, &session.session_id, AgentLifecycle::Failed).await;
+
+        let diagnostics = host
+            .read_diagnostics(
+                context(),
+                ReadAgentDiagnosticsRequest {
+                    session_id: session.session_id.clone(),
+                    after_sequence: 0,
+                    limit: 100,
+                },
+            )
+            .await
+            .expect("private diagnostics remain readable");
+        assert!(diagnostics.caught_up);
+        assert_eq!(diagnostics.oldest_retained_sequence, 1);
+        assert!(diagnostics.diagnostics.iter().any(|entry| {
+            entry.kind == AgentDiagnosticKind::AdapterStderr
+                && entry.message == "fixture adapter diagnostic"
+        }));
+        assert!(diagnostics.diagnostics.iter().any(|entry| {
+            entry.kind == AgentDiagnosticKind::AdapterStderr
+                && entry.message == "fixture transport crashed"
+        }));
+        assert!(diagnostics.diagnostics.iter().any(|entry| {
+            entry.kind == AgentDiagnosticKind::ActorFailure
+                && entry.message == "agent actor failed: TransportFailed"
+        }));
+
+        let events = host
+            .read_events(
+                context(),
+                ReadEventsRequest {
+                    session_id: session.session_id,
+                    after_sequence: 0,
+                    limit: 1_000,
+                },
+            )
+            .await
+            .expect("native channel journal remains readable");
+        assert!(events.events.iter().all(|event| {
+            !event
+                .native_event_json
+                .contains("fixture adapter diagnostic")
+                && !event
+                    .native_event_json
+                    .contains("fixture transport crashed")
+        }));
+    }
 }
 
 #[tokio::test]

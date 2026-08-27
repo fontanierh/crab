@@ -1,0 +1,25 @@
+flowchart LR
+    ADAPTER["ACP adapter process"]
+    ACTOR["Crab session actor"]
+    RESTART["Runtime reopen"]
+    PRIVATE[("bounded private diagnostics<br/>512 records · 16 KiB each")]
+    IPC["owner-authenticated<br/>local Boxology IPC"]
+    CLI["crab-v2-agent<br/>session catalog · cursor reads"]
+    NATIVE[("native ACP event journal")]
+    CHANNEL["native channels"]
+    EXCLUDED["bridges · triggers<br/>agent MCP tools"]
+
+    ADAPTER -->|"stdout JSON-RPC"| NATIVE
+    NATIVE --> CHANNEL
+    ADAPTER -->|"stderr"| PRIVATE
+    ACTOR -->|"terminal cause"| PRIVATE
+    RESTART -->|"interruption cause"| PRIVATE
+    PRIVATE --> IPC --> CLI
+    PRIVATE -. "never copied" .-> EXCLUDED
+
+    classDef private fill:#fff3cd,stroke:#9a6700,color:#24292f
+    classDef safe fill:#ddf4ff,stroke:#0969da,color:#24292f
+    classDef excluded fill:#ffebe9,stroke:#cf222e,color:#24292f
+    class PRIVATE private
+    class NATIVE,IPC,CLI safe
+    class EXCLUDED excluded

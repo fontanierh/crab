@@ -132,3 +132,11 @@ Structured migration events are emitted in startup state:
 - Crash during delivery can still avoid duplicate output via outbound dedupe store.
 - Corrupted index/log paths can be surfaced with explicit context-rich errors.
 - Upgrade tooling can evaluate state compatibility using `schema_version.json` without mutating data.
+
+## Crab v2 state
+
+Crab v2 owns independent per-box SQLite schemas under its private runtime directory. Its
+`agent-host` schema v3 is an additive migration from v2: `sessions.last_diagnostic_sequence` and a
+foreign-keyed `diagnostics` table preserve bounded owner-only adapter diagnostics. See
+[`v2/docs/agent-host-storage.md`](../../v2/docs/agent-host-storage.md) for migration and retention
+invariants; no v1 state shape or migration step changes.
