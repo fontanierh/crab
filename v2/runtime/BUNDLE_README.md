@@ -46,6 +46,10 @@ logs and credentials outside releases, and owns the single `com.crab.v2.runtime`
 It stops the old runtime gracefully, switches one `current` symlink, then proves one launchd-owned
 process and authenticated local IPC. Any failure restores and verifies the previous release.
 
+The bundled WhatsApp preset intentionally has an empty `inboundPolicy`, so it cannot trigger the
+agent until exact authorized DM IDs or group-and-sender pairs are added to the durable runtime
+config. Updates preserve that config. See `bridges/whatsapp/README.md` for the strict policy shape.
+
 Check all layers without exposing the captured environment:
 
 ```sh

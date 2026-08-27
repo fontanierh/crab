@@ -149,6 +149,11 @@ accepts the trigger before requesting cooperative cancellation of active work.
 authentication, credential lifecycle and shutdown. It uses the same owner-only local endpoint and
 never opens runtime state directly. See the [operator flow](bridge-operations.md).
 
+The bundled WhatsApp configuration is intentionally default-deny. Before relying on inbound
+messages, set exact `inboundPolicy.directChatIds` or group `chatId` plus `senderIds` in the durable
+runtime configuration. Missing and empty policies accept no inbound traffic; outbound delivery and
+authentication remain available.
+
 ## Restart contract
 
 | Persisted state | Startup action |

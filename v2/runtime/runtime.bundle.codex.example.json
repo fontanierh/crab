@@ -70,7 +70,8 @@
       "workingDirectory": "../bridges/whatsapp",
       "configuration": {
         "targetChannelId": "primary",
-        "browserName": "Crab"
+        "browserName": "Crab",
+        "inboundPolicy": { "directChatIds": [], "groups": [] }
       },
       "authenticationMethods": ["qrCode", "phoneCode"],
       "ingressMode": "queue",

@@ -44,7 +44,9 @@ with `agent-full-access` and high reasoning. Both verify their vendored adapter 
 register the bundled WhatsApp bridge in queue mode with QR and phone authentication. Claude
 negotiates its `_session/steering` extension; Codex remains queue-only until its idle-race work can
 remain host-owned. WhatsApp bridge incidents and recovery target the primary queue lane. The
-first-party authority probes currently make both presets macOS-specific.
+WhatsApp preset starts with an empty, default-deny inbound policy; exact authorized DM IDs or
+group-and-sender pairs belong in the durable runtime config and survive updates. The first-party
+authority probes currently make both presets macOS-specific.
 
 ## Deploy and update
 

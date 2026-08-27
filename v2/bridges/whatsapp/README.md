@@ -22,9 +22,22 @@ The package supports `qrCode` and `phoneCode` authentication. Configuration is s
 ```json
 {
   "targetChannelId": "primary",
-  "browserName": "Crab"
+  "browserName": "Crab",
+  "inboundPolicy": {
+    "directChatIds": ["33123456789@s.whatsapp.net", "opaque-user@lid"],
+    "groups": [{
+      "chatId": "123456789@g.us",
+      "senderIds": ["33123456789@s.whatsapp.net", "opaque-user@lid"]
+    }]
+  }
 }
 ```
+
+Inbound authorization is exact and fail-closed. Missing or empty `inboundPolicy` denies every
+message. A direct message must match `directChatIds`. A group message must match both one group
+`chatId` and one of that rule's `senderIds`; listing a group as a direct chat is rejected. Baileys
+primary and alternate JIDs are both checked, but no wildcard or display-name match exists.
+Unauthorized traffic is discarded before media download or any host call.
 
 Outbound delivery accepts selected text or one host-owned attachment with `destination.chatId`.
 Image, video and document payloads may carry a caption; audio and sticker payloads remain native
