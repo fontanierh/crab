@@ -7,9 +7,9 @@ use boxology_runtime::CompositionBuilder;
 use native_channel_implementation::{
     AcceptedTurn, BindChannelRequest, BindingReference, ChannelBinding, ChannelInputMode,
     ChannelLifecycle, ChannelReceipt, ChannelStatus, ChannelTurn, ChannelTurnDisposition,
-    InterruptReceipt, InterruptRequest, LocateBindingRequest, NativeChannelError,
-    NativeChannelEvent, PublishReceipt, PublishedEventPage, RecoverSessionRequest,
-    ReplaceSessionRequest, ReplayRequest, generated as native_channel,
+    InterruptReceipt, InterruptRequest, InterruptingTurnRequest, LocateBindingRequest,
+    NativeChannelError, NativeChannelEvent, PublishReceipt, PublishedEventPage,
+    RecoverSessionRequest, ReplaceSessionRequest, ReplayRequest, generated as native_channel,
 };
 use trigger_inbox_contract::{
     EnqueueTrigger, TriggerAttachment, TriggerMode, TriggerReference, TriggerSource, TriggerState,
@@ -24,6 +24,7 @@ use turn_router_implementation::{TurnRouterState, generated as turn_router};
 struct FakeState {
     turns: Vec<ChannelTurn>,
     interrupts: Vec<InterruptRequest>,
+    interrupting_turns: Vec<InterruptingTurnRequest>,
 }
 
 struct FakeNativeChannel {
@@ -73,6 +74,33 @@ impl FakeNativeChannel {
             mode: request.mode,
             run_id: "run-1".into(),
             disposition,
+            interrupted_run_id: None,
+            cancel_requested_at_ms: None,
+        })
+    }
+
+    async fn accept_interrupting_turn(
+        &self,
+        context: CallContext,
+        request: InterruptingTurnRequest,
+    ) -> Result<AcceptedTurn, NativeChannelError> {
+        let _ = context;
+        if request.turn.binding_id != "binding-good" {
+            return Err(NativeChannelError::UnknownBinding);
+        }
+        let mut state = self.state.lock().expect("fake state lock");
+        state.turns.push(request.turn.clone());
+        state.interrupting_turns.push(request.clone());
+        Ok(AcceptedTurn {
+            binding_id: request.turn.binding_id,
+            session_id: "session-1".into(),
+            client_turn_id: request.turn.client_turn_id,
+            accepted_at_ms: 100,
+            mode: request.turn.mode,
+            run_id: "run-interrupting".into(),
+            disposition: ChannelTurnDisposition::CancelRequestedThenQueued,
+            interrupted_run_id: Some("run-active".into()),
+            cancel_requested_at_ms: Some(100),
         })
     }
 
@@ -387,7 +415,12 @@ async fn router_serially_delivers_all_modes_and_truthfully_settles_each_lease() 
         assert_eq!(state.turns[0].mode, ChannelInputMode::Queue);
         assert_eq!(state.turns[1].mode, ChannelInputMode::Steer);
         assert_eq!(state.turns[2].mode, ChannelInputMode::Queue);
-        assert_eq!(state.interrupts.len(), 1);
+        assert!(state.interrupts.is_empty());
+        assert_eq!(state.interrupting_turns.len(), 1);
+        assert_eq!(
+            state.interrupting_turns[0].reason,
+            format!("trigger:{}", trigger_ids[2])
+        );
         let first_prompt: serde_json::Value =
             serde_json::from_str(&state.turns[0].native_prompt_json).expect("prompt is JSON");
         assert_eq!(first_prompt[0]["text"], "hello");

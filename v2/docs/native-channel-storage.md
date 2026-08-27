@@ -7,8 +7,10 @@ and sequence instead of copying it into a second event journal.
 
 ## Schema lifecycle
 
-- `PRAGMA user_version = 1` creates `bindings`, `turns`, `publications`, `interrupts`, and
+- `PRAGMA user_version = 2` creates `bindings`, `turns`, `publications`, `interrupts`, and
   `session_replacements` atomically.
+- Schema v1 migrates additively: turns gain nullable interruption receipts plus interrupting-request
+  and reason fields, preserving prior queue/steer rows unchanged.
 - WAL mode, foreign keys, a five-second busy timeout, and full synchronous writes are mandatory.
 - Unknown schema versions fail closed with `StorageUnavailable`.
 - ACP processes cannot survive a runtime restart. Reopening marks live bindings `Failed` while
@@ -27,9 +29,10 @@ and sequence instead of copying it into a second event journal.
 - Replay reads every ordered ACP event, including client-to-agent messages and tool activity.
 - Adapter publication is acknowledged strictly in sequence. The submitted event must match the
   authoritative ACP record; retries return the same deterministic delivery receipt.
-- Interrupt is a separate operation: it cancels the active run and leaves accepted queued turns for
-  the agent host to drain in stable order. Interrupt and session-replacement reasons are retained as
-  operator audit records.
+- Native UI interrupt is a separate operation: it cancels the active run and leaves accepted queued
+  turns for the agent host to drain in stable order. Automatic interrupting ingress instead uses
+  one `accept_interrupting_turn` call that accepts the turn before cancellation can drain the queue.
+  Both interruption paths and session-replacement reasons retain operator audit records.
 - Session replacement atomically installs the fresh session and adapter metadata while preserving
   the binding identity. A failed replacement leaves the previous binding untouched.
 - Same-session recovery requires the binding to be `Failed`, proves the expected session is live,

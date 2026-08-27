@@ -31,7 +31,8 @@ runtime-state/
   the caller, while SQLite retains only challenge metadata—not QR or response payloads.
 - Inbound deduplication is `(bridge_id, external_event_id)`; acknowledgement follows durable
   `trigger-inbox.enqueue`. The registered generation—not the event—selects queue, steer or
-  interrupt-and-steer.
+  interrupt-and-steer. The router delivers interrupt-and-steer through atomic downstream
+  acceptance, so the triggering input cannot lose a cancellation race.
 - Package uploads and agent-requested local-file imports are capped at 8 MiB and deterministically
   deduplicated by bridge, stable source identity, metadata and bytes. Agent imports require an
   absolute regular non-symlink source and a stable read. The host copies into a private path and

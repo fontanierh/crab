@@ -1,13 +1,15 @@
 %%{init: {"theme": "base", "themeVariables": {"fontFamily": "ui-sans-serif, system-ui, sans-serif", "primaryTextColor": "#172033", "lineColor": "#64748b", "edgeLabelBackground": "#ffffff"}, "flowchart": {"curve": "basis", "nodeSpacing": 42, "rankSpacing": 58}}}%%
 flowchart LR
     UI["Native agent UI<br/>full session view"]
+    INGRESS["Bridge · scheduler · sub-agent<br/>automatic interrupting ingress"]
     CHANNEL["Native channel<br/>binding · cursor · input policy"]
-    DB[("Channel SQLite<br/>turns · publication receipts")]
+    DB[("Channel SQLite<br/>turns · interruption receipts + reasons<br/>publication receipts")]
     IMPORT{"Boxology import<br/>agent-host contract"}
     AGENT["ACP agent host<br/>durable raw event journal"]
 
     UI -->|"queue · steer"| CHANNEL
     UI -->|"explicit interrupt"| CHANNEL
+    INGRESS -->|"atomic accept + cancel"| CHANNEL
     CHANNEL <-->|"binding + dedupe"| DB
     CHANNEL --> IMPORT
     IMPORT -->|"prompt · cancel"| AGENT
@@ -17,11 +19,13 @@ flowchart LR
     UI -->|"ordered publication ack"| CHANNEL
 
     classDef ui fill:#f3e8ff,stroke:#9333ea,stroke-width:2px,color:#581c87;
+    classDef external fill:#f8fafc,stroke:#64748b,stroke-width:1.5px,color:#172033;
     classDef runtime fill:#dbeafe,stroke:#2563eb,stroke-width:2px,color:#172554;
     classDef durable fill:#dcfce7,stroke:#16a34a,stroke-width:2px,color:#14532d;
     classDef boundary fill:#fef3c7,stroke:#d97706,stroke-width:2px,color:#78350f;
 
     class UI ui;
+    class INGRESS external;
     class CHANNEL,AGENT runtime;
     class DB durable;
     class IMPORT boundary;

@@ -636,13 +636,14 @@ mod tests {
     };
     use agent_host_implementation::{
         AcpEvent, AcpEventDirection, AcpEventKind, AcpNegotiation, AcpProtocolProfile,
-        AgentCatalog, AgentHostError, AgentLifecycle, AgentSession, AuthorityAttestation,
-        CompactionReporting, DetachSessionsReport, DetachSessionsRequest, DiscoverAgentsRequest,
-        EventPage, FilesystemAuthority, NetworkAuthority, OpenSessionRequest, OperationReceipt,
-        PermissionAuthority, PermissionRequest, PermissionResolution, PreflightReport,
-        PreflightRequest, PromptAccepted, PromptDisposition, PromptRequest, ReadEventsRequest,
-        ResumeSessionRequest, RootAuthority, RunReference, SandboxAuthority, SessionReference,
-        SessionStatus, SteeringSupport, generated as agent_host,
+        AgentCatalog, AgentHostError, AgentInputMode, AgentLifecycle, AgentSession,
+        AuthorityAttestation, CompactionReporting, DetachSessionsReport, DetachSessionsRequest,
+        DiscoverAgentsRequest, EventPage, FilesystemAuthority, NetworkAuthority,
+        OpenSessionRequest, OperationReceipt, PermissionAuthority, PermissionRequest,
+        PermissionResolution, PreflightReport, PreflightRequest, PromptAccepted, PromptDisposition,
+        PromptRequest, ReadEventsRequest, ResumeSessionRequest, RootAuthority, RunReference,
+        SandboxAuthority, SessionReference, SessionStatus, SteeringSupport,
+        generated as agent_host,
     };
     use boxology_contract::{CallContext, CallError};
     use boxology_runtime::{Composition, CompositionBuilder};
@@ -923,6 +924,11 @@ mod tests {
             if !state.live_sessions.contains(&request.session_id) {
                 return Err(AgentHostError::UnknownSession);
             }
+            let interrupted_run_id = if matches!(request.mode, AgentInputMode::InterruptAndQueue) {
+                state.active_runs.remove(&request.session_id)
+            } else {
+                None
+            };
             state.prompts.push(request.clone());
             let run_id = format!("run-{}", state.prompts.len());
             let sequence = state
@@ -975,7 +981,13 @@ mod tests {
                 session_id: request.session_id,
                 run_id,
                 accepted_at_ms: 1,
-                disposition: PromptDisposition::StartedForegroundWork,
+                disposition: if interrupted_run_id.is_some() {
+                    PromptDisposition::CancelRequestedThenQueued
+                } else {
+                    PromptDisposition::StartedForegroundWork
+                },
+                cancel_requested_at_ms: interrupted_run_id.as_ref().map(|_| 1),
+                interrupted_run_id,
             })
         }
 

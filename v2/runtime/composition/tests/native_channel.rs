@@ -17,8 +17,8 @@ use boxology_contract::{CallContext, Caller, CancelToken, TraceContext};
 use boxology_runtime::CompositionBuilder;
 use native_channel_contract::{
     BindChannelRequest, BindingReference, ChannelInputMode, ChannelTurn, ChannelTurnDisposition,
-    InterruptRequest, LocateBindingRequest, NativeChannelError, NativeEventDirection,
-    RecoverSessionRequest, ReplayRequest,
+    InterruptRequest, InterruptingTurnRequest, LocateBindingRequest, NativeChannelError,
+    NativeEventDirection, RecoverSessionRequest, ReplayRequest,
 };
 use native_channel_implementation::{NativeChannelState, generated as native_channel};
 
@@ -84,25 +84,62 @@ impl FakeAgentHost {
         let mut state = self.state.lock().expect("fake state lock");
         state.next_run += 1;
         let new_run_id = format!("run-{}", state.next_run);
-        let (run_id, disposition, emit) = match (&request.mode, state.active_run_id.clone()) {
-            (AgentInputMode::Queue, None) => {
-                state.active_run_id = Some(new_run_id.clone());
-                (new_run_id, PromptDisposition::StartedForegroundWork, true)
-            }
-            (AgentInputMode::Queue, Some(_)) => {
-                state.queued_run_ids.push_back(new_run_id.clone());
-                (new_run_id, PromptDisposition::QueuedForTurnBoundary, false)
-            }
-            (AgentInputMode::Steer, Some(active)) => {
-                (active, PromptDisposition::ContributedToActiveWork, true)
-            }
-            (AgentInputMode::Steer, None) => {
-                return Err(AgentHostError::SteeringUnavailable);
-            }
-            (AgentInputMode::Unknown { .. }, _) => {
-                return Err(AgentHostError::InvalidNativePayload);
-            }
-        };
+        let (run_id, disposition, emit, interrupted_run_id, cancel_requested_at_ms) =
+            match (&request.mode, state.active_run_id.clone()) {
+                (AgentInputMode::Queue, None) => {
+                    state.active_run_id = Some(new_run_id.clone());
+                    (
+                        new_run_id,
+                        PromptDisposition::StartedForegroundWork,
+                        true,
+                        None,
+                        None,
+                    )
+                }
+                (AgentInputMode::Queue, Some(_)) => {
+                    state.queued_run_ids.push_back(new_run_id.clone());
+                    (
+                        new_run_id,
+                        PromptDisposition::QueuedForTurnBoundary,
+                        false,
+                        None,
+                        None,
+                    )
+                }
+                (AgentInputMode::Steer, Some(active)) => (
+                    active,
+                    PromptDisposition::ContributedToActiveWork,
+                    true,
+                    None,
+                    None,
+                ),
+                (AgentInputMode::Steer, None) => {
+                    return Err(AgentHostError::SteeringUnavailable);
+                }
+                (AgentInputMode::InterruptAndQueue, None) => {
+                    state.active_run_id = Some(new_run_id.clone());
+                    (
+                        new_run_id,
+                        PromptDisposition::StartedForegroundWork,
+                        true,
+                        None,
+                        None,
+                    )
+                }
+                (AgentInputMode::InterruptAndQueue, Some(active)) => {
+                    state.queued_run_ids.push_back(new_run_id.clone());
+                    (
+                        new_run_id,
+                        PromptDisposition::CancelRequestedThenQueued,
+                        false,
+                        Some(active),
+                        Some(500),
+                    )
+                }
+                (AgentInputMode::Unknown { .. }, _) => {
+                    return Err(AgentHostError::InvalidNativePayload);
+                }
+            };
         if emit {
             let sequence = state.events.len() as u64 + 1;
             state.events.push(AcpEvent {
@@ -123,6 +160,8 @@ impl FakeAgentHost {
             run_id,
             accepted_at_ms: 100 + state.next_run,
             disposition,
+            interrupted_run_id,
+            cancel_requested_at_ms,
         })
     }
 
@@ -385,6 +424,62 @@ async fn native_channel_routes_replays_publishes_and_interrupts_through_import()
     );
     assert_eq!(steered.run_id, active.run_id);
 
+    let urgent_request = turn(
+        &binding.binding_id,
+        "turn-urgent",
+        ChannelInputMode::Queue,
+        "interrupt now",
+    );
+    let urgent = handle
+        .accept_interrupting_turn(
+            context(),
+            InterruptingTurnRequest {
+                turn: urgent_request.clone(),
+                reason: "automatic bridge policy".into(),
+            },
+        )
+        .await
+        .expect("interrupting input is accepted before cancellation");
+    assert_eq!(
+        urgent.disposition,
+        ChannelTurnDisposition::CancelRequestedThenQueued
+    );
+    assert_eq!(urgent.interrupted_run_id, Some(active.run_id.clone()));
+    assert_eq!(urgent.cancel_requested_at_ms, Some(500));
+    assert_eq!(
+        handle
+            .accept_interrupting_turn(
+                context(),
+                InterruptingTurnRequest {
+                    turn: urgent_request.clone(),
+                    reason: "automatic bridge policy".into(),
+                },
+            )
+            .await
+            .expect("interrupting retry is stable"),
+        urgent
+    );
+    assert_eq!(
+        handle
+            .accept_interrupting_turn(
+                context(),
+                InterruptingTurnRequest {
+                    turn: urgent_request.clone(),
+                    reason: "changed reason".into(),
+                },
+            )
+            .await,
+        Err(boxology_contract::CallError::Domain(
+            NativeChannelError::DuplicateTurnConflict
+        ))
+    );
+    assert_eq!(
+        handle.accept_turn(context(), urgent_request).await,
+        Err(boxology_contract::CallError::Domain(
+            NativeChannelError::DuplicateTurnConflict
+        ))
+    );
+
     let replay = handle
         .replay_native_events(
             context(),
@@ -431,7 +526,7 @@ async fn native_channel_routes_replays_publishes_and_interrupts_through_import()
         .await
         .expect("channel status reads agent state");
     assert_eq!(status.available_sequence, 2);
-    assert_eq!(status.pending_input_count, 1);
+    assert_eq!(status.pending_input_count, 2);
 
     let interrupted = handle
         .interrupt_and_drain(
@@ -445,7 +540,7 @@ async fn native_channel_routes_replays_publishes_and_interrupts_through_import()
         )
         .await
         .expect("explicit interrupt cancels active run");
-    assert_eq!(interrupted.pending_input_count, 1);
+    assert_eq!(interrupted.pending_input_count, 2);
     assert_eq!(interrupted.cancel_requested_at_ms, 500);
 
     handle

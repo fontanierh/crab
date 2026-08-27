@@ -8,7 +8,9 @@ view.
 
 ## Schema lifecycle
 
-- `PRAGMA user_version = 1` creates `sessions`, `prompts`, `events`, and `permissions` atomically.
+- `PRAGMA user_version = 2` creates `sessions`, `prompts`, `events`, and `permissions` atomically.
+- Schema v1 migrates additively: prompts gain nullable `interrupted_run_id` and
+  `cancel_requested_at_ms` receipt fields.
 - WAL mode, foreign keys, a five-second busy timeout, and full synchronous writes are mandatory.
 - Unknown schema versions fail closed with `StorageUnavailable`.
 - A process cannot survive a Crab restart. Reopening marks `Starting`, `Ready`, `Busy`, `Detaching`
@@ -31,6 +33,9 @@ view.
   Crab requests `promptRequired` on an idle race and starts the continuation itself through normal
   `session/prompt`, so no detached turn escapes the durable lifecycle.
 - ACP v2 steering contributes to the active run; queued prompts wait for an `idle` state update.
+- `InterruptAndQueue` is one session-actor operation. When busy, Crab requests cooperative cancel,
+  durably queues the immutable input with its interrupted-run receipt before processing completion,
+  then drains FIFO. Exact retries return that receipt without cancelling again.
 - Permission requests and the automatically selected strongest allow response are audit records,
   never human-gated work.
 - Configured stdio MCP declarations are attached to every `session/new` and `session/resume`. Crab

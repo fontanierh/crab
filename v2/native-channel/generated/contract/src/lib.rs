@@ -276,8 +276,29 @@ static __BOXOLOGY_CONTRACT_DESCRIPTOR: ::std::sync::LazyLock<
                                 ::boxology_contract::VariantPayload::Unit,
                                 None,
                             ),
+                            ::boxology_contract::VariantDescriptor::new(
+                                "CancelRequestedThenQueued",
+                                ::boxology_contract::VariantPayload::Unit,
+                                None,
+                            ),
                         ])
                         .expect("generated enum descriptor is valid"),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
+                    "interrupted_run_id",
+                    ::boxology_contract::TypeDescriptor::optional(
+                            ::boxology_contract::TypeDescriptor::string(),
+                        )
+                        .expect("generated optional descriptor is valid"),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
+                    "cancel_requested_at_ms",
+                    ::boxology_contract::TypeDescriptor::optional(
+                            ::boxology_contract::TypeDescriptor::u64(),
+                        )
+                        .expect("generated optional descriptor is valid"),
                     None,
                 ),
             ])
@@ -289,6 +310,158 @@ static __BOXOLOGY_CONTRACT_DESCRIPTOR: ::std::sync::LazyLock<
         None,
     );
     let capability_2 = ::boxology_contract::CapabilityDescriptor::new(
+        ::boxology_contract::CapabilityId::new(
+            box_id.clone(),
+            ::boxology_contract::CapabilityName::new("accept_interrupting_turn")
+                .expect("generated capability name is valid"),
+        ),
+        ::boxology_contract::TypeDescriptor::structure([
+                ::boxology_contract::FieldDescriptor::new(
+                    "turn",
+                    ::boxology_contract::TypeDescriptor::structure([
+                            ::boxology_contract::FieldDescriptor::new(
+                                "binding_id",
+                                ::boxology_contract::TypeDescriptor::string(),
+                                None,
+                            ),
+                            ::boxology_contract::FieldDescriptor::new(
+                                "client_turn_id",
+                                ::boxology_contract::TypeDescriptor::string(),
+                                None,
+                            ),
+                            ::boxology_contract::FieldDescriptor::new(
+                                "received_at_ms",
+                                ::boxology_contract::TypeDescriptor::u64(),
+                                None,
+                            ),
+                            ::boxology_contract::FieldDescriptor::new(
+                                "mode",
+                                ::boxology_contract::TypeDescriptor::enumeration([
+                                        ::boxology_contract::VariantDescriptor::new(
+                                            "Queue",
+                                            ::boxology_contract::VariantPayload::Unit,
+                                            None,
+                                        ),
+                                        ::boxology_contract::VariantDescriptor::new(
+                                            "Steer",
+                                            ::boxology_contract::VariantPayload::Unit,
+                                            None,
+                                        ),
+                                    ])
+                                    .expect("generated enum descriptor is valid"),
+                                None,
+                            ),
+                            ::boxology_contract::FieldDescriptor::new(
+                                "native_prompt_json",
+                                ::boxology_contract::TypeDescriptor::string(),
+                                None,
+                            ),
+                        ])
+                        .expect("generated struct descriptor is valid"),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
+                    "reason",
+                    ::boxology_contract::TypeDescriptor::string(),
+                    None,
+                ),
+            ])
+            .expect("generated struct descriptor is valid"),
+        ::boxology_contract::TypeDescriptor::structure([
+                ::boxology_contract::FieldDescriptor::new(
+                    "binding_id",
+                    ::boxology_contract::TypeDescriptor::string(),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
+                    "session_id",
+                    ::boxology_contract::TypeDescriptor::string(),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
+                    "client_turn_id",
+                    ::boxology_contract::TypeDescriptor::string(),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
+                    "accepted_at_ms",
+                    ::boxology_contract::TypeDescriptor::u64(),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
+                    "mode",
+                    ::boxology_contract::TypeDescriptor::enumeration([
+                            ::boxology_contract::VariantDescriptor::new(
+                                "Queue",
+                                ::boxology_contract::VariantPayload::Unit,
+                                None,
+                            ),
+                            ::boxology_contract::VariantDescriptor::new(
+                                "Steer",
+                                ::boxology_contract::VariantPayload::Unit,
+                                None,
+                            ),
+                        ])
+                        .expect("generated enum descriptor is valid"),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
+                    "run_id",
+                    ::boxology_contract::TypeDescriptor::string(),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
+                    "disposition",
+                    ::boxology_contract::TypeDescriptor::enumeration([
+                            ::boxology_contract::VariantDescriptor::new(
+                                "StartedForegroundWork",
+                                ::boxology_contract::VariantPayload::Unit,
+                                None,
+                            ),
+                            ::boxology_contract::VariantDescriptor::new(
+                                "ContributedToActiveWork",
+                                ::boxology_contract::VariantPayload::Unit,
+                                None,
+                            ),
+                            ::boxology_contract::VariantDescriptor::new(
+                                "QueuedForTurnBoundary",
+                                ::boxology_contract::VariantPayload::Unit,
+                                None,
+                            ),
+                            ::boxology_contract::VariantDescriptor::new(
+                                "CancelRequestedThenQueued",
+                                ::boxology_contract::VariantPayload::Unit,
+                                None,
+                            ),
+                        ])
+                        .expect("generated enum descriptor is valid"),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
+                    "interrupted_run_id",
+                    ::boxology_contract::TypeDescriptor::optional(
+                            ::boxology_contract::TypeDescriptor::string(),
+                        )
+                        .expect("generated optional descriptor is valid"),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
+                    "cancel_requested_at_ms",
+                    ::boxology_contract::TypeDescriptor::optional(
+                            ::boxology_contract::TypeDescriptor::u64(),
+                        )
+                        .expect("generated optional descriptor is valid"),
+                    None,
+                ),
+            ])
+            .expect("generated struct descriptor is valid"),
+        error.clone(),
+        ::boxology_contract::CapabilityShape::Unary,
+        ::boxology_contract::ExposureLevel::CodeOnly,
+        ::boxology_contract::Idempotency::None,
+        None,
+    );
+    let capability_3 = ::boxology_contract::CapabilityDescriptor::new(
         ::boxology_contract::CapabilityId::new(
             box_id.clone(),
             ::boxology_contract::CapabilityName::new("interrupt_and_drain")
@@ -346,7 +519,7 @@ static __BOXOLOGY_CONTRACT_DESCRIPTOR: ::std::sync::LazyLock<
         ::boxology_contract::Idempotency::None,
         None,
     );
-    let capability_3 = ::boxology_contract::CapabilityDescriptor::new(
+    let capability_4 = ::boxology_contract::CapabilityDescriptor::new(
         ::boxology_contract::CapabilityId::new(
             box_id.clone(),
             ::boxology_contract::CapabilityName::new("publish_native_event")
@@ -514,7 +687,7 @@ static __BOXOLOGY_CONTRACT_DESCRIPTOR: ::std::sync::LazyLock<
         ::boxology_contract::Idempotency::None,
         None,
     );
-    let capability_4 = ::boxology_contract::CapabilityDescriptor::new(
+    let capability_5 = ::boxology_contract::CapabilityDescriptor::new(
         ::boxology_contract::CapabilityId::new(
             box_id.clone(),
             ::boxology_contract::CapabilityName::new("replay_native_events")
@@ -697,7 +870,7 @@ static __BOXOLOGY_CONTRACT_DESCRIPTOR: ::std::sync::LazyLock<
         ::boxology_contract::Idempotency::None,
         None,
     );
-    let capability_5 = ::boxology_contract::CapabilityDescriptor::new(
+    let capability_6 = ::boxology_contract::CapabilityDescriptor::new(
         ::boxology_contract::CapabilityId::new(
             box_id.clone(),
             ::boxology_contract::CapabilityName::new("replace_session")
@@ -805,7 +978,7 @@ static __BOXOLOGY_CONTRACT_DESCRIPTOR: ::std::sync::LazyLock<
         ::boxology_contract::Idempotency::None,
         None,
     );
-    let capability_6 = ::boxology_contract::CapabilityDescriptor::new(
+    let capability_7 = ::boxology_contract::CapabilityDescriptor::new(
         ::boxology_contract::CapabilityId::new(
             box_id.clone(),
             ::boxology_contract::CapabilityName::new("recover_session")
@@ -895,7 +1068,7 @@ static __BOXOLOGY_CONTRACT_DESCRIPTOR: ::std::sync::LazyLock<
         ::boxology_contract::Idempotency::None,
         None,
     );
-    let capability_7 = ::boxology_contract::CapabilityDescriptor::new(
+    let capability_8 = ::boxology_contract::CapabilityDescriptor::new(
         ::boxology_contract::CapabilityId::new(
             box_id.clone(),
             ::boxology_contract::CapabilityName::new("channel_status")
@@ -1010,7 +1183,7 @@ static __BOXOLOGY_CONTRACT_DESCRIPTOR: ::std::sync::LazyLock<
         ::boxology_contract::Idempotency::None,
         None,
     );
-    let capability_8 = ::boxology_contract::CapabilityDescriptor::new(
+    let capability_9 = ::boxology_contract::CapabilityDescriptor::new(
         ::boxology_contract::CapabilityId::new(
             box_id.clone(),
             ::boxology_contract::CapabilityName::new("inspect_binding")
@@ -1095,7 +1268,7 @@ static __BOXOLOGY_CONTRACT_DESCRIPTOR: ::std::sync::LazyLock<
         ::boxology_contract::Idempotency::None,
         None,
     );
-    let capability_9 = ::boxology_contract::CapabilityDescriptor::new(
+    let capability_10 = ::boxology_contract::CapabilityDescriptor::new(
         ::boxology_contract::CapabilityId::new(
             box_id.clone(),
             ::boxology_contract::CapabilityName::new("find_binding")
@@ -1185,7 +1358,7 @@ static __BOXOLOGY_CONTRACT_DESCRIPTOR: ::std::sync::LazyLock<
         ::boxology_contract::Idempotency::None,
         None,
     );
-    let capability_10 = ::boxology_contract::CapabilityDescriptor::new(
+    let capability_11 = ::boxology_contract::CapabilityDescriptor::new(
         ::boxology_contract::CapabilityId::new(
             box_id.clone(),
             ::boxology_contract::CapabilityName::new("unbind_channel")
@@ -1232,9 +1405,10 @@ static __BOXOLOGY_CONTRACT_DESCRIPTOR: ::std::sync::LazyLock<
                 capability_8,
                 capability_9,
                 capability_10,
+                capability_11,
             ],
             ::boxology_contract::ContractRevision::new(
-                    "sha256:afe38948c3efd58720cd6b994c492070fde7c68e22165f56a7655935482cfa7e",
+                    "sha256:1179e37558c53fcb8f026c92b86d74e0c4ab833470a348593fcfc45dab92d20a",
                 )
                 .expect("generated contract revision is non-empty"),
         )
@@ -1269,6 +1443,13 @@ pub trait NativeChannelDispatch: Send + Sync + 'static {
         &'a self,
         context: CallContext,
         request: ChannelTurn,
+    ) -> Pin<
+        Box<dyn Future<Output = Result<AcceptedTurn, NativeChannelError>> + Send + 'a>,
+    >;
+    fn accept_interrupting_turn<'a>(
+        &'a self,
+        context: CallContext,
+        request: InterruptingTurnRequest,
     ) -> Pin<
         Box<dyn Future<Output = Result<AcceptedTurn, NativeChannelError>> + Send + 'a>,
     >;
@@ -1518,8 +1699,132 @@ impl NativeChannelHandle {
                                 ::boxology_contract::VariantPayload::Unit,
                                 None,
                             ),
+                            ::boxology_contract::VariantDescriptor::new(
+                                "CancelRequestedThenQueued",
+                                ::boxology_contract::VariantPayload::Unit,
+                                None,
+                            ),
                         ])
                         .expect("generated enum descriptor is valid"),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
+                    "interrupted_run_id",
+                    TypeDescriptor::optional(TypeDescriptor::string())
+                        .expect("generated optional descriptor is valid"),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
+                    "cancel_requested_at_ms",
+                    TypeDescriptor::optional(TypeDescriptor::u64())
+                        .expect("generated optional descriptor is valid"),
+                    None,
+                ),
+            ])
+            .expect("generated struct descriptor is valid")
+            .conform(DecodeRole::ConsumerOutput, output)
+            .map_err(|error| conversion_detail("output_decode", error))
+            .map_err(CallError::InvalidResponse)?;
+        <AcceptedTurn as ContractType>::decode(&output)
+            .map_err(|error| conversion_detail("output_decode", error))
+            .map_err(CallError::InvalidResponse)
+    }
+    pub async fn accept_interrupting_turn(
+        &self,
+        context: CallContext,
+        request: InterruptingTurnRequest,
+    ) -> Result<AcceptedTurn, CallError<NativeChannelError>> {
+        let input = request
+            .encode()
+            .map_err(|error| conversion_detail("input_encode", error))
+            .map_err(CallError::ContractViolation)?;
+        let output = self
+            .target
+            .call(&NATIVE_CHANNEL_ACCEPT_INTERRUPTING_TURN, context, input)
+            .await
+            .map_err(|error| {
+                error.into_typed::<NativeChannelError>(&NATIVE_CHANNEL_ERROR_DESCRIPTOR)
+            })?;
+        let output = TypeDescriptor::structure([
+                ::boxology_contract::FieldDescriptor::new(
+                    "binding_id",
+                    TypeDescriptor::string(),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
+                    "session_id",
+                    TypeDescriptor::string(),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
+                    "client_turn_id",
+                    TypeDescriptor::string(),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
+                    "accepted_at_ms",
+                    TypeDescriptor::u64(),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
+                    "mode",
+                    TypeDescriptor::enumeration([
+                            ::boxology_contract::VariantDescriptor::new(
+                                "Queue",
+                                ::boxology_contract::VariantPayload::Unit,
+                                None,
+                            ),
+                            ::boxology_contract::VariantDescriptor::new(
+                                "Steer",
+                                ::boxology_contract::VariantPayload::Unit,
+                                None,
+                            ),
+                        ])
+                        .expect("generated enum descriptor is valid"),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
+                    "run_id",
+                    TypeDescriptor::string(),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
+                    "disposition",
+                    TypeDescriptor::enumeration([
+                            ::boxology_contract::VariantDescriptor::new(
+                                "StartedForegroundWork",
+                                ::boxology_contract::VariantPayload::Unit,
+                                None,
+                            ),
+                            ::boxology_contract::VariantDescriptor::new(
+                                "ContributedToActiveWork",
+                                ::boxology_contract::VariantPayload::Unit,
+                                None,
+                            ),
+                            ::boxology_contract::VariantDescriptor::new(
+                                "QueuedForTurnBoundary",
+                                ::boxology_contract::VariantPayload::Unit,
+                                None,
+                            ),
+                            ::boxology_contract::VariantDescriptor::new(
+                                "CancelRequestedThenQueued",
+                                ::boxology_contract::VariantPayload::Unit,
+                                None,
+                            ),
+                        ])
+                        .expect("generated enum descriptor is valid"),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
+                    "interrupted_run_id",
+                    TypeDescriptor::optional(TypeDescriptor::string())
+                        .expect("generated optional descriptor is valid"),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
+                    "cancel_requested_at_ms",
+                    TypeDescriptor::optional(TypeDescriptor::u64())
+                        .expect("generated optional descriptor is valid"),
                     None,
                 ),
             ])
@@ -2320,6 +2625,15 @@ static NATIVE_CHANNEL_ACCEPT_TURN: LazyLock<CapabilityId> = LazyLock::new(|| {
     CapabilityId::new(
         BoxId::new("native-channel").expect("generated box identity is valid"),
         CapabilityName::new("accept_turn").expect("generated capability name is valid"),
+    )
+});
+#[rustfmt::skip]
+static NATIVE_CHANNEL_ACCEPT_INTERRUPTING_TURN: LazyLock<CapabilityId> = LazyLock::new(||
+{
+    CapabilityId::new(
+        BoxId::new("native-channel").expect("generated box identity is valid"),
+        CapabilityName::new("accept_interrupting_turn")
+            .expect("generated capability name is valid"),
     )
 });
 #[rustfmt::skip]
@@ -3199,6 +3513,7 @@ pub enum ChannelTurnDisposition {
     StartedForegroundWork,
     ContributedToActiveWork,
     QueuedForTurnBoundary,
+    CancelRequestedThenQueued,
     Unknown { tag: ::std::string::String, payload: ::boxology_contract::OpaquePayload },
 }
 #[rustfmt::skip]
@@ -3218,6 +3533,12 @@ impl ::boxology_contract::ContractType for ChannelTurnDisposition {
             }
             Self::QueuedForTurnBoundary => {
                 ("QueuedForTurnBoundary".into(), ::boxology_contract::SlotValue::Null)
+            }
+            Self::CancelRequestedThenQueued => {
+                (
+                    "CancelRequestedThenQueued".into(),
+                    ::boxology_contract::SlotValue::Null,
+                )
             }
             Self::Unknown { tag, payload } => {
                 (
@@ -3267,6 +3588,17 @@ impl ::boxology_contract::ContractType for ChannelTurnDisposition {
                 payload, ::boxology_contract::SlotValue::Null
             ) => Ok(Self::QueuedForTurnBoundary),
             "QueuedForTurnBoundary" => {
+                Err(
+                    ::boxology_contract::DecodeError::new(
+                            ::boxology_contract::DecodeErrorKind::UnexpectedPayload,
+                        )
+                        .under(::boxology_contract::PathSegment::Variant(tag.into())),
+                )
+            }
+            "CancelRequestedThenQueued" if matches!(
+                payload, ::boxology_contract::SlotValue::Null
+            ) => Ok(Self::CancelRequestedThenQueued),
+            "CancelRequestedThenQueued" => {
                 Err(
                     ::boxology_contract::DecodeError::new(
                             ::boxology_contract::DecodeErrorKind::UnexpectedPayload,
@@ -3326,6 +3658,8 @@ pub struct AcceptedTurn {
     /// The durable run selected by `agent-host`.
     pub run_id: ::std::string::String,
     pub disposition: ChannelTurnDisposition,
+    pub interrupted_run_id: ::core::option::Option<::std::string::String>,
+    pub cancel_requested_at_ms: ::core::option::Option<u64>,
 }
 #[rustfmt::skip]
 impl ::boxology_contract::ContractType for AcceptedTurn {
@@ -3404,6 +3738,34 @@ impl ::boxology_contract::ContractType for AcceptedTurn {
         {
             fields.push(("disposition".into(), value));
         }
+        if let Some(value) = ::boxology_contract::ContractType::encode_field(
+                &self.interrupted_run_id,
+            )
+            .map_err(|error| {
+                error
+                    .under(
+                        ::boxology_contract::PathSegment::Field(
+                            "interrupted_run_id".into(),
+                        ),
+                    )
+            })?
+        {
+            fields.push(("interrupted_run_id".into(), value));
+        }
+        if let Some(value) = ::boxology_contract::ContractType::encode_field(
+                &self.cancel_requested_at_ms,
+            )
+            .map_err(|error| {
+                error
+                    .under(
+                        ::boxology_contract::PathSegment::Field(
+                            "cancel_requested_at_ms".into(),
+                        ),
+                    )
+            })?
+        {
+            fields.push(("cancel_requested_at_ms".into(), value));
+        }
         ::boxology_contract::ContractValue::object(fields)
             .map_err(|_| unreachable!("validated generated field identities are unique"))
     }
@@ -3420,7 +3782,8 @@ impl ::boxology_contract::ContractType for AcceptedTurn {
         for (field, _) in fields.entries() {
             match field {
                 "binding_id" | "session_id" | "client_turn_id" | "accepted_at_ms"
-                | "mode" | "run_id" | "disposition" => {}
+                | "mode" | "run_id" | "disposition" | "interrupted_run_id"
+                | "cancel_requested_at_ms" => {}
                 _ => {
                     return Err(
                         ::boxology_contract::DecodeError::new(
@@ -3494,6 +3857,109 @@ impl ::boxology_contract::ContractType for AcceptedTurn {
                         .under(
                             ::boxology_contract::PathSegment::Field("disposition".into()),
                         )
+                })?,
+            interrupted_run_id: <::core::option::Option<
+                ::std::string::String,
+            > as ::boxology_contract::ContractType>::decode_field(
+                    fields.get("interrupted_run_id"),
+                )
+                .map_err(|error| {
+                    error
+                        .under(
+                            ::boxology_contract::PathSegment::Field(
+                                "interrupted_run_id".into(),
+                            ),
+                        )
+                })?,
+            cancel_requested_at_ms: <::core::option::Option<
+                u64,
+            > as ::boxology_contract::ContractType>::decode_field(
+                    fields.get("cancel_requested_at_ms"),
+                )
+                .map_err(|error| {
+                    error
+                        .under(
+                            ::boxology_contract::PathSegment::Field(
+                                "cancel_requested_at_ms".into(),
+                            ),
+                        )
+                })?,
+        })
+    }
+}
+#[rustfmt::skip]
+/// Automatic interrupting ingress is distinct from the native UI's explicit interrupt action.
+/// The turn is accepted durably in the same session operation that requests cancellation.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct InterruptingTurnRequest {
+    pub turn: ChannelTurn,
+    pub reason: ::std::string::String,
+}
+#[rustfmt::skip]
+impl ::boxology_contract::ContractType for InterruptingTurnRequest {
+    fn encode_value(
+        &self,
+    ) -> ::core::result::Result<
+        ::boxology_contract::ContractValue,
+        ::boxology_contract::EncodeError,
+    > {
+        let mut fields = ::std::vec::Vec::new();
+        if let Some(value) = ::boxology_contract::ContractType::encode_field(&self.turn)
+            .map_err(|error| {
+                error.under(::boxology_contract::PathSegment::Field("turn".into()))
+            })?
+        {
+            fields.push(("turn".into(), value));
+        }
+        if let Some(value) = ::boxology_contract::ContractType::encode_field(
+                &self.reason,
+            )
+            .map_err(|error| {
+                error.under(::boxology_contract::PathSegment::Field("reason".into()))
+            })?
+        {
+            fields.push(("reason".into(), value));
+        }
+        ::boxology_contract::ContractValue::object(fields)
+            .map_err(|_| unreachable!("validated generated field identities are unique"))
+    }
+    fn decode_value(
+        value: &::boxology_contract::ContractValue,
+    ) -> ::core::result::Result<Self, ::boxology_contract::DecodeError> {
+        let ::boxology_contract::ValueRef::Object(fields) = value.view() else {
+            return Err(
+                ::boxology_contract::DecodeError::new(
+                    ::boxology_contract::DecodeErrorKind::KindMismatch,
+                ),
+            );
+        };
+        for (field, _) in fields.entries() {
+            match field {
+                "turn" | "reason" => {}
+                _ => {
+                    return Err(
+                        ::boxology_contract::DecodeError::new(
+                                ::boxology_contract::DecodeErrorKind::UnknownField(
+                                    field.into(),
+                                ),
+                            )
+                            .under(::boxology_contract::PathSegment::Field(field.into())),
+                    );
+                }
+            }
+        }
+        Ok(Self {
+            turn: <ChannelTurn as ::boxology_contract::ContractType>::decode_field(
+                    fields.get("turn"),
+                )
+                .map_err(|error| {
+                    error.under(::boxology_contract::PathSegment::Field("turn".into()))
+                })?,
+            reason: <::std::string::String as ::boxology_contract::ContractType>::decode_field(
+                    fields.get("reason"),
+                )
+                .map_err(|error| {
+                    error.under(::boxology_contract::PathSegment::Field("reason".into()))
                 })?,
         })
     }
@@ -5626,11 +6092,12 @@ pub mod test_support {
     };
     use super::{
         NativeChannelError, NATIVE_CHANNEL_BIND_CHANNEL, NATIVE_CHANNEL_ACCEPT_TURN,
-        NATIVE_CHANNEL_INTERRUPT_AND_DRAIN, NATIVE_CHANNEL_PUBLISH_NATIVE_EVENT,
-        NATIVE_CHANNEL_REPLAY_NATIVE_EVENTS, NATIVE_CHANNEL_REPLACE_SESSION,
-        NATIVE_CHANNEL_RECOVER_SESSION, NATIVE_CHANNEL_CHANNEL_STATUS,
-        NATIVE_CHANNEL_INSPECT_BINDING, NATIVE_CHANNEL_FIND_BINDING,
-        NATIVE_CHANNEL_UNBIND_CHANNEL, NativeChannelHandle, conversion_detail,
+        NATIVE_CHANNEL_ACCEPT_INTERRUPTING_TURN, NATIVE_CHANNEL_INTERRUPT_AND_DRAIN,
+        NATIVE_CHANNEL_PUBLISH_NATIVE_EVENT, NATIVE_CHANNEL_REPLAY_NATIVE_EVENTS,
+        NATIVE_CHANNEL_REPLACE_SESSION, NATIVE_CHANNEL_RECOVER_SESSION,
+        NATIVE_CHANNEL_CHANNEL_STATUS, NATIVE_CHANNEL_INSPECT_BINDING,
+        NATIVE_CHANNEL_FIND_BINDING, NATIVE_CHANNEL_UNBIND_CHANNEL, NativeChannelHandle,
+        conversion_detail,
     };
     type BindChannelFuture = Pin<
         Box<
@@ -5654,6 +6121,17 @@ pub mod test_support {
         CallContext,
         super::ChannelTurn,
     ) -> AcceptTurnFuture + Send + Sync + 'static;
+    type AcceptInterruptingTurnFuture = Pin<
+        Box<
+            dyn Future<
+                Output = Result<super::AcceptedTurn, NativeChannelError>,
+            > + Send + 'static,
+        >,
+    >;
+    type AcceptInterruptingTurnResponder = dyn Fn(
+        CallContext,
+        super::InterruptingTurnRequest,
+    ) -> AcceptInterruptingTurnFuture + Send + Sync + 'static;
     type InterruptAndDrainFuture = Pin<
         Box<
             dyn Future<
@@ -5757,6 +6235,7 @@ pub mod test_support {
     pub struct NativeChannelFake {
         bind_channel: Option<Arc<BindChannelResponder>>,
         accept_turn: Option<Arc<AcceptTurnResponder>>,
+        accept_interrupting_turn: Option<Arc<AcceptInterruptingTurnResponder>>,
         interrupt_and_drain: Option<Arc<InterruptAndDrainResponder>>,
         publish_native_event: Option<Arc<PublishNativeEventResponder>>,
         replay_native_events: Option<Arc<ReplayNativeEventsResponder>>,
@@ -5791,6 +6270,20 @@ pub mod test_support {
                 + 'static,
         {
             self.accept_turn = Some(
+                Arc::new(move |context, request| {
+                    Box::pin(responder(context, request))
+                }),
+            );
+            self
+        }
+        pub fn with_accept_interrupting_turn<F, Fut>(mut self, responder: F) -> Self
+        where
+            F: Fn(CallContext, super::InterruptingTurnRequest) -> Fut + Send + Sync
+                + 'static,
+            Fut: Future<Output = Result<super::AcceptedTurn, NativeChannelError>> + Send
+                + 'static,
+        {
+            self.accept_interrupting_turn = Some(
                 Arc::new(move |context, request| {
                     Box::pin(responder(context, request))
                 }),
@@ -6038,6 +6531,91 @@ pub mod test_support {
                             )
                         })?;
                     let request = <super::ChannelTurn as ContractType>::decode(&input)
+                        .map_err(|error| {
+                            ErasedCallError::ContractViolation(
+                                conversion_detail("input_decode", error),
+                            )
+                        })?;
+                    match responder(context, request).await {
+                        Ok(output) => {
+                            output
+                                .encode()
+                                .map_err(|error| {
+                                    ErasedCallError::InvalidResponse(
+                                        conversion_detail("output_encode", error),
+                                    )
+                                })
+                        }
+                        Err(error) => Err(ErasedCallError::from_domain(&error)),
+                    }
+                });
+            }
+            if capability == &*NATIVE_CHANNEL_ACCEPT_INTERRUPTING_TURN {
+                let Some(responder) = self.accept_interrupting_turn.clone() else {
+                    return Box::pin(ready(Err(unprogrammed())));
+                };
+                return Box::pin(async move {
+                    let input = TypeDescriptor::structure([
+                            ::boxology_contract::FieldDescriptor::new(
+                                "turn",
+                                TypeDescriptor::structure([
+                                        ::boxology_contract::FieldDescriptor::new(
+                                            "binding_id",
+                                            TypeDescriptor::string(),
+                                            None,
+                                        ),
+                                        ::boxology_contract::FieldDescriptor::new(
+                                            "client_turn_id",
+                                            TypeDescriptor::string(),
+                                            None,
+                                        ),
+                                        ::boxology_contract::FieldDescriptor::new(
+                                            "received_at_ms",
+                                            TypeDescriptor::u64(),
+                                            None,
+                                        ),
+                                        ::boxology_contract::FieldDescriptor::new(
+                                            "mode",
+                                            TypeDescriptor::enumeration([
+                                                    ::boxology_contract::VariantDescriptor::new(
+                                                        "Queue",
+                                                        ::boxology_contract::VariantPayload::Unit,
+                                                        None,
+                                                    ),
+                                                    ::boxology_contract::VariantDescriptor::new(
+                                                        "Steer",
+                                                        ::boxology_contract::VariantPayload::Unit,
+                                                        None,
+                                                    ),
+                                                ])
+                                                .expect("generated enum descriptor is valid"),
+                                            None,
+                                        ),
+                                        ::boxology_contract::FieldDescriptor::new(
+                                            "native_prompt_json",
+                                            TypeDescriptor::string(),
+                                            None,
+                                        ),
+                                    ])
+                                    .expect("generated struct descriptor is valid"),
+                                None,
+                            ),
+                            ::boxology_contract::FieldDescriptor::new(
+                                "reason",
+                                TypeDescriptor::string(),
+                                None,
+                            ),
+                        ])
+                        .expect("generated struct descriptor is valid")
+                        .conform(DecodeRole::ProviderInput, input)
+                        .map_err(|error| {
+                            ErasedCallError::ContractViolation(
+                                conversion_detail("input_decode", error),
+                            )
+                        })?;
+                    let request = <super::InterruptingTurnRequest as ContractType>::decode(
+                            &input,
+                        )
                         .map_err(|error| {
                             ErasedCallError::ContractViolation(
                                 conversion_detail("input_decode", error),
@@ -6613,8 +7191,8 @@ pub mod test_support {
 #[rustfmt::skip]
 #[doc(hidden)]
 pub const __BOXOLOGY_SEMANTIC_DIGEST: [u8; 32] = [
-    213, 221, 122, 108, 128, 146, 251, 244, 226, 17, 50, 207, 111, 40, 105, 35, 29, 110,
-    10, 226, 46, 232, 46, 75, 0, 222, 228, 231, 99, 170, 100, 132,
+    192, 44, 154, 178, 213, 162, 127, 176, 152, 86, 129, 25, 25, 111, 47, 148, 63, 100,
+    229, 125, 214, 254, 249, 138, 77, 11, 166, 172, 66, 25, 71, 206,
 ];
 #[rustfmt::skip]
 #[doc(hidden)]
@@ -6624,21 +7202,23 @@ macro_rules! __boxology_check_implementation {
         $crate::__boxology_check_implementation!(@ find_bind_channel $receiver; $($method
         $validity;)*); $crate::__boxology_check_implementation!(@ find_accept_turn
         $receiver; $($method $validity;)*); $crate::__boxology_check_implementation!(@
-        find_interrupt_and_drain $receiver; $($method $validity;)*);
-        $crate::__boxology_check_implementation!(@ find_publish_native_event $receiver;
+        find_accept_interrupting_turn $receiver; $($method $validity;)*);
+        $crate::__boxology_check_implementation!(@ find_interrupt_and_drain $receiver;
         $($method $validity;)*); $crate::__boxology_check_implementation!(@
-        find_replay_native_events $receiver; $($method $validity;)*);
-        $crate::__boxology_check_implementation!(@ find_replace_session $receiver;
+        find_publish_native_event $receiver; $($method $validity;)*);
+        $crate::__boxology_check_implementation!(@ find_replay_native_events $receiver;
         $($method $validity;)*); $crate::__boxology_check_implementation!(@
-        find_recover_session $receiver; $($method $validity;)*);
-        $crate::__boxology_check_implementation!(@ find_channel_status $receiver;
+        find_replace_session $receiver; $($method $validity;)*);
+        $crate::__boxology_check_implementation!(@ find_recover_session $receiver;
         $($method $validity;)*); $crate::__boxology_check_implementation!(@
-        find_inspect_binding $receiver; $($method $validity;)*);
-        $crate::__boxology_check_implementation!(@ find_find_binding $receiver; $($method
-        $validity;)*); $crate::__boxology_check_implementation!(@ find_unbind_channel
-        $receiver; $($method $validity;)*); impl $crate::NativeChannelDispatch for
-        $receiver { fn bind_channel <'a > (&'a self, context : ::boxology::CallContext,
-        input : $crate::BindChannelRequest,) -> ::std::pin::Pin < ::std::boxed::Box < dyn
+        find_channel_status $receiver; $($method $validity;)*);
+        $crate::__boxology_check_implementation!(@ find_inspect_binding $receiver;
+        $($method $validity;)*); $crate::__boxology_check_implementation!(@
+        find_find_binding $receiver; $($method $validity;)*);
+        $crate::__boxology_check_implementation!(@ find_unbind_channel $receiver;
+        $($method $validity;)*); impl $crate::NativeChannelDispatch for $receiver { fn
+        bind_channel <'a > (&'a self, context : ::boxology::CallContext, input :
+        $crate::BindChannelRequest,) -> ::std::pin::Pin < ::std::boxed::Box < dyn
         ::core::future::Future < Output = ::core::result::Result <$crate::ChannelBinding,
         $crate::NativeChannelError >, > + ::core::marker::Send + 'a, >, > {
         ::std::boxed::Box::pin(self.bind_channel(context, input)) } fn accept_turn <'a >
@@ -6646,21 +7226,26 @@ macro_rules! __boxology_check_implementation {
         ::std::pin::Pin < ::std::boxed::Box < dyn ::core::future::Future < Output =
         ::core::result::Result <$crate::AcceptedTurn, $crate::NativeChannelError >, > +
         ::core::marker::Send + 'a, >, > { ::std::boxed::Box::pin(self
-        .accept_turn(context, input)) } fn interrupt_and_drain <'a > (&'a self, context :
-        ::boxology::CallContext, input : $crate::InterruptRequest,) -> ::std::pin::Pin <
-        ::std::boxed::Box < dyn ::core::future::Future < Output = ::core::result::Result
-        <$crate::InterruptReceipt, $crate::NativeChannelError >, > + ::core::marker::Send
-        + 'a, >, > { ::std::boxed::Box::pin(self.interrupt_and_drain(context, input)) }
-        fn publish_native_event <'a > (&'a self, context : ::boxology::CallContext, input
-        : $crate::NativeChannelEvent,) -> ::std::pin::Pin < ::std::boxed::Box < dyn
-        ::core::future::Future < Output = ::core::result::Result <$crate::PublishReceipt,
-        $crate::NativeChannelError >, > + ::core::marker::Send + 'a, >, > {
-        ::std::boxed::Box::pin(self.publish_native_event(context, input)) } fn
-        replay_native_events <'a > (&'a self, context : ::boxology::CallContext, input :
-        $crate::ReplayRequest,) -> ::std::pin::Pin < ::std::boxed::Box < dyn
-        ::core::future::Future < Output = ::core::result::Result
-        <$crate::PublishedEventPage, $crate::NativeChannelError >, > +
+        .accept_turn(context, input)) } fn accept_interrupting_turn <'a > (&'a self,
+        context : ::boxology::CallContext, input : $crate::InterruptingTurnRequest,) ->
+        ::std::pin::Pin < ::std::boxed::Box < dyn ::core::future::Future < Output =
+        ::core::result::Result <$crate::AcceptedTurn, $crate::NativeChannelError >, > +
         ::core::marker::Send + 'a, >, > { ::std::boxed::Box::pin(self
+        .accept_interrupting_turn(context, input)) } fn interrupt_and_drain <'a > (&'a
+        self, context : ::boxology::CallContext, input : $crate::InterruptRequest,) ->
+        ::std::pin::Pin < ::std::boxed::Box < dyn ::core::future::Future < Output =
+        ::core::result::Result <$crate::InterruptReceipt, $crate::NativeChannelError >, >
+        + ::core::marker::Send + 'a, >, > { ::std::boxed::Box::pin(self
+        .interrupt_and_drain(context, input)) } fn publish_native_event <'a > (&'a self,
+        context : ::boxology::CallContext, input : $crate::NativeChannelEvent,) ->
+        ::std::pin::Pin < ::std::boxed::Box < dyn ::core::future::Future < Output =
+        ::core::result::Result <$crate::PublishReceipt, $crate::NativeChannelError >, > +
+        ::core::marker::Send + 'a, >, > { ::std::boxed::Box::pin(self
+        .publish_native_event(context, input)) } fn replay_native_events <'a > (&'a self,
+        context : ::boxology::CallContext, input : $crate::ReplayRequest,) ->
+        ::std::pin::Pin < ::std::boxed::Box < dyn ::core::future::Future < Output =
+        ::core::result::Result <$crate::PublishedEventPage, $crate::NativeChannelError >,
+        > + ::core::marker::Send + 'a, >, > { ::std::boxed::Box::pin(self
         .replay_native_events(context, input)) } fn replace_session <'a > (&'a self,
         context : ::boxology::CallContext, input : $crate::ReplaceSessionRequest,) ->
         ::std::pin::Pin < ::std::boxed::Box < dyn ::core::future::Future < Output =
@@ -6728,6 +7313,34 @@ macro_rules! __boxology_check_implementation {
         $($rest)*);
     };
     (@ find_accept_turn $receiver:ty;) => {
+        compile_error!("Boxology capability implementation is missing");
+    };
+    (
+        @ find_accept_interrupting_turn $receiver:ty; accept_interrupting_turn valid;
+        $($rest:tt)*
+    ) => {
+        const _ : () = { fn require_service < T : ::core::marker::Send +
+        ::core::marker::Sync + 'static > () {} fn require_future < F :
+        ::core::future::Future < Output = ::core::result::Result <$crate::AcceptedTurn,
+        $crate::NativeChannelError >> + ::core::marker::Send > (_ : F) {} fn
+        check(receiver : &$receiver, context : ::boxology::CallContext, input :
+        $crate::InterruptingTurnRequest) { require_service::<$receiver > ();
+        require_future(receiver.accept_interrupting_turn(context, input)); } };
+    };
+    (
+        @ find_accept_interrupting_turn $receiver:ty; accept_interrupting_turn invalid;
+        $($rest:tt)*
+    ) => {
+        compile_error!("Boxology capability has an invalid structural signature");
+    };
+    (
+        @ find_accept_interrupting_turn $receiver:ty; $other:ident $validity:ident;
+        $($rest:tt)*
+    ) => {
+        $crate::__boxology_check_implementation!(@ find_accept_interrupting_turn
+        $receiver; $($rest)*);
+    };
+    (@ find_accept_interrupting_turn $receiver:ty;) => {
         compile_error!("Boxology capability implementation is missing");
     };
     (

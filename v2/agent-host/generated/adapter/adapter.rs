@@ -287,6 +287,11 @@ where
                                         ::boxology_contract::VariantPayload::Unit,
                                         None,
                                     ),
+                                    ::boxology_contract::VariantDescriptor::new(
+                                        "InterruptAndQueue",
+                                        ::boxology_contract::VariantPayload::Unit,
+                                        None,
+                                    ),
                                 ])
                                 .expect("generated enum descriptor is valid"),
                             None,

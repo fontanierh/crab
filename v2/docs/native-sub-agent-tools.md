@@ -27,4 +27,4 @@ Calls acknowledge accepted control work rather than waiting for a child model tu
 reads the parent's current durable ACP event cursor before spawning; `fresh` starts without parent
 history. `crashRestartLimit` defaults to one exact-session recovery and may be set to zero to make
 the child intentionally ephemeral. Input modes remain `queue`, `steer`, and
-`interrupt-and-steer`.
+`interrupt-and-steer`; the last is an atomic accept-and-cancel operation at the destination actor.

@@ -42,6 +42,27 @@
     {
       "deprecation": null,
       "docs": [
+        " Accept an input and cooperatively cancel active work as one ordered session operation. An",
+        " idle session simply starts the accepted turn. This is the safe primitive for automatic",
+        " bridge and sub-system `InterruptAndSteer` policy; native UI interrupt stays explicit."
+      ],
+      "error": "NativeChannelError",
+      "id": "native-channel.accept_interrupting_turn",
+      "idempotency": "none",
+      "input": {
+        "name": "request",
+        "type": "InterruptingTurnRequest"
+      },
+      "max_exposure": "code_only",
+      "name": "accept_interrupting_turn",
+      "output": {
+        "type": "AcceptedTurn"
+      },
+      "shape": "unary"
+    },
+    {
+      "deprecation": null,
+      "docs": [
         " Cancel current thinking/tool execution cooperatively and immediately drain accepted input."
       ],
       "error": "NativeChannelError",
@@ -213,9 +234,9 @@
   "provenance": {
     "generator": "boxology-generator",
     "generator_version": "0.1.1",
-    "semantic_digest": "sha256:d5dd7a6c8092fbf4e21132cf6f2869231d6e0ae22ee82e4b00dee4e763aa6484"
+    "semantic_digest": "sha256:c02c9ab2d5a27fb098568119196f2f943f64e57dd6fef98a4d0ba6ac421947ce"
   },
-  "revision": "sha256:afe38948c3efd58720cd6b994c492070fde7c68e22165f56a7655935482cfa7e",
+  "revision": "sha256:1179e37558c53fcb8f026c92b86d74e0c4ab833470a348593fcfc45dab92d20a",
   "schema_format": 1,
   "types": [
     {
@@ -424,6 +445,11 @@
           "deprecation": null,
           "docs": [],
           "name": "QueuedForTurnBoundary"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "CancelRequestedThenQueued"
         }
       ]
     },
@@ -474,10 +500,45 @@
           "docs": [],
           "name": "disposition",
           "type": "ChannelTurnDisposition"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "interrupted_run_id",
+          "type": "Option<String>"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "cancel_requested_at_ms",
+          "type": "Option<u64>"
         }
       ],
       "kind": "struct",
       "name": "AcceptedTurn"
+    },
+    {
+      "deprecation": null,
+      "docs": [
+        " Automatic interrupting ingress is distinct from the native UI's explicit interrupt action.",
+        " The turn is accepted durably in the same session operation that requests cancellation."
+      ],
+      "fields": [
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "turn",
+          "type": "ChannelTurn"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "reason",
+          "type": "String"
+        }
+      ],
+      "kind": "struct",
+      "name": "InterruptingTurnRequest"
     },
     {
       "deprecation": null,

@@ -149,6 +149,9 @@ boxology::contract! {
         Queue,
         /// Contribute to active work. Fail if ACP v2 or an equivalent extension was not negotiated.
         Steer,
+        /// Accept durably before cooperatively cancelling active work. The accepted input is then
+        /// the next queued run. If the session is idle, start it without issuing a cancellation.
+        InterruptAndQueue,
     }
 
     pub struct PromptRequest {
@@ -166,6 +169,7 @@ boxology::contract! {
         StartedForegroundWork,
         ContributedToActiveWork,
         QueuedForTurnBoundary,
+        CancelRequestedThenQueued,
     }
 
     pub struct PromptAccepted {
@@ -173,6 +177,10 @@ boxology::contract! {
         pub run_id: String,
         pub accepted_at_ms: u64,
         pub disposition: PromptDisposition,
+        /// Active run cooperatively cancelled by `InterruptAndQueue`, otherwise absent.
+        pub interrupted_run_id: Option<String>,
+        /// Time at which the cancellation notification was accepted for transport.
+        pub cancel_requested_at_ms: Option<u64>,
     }
 
     /// A hint for indexing and UI filtering. `native_event_json` is always authoritative.
@@ -317,7 +325,9 @@ boxology::contract! {
     pub async fn resume_session(request: ResumeSessionRequest) -> Result<AgentSession, AgentHostError>;
 
     /// Submit input without waiting for work to finish. `Queue` is portable. `Steer` uses the ACP
-    /// v2 prompt lifecycle or a negotiated extension and fails rather than silently becoming queue.
+    /// v2 prompt lifecycle or a negotiated extension and fails rather than silently becoming
+    /// queue. `InterruptAndQueue` is one actor operation: it accepts the input and requests
+    /// cooperative cancellation before any completion signal can drain the queue.
     #[capability]
     pub async fn prompt(request: PromptRequest) -> Result<PromptAccepted, AgentHostError>;
 

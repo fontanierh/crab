@@ -31,8 +31,9 @@ runtime-state/
 - SQLite schema v1 uses WAL, foreign keys, full synchronous writes and fail-closed version checks.
 - Spawn and message retries use caller IDs plus canonical request fingerprints; changed retries are
   rejected instead of silently reusing prior work.
-- Parent-to-child and child-to-parent sends support queue, steer and cancel-then-queue. Delivery is
-  accepted without waiting for model completion.
+- Parent-to-child and child-to-parent sends support queue, steer and actor-serialized
+  cancel-then-queue. The interrupting input is accepted before completion can drain older work;
+  delivery never waits for model completion.
 - A background cursor pump copies every child ACP event, including tool calls and agent-owned
   compaction events, into the sub-agent journal without narrowing the native JSON.
 - On reopen, active records become explicit recovery candidates and transport-ambiguous pending

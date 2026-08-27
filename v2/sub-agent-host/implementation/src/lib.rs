@@ -13,8 +13,7 @@ use std::{
 use boxology_contract::{CallContext, Caller, CancelToken, ErasedCallError, TraceContext};
 use boxology_import_agent_host::{
     AcpEventDirection, AcpEventKind, AgentInputMode, AgentLifecycle, OpenSessionRequest,
-    PromptDisposition, PromptRequest, ReadEventsRequest, ResumeSessionRequest, RunReference,
-    SessionReference,
+    PromptDisposition, PromptRequest, ReadEventsRequest, ResumeSessionRequest, SessionReference,
 };
 use generated::AgentHostImport;
 use serde_json::{Value, json};
@@ -301,37 +300,10 @@ impl SubAgentHost {
         native_prompt_json: &str,
         unknown_session: SubAgentHostError,
     ) -> Result<(InputDisposition, u64), SubAgentHostError> {
-        let (agent_mode, interrupted) = match mode {
-            SubAgentInputMode::Queue => (AgentInputMode::Queue, false),
-            SubAgentInputMode::Steer => (AgentInputMode::Steer, false),
-            SubAgentInputMode::InterruptAndSteer => {
-                let status = self
-                    .agent_host
-                    .session_status(
-                        context.clone(),
-                        SessionReference {
-                            session_id: session_id.to_owned(),
-                        },
-                    )
-                    .await
-                    .map_err(|error| map_session_call(error, unknown_session.clone()))?;
-                let mut interrupted = false;
-                if let Some(run_id) = status.active_run_id {
-                    let receipt = self
-                        .agent_host
-                        .cancel_run(
-                            context.clone(),
-                            RunReference {
-                                session_id: session_id.to_owned(),
-                                run_id,
-                            },
-                        )
-                        .await
-                        .map_err(|error| map_session_call(error, unknown_session.clone()))?;
-                    interrupted = receipt.accepted;
-                }
-                (AgentInputMode::Queue, interrupted)
-            }
+        let agent_mode = match mode {
+            SubAgentInputMode::Queue => AgentInputMode::Queue,
+            SubAgentInputMode::Steer => AgentInputMode::Steer,
+            SubAgentInputMode::InterruptAndSteer => AgentInputMode::InterruptAndQueue,
             SubAgentInputMode::Unknown { .. } => {
                 return Err(SubAgentHostError::InvalidNativePayload);
             }
@@ -349,11 +321,7 @@ impl SubAgentHost {
             )
             .await
             .map_err(|error| map_session_call(error, unknown_session))?;
-        let disposition = if interrupted {
-            InputDisposition::CancelRequestedThenQueued
-        } else {
-            map_disposition(accepted.disposition)?
-        };
+        let disposition = map_disposition(accepted.disposition)?;
         Ok((disposition, accepted.accepted_at_ms))
     }
 
@@ -989,6 +957,9 @@ fn map_disposition(disposition: PromptDisposition) -> Result<InputDisposition, S
         PromptDisposition::StartedForegroundWork => Ok(InputDisposition::StartedForegroundWork),
         PromptDisposition::ContributedToActiveWork => Ok(InputDisposition::ContributedToActiveWork),
         PromptDisposition::QueuedForTurnBoundary => Ok(InputDisposition::QueuedForTurnBoundary),
+        PromptDisposition::CancelRequestedThenQueued => {
+            Ok(InputDisposition::CancelRequestedThenQueued)
+        }
         PromptDisposition::Unknown { .. } => Err(SubAgentHostError::InvalidNativePayload),
     }
 }

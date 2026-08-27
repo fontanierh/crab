@@ -83,7 +83,9 @@
       "deprecation": null,
       "docs": [
         " Submit input without waiting for work to finish. `Queue` is portable. `Steer` uses the ACP",
-        " v2 prompt lifecycle or a negotiated extension and fails rather than silently becoming queue."
+        " v2 prompt lifecycle or a negotiated extension and fails rather than silently becoming",
+        " queue. `InterruptAndQueue` is one actor operation: it accepts the input and requests",
+        " cooperative cancellation before any completion signal can drain the queue."
       ],
       "error": "AgentHostError",
       "id": "agent-host.prompt",
@@ -216,9 +218,9 @@
   "provenance": {
     "generator": "boxology-generator",
     "generator_version": "0.1.1",
-    "semantic_digest": "sha256:14d53513035e5a7f4e2a7637763c16124cf8e6df1dd63e53a8b1e850b8076309"
+    "semantic_digest": "sha256:2a79e252e3890d98feb6a6397adfab9e6a84826c3366e4917fdcdcf43cdb7a2c"
   },
-  "revision": "sha256:71d1650ce348f47d6fe90a1b719d7dd00e6d4fedb4111d6428a0864feee3f84e",
+  "revision": "sha256:a2e3701742bd201e79f923b3cc3b1218b65b7d876ff68f0e13d3dde44d08f5bb",
   "schema_format": 1,
   "types": [
     {
@@ -764,6 +766,14 @@
             " Contribute to active work. Fail if ACP v2 or an equivalent extension was not negotiated."
           ],
           "name": "Steer"
+        },
+        {
+          "deprecation": null,
+          "docs": [
+            " Accept durably before cooperatively cancelling active work. The accepted input is then",
+            " the next queued run. If the session is idle, start it without issuing a cancellation."
+          ],
+          "name": "InterruptAndQueue"
         }
       ]
     },
@@ -826,6 +836,11 @@
           "deprecation": null,
           "docs": [],
           "name": "QueuedForTurnBoundary"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "CancelRequestedThenQueued"
         }
       ]
     },
@@ -856,6 +871,22 @@
           "docs": [],
           "name": "disposition",
           "type": "PromptDisposition"
+        },
+        {
+          "deprecation": null,
+          "docs": [
+            " Active run cooperatively cancelled by `InterruptAndQueue`, otherwise absent."
+          ],
+          "name": "interrupted_run_id",
+          "type": "Option<String>"
+        },
+        {
+          "deprecation": null,
+          "docs": [
+            " Time at which the cancellation notification was accepted for transport."
+          ],
+          "name": "cancel_requested_at_ms",
+          "type": "Option<u64>"
         }
       ],
       "kind": "struct",
