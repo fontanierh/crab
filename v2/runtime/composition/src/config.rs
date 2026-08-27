@@ -8,7 +8,9 @@ use agent_host_implementation::{
     AgentProtocol, AgentSteeringExtension, AuthorityProbeConfig, ConfiguredAgent,
     ConfiguredMcpServer,
 };
-use bridge_host_contract::{AuthenticationMethod, BridgeIngressMode, BridgeSpec};
+use bridge_host_contract::{
+    AuthenticationMethod, BridgeAlertTarget, BridgeIngressMode, BridgeSpec,
+};
 use serde::Deserialize;
 use serde_json::{Map, Value};
 
@@ -182,6 +184,9 @@ pub struct BridgeConfig {
     pub authentication_methods: Vec<BridgeAuthenticationConfig>,
     /// Fixed ingress behavior for this bridge generation.
     pub ingress_mode: BridgeIngressConfig,
+    /// Optional agent channel for actionable health/auth incidents.
+    #[serde(default)]
+    pub alert_target: Option<BridgeAlertConfig>,
     /// Whether the package should be supervised.
     pub desired_running: bool,
     /// Delay between live health probes.
@@ -192,6 +197,16 @@ pub struct BridgeConfig {
     pub restart_limit: u64,
     /// Restart-budget window and maximum backoff.
     pub restart_window_ms: u64,
+}
+
+/// Existing native route that receives bridge incident and recovery turns.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct BridgeAlertConfig {
+    /// Configured native-channel route key.
+    pub channel_id: String,
+    /// Configured trigger worker lane for that channel.
+    pub lane: String,
 }
 
 /// Authentication presentation selected from the generic bridge contract.
@@ -450,6 +465,17 @@ impl RuntimeConfig {
             {
                 return Err(RuntimeConfigError::InvalidTopology);
             }
+            if bridge.alert_target.as_ref().is_some_and(|target| {
+                target.channel_id.trim().is_empty()
+                    || target.lane.trim().is_empty()
+                    || !channels.contains(target.channel_id.as_str())
+                    || !lanes.contains(target.lane.as_str())
+                    || self.channels.iter().any(|channel| {
+                        channel.channel_id == target.channel_id && channel.lane != target.lane
+                    })
+            }) {
+                return Err(RuntimeConfigError::InvalidTopology);
+            }
             if let Some(target) = bridge.configuration.get("targetChannelId")
                 && (!target.is_string() || !channels.contains(target.as_str().unwrap_or_default()))
             {
@@ -503,6 +529,10 @@ impl BridgeConfig {
                 BridgeIngressConfig::Steer => BridgeIngressMode::Steer,
                 BridgeIngressConfig::InterruptAndSteer => BridgeIngressMode::InterruptAndSteer,
             },
+            alert_target: self.alert_target.as_ref().map(|target| BridgeAlertTarget {
+                channel_id: target.channel_id.clone(),
+                lane: target.lane.clone(),
+            }),
             desired_running: self.desired_running,
             health_interval_ms: self.health_interval_ms,
             credential_validation_interval_ms: self.credential_validation_interval_ms,
@@ -594,7 +624,9 @@ mod tests {
                 "workingDirectory": "../bridges/whatsapp",
                 "configuration": {"targetChannelId":"primary","browserName":"Crab"},
                 "authenticationMethods": ["qrCode", "phoneCode"],
-                "ingressMode": "queue", "desiredRunning": true,
+                "ingressMode": "queue",
+                "alertTarget": {"channelId":"primary","lane":"primary"},
+                "desiredRunning": true,
                 "healthIntervalMs": 5000, "credentialValidationIntervalMs": 3600000,
                 "restartLimit": 5, "restartWindowMs": 300000
               }]
@@ -634,10 +666,27 @@ mod tests {
         assert!(spec.launch_json.contains("PATH"));
         assert!(!spec.launch_json.contains("secret"));
         assert_eq!(spec.authentication_methods.len(), 2);
+        assert_eq!(
+            spec.alert_target
+                .as_ref()
+                .map(|target| target.channel_id.as_str()),
+            Some("primary")
+        );
 
         let mut invalid = config.clone();
         invalid.agents[0].steering_extension =
             Some(super::SteeringExtensionConfig::SessionSteeringV1);
+        assert!(matches!(
+            invalid.validate(),
+            Err(RuntimeConfigError::InvalidTopology)
+        ));
+
+        let mut invalid = config.clone();
+        invalid.bridges[0]
+            .alert_target
+            .as_mut()
+            .expect("fixture alert target")
+            .lane = "missing".into();
         assert!(matches!(
             invalid.validate(),
             Err(RuntimeConfigError::InvalidTopology)

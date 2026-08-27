@@ -1,0 +1,24 @@
+%%{init: {"theme": "base", "themeVariables": {"fontFamily": "ui-sans-serif, system-ui, sans-serif", "primaryTextColor": "#172033", "lineColor": "#64748b", "edgeLabelBackground": "#ffffff"}, "flowchart": {"curve": "basis", "nodeSpacing": 42, "rankSpacing": 58}}}%%
+flowchart LR
+    PROBE["package launch<br/>health + credential probe"]
+    CLASSIFY{"actionable<br/>incident?"}
+    EPISODE[("SQLite incident episode<br/>generation + sequence")]
+    INBOX[("trigger-inbox<br/>durable dedupe")]
+    AGENT["configured agent channel<br/>Queue"]
+    HEALTHY["fully healthy"]
+
+    PROBE --> CLASSIFY
+    CLASSIFY -->|"yes"| EPISODE
+    EPISODE -->|"retry same incident key<br/>until committed"| INBOX --> AGENT
+    CLASSIFY -->|"no"| HEALTHY
+    HEALTHY -->|"close active episode"| EPISODE
+    EPISODE -->|"one recovery key"| INBOX
+
+    classDef probe fill:#e0f2fe,stroke:#0284c7,color:#0c4a6e,stroke-width:1.5px;
+    classDef decision fill:#fef3c7,stroke:#d97706,color:#78350f,stroke-width:1.5px;
+    classDef durable fill:#dcfce7,stroke:#16a34a,color:#14532d,stroke-width:1.5px;
+    classDef agent fill:#ede9fe,stroke:#7c3aed,color:#4c1d95,stroke-width:1.5px;
+    class PROBE,HEALTHY probe;
+    class CLASSIFY decision;
+    class EPISODE,INBOX durable;
+    class AGENT agent;

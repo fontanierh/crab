@@ -7,9 +7,9 @@ use async_trait::async_trait;
 use boxology_contract::{CallContext, Caller, CancelToken, TraceContext};
 use boxology_runtime::CompositionBuilder;
 use bridge_host_contract::{
-    AuthenticationMethod, BeginAuthenticationRequest, BridgeInbound, BridgeIngressMode,
-    BridgeLifecycle, BridgeOutbound, BridgeReference, BridgeSpec, DeliveryLifecycle,
-    ImportBridgeContentRequest, ReconcileBridgeRequest, ReplaceBridgeRequest,
+    AuthenticationMethod, BeginAuthenticationRequest, BridgeAlertTarget, BridgeInbound,
+    BridgeIngressMode, BridgeLifecycle, BridgeOutbound, BridgeReference, BridgeSpec,
+    DeliveryLifecycle, ImportBridgeContentRequest, ReconcileBridgeRequest, ReplaceBridgeRequest,
     SubmitAuthenticationRequest,
 };
 use bridge_host_implementation::{
@@ -19,7 +19,7 @@ use bridge_host_implementation::{
     PackageCredentialValidation, PackageDelivery, PackageHealth, generated as bridge_host,
 };
 use sha2::{Digest, Sha256};
-use trigger_inbox_contract::{TriggerMode, TriggerReference};
+use trigger_inbox_contract::{ClaimTriggers, TriggerMode, TriggerReference};
 use trigger_inbox_implementation::{TriggerInbox, generated as trigger_inbox};
 
 #[derive(Default)]
@@ -180,6 +180,7 @@ fn spec(mode: BridgeIngressMode) -> BridgeSpec {
         configuration_json: "{}".into(),
         authentication_methods: vec![AuthenticationMethod::PhoneCode],
         ingress_mode: mode,
+        alert_target: None,
         desired_running: true,
         health_interval_ms: 10,
         credential_validation_interval_ms: 10,
@@ -506,6 +507,7 @@ async fn supervisor_recovers_a_failed_package_within_the_restart_budget() {
     let trigger_store = TriggerInbox::open_in_memory().expect("trigger inbox opens");
     let mut builder = CompositionBuilder::new();
     let trigger = trigger_inbox::register(&mut builder, trigger_store);
+    let trigger_handle = builder.handle::<trigger_inbox_contract::TriggerInboxHandle>(&trigger);
     let bridge = bridge_host::register(&mut builder, move |imports| {
         bridge_state.connect(
             imports.trigger_inbox,
@@ -522,6 +524,10 @@ async fn supervisor_recovers_a_failed_package_within_the_restart_budget() {
 
     let mut recovering = spec(BridgeIngressMode::Queue);
     recovering.authentication_methods.clear();
+    recovering.alert_target = Some(BridgeAlertTarget {
+        channel_id: "primary".into(),
+        lane: "primary".into(),
+    });
     assert!(
         bridge_handle
             .register_bridge(context(), recovering)
@@ -550,6 +556,48 @@ async fn supervisor_recovers_a_failed_package_within_the_restart_budget() {
     })
     .await
     .expect("supervisor retries and restores health");
+
+    tokio::time::sleep(std::time::Duration::from_millis(40)).await;
+    let now_ms = u64::try_from(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock is valid")
+            .as_millis(),
+    )
+    .expect("clock fits");
+    let alerts = trigger_handle
+        .claim(
+            context(),
+            ClaimTriggers {
+                worker_id: "incident-test".into(),
+                lane: "primary".into(),
+                limit: 10,
+                lease_duration_ms: 10_000,
+                now_ms,
+            },
+        )
+        .await
+        .expect("supervisor alerts are durable");
+    assert_eq!(alerts.leases.len(), 2);
+    assert!(
+        alerts.leases[0]
+            .trigger
+            .message_json
+            .contains("crab.bridge.incident")
+    );
+    assert!(
+        alerts.leases[1]
+            .trigger
+            .message_json
+            .contains("crab.bridge.recovered")
+    );
+    assert!(
+        alerts
+            .leases
+            .iter()
+            .all(|lease| lease.trigger.mode == TriggerMode::Queue
+                && lease.trigger.target_channel_id == "primary")
+    );
 
     bridge_handle
         .stop_bridge(

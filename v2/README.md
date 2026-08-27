@@ -76,8 +76,10 @@ interrupt as a separate explicit action.
   [rendered attach flow](docs/channel-gateway-flow.png).
 - `bridge-host` supervises agent-installed JSON-lines packages, brokers private file-backed
   credentials, actively probes health and credential validity, and applies bounded restart
-  backoff. Package-originated ingress is acknowledged only after the generated `trigger-inbox`
-  import commits it. Bounded inbound media is fsynced into host-owned private content and only
+  backoff. Optional generation-fixed alert targets receive one durable queue turn per actionable
+  incident and one recovery turn; failed enqueues retry without duplication. Package-originated
+  ingress is acknowledged only after the generated `trigger-inbox` import commits it. Bounded
+  inbound media is fsynced into host-owned private content and only
   validated handles become ACP resource links; mutable service credentials use fingerprint-CAS
   atomic snapshots; selected outbound delivery is durable and idempotent. `crab-v2-bridge` exposes
   its complete operator lifecycle through authenticated local IPC without disclosing credential

@@ -1038,6 +1038,26 @@ where
                             None,
                         ),
                         ::boxology_contract::FieldDescriptor::new(
+                            "alert_target",
+                            ::boxology_contract::TypeDescriptor::optional(
+                                    ::boxology_contract::TypeDescriptor::structure([
+                                            ::boxology_contract::FieldDescriptor::new(
+                                                "channel_id",
+                                                ::boxology_contract::TypeDescriptor::string(),
+                                                None,
+                                            ),
+                                            ::boxology_contract::FieldDescriptor::new(
+                                                "lane",
+                                                ::boxology_contract::TypeDescriptor::string(),
+                                                None,
+                                            ),
+                                        ])
+                                        .expect("generated struct descriptor is valid"),
+                                )
+                                .expect("generated optional descriptor is valid"),
+                            None,
+                        ),
+                        ::boxology_contract::FieldDescriptor::new(
                             "desired_running",
                             ::boxology_contract::TypeDescriptor::bool(),
                             None,
@@ -1236,6 +1256,26 @@ where
                                                 ),
                                             ])
                                             .expect("generated enum descriptor is valid"),
+                                        None,
+                                    ),
+                                    ::boxology_contract::FieldDescriptor::new(
+                                        "alert_target",
+                                        ::boxology_contract::TypeDescriptor::optional(
+                                                ::boxology_contract::TypeDescriptor::structure([
+                                                        ::boxology_contract::FieldDescriptor::new(
+                                                            "channel_id",
+                                                            ::boxology_contract::TypeDescriptor::string(),
+                                                            None,
+                                                        ),
+                                                        ::boxology_contract::FieldDescriptor::new(
+                                                            "lane",
+                                                            ::boxology_contract::TypeDescriptor::string(),
+                                                            None,
+                                                        ),
+                                                    ])
+                                                    .expect("generated struct descriptor is valid"),
+                                            )
+                                            .expect("generated optional descriptor is valid"),
                                         None,
                                     ),
                                     ::boxology_contract::FieldDescriptor::new(

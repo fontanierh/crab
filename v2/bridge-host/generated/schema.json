@@ -295,9 +295,9 @@
   "provenance": {
     "generator": "boxology-generator",
     "generator_version": "0.1.1",
-    "semantic_digest": "sha256:4f7a565731e2f28fdb82a93b080008d4940c967f628e94d8a1ccc53510f58ac5"
+    "semantic_digest": "sha256:130236a343eb383c4980dd3f4e2d3399761ae8ac05fe2c5e89f2afeaca11664a"
   },
-  "revision": "sha256:b66a7692a957d38d7cba393d60d4248f612fc79835e130b036c8ed8280bb3f21",
+  "revision": "sha256:a1708ebe3dd71369b16a5018187bcf669d7c393539bc0b6a4f0794ad86c113f8",
   "schema_format": 1,
   "types": [
     {
@@ -504,6 +504,28 @@
     {
       "deprecation": null,
       "docs": [
+        " Agent channel that receives actionable supervisor incidents in queue mode."
+      ],
+      "fields": [
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "channel_id",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "lane",
+          "type": "String"
+        }
+      ],
+      "kind": "struct",
+      "name": "BridgeAlertTarget"
+    },
+    {
+      "deprecation": null,
+      "docs": [
         " Installation metadata for a bridge package. The agent may add new packages at runtime."
       ],
       "fields": [
@@ -554,6 +576,14 @@
           "docs": [],
           "name": "ingress_mode",
           "type": "BridgeIngressMode"
+        },
+        {
+          "deprecation": null,
+          "docs": [
+            " Optional and generation-fixed. When absent, supervision remains silent."
+          ],
+          "name": "alert_target",
+          "type": "Option<BridgeAlertTarget>"
         },
         {
           "deprecation": null,
@@ -624,6 +654,12 @@
           "docs": [],
           "name": "ingress_mode",
           "type": "BridgeIngressMode"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "alert_target",
+          "type": "Option<BridgeAlertTarget>"
         },
         {
           "deprecation": null,

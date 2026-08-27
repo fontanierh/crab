@@ -74,6 +74,7 @@
       },
       "authenticationMethods": ["qrCode", "phoneCode"],
       "ingressMode": "queue",
+      "alertTarget": { "channelId": "primary", "lane": "primary" },
       "desiredRunning": true,
       "healthIntervalMs": 5000,
       "credentialValidationIntervalMs": 3600000,

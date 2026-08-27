@@ -5,13 +5,27 @@ use serde_json::{Value, json};
 use uuid::Uuid;
 
 use crate::{
-    AuthenticationChallenge, AuthenticationMethod, BridgeHostError, BridgeInbound,
-    BridgeIngressMode, BridgeLifecycle, BridgeOutbound, BridgeReceipt, BridgeRecord, BridgeSpec,
-    BridgeStatus, CredentialLifecycle, CredentialStatus, DeliveryLifecycle, DeliveryReceipt,
-    HealthObservation, TriggerIntent,
+    AuthenticationChallenge, AuthenticationMethod, BridgeAlertTarget, BridgeHostError,
+    BridgeInbound, BridgeIngressMode, BridgeLifecycle, BridgeOutbound, BridgeReceipt, BridgeRecord,
+    BridgeSpec, BridgeStatus, CredentialLifecycle, CredentialStatus, DeliveryLifecycle,
+    DeliveryReceipt, HealthObservation, TriggerIntent,
 };
 
-const SCHEMA_VERSION: i64 = 1;
+const SCHEMA_VERSION: i64 = 2;
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct BridgeIncidentEpisode {
+    pub(crate) bridge_id: String,
+    pub(crate) generation: u64,
+    pub(crate) sequence: u64,
+    pub(crate) kind: String,
+    pub(crate) started_at_ms: u64,
+    pub(crate) target_channel_id: String,
+    pub(crate) lane: String,
+    pub(crate) incident_trigger_id: Option<String>,
+    pub(crate) recovered_at_ms: Option<u64>,
+    pub(crate) recovery_trigger_id: Option<String>,
+}
 
 pub(crate) struct BridgeStore {
     connection: Mutex<Connection>,
@@ -39,7 +53,11 @@ impl BridgeStore {
             .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
             .map_err(storage_error)?;
         match version {
-            0 => migrate_v0_to_v1(&mut connection)?,
+            0 => {
+                migrate_v0_to_v1(&mut connection)?;
+                migrate_v1_to_v2(&mut connection)?;
+            }
+            1 => migrate_v1_to_v2(&mut connection)?,
             SCHEMA_VERSION => {}
             _ => return Err(BridgeHostError::StorageUnavailable),
         }
@@ -88,8 +106,25 @@ impl BridgeStore {
             .optional()
             .map_err(storage_error)?
         {
-            if existing != fingerprint {
+            if !fingerprints_equal(&existing, &fingerprint)? {
                 return Err(BridgeHostError::DuplicateBridgeConflict);
+            }
+            if existing != fingerprint {
+                transaction
+                    .execute(
+                        "UPDATE bridges SET spec_fingerprint = ?2 WHERE bridge_id = ?1",
+                        params![spec.bridge_id, fingerprint],
+                    )
+                    .map_err(storage_error)?;
+                transaction
+                    .execute(
+                        "UPDATE generation_audit SET spec_fingerprint = ?2
+                         WHERE bridge_id = ?1 AND generation = (
+                            SELECT generation FROM bridges WHERE bridge_id = ?1
+                         )",
+                        params![spec.bridge_id, fingerprint],
+                    )
+                    .map_err(storage_error)?;
             }
             transaction.commit().map_err(storage_error)?;
             drop(connection);
@@ -103,9 +138,10 @@ impl BridgeStore {
                     authentication_methods_json, ingress_mode, desired_running,
                     health_interval_ms, credential_validation_interval_ms, restart_limit,
                     restart_window_ms, lifecycle, generation, registered_at_ms,
-                    consecutive_failures, next_restart_at_ms, last_error, spec_fingerprint
+                    consecutive_failures, next_restart_at_ms, last_error,
+                    alert_target_channel_id, alert_lane, spec_fingerprint
                  ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12,
-                           'Registered', 1, ?13, 0, NULL, NULL, ?14)",
+                           'Registered', 1, ?13, 0, NULL, NULL, ?14, ?15, ?16)",
                 params![
                     spec.bridge_id,
                     spec.package_id,
@@ -120,6 +156,12 @@ impl BridgeStore {
                     db_i64(spec.restart_limit)?,
                     db_i64(spec.restart_window_ms)?,
                     db_i64(now_ms)?,
+                    spec.alert_target
+                        .as_ref()
+                        .map(|target| target.channel_id.as_str()),
+                    spec.alert_target
+                        .as_ref()
+                        .map(|target| target.lane.as_str()),
                     fingerprint,
                 ],
             )
@@ -167,7 +209,7 @@ impl BridgeStore {
                     credential_validation_interval_ms = ?11, restart_limit = ?12,
                     restart_window_ms = ?13, lifecycle = 'Registered', generation = generation + 1,
                     consecutive_failures = 0, next_restart_at_ms = NULL, last_error = NULL,
-                    spec_fingerprint = ?14
+                    alert_target_channel_id = ?14, alert_lane = ?15, spec_fingerprint = ?16
                  WHERE bridge_id = ?1 AND generation = ?2",
                 params![
                     spec.bridge_id,
@@ -183,6 +225,12 @@ impl BridgeStore {
                     db_i64(spec.credential_validation_interval_ms)?,
                     db_i64(spec.restart_limit)?,
                     db_i64(spec.restart_window_ms)?,
+                    spec.alert_target
+                        .as_ref()
+                        .map(|target| target.channel_id.as_str()),
+                    spec.alert_target
+                        .as_ref()
+                        .map(|target| target.lane.as_str()),
                     fingerprint,
                 ],
             )
@@ -222,7 +270,8 @@ impl BridgeStore {
                 "SELECT package_id, display_name, launch_json, configuration_json,
                         authentication_methods_json, ingress_mode, desired_running,
                         health_interval_ms, credential_validation_interval_ms,
-                        restart_limit, restart_window_ms
+                        restart_limit, restart_window_ms,
+                        alert_target_channel_id, alert_lane
                  FROM bridges WHERE bridge_id = ?1",
                 params![bridge_id],
                 |row| {
@@ -238,6 +287,8 @@ impl BridgeStore {
                         row.get::<_, i64>(8)?,
                         row.get::<_, i64>(9)?,
                         row.get::<_, i64>(10)?,
+                        row.get::<_, Option<String>>(11)?,
+                        row.get::<_, Option<String>>(12)?,
                     ))
                 },
             )
@@ -257,7 +308,16 @@ impl BridgeStore {
                     validation_interval,
                     restart_limit,
                     restart_window,
+                    alert_channel_id,
+                    alert_lane,
                 )| {
+                    let alert_target = match (alert_channel_id, alert_lane) {
+                        (Some(channel_id), Some(lane)) => {
+                            Some(BridgeAlertTarget { channel_id, lane })
+                        }
+                        (None, None) => None,
+                        _ => return Err(BridgeHostError::StorageUnavailable),
+                    };
                     Ok(BridgeSpec {
                         bridge_id: bridge_id.to_owned(),
                         package_id,
@@ -266,6 +326,7 @@ impl BridgeStore {
                         configuration_json,
                         authentication_methods: decode_authentication_methods(&methods)?,
                         ingress_mode: parse_ingress_mode(&ingress_mode)?,
+                        alert_target,
                         desired_running,
                         health_interval_ms: db_u64(health_interval)?,
                         credential_validation_interval_ms: db_u64(validation_interval)?,
@@ -313,7 +374,7 @@ impl BridgeStore {
         connection
             .query_row(
                 "SELECT package_id, display_name, lifecycle, ingress_mode, desired_running,
-                        generation, registered_at_ms
+                        generation, registered_at_ms, alert_target_channel_id, alert_lane
                  FROM bridges WHERE bridge_id = ?1",
                 params![bridge_id],
                 |row| {
@@ -325,6 +386,8 @@ impl BridgeStore {
                         row.get::<_, bool>(4)?,
                         row.get::<_, i64>(5)?,
                         row.get::<_, i64>(6)?,
+                        row.get::<_, Option<String>>(7)?,
+                        row.get::<_, Option<String>>(8)?,
                     ))
                 },
             )
@@ -332,13 +395,31 @@ impl BridgeStore {
             .map_err(storage_error)?
             .ok_or(BridgeHostError::UnknownBridge)
             .and_then(
-                |(package_id, display_name, lifecycle, mode, desired, generation, registered)| {
+                |(
+                    package_id,
+                    display_name,
+                    lifecycle,
+                    mode,
+                    desired,
+                    generation,
+                    registered,
+                    alert_channel_id,
+                    alert_lane,
+                )| {
+                    let alert_target = match (alert_channel_id, alert_lane) {
+                        (Some(channel_id), Some(lane)) => {
+                            Some(BridgeAlertTarget { channel_id, lane })
+                        }
+                        (None, None) => None,
+                        _ => return Err(BridgeHostError::StorageUnavailable),
+                    };
                     Ok(BridgeRecord {
                         bridge_id: bridge_id.to_owned(),
                         package_id,
                         display_name,
                         lifecycle: parse_lifecycle(&lifecycle)?,
                         ingress_mode: parse_ingress_mode(&mode)?,
+                        alert_target,
                         desired_running: desired,
                         generation: db_u64(generation)?,
                         registered_at_ms: db_u64(registered)?,
@@ -1091,6 +1172,153 @@ impl BridgeStore {
         self.status(bridge_id, now_ms)
     }
 
+    pub(crate) fn begin_incident(
+        &self,
+        bridge_id: &str,
+        kind: &str,
+        target: &BridgeAlertTarget,
+        now_ms: u64,
+    ) -> Result<BridgeIncidentEpisode, BridgeHostError> {
+        if kind.trim().is_empty()
+            || kind.len() > 128
+            || target.channel_id.trim().is_empty()
+            || target.channel_id.len() > 512
+            || target.lane.trim().is_empty()
+            || target.lane.len() > 512
+        {
+            return Err(BridgeHostError::StorageUnavailable);
+        }
+        let mut connection = self.lock()?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(storage_error)?;
+        let generation = transaction
+            .query_row(
+                "SELECT generation FROM bridges WHERE bridge_id = ?1",
+                params![bridge_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()
+            .map_err(storage_error)?
+            .ok_or(BridgeHostError::UnknownBridge)?;
+        let active = query_active_incident(&transaction, bridge_id)?;
+        if let Some(active) = active
+            && active.generation == db_u64(generation)?
+            && active.kind == kind
+        {
+            transaction.commit().map_err(storage_error)?;
+            return Ok(active);
+        }
+        transaction
+            .execute(
+                "UPDATE bridge_incidents SET recovered_at_ms = ?2,
+                    recovery_trigger_id = 'superseded'
+                 WHERE bridge_id = ?1 AND recovered_at_ms IS NULL",
+                params![bridge_id, db_i64(now_ms)?],
+            )
+            .map_err(storage_error)?;
+        transaction
+            .execute(
+                "UPDATE bridge_incidents SET recovery_trigger_id = 'superseded'
+                 WHERE bridge_id = ?1 AND recovered_at_ms IS NOT NULL
+                       AND recovery_trigger_id IS NULL",
+                params![bridge_id],
+            )
+            .map_err(storage_error)?;
+        let sequence = transaction
+            .query_row(
+                "SELECT COALESCE(MAX(sequence), 0) + 1
+                 FROM bridge_incidents WHERE bridge_id = ?1",
+                params![bridge_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .map_err(storage_error)?;
+        transaction
+            .execute(
+                "INSERT INTO bridge_incidents (
+                    bridge_id, sequence, generation, kind, started_at_ms,
+                    target_channel_id, lane,
+                    incident_trigger_id, recovered_at_ms, recovery_trigger_id
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL, NULL, NULL)",
+                params![
+                    bridge_id,
+                    sequence,
+                    generation,
+                    kind,
+                    db_i64(now_ms)?,
+                    target.channel_id,
+                    target.lane,
+                ],
+            )
+            .map_err(storage_error)?;
+        transaction.commit().map_err(storage_error)?;
+        Ok(BridgeIncidentEpisode {
+            bridge_id: bridge_id.to_owned(),
+            generation: db_u64(generation)?,
+            sequence: db_u64(sequence)?,
+            kind: kind.to_owned(),
+            started_at_ms: now_ms,
+            target_channel_id: target.channel_id.clone(),
+            lane: target.lane.clone(),
+            incident_trigger_id: None,
+            recovered_at_ms: None,
+            recovery_trigger_id: None,
+        })
+    }
+
+    pub(crate) fn mark_incident_enqueued(
+        &self,
+        bridge_id: &str,
+        sequence: u64,
+        trigger_id: &str,
+    ) -> Result<(), BridgeHostError> {
+        let connection = self.lock()?;
+        mark_incident_trigger(
+            &connection,
+            bridge_id,
+            sequence,
+            "incident_trigger_id",
+            trigger_id,
+        )
+    }
+
+    pub(crate) fn recover_incident(
+        &self,
+        bridge_id: &str,
+        now_ms: u64,
+    ) -> Result<Option<BridgeIncidentEpisode>, BridgeHostError> {
+        let mut connection = self.lock()?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(storage_error)?;
+        transaction
+            .execute(
+                "UPDATE bridge_incidents SET recovered_at_ms = ?2
+                 WHERE bridge_id = ?1 AND recovered_at_ms IS NULL",
+                params![bridge_id, db_i64(now_ms)?],
+            )
+            .map_err(storage_error)?;
+        let pending = query_pending_recovery(&transaction, bridge_id)?;
+        transaction.commit().map_err(storage_error)?;
+        Ok(pending)
+    }
+
+    pub(crate) fn mark_recovery_enqueued(
+        &self,
+        bridge_id: &str,
+        sequence: u64,
+        trigger_id: &str,
+    ) -> Result<(), BridgeHostError> {
+        let connection = self.lock()?;
+        mark_incident_trigger(
+            &connection,
+            bridge_id,
+            sequence,
+            "recovery_trigger_id",
+            trigger_id,
+        )
+    }
+
     fn lock(&self) -> Result<std::sync::MutexGuard<'_, Connection>, BridgeHostError> {
         self.connection
             .lock()
@@ -1194,6 +1422,214 @@ fn migrate_v0_to_v1(connection: &mut Connection) -> Result<(), BridgeHostError> 
         )
         .map_err(storage_error)?;
     transaction.commit().map_err(storage_error)
+}
+
+fn migrate_v1_to_v2(connection: &mut Connection) -> Result<(), BridgeHostError> {
+    let transaction = connection.transaction().map_err(storage_error)?;
+    transaction
+        .execute_batch(
+            "ALTER TABLE bridges ADD COLUMN alert_target_channel_id TEXT;
+             ALTER TABLE bridges ADD COLUMN alert_lane TEXT;
+             CREATE TABLE bridge_incidents (
+                bridge_id TEXT NOT NULL REFERENCES bridges(bridge_id),
+                sequence INTEGER NOT NULL,
+                generation INTEGER NOT NULL,
+                kind TEXT NOT NULL,
+                started_at_ms INTEGER NOT NULL,
+                target_channel_id TEXT NOT NULL,
+                lane TEXT NOT NULL,
+                incident_trigger_id TEXT,
+                recovered_at_ms INTEGER,
+                recovery_trigger_id TEXT,
+                PRIMARY KEY(bridge_id, sequence)
+             );
+             CREATE UNIQUE INDEX one_active_bridge_incident
+                 ON bridge_incidents(bridge_id) WHERE recovered_at_ms IS NULL;
+             PRAGMA user_version = 2;",
+        )
+        .map_err(storage_error)?;
+    rewrite_legacy_fingerprints(&transaction)?;
+    transaction.commit().map_err(storage_error)
+}
+
+fn rewrite_legacy_fingerprints(connection: &Connection) -> Result<(), BridgeHostError> {
+    let bridges = {
+        let mut statement = connection
+            .prepare("SELECT bridge_id, spec_fingerprint FROM bridges")
+            .map_err(storage_error)?;
+        statement
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .map_err(storage_error)?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(storage_error)?
+    };
+    for (bridge_id, fingerprint) in bridges {
+        connection
+            .execute(
+                "UPDATE bridges SET spec_fingerprint = ?2 WHERE bridge_id = ?1",
+                params![bridge_id, add_empty_alert_target(&fingerprint)?],
+            )
+            .map_err(storage_error)?;
+    }
+    let audits = {
+        let mut statement = connection
+            .prepare("SELECT bridge_id, generation, spec_fingerprint FROM generation_audit")
+            .map_err(storage_error)?;
+        statement
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            })
+            .map_err(storage_error)?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(storage_error)?
+    };
+    for (bridge_id, generation, fingerprint) in audits {
+        connection
+            .execute(
+                "UPDATE generation_audit SET spec_fingerprint = ?3
+                 WHERE bridge_id = ?1 AND generation = ?2",
+                params![bridge_id, generation, add_empty_alert_target(&fingerprint)?],
+            )
+            .map_err(storage_error)?;
+    }
+    Ok(())
+}
+
+fn add_empty_alert_target(fingerprint: &str) -> Result<String, BridgeHostError> {
+    let mut value = serde_json::from_str::<Value>(fingerprint)
+        .map_err(|_| BridgeHostError::StorageUnavailable)?;
+    let object = value
+        .as_object_mut()
+        .ok_or(BridgeHostError::StorageUnavailable)?;
+    object.insert("alertTarget".into(), Value::Null);
+    serde_json::to_string(&value).map_err(|_| BridgeHostError::StorageUnavailable)
+}
+
+fn fingerprints_equal(left: &str, right: &str) -> Result<bool, BridgeHostError> {
+    let left =
+        serde_json::from_str::<Value>(left).map_err(|_| BridgeHostError::StorageUnavailable)?;
+    let right =
+        serde_json::from_str::<Value>(right).map_err(|_| BridgeHostError::StorageUnavailable)?;
+    Ok(left == right)
+}
+
+fn query_active_incident(
+    connection: &Connection,
+    bridge_id: &str,
+) -> Result<Option<BridgeIncidentEpisode>, BridgeHostError> {
+    query_incident(
+        connection,
+        "SELECT sequence, generation, kind, started_at_ms, target_channel_id, lane,
+                incident_trigger_id, recovered_at_ms, recovery_trigger_id
+         FROM bridge_incidents
+         WHERE bridge_id = ?1 AND recovered_at_ms IS NULL
+         ORDER BY sequence DESC LIMIT 1",
+        bridge_id,
+    )
+}
+
+fn query_pending_recovery(
+    connection: &Connection,
+    bridge_id: &str,
+) -> Result<Option<BridgeIncidentEpisode>, BridgeHostError> {
+    query_incident(
+        connection,
+        "SELECT sequence, generation, kind, started_at_ms, target_channel_id, lane,
+                incident_trigger_id, recovered_at_ms, recovery_trigger_id
+         FROM bridge_incidents
+         WHERE bridge_id = ?1 AND recovered_at_ms IS NOT NULL
+               AND incident_trigger_id IS NOT NULL AND recovery_trigger_id IS NULL
+         ORDER BY sequence ASC LIMIT 1",
+        bridge_id,
+    )
+}
+
+fn query_incident(
+    connection: &Connection,
+    statement: &str,
+    bridge_id: &str,
+) -> Result<Option<BridgeIncidentEpisode>, BridgeHostError> {
+    connection
+        .query_row(statement, params![bridge_id], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, i64>(3)?,
+                row.get::<_, String>(4)?,
+                row.get::<_, String>(5)?,
+                row.get::<_, Option<String>>(6)?,
+                row.get::<_, Option<i64>>(7)?,
+                row.get::<_, Option<String>>(8)?,
+            ))
+        })
+        .optional()
+        .map_err(storage_error)?
+        .map(
+            |(
+                sequence,
+                generation,
+                kind,
+                started,
+                target_channel_id,
+                lane,
+                incident_trigger,
+                recovered,
+                recovery_trigger,
+            )| {
+                Ok(BridgeIncidentEpisode {
+                    bridge_id: bridge_id.to_owned(),
+                    generation: db_u64(generation)?,
+                    sequence: db_u64(sequence)?,
+                    kind,
+                    started_at_ms: db_u64(started)?,
+                    target_channel_id,
+                    lane,
+                    incident_trigger_id: incident_trigger,
+                    recovered_at_ms: recovered.map(db_u64).transpose()?,
+                    recovery_trigger_id: recovery_trigger,
+                })
+            },
+        )
+        .transpose()
+}
+
+fn mark_incident_trigger(
+    connection: &Connection,
+    bridge_id: &str,
+    sequence: u64,
+    column: &str,
+    trigger_id: &str,
+) -> Result<(), BridgeHostError> {
+    if trigger_id.trim().is_empty() || trigger_id.len() > 1024 {
+        return Err(BridgeHostError::StorageUnavailable);
+    }
+    let statement = match column {
+        "incident_trigger_id" => {
+            "UPDATE bridge_incidents SET incident_trigger_id = ?3
+             WHERE bridge_id = ?1 AND sequence = ?2
+                   AND (incident_trigger_id IS NULL OR incident_trigger_id = ?3)"
+        }
+        "recovery_trigger_id" => {
+            "UPDATE bridge_incidents SET recovery_trigger_id = ?3
+             WHERE bridge_id = ?1 AND sequence = ?2
+                   AND (recovery_trigger_id IS NULL OR recovery_trigger_id = ?3)"
+        }
+        _ => return Err(BridgeHostError::StorageUnavailable),
+    };
+    let changed = connection
+        .execute(statement, params![bridge_id, db_i64(sequence)?, trigger_id])
+        .map_err(storage_error)?;
+    if changed != 1 {
+        return Err(BridgeHostError::StorageUnavailable);
+    }
+    Ok(())
 }
 
 fn bridge_exists(connection: &Connection, bridge_id: &str) -> Result<bool, BridgeHostError> {
@@ -1337,6 +1773,10 @@ fn spec_fingerprint(spec: &BridgeSpec) -> Result<String, BridgeHostError> {
             .map(authentication_method_tag)
             .collect::<Result<Vec<_>, _>>()?,
         "ingressMode": ingress_mode_tag(&spec.ingress_mode)?,
+        "alertTarget": spec.alert_target.as_ref().map(|target| json!({
+            "channelId": target.channel_id,
+            "lane": target.lane,
+        })),
         "desiredRunning": spec.desired_running,
         "healthIntervalMs": spec.health_interval_ms,
         "credentialValidationIntervalMs": spec.credential_validation_interval_ms,
@@ -1539,12 +1979,12 @@ fn storage_error(_: rusqlite::Error) -> BridgeHostError {
 
 #[cfg(test)]
 mod tests {
-    use rusqlite::Connection;
+    use rusqlite::{Connection, params};
 
     use super::BridgeStore;
     use crate::{
-        AuthenticationMethod, BridgeHostError, BridgeIngressMode, BridgeLifecycle, BridgeSpec,
-        CredentialLifecycle, HealthObservation, PackageChallenge,
+        AuthenticationMethod, BridgeAlertTarget, BridgeHostError, BridgeIngressMode,
+        BridgeLifecycle, BridgeSpec, CredentialLifecycle, HealthObservation, PackageChallenge,
     };
 
     fn spec(desired_running: bool) -> BridgeSpec {
@@ -1556,6 +1996,7 @@ mod tests {
             configuration_json: "{}".into(),
             authentication_methods: Vec::new(),
             ingress_mode: BridgeIngressMode::Queue,
+            alert_target: None,
             desired_running,
             health_interval_ms: 10,
             credential_validation_interval_ms: 20,
@@ -1712,13 +2153,175 @@ mod tests {
         let path = directory.path().join("future.sqlite");
         let connection = Connection::open(&path).expect("sqlite opens");
         connection
-            .pragma_update(None, "user_version", 2)
+            .pragma_update(None, "user_version", 3)
             .expect("future version is written");
         drop(connection);
         assert!(matches!(
             BridgeStore::open(path),
             Err(BridgeHostError::StorageUnavailable)
         ));
+    }
+
+    #[test]
+    fn schema_one_migrates_to_alerts_and_incident_episodes_are_retry_safe() {
+        let directory = tempfile::tempdir().expect("temporary state directory");
+        let path = directory.path().join("incidents.sqlite");
+        {
+            let mut connection = Connection::open(&path).expect("sqlite opens");
+            super::migrate_v0_to_v1(&mut connection).expect("legacy schema creates");
+            let legacy = spec(false);
+            let mut fingerprint = serde_json::from_str::<serde_json::Value>(
+                &super::spec_fingerprint(&legacy).expect("fingerprint encodes"),
+            )
+            .expect("fingerprint parses");
+            fingerprint
+                .as_object_mut()
+                .expect("fingerprint is an object")
+                .remove("alertTarget");
+            let fingerprint = fingerprint.to_string();
+            connection
+                .execute(
+                    "INSERT INTO bridges (
+                        bridge_id, package_id, display_name, launch_json, configuration_json,
+                        authentication_methods_json, ingress_mode, desired_running,
+                        health_interval_ms, credential_validation_interval_ms, restart_limit,
+                        restart_window_ms, lifecycle, generation, registered_at_ms,
+                        consecutive_failures, next_restart_at_ms, last_error, spec_fingerprint
+                     ) VALUES (?1, ?2, ?3, ?4, ?5, '[]', 'Queue', FALSE,
+                               ?6, ?7, ?8, ?9, 'Registered', 1, 1, 0, NULL, NULL, ?10)",
+                    params![
+                        legacy.bridge_id,
+                        legacy.package_id,
+                        legacy.display_name,
+                        legacy.launch_json,
+                        legacy.configuration_json,
+                        i64::try_from(legacy.health_interval_ms).expect("interval fits"),
+                        i64::try_from(legacy.credential_validation_interval_ms)
+                            .expect("validation fits"),
+                        i64::try_from(legacy.restart_limit).expect("limit fits"),
+                        i64::try_from(legacy.restart_window_ms).expect("window fits"),
+                        fingerprint,
+                    ],
+                )
+                .expect("legacy bridge writes");
+            connection
+                .execute(
+                    "INSERT INTO credentials (
+                        bridge_id, lifecycle, credential_handle, validated_at_ms,
+                        expires_at_ms, account_hint, detail_json
+                     ) VALUES ('bridge-1', 'Missing', NULL, NULL, NULL, NULL, '{}')",
+                    [],
+                )
+                .expect("legacy credential writes");
+            connection
+                .execute(
+                    "INSERT INTO generation_audit (
+                        bridge_id, generation, changed_at_ms, spec_fingerprint
+                     ) VALUES ('bridge-1', 1, 1, ?1)",
+                    params![fingerprint],
+                )
+                .expect("legacy audit writes");
+        }
+
+        let store = BridgeStore::open(&path).expect("legacy schema migrates");
+        assert_eq!(
+            store
+                .lock()
+                .expect("store lock")
+                .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
+                .expect("schema reads"),
+            2
+        );
+        let migrated_fingerprint = store
+            .lock()
+            .expect("store lock")
+            .query_row(
+                "SELECT spec_fingerprint FROM bridges WHERE bridge_id = 'bridge-1'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .expect("migrated fingerprint reads");
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&migrated_fingerprint)
+                .expect("migrated fingerprint parses"),
+            serde_json::from_str::<serde_json::Value>(
+                &super::spec_fingerprint(&spec(false)).expect("expected fingerprint encodes")
+            )
+            .expect("expected fingerprint parses")
+        );
+        let (unchanged, inserted) = store
+            .register(&spec(false), 1)
+            .expect("legacy registration remains idempotent");
+        assert!(!inserted);
+        assert_eq!(unchanged.generation, 1);
+        let mut configured = spec(false);
+        configured.alert_target = Some(BridgeAlertTarget {
+            channel_id: "primary".into(),
+            lane: "primary".into(),
+        });
+        let record = store
+            .replace(&configured, 1, 2)
+            .expect("alert target installs as a new generation");
+        assert_eq!(record.alert_target, configured.alert_target);
+
+        let first = store
+            .begin_incident(
+                "bridge-1",
+                "package-unavailable",
+                configured.alert_target.as_ref().expect("alert target"),
+                2,
+            )
+            .expect("incident begins");
+        assert_eq!(
+            store
+                .begin_incident(
+                    "bridge-1",
+                    "package-unavailable",
+                    configured.alert_target.as_ref().expect("alert target"),
+                    3,
+                )
+                .expect("same episode retries"),
+            first
+        );
+        store
+            .mark_incident_enqueued("bridge-1", first.sequence, "trigger-incident")
+            .expect("incident enqueue records");
+        let recovery = store
+            .recover_incident("bridge-1", 4)
+            .expect("incident recovers")
+            .expect("recovery is pending");
+        assert_eq!(recovery.sequence, first.sequence);
+        assert_eq!(recovery.recovered_at_ms, Some(4));
+        assert!(recovery.recovery_trigger_id.is_none());
+        assert_eq!(
+            store
+                .recover_incident("bridge-1", 5)
+                .expect("recovery retries")
+                .expect("same recovery remains")
+                .sequence,
+            first.sequence
+        );
+        store
+            .mark_recovery_enqueued("bridge-1", first.sequence, "trigger-recovery")
+            .expect("recovery enqueue records");
+        assert!(
+            store
+                .recover_incident("bridge-1", 6)
+                .expect("closed incident reads")
+                .is_none()
+        );
+        assert_eq!(
+            store
+                .begin_incident(
+                    "bridge-1",
+                    "credential-rejected",
+                    configured.alert_target.as_ref().expect("alert target"),
+                    7,
+                )
+                .expect("new episode begins")
+                .sequence,
+            first.sequence + 1
+        );
     }
 
     #[test]

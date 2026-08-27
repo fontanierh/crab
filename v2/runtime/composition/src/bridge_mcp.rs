@@ -6,12 +6,12 @@ use agent_client_protocol::{ConnectTo as _, Error, Stdio, mcp_server::McpServer,
 use agent_client_protocol_rmcp::{McpServerExt as _, McpTool};
 use agent_host_implementation::CRAB_STATE_DIRECTORY_ENV;
 use bridge_host_contract::{
-    AuthenticationChallenge, AuthenticationMethod, BeginAuthenticationRequest, BridgeAttachment,
-    BridgeCatalog, BridgeIngressMode, BridgeLifecycle, BridgeOutbound, BridgeReceipt, BridgeRecord,
-    BridgeReference, BridgeSpec, BridgeStatus, CredentialLifecycle, CredentialStatus,
-    DeliveryLifecycle, DeliveryReceipt, DeliveryReference, ImportBridgeContentRequest,
-    ImportedBridgeContent, ReconcileBridgeRequest, ReplaceBridgeRequest,
-    SubmitAuthenticationRequest,
+    AuthenticationChallenge, AuthenticationMethod, BeginAuthenticationRequest, BridgeAlertTarget,
+    BridgeAttachment, BridgeCatalog, BridgeIngressMode, BridgeLifecycle, BridgeOutbound,
+    BridgeReceipt, BridgeRecord, BridgeReference, BridgeSpec, BridgeStatus, CredentialLifecycle,
+    CredentialStatus, DeliveryLifecycle, DeliveryReceipt, DeliveryReference,
+    ImportBridgeContentRequest, ImportedBridgeContent, ReconcileBridgeRequest,
+    ReplaceBridgeRequest, SubmitAuthenticationRequest,
 };
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -163,6 +163,13 @@ struct LaunchInput {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct AlertTargetInput {
+    channel_id: String,
+    lane: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct BridgeSpecInput {
     bridge_id: String,
     package_id: String,
@@ -174,6 +181,8 @@ struct BridgeSpecInput {
     #[serde(default)]
     authentication_methods: Vec<AuthenticationMethodInput>,
     ingress_mode: IngressModeInput,
+    #[serde(default)]
+    alert_target: Option<AlertTargetInput>,
     desired_running: bool,
     health_interval_ms: u64,
     credential_validation_interval_ms: u64,
@@ -193,6 +202,9 @@ impl BridgeSpecInput {
             || self.restart_limit == 0
             || self.restart_window_ms == 0
             || !valid_environment_names(&self.launch.environment_names)
+            || self.alert_target.as_ref().is_some_and(|target| {
+                target.channel_id.trim().is_empty() || target.lane.trim().is_empty()
+            })
         {
             return Err(invalid_input());
         }
@@ -226,6 +238,10 @@ impl BridgeSpecInput {
                 .map_err(|_| invalid_input())?,
             authentication_methods: methods,
             ingress_mode: self.ingress_mode.into(),
+            alert_target: self.alert_target.map(|target| BridgeAlertTarget {
+                channel_id: target.channel_id,
+                lane: target.lane,
+            }),
             desired_running: self.desired_running,
             health_interval_ms: self.health_interval_ms,
             credential_validation_interval_ms: self.credential_validation_interval_ms,
@@ -793,6 +809,10 @@ fn record_json(record: BridgeRecord) -> Value {
         "displayName": record.display_name,
         "lifecycle": lifecycle_name(&record.lifecycle),
         "ingressMode": ingress_name(&record.ingress_mode),
+        "alertTarget": record.alert_target.map(|target| json!({
+            "channelId": target.channel_id,
+            "lane": target.lane,
+        })),
         "desiredRunning": record.desired_running,
         "generation": record.generation,
         "registeredAtMs": record.registered_at_ms,
