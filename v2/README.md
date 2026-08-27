@@ -85,8 +85,9 @@ interrupt as a separate explicit action.
   reuses a matching live binding, resumes matching unavailable sessions before replacement, and
   rejects changed intent while a session is live. Attachment lifecycles serialize only for the
   same adapter/channel identity; unrelated channels proceed concurrently and idle weak lock entries
-  prune themselves. Only explicit resume unavailability falls back to replacement; hard recovery
-  failures stay visible. See the
+  prune themselves. It bounds every identifier, path, prompt and metadata field before JSON parsing,
+  fingerprinting, lane admission or imported calls. Only explicit resume unavailability falls back
+  to replacement; hard recovery failures stay visible. See the
   [rendered attach flow](docs/channel-gateway-flow.png).
 - `bridge-host` supervises agent-installed JSON-lines packages, brokers private file-backed
   credentials, actively probes health and credential validity, and applies bounded restart

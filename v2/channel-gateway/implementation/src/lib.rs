@@ -20,6 +20,12 @@ use tokio::sync::{Mutex, OwnedMutexGuard};
 
 use generated::{AgentHostImport, NativeChannelImport};
 
+const MAX_ATTACHMENT_IDENTIFIER_BYTES: usize = 256;
+const MAX_WORKING_DIRECTORY_BYTES: usize = 4 * 1024;
+const MAX_SESSION_METADATA_BYTES: usize = 64 * 1024;
+const MAX_NATIVE_CHANNEL_METADATA_BYTES: usize = 64 * 1024;
+const MAX_BOOTSTRAP_PROMPT_BYTES: usize = 2 * 1024 * 1024;
+
 /// Stateless lifecycle owner waiting for composition-selected imports.
 pub struct ChannelGateway {
     agent_host: AgentHostImport,
@@ -244,10 +250,18 @@ impl AttachmentLocks {
 }
 
 fn attachment_envelope(request: &AttachChannelRequest) -> Result<String, ChannelGatewayError> {
-    if request.channel_id.trim().is_empty()
-        || request.adapter_id.trim().is_empty()
-        || request.agent_id.trim().is_empty()
+    if !valid_identifier(&request.channel_id)
+        || !valid_identifier(&request.adapter_id)
+        || !valid_identifier(&request.agent_id)
+        || request.working_directory.trim().is_empty()
+        || request.working_directory.len() > MAX_WORKING_DIRECTORY_BYTES
         || !Path::new(&request.working_directory).is_absolute()
+        || request
+            .bootstrap_prompt
+            .as_ref()
+            .is_some_and(|prompt| prompt.len() > MAX_BOOTSTRAP_PROMPT_BYTES)
+        || request.session_metadata_json.len() > MAX_SESSION_METADATA_BYTES
+        || request.native_channel_json.len() > MAX_NATIVE_CHANNEL_METADATA_BYTES
     {
         return Err(ChannelGatewayError::InvalidRequest);
     }
@@ -272,6 +286,10 @@ fn attachment_envelope(request: &AttachChannelRequest) -> Result<String, Channel
         "crabAttachment": {"schema": 1, "fingerprint": fingerprint},
     }))
     .map_err(|_| ChannelGatewayError::InvalidRequest)
+}
+
+fn valid_identifier(value: &str) -> bool {
+    !value.trim().is_empty() && value.len() <= MAX_ATTACHMENT_IDENTIFIER_BYTES
 }
 
 fn attachment(
@@ -328,7 +346,12 @@ mod tests {
     use boxology_contract::CapabilityId;
     use tokio::time::timeout;
 
-    use super::{AttachmentLocks, generated};
+    use super::{
+        AttachChannelRequest, AttachmentLocks, ChannelGatewayError,
+        MAX_ATTACHMENT_IDENTIFIER_BYTES, MAX_BOOTSTRAP_PROMPT_BYTES,
+        MAX_NATIVE_CHANNEL_METADATA_BYTES, MAX_SESSION_METADATA_BYTES, MAX_WORKING_DIRECTORY_BYTES,
+        attachment_envelope, generated,
+    };
 
     #[test]
     fn contract_exposes_only_idempotent_attachment() {
@@ -379,5 +402,82 @@ mod tests {
         let fresh = locks.lock("t3code", "fresh").await;
         assert_eq!(locks.len(), 1);
         drop(fresh);
+    }
+
+    #[test]
+    fn attachment_admission_accepts_exact_field_limits() {
+        let request = AttachChannelRequest {
+            channel_id: "c".repeat(MAX_ATTACHMENT_IDENTIFIER_BYTES),
+            adapter_id: "a".repeat(MAX_ATTACHMENT_IDENTIFIER_BYTES),
+            agent_id: "g".repeat(MAX_ATTACHMENT_IDENTIFIER_BYTES),
+            working_directory: format!("/{}", "w".repeat(MAX_WORKING_DIRECTORY_BYTES - 1)),
+            bootstrap_prompt: Some("p".repeat(MAX_BOOTSTRAP_PROMPT_BYTES)),
+            session_metadata_json: object_json_with_len(MAX_SESSION_METADATA_BYTES),
+            native_channel_json: object_json_with_len(MAX_NATIVE_CHANNEL_METADATA_BYTES),
+        };
+
+        attachment_envelope(&request).expect("exact byte limits are admitted");
+    }
+
+    #[test]
+    fn attachment_admission_rejects_each_oversized_field() {
+        let request = valid_request();
+        let cases = [
+            AttachChannelRequest {
+                channel_id: "c".repeat(MAX_ATTACHMENT_IDENTIFIER_BYTES + 1),
+                ..request.clone()
+            },
+            AttachChannelRequest {
+                adapter_id: "a".repeat(MAX_ATTACHMENT_IDENTIFIER_BYTES + 1),
+                ..request.clone()
+            },
+            AttachChannelRequest {
+                agent_id: "g".repeat(MAX_ATTACHMENT_IDENTIFIER_BYTES + 1),
+                ..request.clone()
+            },
+            AttachChannelRequest {
+                working_directory: format!("/{}", "w".repeat(MAX_WORKING_DIRECTORY_BYTES)),
+                ..request.clone()
+            },
+            AttachChannelRequest {
+                bootstrap_prompt: Some("p".repeat(MAX_BOOTSTRAP_PROMPT_BYTES + 1)),
+                ..request.clone()
+            },
+            AttachChannelRequest {
+                session_metadata_json: object_json_with_len(MAX_SESSION_METADATA_BYTES + 1),
+                ..request.clone()
+            },
+            AttachChannelRequest {
+                native_channel_json: object_json_with_len(MAX_NATIVE_CHANNEL_METADATA_BYTES + 1),
+                ..request
+            },
+        ];
+
+        for oversized in cases {
+            assert_eq!(
+                attachment_envelope(&oversized),
+                Err(ChannelGatewayError::InvalidRequest)
+            );
+        }
+    }
+
+    fn valid_request() -> AttachChannelRequest {
+        AttachChannelRequest {
+            channel_id: "channel".into(),
+            adapter_id: "adapter".into(),
+            agent_id: "agent".into(),
+            working_directory: "/workspace".into(),
+            bootstrap_prompt: None,
+            session_metadata_json: "{}".into(),
+            native_channel_json: "{}".into(),
+        }
+    }
+
+    fn object_json_with_len(len: usize) -> String {
+        let mut value = String::from(r#"{"value":""#);
+        value.extend(std::iter::repeat_n('x', len - value.len() - 2));
+        value.push_str(r#""}"#);
+        assert_eq!(value.len(), len);
+        value
     }
 }
