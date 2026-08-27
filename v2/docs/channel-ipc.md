@@ -52,6 +52,9 @@ operators never open Crab's databases or credential store.
   closed.
 - One ten-second deadline covers connect, write and response read as a single operation. A peer
   that accepts without replying returns the stable `local IPC request timed out` error.
+- The server handles at most 64 connections concurrently and caps every accepted connection at 30
+  seconds, including partial frames and capability execution. Expired peers receive no response;
+  their task and socket are released, and shutdown still preempts a full connection set.
 - Responses preserve Boxology domain-error tags and canonical contract output. The bridge CLI
   exposes auth presentations but never credential handles or material. Private agent diagnostics
   cross only on an explicit operator request and are never available to agent MCP tools.
