@@ -6,10 +6,10 @@
       "displayName": "Claude Opus 5",
       "executable": "../agents/claude/node_modules/.bin/claude-agent-acp",
       "arguments": [],
-      "environmentFrom": ["PATH"],
+      "environmentFrom": ["PATH", "CLAUDE_CODE_OAUTH_TOKEN"],
       "sessionOptions": {
         "mode": "bypassPermissions",
-        "model": "opus[1m]"
+        "model": "opus"
       },
       "sessionMcpServers": [
         {

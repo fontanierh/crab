@@ -178,6 +178,68 @@ class BundleVerifierTests(unittest.TestCase):
                     verify_bundle(bundle)
 
 
+class EnvironmentFileTests(unittest.TestCase):
+    def test_owner_private_dotenv_is_parsed_without_shell_evaluation(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            path = Path(raw) / "runtime.env"
+            path.write_text(
+                "# deployment credentials\n"
+                "export CLAUDE_CODE_OAUTH_TOKEN=service-token\n"
+                'QUOTED="value with spaces"\n'
+                "SINGLE='literal value'\n",
+                encoding="utf-8",
+            )
+            path.chmod(0o600)
+            self.assertEqual(
+                bundle_tool.load_environment_file(path),
+                {
+                    "CLAUDE_CODE_OAUTH_TOKEN": "service-token",
+                    "QUOTED": "value with spaces",
+                    "SINGLE": "literal value",
+                },
+            )
+            self.assertEqual(
+                bundle_tool.merged_deployment_environment(
+                    {"PATH": "/ambient", "QUOTED": "old"}, path
+                ),
+                {
+                    "PATH": "/ambient",
+                    "CLAUDE_CODE_OAUTH_TOKEN": "service-token",
+                    "QUOTED": "value with spaces",
+                    "SINGLE": "literal value",
+                },
+            )
+
+    def test_environment_file_rejects_unsafe_shape_and_never_reports_values(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            parent = Path(raw)
+            for name, content, mode in (
+                ("duplicate", "TOKEN=secret\nTOKEN=other\n", 0o600),
+                ("syntax", "TOKEN=$(unsafe)\n", 0o600),
+                ("permissions", "TOKEN=secret\n", 0o644),
+            ):
+                with self.subTest(name=name):
+                    path = parent / name
+                    path.write_text(content, encoding="utf-8")
+                    path.chmod(mode)
+                    with self.assertRaises(BundleError) as raised:
+                        bundle_tool.load_environment_file(path)
+                    self.assertNotIn("secret", str(raised.exception))
+                    self.assertNotIn("other", str(raised.exception))
+
+    @unittest.skipUnless(hasattr(os, "symlink"), "symlinks unavailable")
+    def test_environment_file_rejects_a_symlink(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            parent = Path(raw)
+            target = parent / "target.env"
+            target.write_text("TOKEN=secret\n", encoding="utf-8")
+            target.chmod(0o600)
+            link = parent / "runtime.env"
+            link.symlink_to(target)
+            with self.assertRaises(BundleError):
+                bundle_tool.load_environment_file(link)
+
+
 class ServiceDeploymentTests(unittest.TestCase):
     @staticmethod
     def ready(_paths: object, launchd: FakeLaunchd, _timeout: float) -> int:

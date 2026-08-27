@@ -42,6 +42,7 @@ SERVICE_SCHEMA_VERSION = 1
 SERVICE_LABEL = "com.crab.v2.runtime"
 SERVICE_LINKS = ("bin", "agents", "bridges", "libexec")
 DEFAULT_READINESS_TIMEOUT_SECONDS = 30.0
+MAX_ENVIRONMENT_FILE_BYTES = 1024 * 1024
 
 
 class BundleError(RuntimeError):
@@ -896,6 +897,82 @@ def deployment_environment(
     return environment
 
 
+def load_environment_file(path: Path) -> dict[str, str]:
+    """Read one owner-only dotenv file without evaluating shell syntax."""
+    path = path.expanduser()
+    if not path.is_absolute():
+        path = Path.cwd() / path
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(path, flags)
+    except OSError as error:
+        raise BundleError("environment file is unavailable") from error
+    try:
+        details = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(details.st_mode)
+            or details.st_uid != os.getuid()
+            or stat.S_IMODE(details.st_mode) & 0o077
+            or details.st_size > MAX_ENVIRONMENT_FILE_BYTES
+        ):
+            raise BundleError("environment file must be an owner-only regular file")
+        with os.fdopen(descriptor, "rb", closefd=False) as handle:
+            raw = handle.read(MAX_ENVIRONMENT_FILE_BYTES + 1)
+    finally:
+        os.close(descriptor)
+    if len(raw) > MAX_ENVIRONMENT_FILE_BYTES:
+        raise BundleError("environment file is too large")
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise BundleError("environment file must be UTF-8") from error
+    environment: dict[str, str] = {}
+    for line_number, line in enumerate(text.splitlines(), start=1):
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line.removeprefix("export ").lstrip()
+        name, separator, value = line.partition("=")
+        name = name.strip()
+        value = value.strip()
+        if (
+            not separator
+            or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name)
+            or name in environment
+        ):
+            raise BundleError(f"environment file line {line_number} is invalid")
+        if value.startswith('"'):
+            try:
+                decoded = json.loads(value)
+            except json.JSONDecodeError as error:
+                raise BundleError(
+                    f"environment file line {line_number} is invalid"
+                ) from error
+            if not isinstance(decoded, str):
+                raise BundleError(f"environment file line {line_number} is invalid")
+            value = decoded
+        elif value.startswith("'"):
+            if len(value) < 2 or not value.endswith("'") or "'" in value[1:-1]:
+                raise BundleError(f"environment file line {line_number} is invalid")
+            value = value[1:-1]
+        elif any(character in value for character in "'\"`\\$"):
+            raise BundleError(f"environment file line {line_number} is invalid")
+        if "\0" in value:
+            raise BundleError(f"environment file line {line_number} is invalid")
+        environment[name] = value
+    return environment
+
+
+def merged_deployment_environment(
+    ambient: Mapping[str, str], environment_file: Path | None
+) -> dict[str, str]:
+    environment = dict(ambient)
+    if environment_file is not None:
+        environment.update(load_environment_file(environment_file))
+    return environment
+
+
 def require_runtime_node(environment: Mapping[str, str]) -> None:
     path = environment.get("PATH")
     if path is None:
@@ -1253,6 +1330,11 @@ def parser() -> argparse.ArgumentParser:
         help="agent workspace; required only for the first deployment",
     )
     deploy.add_argument(
+        "--environment-file",
+        type=Path,
+        help="owner-only dotenv file; only config-declared names are captured",
+    )
+    deploy.add_argument(
         "--timeout",
         type=float,
         default=DEFAULT_READINESS_TIMEOUT_SECONDS,
@@ -1290,6 +1372,9 @@ def main(arguments: Sequence[str] | None = None) -> int:
                 options.root,
                 workspace=options.workspace,
                 launchd=SystemLaunchd(),
+                environ=merged_deployment_environment(
+                    os.environ, options.environment_file
+                ),
                 timeout_seconds=options.timeout,
             )
             print(

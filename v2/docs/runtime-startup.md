@@ -46,10 +46,9 @@ session closed.
 
 [`runtime.claude-opus.example.json`](../runtime/runtime.claude-opus.example.json) is the first real
 agent preset. It pins the official Claude ACP adapter to `0.70.0`, selects
-`mode=bypassPermissions`, and selects the exact effective picker ID `model=opus[1m]`. The official
-adapter currently canonicalizes the shorthand `opus` to that account-offered Opus 5 picker; the
-exact value makes a future rewrite fail closed. The package pin and resolved model are separate
-things.
+`mode=bypassPermissions`, and selects the exact service-token picker ID `model=opus`, whose ACP
+descriptor identifies Opus 5. The exact effective value makes a future rewrite fail closed. The
+package pin and resolved model are separate things.
 
 The preset uses Crab's shell-free `crab-v2-claude-authority-probe`. On macOS it actively checks the
 exact adapter version, non-root bypass eligibility, `launchctl`'s `sandboxed = no` result, writes in
@@ -62,8 +61,10 @@ model. Any failed layer stops startup.
 Build the release probe before starting the preset, then replace only the working directory. Keep
 the configuration beside the committed example or replace the probe path with its deployed
 location. The first-party probe currently requires macOS; other platforms must supply an equally
-strict agent-specific probe. Claude authentication remains owned by the native Claude login; no
-token is stored in JSON.
+strict agent-specific probe. Claude authentication remains owned by Claude; no token is stored in
+JSON. The production presets require `CLAUDE_CODE_OAUTH_TOKEN` by name so a long-running launchd
+session does not depend on an interactive OAuth refresh. Its value exists only in the owner-private
+process environment.
 
 ```sh
 cargo build --release -p agent-host-implementation \
