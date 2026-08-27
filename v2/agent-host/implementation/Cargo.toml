@@ -11,6 +11,7 @@ boxology = { workspace = true }
 boxology-contract = { workspace = true }
 boxology-runtime = { workspace = true }
 boxology_generated_contract = { package = "agent-host-contract", version = "=0.0.0", path = "../generated/contract" }
+nix = { workspace = true }
 rusqlite = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
