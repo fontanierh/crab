@@ -856,6 +856,7 @@ fn domain_error(code: &str) -> Error {
 fn ipc_error(error: ChannelIpcClientError) -> Error {
     let (kind, code) = match error {
         ChannelIpcClientError::Io(_) => ("transport".to_owned(), "Unavailable".to_owned()),
+        ChannelIpcClientError::Timeout => ("transport".to_owned(), "Timeout".to_owned()),
         ChannelIpcClientError::Protocol(stage) => ("protocol".to_owned(), stage.to_owned()),
         ChannelIpcClientError::Remote { kind, code } => (kind, code),
     };
