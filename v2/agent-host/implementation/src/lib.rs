@@ -24,13 +24,14 @@ use authority::SharedAuthorityVerifier;
 use serde_json::{Map, Value};
 use store::AgentStore;
 use tokio::{
-    sync::{RwLock, oneshot},
-    task::JoinSet,
+    sync::{OwnedSemaphorePermit, RwLock, Semaphore, oneshot},
+    task::{JoinHandle, JoinSet},
 };
 use uuid::Uuid;
 
 const CONTROL_TIMEOUT: Duration = Duration::from_secs(30);
 const AUTHORITY_TIMEOUT: Duration = Duration::from_secs(30);
+const MAX_AGENT_SESSION_ACTORS: usize = 128;
 
 pub(crate) type Clock = Arc<dyn Fn() -> Result<u64, AgentHostError> + Send + Sync>;
 
@@ -40,6 +41,7 @@ pub struct AgentHost {
     store: Arc<AgentStore>,
     authority: SharedAuthorityVerifier,
     sessions: Arc<RwLock<HashMap<String, SessionHandle>>>,
+    session_slots: Arc<Semaphore>,
     state_directory: Option<PathBuf>,
     clock: Clock,
     authority_timeout: Duration,
@@ -119,6 +121,7 @@ impl AgentHost {
             store: Arc::new(store),
             authority,
             sessions: Arc::new(RwLock::new(HashMap::new())),
+            session_slots: Arc::new(Semaphore::new(MAX_AGENT_SESSION_ACTORS)),
             state_directory,
             clock: Arc::new(system_time_ms),
             authority_timeout: AUTHORITY_TIMEOUT,
@@ -212,6 +215,32 @@ impl AgentHost {
             })
     }
 
+    fn try_session_slot(&self) -> Result<OwnedSemaphorePermit, AgentHostError> {
+        self.session_slots
+            .clone()
+            .try_acquire_owned()
+            .map_err(|_| AgentHostError::SessionCapacityUnavailable)
+    }
+
+    async fn register_live_session(
+        &self,
+        session_id: String,
+        handle: SessionHandle,
+        exited: oneshot::Receiver<()>,
+    ) {
+        let generation = handle.generation;
+        self.sessions
+            .write()
+            .await
+            .insert(session_id.clone(), handle);
+        drop(spawn_session_reaper(
+            self.sessions.clone(),
+            session_id,
+            generation,
+            exited,
+        ));
+    }
+
     fn session_can_fork(session: &AgentSession) -> bool {
         let Ok(capabilities) =
             serde_json::from_str::<Value>(&session.negotiation.agent_capabilities_json)
@@ -268,6 +297,7 @@ impl AgentHost {
             .get(&request.agent_id)
             .cloned()
             .ok_or(AgentHostError::UnknownAgent)?;
+        let session_slot = self.try_session_slot()?;
         let preflight = self
             .run_preflight(&request.agent_id, &request.working_directory)
             .await?;
@@ -283,7 +313,7 @@ impl AgentHost {
             now_ms,
         )?;
         let state_directory = self.state_directory.clone();
-        let (handle, opened) = spawn_session(
+        let (handle, opened, exited) = spawn_session(
             agent,
             self.store.clone(),
             self.clock.clone(),
@@ -294,6 +324,7 @@ impl AgentHost {
             },
             metadata,
             state_directory,
+            session_slot,
         );
         let opened = tokio::time::timeout(CONTROL_TIMEOUT, opened).await;
         let session = match opened {
@@ -311,7 +342,7 @@ impl AgentHost {
                 return Err(AgentHostError::TransportFailed);
             }
         };
-        self.sessions.write().await.insert(session_id, handle);
+        self.register_live_session(session_id, handle, exited).await;
         Ok(session)
     }
 
@@ -332,6 +363,7 @@ impl AgentHost {
         if agent.protocol.profile() != recoverable.protocol_profile {
             return Err(AgentHostError::SessionResumeUnavailable);
         }
+        let session_slot = self.try_session_slot()?;
         let preflight = self
             .run_preflight(&recoverable.agent_id, &recoverable.working_directory)
             .await?;
@@ -339,7 +371,7 @@ impl AgentHost {
             .prepare_resume(&request.session_id, &preflight.authority, (self.clock)()?)?;
         let state_directory = self.state_directory.clone();
         let session_id = request.session_id;
-        let (handle, opened) = spawn_session(
+        let (handle, opened, exited) = spawn_session(
             agent,
             self.store.clone(),
             self.clock.clone(),
@@ -350,6 +382,7 @@ impl AgentHost {
             },
             metadata,
             state_directory,
+            session_slot,
         );
         let opened = tokio::time::timeout(CONTROL_TIMEOUT, opened).await;
         let session = match opened {
@@ -367,7 +400,7 @@ impl AgentHost {
                 return Err(AgentHostError::TransportFailed);
             }
         };
-        self.sessions.write().await.insert(session_id, handle);
+        self.register_live_session(session_id, handle, exited).await;
         Ok(session)
     }
 
@@ -379,6 +412,7 @@ impl AgentHost {
         let _ = context;
         let metadata = serde_json::from_str::<Map<String, Value>>(&request.metadata_json)
             .map_err(|_| AgentHostError::InvalidNativePayload)?;
+        let session_slot = self.try_session_slot()?;
         let parent_handle = self.live_session(&request.parent_session_id).await?;
         let _parent_control = parent_handle.control.lock().await;
         let parent_status = self.store.status(&request.parent_session_id)?;
@@ -414,7 +448,7 @@ impl AgentHost {
             &preflight.authority,
             now_ms,
         )?;
-        let (handle, opened) = spawn_session(
+        let (handle, opened, exited) = spawn_session(
             agent,
             self.store.clone(),
             self.clock.clone(),
@@ -425,6 +459,7 @@ impl AgentHost {
             },
             metadata,
             self.state_directory.clone(),
+            session_slot,
         );
         let opened = tokio::time::timeout(CONTROL_TIMEOUT, opened).await;
         let session = match opened {
@@ -442,7 +477,7 @@ impl AgentHost {
                 return Err(AgentHostError::TransportFailed);
             }
         };
-        self.sessions.write().await.insert(session_id, handle);
+        self.register_live_session(session_id, handle, exited).await;
         Ok(session)
     }
 
@@ -546,9 +581,35 @@ impl AgentHost {
             SessionCommand::Close { reply }
         })
         .await?;
-        self.sessions.write().await.remove(&request.session_id);
+        remove_session_generation(&self.sessions, &request.session_id, handle.generation).await;
         Ok(result)
     }
+}
+
+async fn remove_session_generation(
+    sessions: &RwLock<HashMap<String, SessionHandle>>,
+    session_id: &str,
+    generation: Uuid,
+) {
+    let mut sessions = sessions.write().await;
+    if sessions
+        .get(session_id)
+        .is_some_and(|handle| handle.generation == generation)
+    {
+        sessions.remove(session_id);
+    }
+}
+
+fn spawn_session_reaper(
+    sessions: Arc<RwLock<HashMap<String, SessionHandle>>>,
+    session_id: String,
+    generation: Uuid,
+    exited: oneshot::Receiver<()>,
+) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        let _ = exited.await;
+        remove_session_generation(&sessions, &session_id, generation).await;
+    })
 }
 
 async fn session_control<T>(
@@ -599,17 +660,18 @@ pub mod generated {
 
 #[cfg(test)]
 mod tests {
-    use std::{future::pending, path::Path, sync::Arc, time::Duration};
+    use std::{collections::HashMap, future::pending, path::Path, sync::Arc, time::Duration};
 
     use async_trait::async_trait;
     use boxology_contract::{CallContext, Caller, CancelToken, CapabilityId, TraceContext};
 
     use super::{
         AgentHost, AgentHostError, AgentProtocol, AuthorityAttestation, AuthorityProbeConfig,
-        AuthorityVerifier, ConfiguredAgent, ListAgentSessionsRequest, OpenSessionRequest,
-        SessionCommand, SessionHandle, generated, session_control,
+        AuthorityVerifier, ConfiguredAgent, ListAgentSessionsRequest, MAX_AGENT_SESSION_ACTORS,
+        OpenSessionRequest, SessionCommand, SessionHandle, generated, session_control,
+        spawn_session_reaper,
     };
-    use tokio::sync::{Mutex, mpsc, oneshot};
+    use tokio::sync::{Mutex, RwLock, mpsc, oneshot};
 
     struct HangingAuthority;
 
@@ -714,6 +776,7 @@ mod tests {
     async fn control_deadline_includes_serialization_lock() {
         let (commands, _receiver) = mpsc::channel(1);
         let handle = SessionHandle {
+            generation: uuid::Uuid::new_v4(),
             commands,
             control: Arc::new(Mutex::new(())),
         };
@@ -740,6 +803,7 @@ mod tests {
                 .is_ok()
         );
         let handle = SessionHandle {
+            generation: uuid::Uuid::new_v4(),
             commands,
             control: Arc::new(Mutex::new(())),
         };
@@ -761,6 +825,7 @@ mod tests {
         for session_id in ["session-c", "session-a", "session-b"] {
             let (commands, _receiver) = mpsc::channel(1);
             let handle = SessionHandle {
+                generation: uuid::Uuid::new_v4(),
                 commands,
                 control: Arc::new(Mutex::new(())),
             };
@@ -780,5 +845,69 @@ mod tests {
             report.failed_session_ids,
             ["session-a", "session-b", "session-c"]
         );
+    }
+
+    #[test]
+    fn session_admission_is_hard_capped_and_released() {
+        let host = AgentHost::open_in_memory(Vec::new()).expect("empty host opens");
+        let mut slots = (0..MAX_AGENT_SESSION_ACTORS)
+            .map(|_| host.try_session_slot().expect("slot remains within cap"))
+            .collect::<Vec<_>>();
+        assert!(matches!(
+            host.try_session_slot(),
+            Err(AgentHostError::SessionCapacityUnavailable)
+        ));
+
+        slots.pop();
+        assert!(host.try_session_slot().is_ok());
+    }
+
+    #[tokio::test]
+    async fn actor_exit_reaper_removes_only_its_matching_generation() {
+        let sessions = Arc::new(RwLock::new(HashMap::new()));
+        let (commands, _receiver) = mpsc::channel(1);
+        let replacement = SessionHandle {
+            generation: uuid::Uuid::new_v4(),
+            commands,
+            control: Arc::new(Mutex::new(())),
+        };
+        let replacement_generation = replacement.generation;
+        sessions
+            .write()
+            .await
+            .insert("session-1".into(), replacement);
+
+        let (old_exited, old_exit) = oneshot::channel();
+        let old_reaper = spawn_session_reaper(
+            sessions.clone(),
+            "session-1".into(),
+            uuid::Uuid::new_v4(),
+            old_exit,
+        );
+        old_exited.send(()).expect("old actor exits");
+        old_reaper.await.expect("old reaper completes");
+        assert_eq!(
+            sessions
+                .read()
+                .await
+                .get("session-1")
+                .map(|handle| handle.generation),
+            Some(replacement_generation)
+        );
+
+        let (replacement_exited, replacement_exit) = oneshot::channel();
+        let replacement_reaper = spawn_session_reaper(
+            sessions.clone(),
+            "session-1".into(),
+            replacement_generation,
+            replacement_exit,
+        );
+        replacement_exited
+            .send(())
+            .expect("replacement actor exits");
+        replacement_reaper
+            .await
+            .expect("replacement reaper completes");
+        assert!(!sessions.read().await.contains_key("session-1"));
     }
 }

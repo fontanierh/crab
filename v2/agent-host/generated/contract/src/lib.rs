@@ -83,6 +83,11 @@ static __BOXOLOGY_CONTRACT_DESCRIPTOR: ::std::sync::LazyLock<
                 None,
             ),
             ::boxology_contract::VariantDescriptor::new(
+                "SessionCapacityUnavailable",
+                ::boxology_contract::VariantPayload::Unit,
+                None,
+            ),
+            ::boxology_contract::VariantDescriptor::new(
                 "SessionResumeUnavailable",
                 ::boxology_contract::VariantPayload::Unit,
                 None,
@@ -1734,7 +1739,7 @@ static __BOXOLOGY_CONTRACT_DESCRIPTOR: ::std::sync::LazyLock<
                 capability_13,
             ],
             ::boxology_contract::ContractRevision::new(
-                    "sha256:a17d5d88d02656890d2274acd81cbb6852eecf65fa61255159a4fe1ccc052146",
+                    "sha256:63cb45f413ae2a41f38e2ba35229bcb274d58ec5ad41bfa4221f61d9670fe7ff",
                 )
                 .expect("generated contract revision is non-empty"),
         )
@@ -3576,6 +3581,11 @@ static AGENT_HOST_ERROR_DESCRIPTOR: LazyLock<TypeDescriptor> = LazyLock::new(|| 
             ),
             ::boxology_contract::VariantDescriptor::new(
                 "InvalidNativePayload",
+                ::boxology_contract::VariantPayload::Unit,
+                None,
+            ),
+            ::boxology_contract::VariantDescriptor::new(
+                "SessionCapacityUnavailable",
                 ::boxology_contract::VariantPayload::Unit,
                 None,
             ),
@@ -9111,6 +9121,8 @@ pub enum AgentHostError {
     UnknownPermission,
     InvalidCursor,
     InvalidNativePayload,
+    /// The host-wide pending and live ACP actor budget is exhausted.
+    SessionCapacityUnavailable,
     SessionResumeUnavailable,
     SessionForkUnavailable,
     SessionForkConflict,
@@ -9175,6 +9187,12 @@ impl ::boxology_contract::ContractType for AgentHostError {
             }
             Self::InvalidNativePayload => {
                 ("InvalidNativePayload".into(), ::boxology_contract::SlotValue::Null)
+            }
+            Self::SessionCapacityUnavailable => {
+                (
+                    "SessionCapacityUnavailable".into(),
+                    ::boxology_contract::SlotValue::Null,
+                )
             }
             Self::SessionResumeUnavailable => {
                 ("SessionResumeUnavailable".into(), ::boxology_contract::SlotValue::Null)
@@ -9378,6 +9396,17 @@ impl ::boxology_contract::ContractType for AgentHostError {
                         .under(::boxology_contract::PathSegment::Variant(tag.into())),
                 )
             }
+            "SessionCapacityUnavailable" if matches!(
+                payload, ::boxology_contract::SlotValue::Null
+            ) => Ok(Self::SessionCapacityUnavailable),
+            "SessionCapacityUnavailable" => {
+                Err(
+                    ::boxology_contract::DecodeError::new(
+                            ::boxology_contract::DecodeErrorKind::UnexpectedPayload,
+                        )
+                        .under(::boxology_contract::PathSegment::Variant(tag.into())),
+                )
+            }
             "SessionResumeUnavailable" if matches!(
                 payload, ::boxology_contract::SlotValue::Null
             ) => Ok(Self::SessionResumeUnavailable),
@@ -9493,6 +9522,7 @@ impl ::boxology_contract::ContractError for AgentHostError {
             Self::UnknownPermission => "UnknownPermission",
             Self::InvalidCursor => "InvalidCursor",
             Self::InvalidNativePayload => "InvalidNativePayload",
+            Self::SessionCapacityUnavailable => "SessionCapacityUnavailable",
             Self::SessionResumeUnavailable => "SessionResumeUnavailable",
             Self::SessionForkUnavailable => "SessionForkUnavailable",
             Self::SessionForkConflict => "SessionForkConflict",
@@ -10571,8 +10601,8 @@ pub mod test_support {
 #[rustfmt::skip]
 #[doc(hidden)]
 pub const __BOXOLOGY_SEMANTIC_DIGEST: [u8; 32] = [
-    53, 253, 5, 169, 199, 214, 218, 15, 101, 169, 242, 251, 217, 74, 78, 148, 46, 166,
-    27, 189, 125, 0, 47, 185, 127, 233, 202, 123, 111, 194, 231, 111,
+    136, 152, 112, 96, 1, 183, 177, 210, 190, 7, 220, 113, 214, 121, 71, 218, 10, 38,
+    213, 111, 131, 50, 213, 146, 29, 109, 66, 125, 75, 203, 218, 248,
 ];
 #[rustfmt::skip]
 #[doc(hidden)]
