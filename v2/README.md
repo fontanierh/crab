@@ -61,7 +61,8 @@ interrupt as a separate explicit action.
   shutdown. Recovery preserves both session IDs and the event cursor while revalidating authority,
   MCP tools and required policy; it never replays bootstrap or owns compaction. Graceful runtime
   shutdown detaches the host-owned live set without native close, while explicit close remains
-  destructive. Bounded adapter stderr and terminal causes remain available only through the
+  destructive. ACP stdout frames are rejected above 16 MiB before parsing or journaling; bounded
+  adapter stderr and terminal causes remain available only through the
   owner-authenticated `crab-v2-agent` operator CLI. See the
   [private diagnostics](docs/agent-diagnostics.md), [resume flow](docs/agent-session-resume.md) and
   [detach flow](docs/runtime-detach.md). Its
@@ -165,6 +166,10 @@ fixes. Regenerate or check with the matching CLI:
 cargo install boxology-cli --git https://github.com/fontanierh/boxology \
   --rev 4dd00888445c6506704a3e3f69932a3c4bc32efa --locked
 ```
+
+The published ACP SDK 2.0.0 is patched at reviewed fork revision `8490e50` until upstream
+[rust-sdk #340](https://github.com/agentclientprotocol/rust-sdk/issues/340) ships. The patch changes
+only stdout framing; Crab keeps the exact 2.0.0 API and schema dependency closure.
 
 A vertical slice that changes a box, its composition and the platform lockfile still triggers the
 known single-owner limitation tracked in
