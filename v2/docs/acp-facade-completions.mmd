@@ -1,0 +1,34 @@
+%%{init: {"theme": "base", "themeVariables": {"fontFamily": "ui-sans-serif, system-ui, sans-serif", "primaryTextColor": "#172033", "lineColor": "#64748b", "edgeLabelBackground": "#ffffff"}, "flowchart": {"curve": "basis", "nodeSpacing": 50, "rankSpacing": 64}}}%%
+flowchart LR
+    UI["Native UI<br/>ACP prompt"]
+    SLOT{"Prompt slot<br/>≤ 128 outstanding?"}
+    ACCEPT["Durable channel accept"]
+    WAITER["Run-specific responder"]
+
+    STREAM["Full session event replay<br/>UI · bridge · cron · self-work"]
+    MATCH{"Registered waiter?"}
+    RESPOND["Respond once<br/>consume completion"]
+    EARLY["Early-race cache<br/>256 most recent"]
+    EVICT["Evict oldest<br/>bounded memory"]
+
+    BUSY["Stable ACP error<br/>no durable accept"]
+
+    UI --> SLOT
+    SLOT -->|"available"| ACCEPT --> WAITER
+    SLOT -->|"full"| BUSY
+    STREAM --> MATCH
+    MATCH -->|"yes"| RESPOND
+    MATCH -->|"not yet / unrelated"| EARLY
+    EARLY -->|"overflow"| EVICT
+    EARLY -. "matching run arrives" .-> RESPOND
+    WAITER -. "run ID" .-> MATCH
+
+    classDef source fill:#f8fafc,stroke:#64748b,stroke-width:1.5px,color:#172033;
+    classDef boundary fill:#fef3c7,stroke:#d97706,stroke-width:2px,color:#78350f;
+    classDef accepted fill:#dbeafe,stroke:#2563eb,stroke-width:2px,color:#172554;
+    classDef failure fill:#fee2e2,stroke:#dc2626,stroke-width:2px,color:#7f1d1d;
+
+    class UI,STREAM source;
+    class SLOT,MATCH boundary;
+    class ACCEPT,WAITER,RESPOND,EARLY accepted;
+    class BUSY,EVICT failure;

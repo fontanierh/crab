@@ -1,7 +1,7 @@
 //! ACP v1 stdio facade for durable Crab-owned native channels.
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     fmt,
     path::{Path, PathBuf},
     sync::{
@@ -30,7 +30,7 @@ use native_channel_contract::{
     NativeEventKind, ReplayRequest,
 };
 use serde_json::{Map, Value, json};
-use tokio::sync::{Mutex, oneshot};
+use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore, oneshot};
 use uuid::Uuid;
 
 use crate::{ChannelIpcClient, ChannelIpcClientError, native_stdio};
@@ -38,6 +38,8 @@ use crate::{ChannelIpcClient, ChannelIpcClientError, native_stdio};
 const AUTH_METHOD: &str = "crab-local";
 const DEFAULT_ADAPTER: &str = "t3code";
 const REPLAY_LIMIT: u64 = 256;
+const EARLY_COMPLETION_CAPACITY: usize = 256;
+const MAX_OUTSTANDING_PROMPTS: usize = 128;
 const IDLE_POLL: Duration = Duration::from_millis(25);
 const ERROR_POLL: Duration = Duration::from_millis(100);
 
@@ -196,8 +198,8 @@ impl AcpChannelFacade {
             .on_receive_request(
                 async move |request: PromptRequest,
                             responder: Responder<PromptResponse>,
-                            _connection: ConnectionTo<Client>| {
-                    prompt.handle_prompt(request, responder).await
+                            connection: ConnectionTo<Client>| {
+                    prompt.handle_prompt(request, responder, connection).await
                 },
                 agent_client_protocol::on_receive_request!(),
             )
@@ -359,6 +361,7 @@ impl AcpChannelFacade {
         &self,
         request: PromptRequest,
         responder: Responder<PromptResponse>,
+        connection: ConnectionTo<Client>,
     ) -> Result<(), agent_client_protocol::Error> {
         if !self.is_authenticated() {
             return responder.respond_with_error(agent_client_protocol::Error::auth_required());
@@ -366,6 +369,9 @@ impl AcpChannelFacade {
         let session_id = request.session_id.to_string();
         let Some(session) = self.sessions.lock().await.get(&session_id).cloned() else {
             return responder.respond_with_error(agent_client_protocol::Error::invalid_params());
+        };
+        let Some(prompt_slot) = session.try_prompt_slot() else {
+            return responder.respond_with_error(stable_internal_error());
         };
         let mode = match input_mode(request.meta.as_ref()) {
             Ok(mode) => mode,
@@ -397,11 +403,21 @@ impl AcpChannelFacade {
             Err(_) => return responder.respond_with_error(stable_internal_error()),
         };
         tokio::spawn(async move {
-            let response = match session.completions.wait(run_id).await {
-                RunCompletion::Portable(reason) => responder.respond(PromptResponse::new(reason)),
-                RunCompletion::Unavailable => responder.respond_with_error(stable_internal_error()),
-            };
-            let _ = response;
+            let _prompt_slot = prompt_slot;
+            tokio::select! {
+                completion = session.completions.wait(run_id) => {
+                    let response = match completion {
+                        RunCompletion::Portable(reason) => {
+                            responder.respond(PromptResponse::new(reason))
+                        }
+                        RunCompletion::Unavailable => {
+                            responder.respond_with_error(stable_internal_error())
+                        }
+                    };
+                    let _ = response;
+                }
+                () = connection.incoming_closed() => {}
+            }
         });
         Ok(())
     }
@@ -443,6 +459,7 @@ struct FacadeSession {
     physical_session_id: String,
     cursor: AtomicU64,
     completions: RunCompletions,
+    prompt_slots: Arc<Semaphore>,
 }
 
 impl FacadeSession {
@@ -459,11 +476,16 @@ impl FacadeSession {
             physical_session_id,
             cursor: AtomicU64::new(0),
             completions: RunCompletions::default(),
+            prompt_slots: Arc::new(Semaphore::new(MAX_OUTSTANDING_PROMPTS)),
         }
+    }
+
+    fn try_prompt_slot(&self) -> Option<OwnedSemaphorePermit> {
+        self.prompt_slots.clone().try_acquire_owned().ok()
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum RunCompletion {
     Portable(StopReason),
     Unavailable,
@@ -471,8 +493,29 @@ enum RunCompletion {
 
 #[derive(Default)]
 struct RunCompletionState {
-    finished: HashMap<String, RunCompletion>,
+    early: HashMap<String, RunCompletion>,
+    early_order: VecDeque<String>,
     waiters: HashMap<String, Vec<oneshot::Sender<RunCompletion>>>,
+}
+
+impl RunCompletionState {
+    fn remember_early(&mut self, run_id: String, completion: RunCompletion) {
+        if self.early.insert(run_id.clone(), completion).is_some() {
+            self.early_order.retain(|remembered| remembered != &run_id);
+        }
+        self.early_order.push_back(run_id);
+        while self.early_order.len() > EARLY_COMPLETION_CAPACITY {
+            if let Some(expired) = self.early_order.pop_front() {
+                self.early.remove(&expired);
+            }
+        }
+    }
+
+    fn take_early(&mut self, run_id: &str) -> Option<RunCompletion> {
+        let completion = self.early.remove(run_id)?;
+        self.early_order.retain(|remembered| remembered != run_id);
+        Some(completion)
+    }
 }
 
 #[derive(Default)]
@@ -482,8 +525,13 @@ impl RunCompletions {
     async fn finish(&self, run_id: String, completion: RunCompletion) {
         let waiters = {
             let mut state = self.0.lock().await;
-            state.finished.insert(run_id.clone(), completion);
-            state.waiters.remove(&run_id).unwrap_or_default()
+            match state.waiters.remove(&run_id) {
+                Some(waiters) => waiters,
+                None => {
+                    state.remember_early(run_id, completion);
+                    return;
+                }
+            }
         };
         for waiter in waiters {
             let _ = waiter.send(completion);
@@ -493,7 +541,7 @@ impl RunCompletions {
     async fn wait(&self, run_id: String) -> RunCompletion {
         let receiver = {
             let mut state = self.0.lock().await;
-            if let Some(completion) = state.finished.get(&run_id).copied() {
+            if let Some(completion) = state.take_early(&run_id) {
                 return completion;
             }
             let (sender, receiver) = oneshot::channel();
@@ -501,6 +549,15 @@ impl RunCompletions {
             receiver
         };
         receiver.await.unwrap_or(RunCompletion::Unavailable)
+    }
+
+    #[cfg(test)]
+    async fn retained_counts(&self) -> (usize, usize) {
+        let state = self.0.lock().await;
+        (
+            state.early.len(),
+            state.waiters.values().map(Vec::len).sum(),
+        )
     }
 }
 
@@ -662,13 +719,18 @@ fn stable_internal_error() -> agent_client_protocol::Error {
 
 #[cfg(test)]
 mod tests {
-    use std::path::{Path, PathBuf};
+    use std::{
+        path::{Path, PathBuf},
+        sync::Arc,
+    };
 
     use agent_client_protocol::schema::v1::{SessionNotification, SessionUpdate, StopReason};
     use serde_json::json;
 
     use super::{
-        input_mode, project_session_update_to_v1, stop_reason, supported_workspace, turn_id,
+        EARLY_COMPLETION_CAPACITY, FacadeSession, MAX_OUTSTANDING_PROMPTS, RunCompletion,
+        RunCompletions, input_mode, project_session_update_to_v1, stop_reason, supported_workspace,
+        turn_id,
     };
     use native_channel_contract::ChannelInputMode;
 
@@ -754,5 +816,63 @@ mod tests {
         let encoded = serde_json::to_value(&projected[0]).expect("v1 notification JSON");
         serde_json::from_value::<SessionNotification>(encoded)
             .expect("strict v1 client accepts projected update");
+    }
+
+    #[tokio::test]
+    async fn completion_state_is_consumed_in_both_race_orders() {
+        let completions = Arc::new(RunCompletions::default());
+        completions
+            .finish("early".into(), RunCompletion::Portable(StopReason::EndTurn))
+            .await;
+        assert_eq!(completions.retained_counts().await, (1, 0));
+        assert_eq!(
+            completions.wait("early".into()).await,
+            RunCompletion::Portable(StopReason::EndTurn)
+        );
+        assert_eq!(completions.retained_counts().await, (0, 0));
+
+        let waiting = completions.clone();
+        let waiter = tokio::spawn(async move { waiting.wait("waiting".into()).await });
+        while completions.retained_counts().await != (0, 1) {
+            tokio::task::yield_now().await;
+        }
+        completions
+            .finish("waiting".into(), RunCompletion::Unavailable)
+            .await;
+        assert_eq!(
+            waiter.await.expect("waiter joins"),
+            RunCompletion::Unavailable
+        );
+        assert_eq!(completions.retained_counts().await, (0, 0));
+    }
+
+    #[tokio::test]
+    async fn unrelated_run_completions_use_a_bounded_early_cache() {
+        let completions = RunCompletions::default();
+        for sequence in 0..(EARLY_COMPLETION_CAPACITY * 4) {
+            completions
+                .finish(format!("external-{sequence}"), RunCompletion::Unavailable)
+                .await;
+        }
+        assert_eq!(
+            completions.retained_counts().await,
+            (EARLY_COMPLETION_CAPACITY, 0)
+        );
+    }
+
+    #[test]
+    fn facade_session_caps_outstanding_prompt_responders() {
+        let session = FacadeSession::new(
+            "facade-session",
+            "/tmp/workspace",
+            "binding-1".into(),
+            "physical-1".into(),
+        );
+        let slots = (0..MAX_OUTSTANDING_PROMPTS)
+            .map(|_| session.try_prompt_slot().expect("slot remains"))
+            .collect::<Vec<_>>();
+        assert!(session.try_prompt_slot().is_none());
+        drop(slots);
+        assert!(session.try_prompt_slot().is_some());
     }
 }
