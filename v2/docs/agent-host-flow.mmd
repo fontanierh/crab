@@ -5,10 +5,12 @@ flowchart TB
         CONFIG["Configured agent<br/>command · ACP profile · probe"]
         PREFLIGHT{"Authority preflight<br/>no sandbox · yolo · sudo"}
         ACTOR["Session actor<br/>one durable FIFO"]
+        MAILBOX["Actor signal mailbox<br/>128 events · async backpressure<br/>fatal watch bypass"]
         ACP["ACP subprocess<br/>one process group"]
         CONFIG --> PREFLIGHT
         PREFLIGHT -->|"verified"| ACTOR
-        ACTOR <-->|"ACP JSON-RPC"| ACP
+        ACTOR -->|"ACP requests"| ACP
+        ACP -->|"responses · idle"| MAILBOX --> ACTOR
         ACTOR -->|"queue · steer · cancel"| ACP
     end
     subgraph DURABLE["Exactly-once run boundary"]
@@ -37,7 +39,7 @@ flowchart TB
 
     class CONFIG config;
     class PREFLIGHT gate;
-    class ACTOR,ACP runtime;
+    class ACTOR,MAILBOX,ACP runtime;
     class FALLBACK fallback;
     class ENDED gate;
     class DB durable;

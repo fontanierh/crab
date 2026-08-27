@@ -12,7 +12,7 @@ use agent_client_protocol::{
 use boxology_contract::ContractError as _;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
-use tokio::sync::{Mutex, mpsc, oneshot};
+use tokio::sync::{Mutex, mpsc, oneshot, watch};
 use uuid::Uuid;
 
 use crate::Clock;
@@ -94,6 +94,54 @@ enum ActorSignal {
     },
     V2Idle,
     Fatal,
+}
+
+const ACTOR_SIGNAL_QUEUE_CAPACITY: usize = 128;
+
+#[derive(Clone)]
+struct ActorSignalSender {
+    events: mpsc::Sender<ActorSignal>,
+    fatal: watch::Sender<bool>,
+}
+
+struct ActorSignalReceiver {
+    events: mpsc::Receiver<ActorSignal>,
+    fatal: watch::Receiver<bool>,
+}
+
+fn actor_signal_channel() -> (ActorSignalSender, ActorSignalReceiver) {
+    let (events, event_receiver) = mpsc::channel(ACTOR_SIGNAL_QUEUE_CAPACITY);
+    let (fatal, fatal_receiver) = watch::channel(false);
+    (
+        ActorSignalSender { events, fatal },
+        ActorSignalReceiver {
+            events: event_receiver,
+            fatal: fatal_receiver,
+        },
+    )
+}
+
+impl ActorSignalSender {
+    async fn send(&self, signal: ActorSignal) -> Result<(), mpsc::error::SendError<ActorSignal>> {
+        self.events.send(signal).await
+    }
+
+    fn fatal(&self) {
+        self.fatal.send_replace(true);
+    }
+}
+
+impl ActorSignalReceiver {
+    async fn recv(&mut self) -> Option<ActorSignal> {
+        if *self.fatal.borrow_and_update() {
+            return Some(ActorSignal::Fatal);
+        }
+        tokio::select! {
+            biased;
+            _ = self.fatal.changed() => Some(ActorSignal::Fatal),
+            signal = self.events.recv() => signal,
+        }
+    }
 }
 
 struct QueuedPrompt {
@@ -196,7 +244,7 @@ async fn run_v1_session(
     command_rx: mpsc::Receiver<SessionCommand>,
     opened_tx: oneshot::Sender<Result<AgentSession, AgentHostError>>,
 ) -> Result<(), AgentHostError> {
-    let (signal_tx, signal_rx) = mpsc::unbounded_channel();
+    let (signal_tx, signal_rx) = actor_signal_channel();
     let process = instrumented_process(
         &agent,
         store.clone(),
@@ -289,7 +337,7 @@ async fn run_v2_session(
     command_rx: mpsc::Receiver<SessionCommand>,
     opened_tx: oneshot::Sender<Result<AgentSession, AgentHostError>>,
 ) -> Result<(), AgentHostError> {
-    let (signal_tx, signal_rx) = mpsc::unbounded_channel();
+    let (signal_tx, signal_rx) = actor_signal_channel();
     let process = instrumented_process(
         &agent,
         store.clone(),
@@ -312,7 +360,7 @@ async fn run_v2_session(
                     notification.update,
                     v2::SessionUpdate::StateUpdate(v2::StateUpdate::Idle(_))
                 ) {
-                    let _ = update_signals.send(ActorSignal::V2Idle);
+                    let _ = update_signals.send(ActorSignal::V2Idle).await;
                 }
                 Ok(())
             },
@@ -377,7 +425,7 @@ fn instrumented_process(
     store: Arc<AgentStore>,
     clock: Clock,
     session_id: String,
-    signals: mpsc::UnboundedSender<ActorSignal>,
+    signals: ActorSignalSender,
 ) -> AcpAgent {
     AcpAgent::new(agent.process_config()).with_debug(move |line, direction| {
         let direction = match direction {
@@ -393,7 +441,7 @@ fn instrumented_process(
                     )
                 });
                 if recorded.is_err() {
-                    let _ = signals.send(ActorSignal::Fatal);
+                    signals.fatal();
                 }
                 return;
             }
@@ -401,7 +449,7 @@ fn instrumented_process(
         let recorded = clock()
             .and_then(|now_ms| store.record_native_line(&session_id, direction, line, now_ms));
         if recorded.is_err() {
-            let _ = signals.send(ActorSignal::Fatal);
+            signals.fatal();
         }
     })
 }
@@ -830,8 +878,8 @@ async fn run_v1_loop(
     native_session_id: String,
     bootstrap_prompt: Option<String>,
     mut commands: mpsc::Receiver<SessionCommand>,
-    mut signals: mpsc::UnboundedReceiver<ActorSignal>,
-    signal_tx: mpsc::UnboundedSender<ActorSignal>,
+    mut signals: ActorSignalReceiver,
+    signal_tx: ActorSignalSender,
     steering_enabled: bool,
 ) -> Result<(), AgentHostError> {
     let mut state = ActorState {
@@ -937,8 +985,8 @@ async fn run_v2_loop(
     native_session_id: String,
     bootstrap_prompt: Option<String>,
     mut commands: mpsc::Receiver<SessionCommand>,
-    mut signals: mpsc::UnboundedReceiver<ActorSignal>,
-    signal_tx: mpsc::UnboundedSender<ActorSignal>,
+    mut signals: ActorSignalReceiver,
+    signal_tx: ActorSignalSender,
 ) -> Result<(), AgentHostError> {
     let mut state = ActorState {
         active_run_id: None,
@@ -1053,7 +1101,7 @@ async fn accept_v1_prompt(
     state: &mut ActorState,
     request: PromptRequest,
     reply: oneshot::Sender<Result<PromptAccepted, AgentHostError>>,
-    signals: &mpsc::UnboundedSender<ActorSignal>,
+    signals: &ActorSignalSender,
     steering_enabled: bool,
 ) {
     let result = accept_v1_prompt_inner(
@@ -1080,7 +1128,7 @@ async fn accept_v1_prompt_inner(
     native_session_id: &str,
     state: &mut ActorState,
     request: PromptRequest,
-    signals: &mpsc::UnboundedSender<ActorSignal>,
+    signals: &ActorSignalSender,
     steering_enabled: bool,
 ) -> Result<PromptAccepted, AgentHostError> {
     validate_prompt(session_id, &request)?;
@@ -1141,7 +1189,7 @@ async fn accept_v1_prompt_inner(
         {
             Ok(response) => response,
             Err(_) => {
-                let _ = signals.send(ActorSignal::Fatal);
+                signals.fatal();
                 return Err(AgentHostError::TransportFailed);
             }
         };
@@ -1163,7 +1211,7 @@ async fn accept_v1_prompt_inner(
                 state.active_run_id = None;
             }
             _ => {
-                let _ = signals.send(ActorSignal::Fatal);
+                signals.fatal();
                 return Err(AgentHostError::TransportFailed);
             }
         }
@@ -1205,7 +1253,7 @@ fn accept_v2_prompt(
     state: &mut ActorState,
     request: PromptRequest,
     reply: oneshot::Sender<Result<PromptAccepted, AgentHostError>>,
-    signals: &mpsc::UnboundedSender<ActorSignal>,
+    signals: &ActorSignalSender,
 ) {
     let result = accept_v2_prompt_inner(
         connection,
@@ -1229,7 +1277,7 @@ fn accept_v2_prompt_inner(
     native_session_id: &str,
     state: &mut ActorState,
     request: PromptRequest,
-    signals: &mpsc::UnboundedSender<ActorSignal>,
+    signals: &ActorSignalSender,
 ) -> Result<PromptAccepted, AgentHostError> {
     validate_prompt(session_id, &request)?;
     let content = parse_v2_prompt(&request.native_prompt_json)?;
@@ -1325,7 +1373,7 @@ fn start_next_v1(
     session_id: &str,
     native_session_id: &str,
     state: &mut ActorState,
-    signals: &mpsc::UnboundedSender<ActorSignal>,
+    signals: &ActorSignalSender,
 ) -> Result<(), AgentHostError> {
     let Some(next) = state.queued.pop_front() else {
         return Ok(());
@@ -1350,7 +1398,7 @@ fn start_next_v2(
     session_id: &str,
     native_session_id: &str,
     state: &mut ActorState,
-    signals: &mpsc::UnboundedSender<ActorSignal>,
+    signals: &ActorSignalSender,
 ) -> Result<(), AgentHostError> {
     let Some(next) = state.queued.pop_front() else {
         return Ok(());
@@ -1375,7 +1423,7 @@ fn dispatch_v1_prompt(
     native_session_id: &str,
     content: Vec<v1::ContentBlock>,
     run_id: String,
-    signals: mpsc::UnboundedSender<ActorSignal>,
+    signals: ActorSignalSender,
 ) {
     let request = connection.send_request(v1::PromptRequest::new(
         native_session_id.to_owned(),
@@ -1383,7 +1431,9 @@ fn dispatch_v1_prompt(
     ));
     tokio::spawn(async move {
         let succeeded = request.block_task().await.is_ok();
-        let _ = signals.send(ActorSignal::V1PromptFinished { run_id, succeeded });
+        let _ = signals
+            .send(ActorSignal::V1PromptFinished { run_id, succeeded })
+            .await;
     });
 }
 
@@ -1394,7 +1444,7 @@ fn dispatch_v2_prompt(
     run_id: String,
     client_turn_id: String,
     started_run: bool,
-    signals: mpsc::UnboundedSender<ActorSignal>,
+    signals: ActorSignalSender,
 ) {
     let request = connection.send_request(v2::PromptRequest::new(
         native_session_id.to_owned(),
@@ -1402,12 +1452,14 @@ fn dispatch_v2_prompt(
     ));
     tokio::spawn(async move {
         let succeeded = request.block_task().await.is_ok();
-        let _ = signals.send(ActorSignal::V2PromptAcknowledged {
-            run_id,
-            client_turn_id,
-            started_run,
-            succeeded,
-        });
+        let _ = signals
+            .send(ActorSignal::V2PromptAcknowledged {
+                run_id,
+                client_turn_id,
+                started_run,
+                succeeded,
+            })
+            .await;
     });
 }
 
@@ -1507,7 +1559,7 @@ async fn detach_v1(
     session_id: &str,
     native_session_id: &str,
     active_run_id: Option<&str>,
-    signals: &mut mpsc::UnboundedReceiver<ActorSignal>,
+    signals: &mut ActorSignalReceiver,
 ) -> Result<OperationReceipt, AgentHostError> {
     let now_ms = clock()?;
     store.set_lifecycle(session_id, &AgentLifecycle::Detaching, now_ms)?;
@@ -1560,7 +1612,7 @@ async fn detach_v2(
     session_id: &str,
     native_session_id: &str,
     busy: bool,
-    signals: &mut mpsc::UnboundedReceiver<ActorSignal>,
+    signals: &mut ActorSignalReceiver,
 ) -> Result<OperationReceipt, AgentHostError> {
     let now_ms = clock()?;
     store.set_lifecycle(session_id, &AgentLifecycle::Detaching, now_ms)?;
@@ -1580,7 +1632,7 @@ async fn detach_v2(
 }
 
 async fn wait_for_v1_cancel(
-    signals: &mut mpsc::UnboundedReceiver<ActorSignal>,
+    signals: &mut ActorSignalReceiver,
     active_run_id: &str,
 ) -> Result<(), AgentHostError> {
     tokio::time::timeout(DETACH_CANCEL_TIMEOUT, async {
@@ -1598,9 +1650,7 @@ async fn wait_for_v1_cancel(
     .map_err(|_| AgentHostError::TransportFailed)?
 }
 
-async fn wait_for_v2_idle(
-    signals: &mut mpsc::UnboundedReceiver<ActorSignal>,
-) -> Result<(), AgentHostError> {
+async fn wait_for_v2_idle(signals: &mut ActorSignalReceiver) -> Result<(), AgentHostError> {
     tokio::time::timeout(DETACH_CANCEL_TIMEOUT, async {
         loop {
             match signals.recv().await {
@@ -1620,7 +1670,7 @@ fn resolve_v1_permission(
     store: &AgentStore,
     clock: &Clock,
     session_id: &str,
-    signals: &mpsc::UnboundedSender<ActorSignal>,
+    signals: &ActorSignalSender,
 ) -> Result<(), agent_client_protocol::Error> {
     let Some(option) = request
         .options
@@ -1633,7 +1683,7 @@ fn resolve_v1_permission(
                 .find(|option| matches!(option.kind, v1::PermissionOptionKind::AllowOnce))
         })
     else {
-        let _ = signals.send(ActorSignal::Fatal);
+        signals.fatal();
         return responder.respond(v1::RequestPermissionResponse::new(
             v1::RequestPermissionOutcome::Cancelled,
         ));
@@ -1658,7 +1708,7 @@ fn resolve_v2_permission(
     store: &AgentStore,
     clock: &Clock,
     session_id: &str,
-    signals: &mpsc::UnboundedSender<ActorSignal>,
+    signals: &ActorSignalSender,
 ) -> Result<(), agent_client_protocol::Error> {
     let Some(option) = request
         .options
@@ -1671,7 +1721,7 @@ fn resolve_v2_permission(
                 .find(|option| matches!(option.kind, v2::PermissionOptionKind::AllowOnce))
         })
     else {
-        let _ = signals.send(ActorSignal::Fatal);
+        signals.fatal();
         return responder.respond(v2::RequestPermissionResponse::new(
             v2::RequestPermissionOutcome::Cancelled,
         ));
@@ -1779,4 +1829,47 @@ fn request_id(id: &v1::RequestId) -> String {
 
 fn acp_error(error: AgentHostError) -> agent_client_protocol::Error {
     agent_client_protocol::Error::internal_error().data(format!("agent host error: {error:?}"))
+}
+
+#[cfg(test)]
+mod signal_tests {
+    use std::{
+        future::{Future as _, poll_fn},
+        task::Poll,
+    };
+
+    use super::{ACTOR_SIGNAL_QUEUE_CAPACITY, ActorSignal, actor_signal_channel};
+
+    fn fill_event_queue(sender: &super::ActorSignalSender) {
+        for _ in 0..ACTOR_SIGNAL_QUEUE_CAPACITY {
+            assert!(sender.events.try_send(ActorSignal::V2Idle).is_ok());
+        }
+    }
+
+    #[tokio::test]
+    async fn event_queue_backpressures_at_its_fixed_capacity() {
+        let (sender, mut receiver) = actor_signal_channel();
+        fill_event_queue(&sender);
+        assert!(matches!(
+            sender.events.try_send(ActorSignal::V2Idle),
+            Err(tokio::sync::mpsc::error::TrySendError::Full(_))
+        ));
+
+        let mut pending = Box::pin(sender.send(ActorSignal::V2Idle));
+        let first_poll = poll_fn(|context| Poll::Ready(pending.as_mut().poll(context))).await;
+        assert!(first_poll.is_pending());
+        assert!(matches!(receiver.recv().await, Some(ActorSignal::V2Idle)));
+        pending.await.expect("event resumes after one slot opens");
+        assert_eq!(receiver.events.len(), ACTOR_SIGNAL_QUEUE_CAPACITY);
+    }
+
+    #[tokio::test]
+    async fn fatal_signal_bypasses_a_full_event_queue() {
+        let (sender, mut receiver) = actor_signal_channel();
+        fill_event_queue(&sender);
+
+        sender.fatal();
+        assert!(matches!(receiver.recv().await, Some(ActorSignal::Fatal)));
+        assert_eq!(receiver.events.len(), ACTOR_SIGNAL_QUEUE_CAPACITY);
+    }
 }
