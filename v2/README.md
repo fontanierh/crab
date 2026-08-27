@@ -88,11 +88,14 @@ interrupt as a separate explicit action.
   ingress is acknowledged only after the generated `trigger-inbox` import commits it. Bounded
   inbound media is fsynced into host-owned private content and only
   validated handles become ACP resource links; mutable service credentials use fingerprint-CAS
-  atomic snapshots; selected outbound delivery is durable and idempotent. `crab-v2-bridge` exposes
+  atomic snapshots. Authentication keeps exactly one pending challenge per bridge, durably marks
+  replacement and expiry, and retains only the newest 64 terminal challenges. Selected outbound
+  delivery is durable and idempotent. `crab-v2-bridge` exposes
   its complete operator lifecycle through authenticated local IPC without disclosing credential
   material. See the
   [operator flow](docs/bridge-operations.md),
-  [state contract](docs/bridge-host-storage.md) and [rendered flow](docs/bridge-host-flow.png).
+  [state contract](docs/bridge-host-storage.md), [rendered flow](docs/bridge-host-flow.png) and
+  [authentication lifecycle](docs/bridge-auth-challenge-flow.png).
 - Every configured ACP parent and child receives 15 strict native bridge tools. An agent can install
   a package it wrote, change or retire it under generation control, authenticate it, validate its
   credentials, stage bounded workspace files into Crab-owned content, and send deliberately
