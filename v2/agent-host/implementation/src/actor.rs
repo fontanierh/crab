@@ -1,7 +1,8 @@
 use std::{collections::BTreeMap, path::PathBuf, sync::Arc, time::Duration};
 
 use agent_client_protocol::{
-    AcpAgent, Agent, ConnectionTo, JsonRpcRequest, JsonRpcResponse, LineDirection, Responder,
+    AcpAgent, Agent, ConnectionTo, DEFAULT_STDOUT_LINE_LIMIT, JsonRpcRequest, JsonRpcResponse,
+    LineDirection, Responder,
     schema::{ProtocolVersion, v1, v2},
 };
 use boxology_contract::ContractError as _;
@@ -20,6 +21,8 @@ use crate::{
 };
 
 const MAX_NATIVE_PROMPT_BYTES: usize = 2 * 1024 * 1024;
+const MAX_ACP_STDOUT_FRAME_BYTES: usize = 16 * 1024 * 1024;
+const _: () = assert!(MAX_ACP_STDOUT_FRAME_BYTES == DEFAULT_STDOUT_LINE_LIMIT);
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonRpcRequest)]
 #[request(method = "_session/steering", response = SessionSteeringResponse)]
@@ -418,7 +421,9 @@ fn instrumented_process(
     session_id: String,
     signals: ActorSignalSender,
 ) -> AcpAgent {
-    AcpAgent::new(agent.process_config()).with_debug(move |line, direction| {
+    let process =
+        AcpAgent::new(agent.process_config()).with_stdout_line_limit(MAX_ACP_STDOUT_FRAME_BYTES);
+    process.with_debug(move |line, direction| {
         let direction = match direction {
             LineDirection::Stdin => AcpEventDirection::ClientToAgent,
             LineDirection::Stdout => AcpEventDirection::AgentToClient,

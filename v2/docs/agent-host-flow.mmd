@@ -7,11 +7,11 @@ flowchart TB
         CONTROL{"Control deadline · 30s<br/>lock · bounded queue · receipt"}
         ACTOR["Session actor<br/>active run only"]
         MAILBOX["Actor signal mailbox<br/>128 events · async backpressure<br/>fatal watch bypass"]
-        ACP["ACP subprocess<br/>one process group"]
+        ACP["ACP subprocess<br/>one process group<br/>stdout ≤ 16 MiB / frame"]
         CONFIG --> PREFLIGHT
         PREFLIGHT -->|"verified"| CONTROL --> ACTOR
         ACTOR -->|"ACP requests"| ACP
-        ACP -->|"responses · idle"| MAILBOX --> ACTOR
+        ACP -->|"bounded JSON-RPC frames<br/>responses · idle"| MAILBOX --> ACTOR
         ACTOR -->|"queue · steer · cancel"| ACP
     end
     subgraph DURABLE["Exactly-once run boundary"]

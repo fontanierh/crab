@@ -43,3 +43,8 @@ sha2 = "0.10.9"
 tempfile = "3.27.0"
 tokio = { version = "1.53.0", features = ["fs", "io-util", "macros", "net", "process", "rt-multi-thread", "signal", "sync", "time"] }
 uuid = { version = "1.25.0", features = ["v4"] }
+
+[patch.crates-io]
+# Temporary reviewed backport of ACP SDK issue #340 onto the published v2.0.0 source. Keep the
+# registry version constraints above so this patch also covers RMCP's transitive ACP dependency.
+agent-client-protocol = { git = "https://github.com/fontanierh/rust-sdk", rev = "8490e501e497ab9679a7a86906487bb351b150d8" }
