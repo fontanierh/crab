@@ -45,10 +45,13 @@ boxology::contract! {
 
     /// Starts exactly one separately supervised ACP harness subprocess.
     pub struct SpawnSubAgentRequest {
-        /// Stable idempotency key chosen by the parent.
+        /// Stable idempotency key chosen by the parent, capped at 256 bytes.
         pub client_sub_agent_id: String,
+        /// Existing parent session identifier, capped at 256 bytes.
         pub parent_session_id: String,
+        /// Configured agent identifier, capped at 256 bytes.
         pub agent_id: String,
+        /// Absolute child working directory, capped at 4 KiB.
         pub working_directory: String,
         pub context_mode: SubAgentContextMode,
         /// Immutable inclusive parent event boundary for inherited context.
@@ -58,6 +61,7 @@ boxology::contract! {
         /// Exact ACP-compatible initial task content, capped at 2 MiB. Larger content travels by
         /// reference.
         pub native_task_prompt_json: String,
+        /// Non-secret child metadata JSON object, capped at 60 KiB before Crab adds its envelope.
         pub metadata_json: String,
         /// Zero disables crash restart. Resume is allowed only when the ACP session can be restored.
         pub crash_restart_limit: u64,
@@ -79,7 +83,9 @@ boxology::contract! {
     }
 
     pub struct SendToChildRequest {
+        /// Opaque Crab sub-agent identifier, capped at 256 bytes.
         pub sub_agent_id: String,
+        /// Idempotency key capped at 128 bytes so the derived ACP turn ID remains bounded.
         pub client_message_id: String,
         pub mode: SubAgentInputMode,
         /// Exact ACP-compatible prompt content, capped at 2 MiB.
@@ -87,10 +93,13 @@ boxology::contract! {
     }
 
     pub struct SendToParentRequest {
+        /// Opaque Crab sub-agent identifier, capped at 256 bytes.
         pub sub_agent_id: String,
+        /// Idempotency key capped at 128 bytes so the derived ACP turn ID remains bounded.
         pub client_message_id: String,
         pub mode: SubAgentInputMode,
-        /// Structured child result/progress, converted to an ACP-compatible parent input.
+        /// Structured child result/progress, capped at 1 MiB before conversion to an
+        /// ACP-compatible parent input.
         pub message_json: String,
     }
 
@@ -137,7 +146,9 @@ boxology::contract! {
     }
 
     pub struct StopSubAgentRequest {
+        /// Opaque Crab sub-agent identifier, capped at 256 bytes.
         pub sub_agent_id: String,
+        /// Human-readable stop reason, capped at 16 KiB.
         pub reason: String,
     }
 
