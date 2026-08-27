@@ -2,7 +2,11 @@ mod contract;
 
 pub use contract::*;
 
-use std::path::Path;
+use std::{
+    collections::HashMap,
+    path::Path,
+    sync::{Arc, Mutex as StdMutex, PoisonError, Weak},
+};
 
 use boxology_contract::{CallContext, ErasedCallError};
 use boxology_import_agent_host::{OpenSessionRequest, ResumeSessionRequest, SessionReference};
@@ -12,7 +16,7 @@ use boxology_import_native_channel::{
 };
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, OwnedMutexGuard};
 
 use generated::{AgentHostImport, NativeChannelImport};
 
@@ -20,7 +24,7 @@ use generated::{AgentHostImport, NativeChannelImport};
 pub struct ChannelGateway {
     agent_host: AgentHostImport,
     native_channel: NativeChannelImport,
-    operations: Mutex<()>,
+    operations: AttachmentLocks,
 }
 
 impl ChannelGateway {
@@ -30,7 +34,7 @@ impl ChannelGateway {
         Self {
             agent_host,
             native_channel,
-            operations: Mutex::new(()),
+            operations: AttachmentLocks::default(),
         }
     }
 
@@ -74,8 +78,11 @@ impl ChannelGateway {
         context: CallContext,
         request: AttachChannelRequest,
     ) -> Result<ChannelAttachment, ChannelGatewayError> {
-        let _operation = self.operations.lock().await;
         let desired_channel_json = attachment_envelope(&request)?;
+        let _operation = self
+            .operations
+            .lock(&request.adapter_id, &request.channel_id)
+            .await;
         let existing = match self
             .native_channel
             .find_binding(
@@ -202,6 +209,40 @@ impl ChannelGateway {
     }
 }
 
+#[derive(Default)]
+struct AttachmentLocks {
+    locks: StdMutex<HashMap<AttachmentIdentity, WeakAttachmentLock>>,
+}
+
+type AttachmentIdentity = (String, String);
+type WeakAttachmentLock = Weak<Mutex<()>>;
+
+impl AttachmentLocks {
+    async fn lock(&self, adapter_id: &str, channel_id: &str) -> OwnedMutexGuard<()> {
+        let key = (adapter_id.to_owned(), channel_id.to_owned());
+        let lock = {
+            let mut locks = self.locks.lock().unwrap_or_else(PoisonError::into_inner);
+            locks.retain(|_, lock| lock.strong_count() > 0);
+            if let Some(lock) = locks.get(&key).and_then(Weak::upgrade) {
+                lock
+            } else {
+                let lock = Arc::new(Mutex::new(()));
+                locks.insert(key, Arc::downgrade(&lock));
+                lock
+            }
+        };
+        lock.lock_owned().await
+    }
+
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.locks
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .len()
+    }
+}
+
 fn attachment_envelope(request: &AttachChannelRequest) -> Result<String, ChannelGatewayError> {
     if request.channel_id.trim().is_empty()
         || request.adapter_id.trim().is_empty()
@@ -282,9 +323,12 @@ pub mod generated {
 
 #[cfg(test)]
 mod tests {
-    use boxology_contract::CapabilityId;
+    use std::time::Duration;
 
-    use super::generated;
+    use boxology_contract::CapabilityId;
+    use tokio::time::timeout;
+
+    use super::{AttachmentLocks, generated};
 
     #[test]
     fn contract_exposes_only_idempotent_attachment() {
@@ -296,5 +340,44 @@ mod tests {
             .map(|capability: CapabilityId| capability.name().as_str().to_owned())
             .collect::<Vec<_>>();
         assert_eq!(names, ["attach_channel"]);
+    }
+
+    #[tokio::test]
+    async fn attachment_locks_serialize_only_matching_identities_and_prune() {
+        let locks = AttachmentLocks::default();
+        let first = locks.lock("t3code", "channel-a").await;
+
+        let other_channel = timeout(
+            Duration::from_millis(100),
+            locks.lock("t3code", "channel-b"),
+        )
+        .await
+        .expect("unrelated channel does not wait");
+        let other_adapter = timeout(
+            Duration::from_millis(100),
+            locks.lock("another-ui", "channel-a"),
+        )
+        .await
+        .expect("unrelated adapter does not wait");
+        assert!(
+            timeout(Duration::from_millis(20), locks.lock("t3code", "channel-a"))
+                .await
+                .is_err()
+        );
+
+        drop(first);
+        let matching = timeout(
+            Duration::from_millis(100),
+            locks.lock("t3code", "channel-a"),
+        )
+        .await
+        .expect("matching identity proceeds after release");
+        drop(matching);
+        drop(other_channel);
+        drop(other_adapter);
+
+        let fresh = locks.lock("t3code", "fresh").await;
+        assert_eq!(locks.len(), 1);
+        drop(fresh);
     }
 }
