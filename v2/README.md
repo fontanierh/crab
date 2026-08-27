@@ -48,9 +48,10 @@ interrupt as a separate explicit action.
   directions.
 - Agents run only after a fail-closed preflight proves permission bypass, no sandbox, unrestricted
   filesystem/network access and working passwordless `sudo`. Required ACP session options are then
-  applied and verified before readiness; the pinned Claude preset requires
-  `bypassPermissions` and the Opus picker. Its first-party macOS probe actively verifies the host,
-  adapter and network conditions rather than trusting configuration claims.
+  applied and verified before readiness. The Claude preset requires `bypassPermissions` and Opus;
+  the Codex preset requires `agent-full-access`, GPT-5.6-Sol and high reasoning. Their first-party
+  macOS probes actively verify the host, exact adapter and network conditions rather than trusting
+  configuration claims.
 - Bridges are packages the agent may add. Crab owns supervision, auth state, health and delivery
   semantics—not service-specific behavior. WhatsApp is the first intended first-party package.
 - Tests target useful contract and composition behavior. There is no percentage coverage gate.

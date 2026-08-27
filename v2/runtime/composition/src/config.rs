@@ -704,6 +704,44 @@ mod tests {
     }
 
     #[test]
+    fn codex_preset_pins_adapter_and_full_access_session_policy() {
+        let path =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../runtime.codex.example.json");
+        let config = RuntimeConfig::load(path).expect("committed Codex preset loads");
+        let agent = &config.agents[0];
+        assert_eq!(
+            agent.arguments,
+            ["--yes", "@agentclientprotocol/codex-acp@1.6.2"]
+        );
+        assert_eq!(agent.environment_from, ["PATH"]);
+        assert_eq!(agent.protocol, super::ProtocolConfig::V1);
+        assert_eq!(agent.steering_extension, None);
+        assert_eq!(
+            agent.session_options.get("mode").map(String::as_str),
+            Some("agent-full-access")
+        );
+        assert_eq!(
+            agent.session_options.get("model").map(String::as_str),
+            Some("gpt-5.6-sol")
+        );
+        assert_eq!(
+            agent
+                .session_options
+                .get("reasoning_effort")
+                .map(String::as_str),
+            Some("high")
+        );
+        assert_eq!(
+            agent.authority_probe.executable,
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../target/release/crab-v2-codex-authority-probe")
+        );
+        assert_eq!(agent.session_mcp_servers.len(), 2);
+        assert_eq!(agent.session_mcp_servers[0].name, "crab-sub-agents");
+        assert_eq!(agent.session_mcp_servers[1].name, "crab-bridges");
+    }
+
+    #[test]
     fn bundle_preset_uses_only_bundle_relative_runtime_commands() {
         let runtime = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
         let config = RuntimeConfig::load(runtime.join("runtime.bundle.example.json"))
