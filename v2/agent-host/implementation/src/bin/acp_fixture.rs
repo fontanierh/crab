@@ -176,6 +176,10 @@ impl FixtureAgent {
         if text == "crash" {
             return Ok(false);
         }
+        if text == "error" {
+            self.respond_error(request, -32001, "fixture prompt failed")?;
+            return Ok(true);
+        }
         match self.protocol {
             Protocol::V1 => {
                 if text == "hold" || text == "permission" {

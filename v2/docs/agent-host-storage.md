@@ -20,6 +20,10 @@ view.
 - `(session_id, client_turn_id)` deduplicates one immutable prompt; a changed retry is rejected.
 - `native_prompt_json` is the exact JSON array carried in ACP's `prompt` field.
 - Native stdin/stdout JSON-RPC lines are stored byte-for-byte with direction and per-session order.
+- Every accepted run ends with exactly one `RunFinished` event. A native ACP terminal response or
+  idle update remains authoritative; if a prompt instead returns a JSON-RPC error, Crab preserves
+  that error and atomically appends a minimal `crab/run_finished` lifecycle notification before
+  clearing the active run.
 - ACP v1 has one foreground run; queued prompts drain FIFO after its prompt response.
 - ACP v2 steering contributes to the active run; queued prompts wait for an `idle` state update.
 - Permission requests and the automatically selected strongest allow response are audit records,

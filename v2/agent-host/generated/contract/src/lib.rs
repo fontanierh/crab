@@ -1251,7 +1251,7 @@ static __BOXOLOGY_CONTRACT_DESCRIPTOR: ::std::sync::LazyLock<
                 capability_10,
             ],
             ::boxology_contract::ContractRevision::new(
-                    "sha256:44f44a7532a8994299080d3c39a826ef3102457f4efd6a47f4f5ba9637d9616a",
+                    "sha256:71d1650ce348f47d6fe90a1b719d7dd00e6d4fedb4111d6428a0864feee3f84e",
                 )
                 .expect("generated contract revision is non-empty"),
         )
@@ -5743,6 +5743,8 @@ pub struct AcpEvent {
     pub direction: AcpEventDirection,
     /// The complete ACP JSON-RPC message. `crab/*` lifecycle notifications are the only
     /// Crab-authored extension; every native ACP message remains byte-for-byte intact.
+    /// `crab/run_finished` carries `sessionId`, `runId`, and a `completed` or `failed`
+    /// `outcome`, and appears only when ACP did not emit its own terminal event.
     pub native_event_json: ::std::string::String,
 }
 #[rustfmt::skip]
@@ -8153,8 +8155,8 @@ pub mod test_support {
 #[rustfmt::skip]
 #[doc(hidden)]
 pub const __BOXOLOGY_SEMANTIC_DIGEST: [u8; 32] = [
-    196, 239, 158, 164, 79, 62, 192, 95, 189, 222, 16, 233, 76, 145, 223, 147, 115, 67,
-    255, 73, 23, 125, 56, 32, 18, 46, 148, 244, 0, 155, 40, 76,
+    20, 213, 53, 19, 3, 94, 90, 127, 78, 42, 118, 55, 118, 60, 22, 18, 76, 248, 230, 223,
+    29, 214, 62, 83, 168, 177, 232, 80, 184, 7, 99, 9,
 ];
 #[rustfmt::skip]
 #[doc(hidden)]

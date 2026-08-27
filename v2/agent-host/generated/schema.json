@@ -216,9 +216,9 @@
   "provenance": {
     "generator": "boxology-generator",
     "generator_version": "0.1.1",
-    "semantic_digest": "sha256:c4ef9ea44f3ec05fbdde10e94c91df937343ff49177d3820122e94f4009b284c"
+    "semantic_digest": "sha256:14d53513035e5a7f4e2a7637763c16124cf8e6df1dd63e53a8b1e850b8076309"
   },
-  "revision": "sha256:44f44a7532a8994299080d3c39a826ef3102457f4efd6a47f4f5ba9637d9616a",
+  "revision": "sha256:71d1650ce348f47d6fe90a1b719d7dd00e6d4fedb4111d6428a0864feee3f84e",
   "schema_format": 1,
   "types": [
     {
@@ -1004,7 +1004,9 @@
           "deprecation": null,
           "docs": [
             " The complete ACP JSON-RPC message. `crab/*` lifecycle notifications are the only",
-            " Crab-authored extension; every native ACP message remains byte-for-byte intact."
+            " Crab-authored extension; every native ACP message remains byte-for-byte intact.",
+            " `crab/run_finished` carries `sessionId`, `runId`, and a `completed` or `failed`",
+            " `outcome`, and appears only when ACP did not emit its own terminal event."
           ],
           "name": "native_event_json",
           "type": "String"
