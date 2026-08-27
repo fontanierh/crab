@@ -27,6 +27,7 @@ use tokio::sync::{RwLock, oneshot};
 use uuid::Uuid;
 
 const CONTROL_TIMEOUT: Duration = Duration::from_secs(30);
+const AUTHORITY_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub(crate) type Clock = Arc<dyn Fn() -> Result<u64, AgentHostError> + Send + Sync>;
 
@@ -38,6 +39,7 @@ pub struct AgentHost {
     sessions: Arc<RwLock<HashMap<String, SessionHandle>>>,
     state_directory: Option<PathBuf>,
     clock: Clock,
+    authority_timeout: Duration,
 }
 
 impl AgentHost {
@@ -115,6 +117,7 @@ impl AgentHost {
             sessions: Arc::new(RwLock::new(HashMap::new())),
             state_directory,
             clock: Arc::new(system_time_ms),
+            authority_timeout: AUTHORITY_TIMEOUT,
         })
     }
 
@@ -171,7 +174,12 @@ impl AgentHost {
             return Err(AgentHostError::PreflightFailed);
         }
         let now_ms = (self.clock)()?;
-        let authority = self.authority.verify(agent, &canonical, now_ms).await?;
+        let authority = tokio::time::timeout(
+            self.authority_timeout,
+            self.authority.verify(agent, &canonical, now_ms),
+        )
+        .await
+        .map_err(|_| AgentHostError::AuthorityUnavailable)??;
         Ok(PreflightReport {
             agent_id: agent_id.to_owned(),
             working_directory: canonical.to_string_lossy().into_owned(),
@@ -580,9 +588,40 @@ pub mod generated {
 
 #[cfg(test)]
 mod tests {
-    use boxology_contract::CapabilityId;
+    use std::{future::pending, path::Path, sync::Arc, time::Duration};
 
-    use super::{AgentHost, AgentHostError, generated};
+    use async_trait::async_trait;
+    use boxology_contract::{CallContext, Caller, CancelToken, CapabilityId, TraceContext};
+
+    use super::{
+        AgentHost, AgentHostError, AgentProtocol, AuthorityAttestation, AuthorityProbeConfig,
+        AuthorityVerifier, ConfiguredAgent, ListAgentSessionsRequest, OpenSessionRequest,
+        generated,
+    };
+
+    struct HangingAuthority;
+
+    #[async_trait]
+    impl AuthorityVerifier for HangingAuthority {
+        async fn verify(
+            &self,
+            _agent: &ConfiguredAgent,
+            _working_directory: &Path,
+            _now_ms: u64,
+        ) -> Result<AuthorityAttestation, AgentHostError> {
+            pending().await
+        }
+    }
+
+    fn context() -> CallContext {
+        CallContext::new(
+            Caller::Anonymous,
+            None,
+            CancelToken::new(),
+            TraceContext::empty(),
+            None,
+        )
+    }
 
     #[test]
     fn live_host_declares_the_complete_surface_and_rejects_duplicate_configuration() {
@@ -618,5 +657,44 @@ mod tests {
         let host = AgentHost::open_in_memory(Vec::new()).expect("empty catalog is valid");
         drop(host);
         assert_eq!(AgentHostError::UnknownAgent, AgentHostError::UnknownAgent);
+    }
+
+    #[tokio::test]
+    async fn authority_timeout_fails_closed_before_session_state_exists() {
+        let directory = tempfile::tempdir().expect("temporary working directory");
+        let executable = std::env::current_exe().expect("test executable path");
+        let agent = ConfiguredAgent::new(
+            "hanging",
+            "Hanging authority fixture",
+            &executable,
+            AgentProtocol::V1,
+            AuthorityProbeConfig::new(executable.clone()),
+        );
+        let mut host = AgentHost::open_in_memory_with_authority_verifier(
+            vec![agent],
+            Arc::new(HangingAuthority),
+        )
+        .expect("host opens");
+        host.authority_timeout = Duration::from_millis(20);
+
+        let result = host
+            .open_session(
+                context(),
+                OpenSessionRequest {
+                    agent_id: "hanging".into(),
+                    working_directory: directory.path().to_string_lossy().into_owned(),
+                    bootstrap_prompt: None,
+                    metadata_json: "{}".into(),
+                },
+            )
+            .await;
+
+        assert_eq!(result, Err(AgentHostError::AuthorityUnavailable));
+        let catalog = host
+            .list_sessions(context(), ListAgentSessionsRequest { limit: 1 })
+            .await
+            .expect("session catalog remains readable");
+        assert_eq!(catalog.total_sessions, 0);
+        assert!(catalog.sessions.is_empty());
     }
 }

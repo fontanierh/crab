@@ -87,6 +87,7 @@ dependencies = [
  "boxology",
  "boxology-contract",
  "boxology-runtime",
+ "nix",
  "rusqlite",
  "serde",
  "serde_json",

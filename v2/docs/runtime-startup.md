@@ -46,6 +46,16 @@ session closed.
 
 ![ACP session policy negotiation](acp-session-policy-flow.png)
 
+### Bounded authority gate
+
+Direct preflight, open, resume and fork all share one fail-closed authority boundary. Verification
+has a 30-second total deadline. The passwordless-sudo and agent-policy subprocesses each have a
+10-second deadline and run in isolated process groups; timeout sends `SIGTERM`, waits one second,
+then sends `SIGKILL` and reaps the direct child. A timeout returns `AuthorityUnavailable` before a
+new session row or ACP subprocess exists.
+
+![Bounded authority preflight](authority-timeout-flow.png)
+
 ### Claude Opus preset
 
 [`runtime.claude-opus.example.json`](../runtime/runtime.claude-opus.example.json) is the first real

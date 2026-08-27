@@ -1,0 +1,29 @@
+%%{init: {"theme": "base", "themeVariables": {"fontFamily": "ui-sans-serif, system-ui, sans-serif", "primaryTextColor": "#172033", "lineColor": "#64748b", "edgeLabelBackground": "#ffffff"}, "flowchart": {"curve": "basis", "nodeSpacing": 40, "rankSpacing": 52}}}%%
+flowchart LR
+    CALL["preflight · open<br/>resume · fork"]
+    TOTAL{"Authority verifier<br/>30s total deadline"}
+    FS["Canonical workspace<br/>write probe"]
+    SUDO["sudo -n id -u<br/>10s command deadline"]
+    PROBE["Agent policy probe<br/>10s command deadline"]
+    READY["Verified authority<br/>session may start"]
+    STOP["Cancel verifier<br/>TERM process group<br/>1s grace → KILL"]
+    REJECT["AuthorityUnavailable<br/>no session row created"]
+
+    CALL --> TOTAL
+    TOTAL --> FS --> SUDO --> PROBE --> READY
+    TOTAL -. "total timeout" .-> STOP
+    SUDO -. "timeout / failure" .-> STOP
+    PROBE -. "timeout / failure" .-> STOP
+    STOP --> REJECT
+
+    classDef caller fill:#f8fafc,stroke:#64748b,stroke-width:1.5px,color:#172033;
+    classDef gate fill:#fef3c7,stroke:#d97706,stroke-width:2px,color:#78350f;
+    classDef probe fill:#dbeafe,stroke:#2563eb,stroke-width:2px,color:#172554;
+    classDef ready fill:#dcfce7,stroke:#16a34a,stroke-width:2px,color:#14532d;
+    classDef failure fill:#fee2e2,stroke:#dc2626,stroke-width:2px,color:#7f1d1d;
+
+    class CALL caller;
+    class TOTAL gate;
+    class FS,SUDO,PROBE probe;
+    class READY ready;
+    class STOP,REJECT failure;
