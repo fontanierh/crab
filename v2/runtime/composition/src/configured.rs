@@ -667,7 +667,7 @@ mod tests {
         AttachChannelRequest, ChannelAttachmentDisposition, ChannelGatewayError,
     };
     use channel_gateway_implementation::{ChannelGateway, generated as channel_gateway};
-    use native_channel_contract::{BindingReference, ChannelLifecycle};
+    use native_channel_contract::{BindingReference, ChannelLifecycle, ListChannelBindingsRequest};
     use native_channel_implementation::{NativeChannelState, generated as native_channel};
     use serde_json::json;
     use sub_agent_host_contract::{
@@ -1806,6 +1806,24 @@ mod tests {
         assert_eq!(second.binding_id, first.binding_id);
         assert_eq!(second.session_id, sessions[0]);
         assert_eq!(state.lock().expect("fake state lock").next_session, 1);
+
+        let channel_client = ChannelIpcClient::from_state_directory(directory.path())
+            .expect("channel operator client opens");
+        let binding_catalog = channel_client
+            .list_channel_bindings(ListChannelBindingsRequest { limit: 100 })
+            .await
+            .expect("binding catalog crosses authenticated IPC");
+        assert_eq!(binding_catalog.total_bindings, 1);
+        assert_eq!(binding_catalog.bindings[0].binding_id, first.binding_id);
+        assert_eq!(binding_catalog.bindings[0].session_id, sessions[0]);
+        let binding_summary = channel_client
+            .channel_binding_summary(BindingReference {
+                binding_id: first.binding_id.clone(),
+            })
+            .await
+            .expect("binding summary crosses authenticated IPC");
+        assert_eq!(binding_summary.pending_input_count, 0);
+        assert_eq!(binding_summary.lifecycle, ChannelLifecycle::Attached);
 
         let diagnostic_client = ChannelIpcClient::from_state_directory(directory.path())
             .expect("diagnostic client opens");

@@ -69,8 +69,11 @@ interrupt as a separate explicit action.
 - `native-channel` is a durable Boxology consumer of `agent-host`: it binds one UI to one session,
   routes queue/steer and explicit interrupt, replays the complete bidirectional ACP stream, and
   confirms adapter publication in order. Failed bindings can recover the exact resumed session
-  without changing identity or delivery cursors. See its
-  [state contract](docs/native-channel-storage.md) and [rendered flow](docs/native-channel-flow.png).
+  without changing identity or delivery cursors. Its owner-only `crab-v2-channel` client discovers
+  bindings, pending work and event cursors without exposing adapter destination metadata. See its
+  [operator flow](docs/channel-operations.md), [state contract](docs/native-channel-storage.md),
+  [rendered host flow](docs/native-channel-flow.png) and
+  [rendered operator flow](docs/channel-operations-flow.png).
 - `channel-gateway` is the single lifecycle path for configured and dynamic UI attachment. It
   reuses a matching live binding, resumes matching unavailable sessions before replacement, and
   rejects changed intent while a session is live. Only explicit resume unavailability falls back

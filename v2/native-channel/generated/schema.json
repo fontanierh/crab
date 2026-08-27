@@ -176,6 +176,45 @@
     {
       "deprecation": null,
       "docs": [
+        " Discover durable bindings without already knowing an opaque binding ID. This capability is",
+        " exposed only through Crab's owner-authenticated local operator transport."
+      ],
+      "error": "NativeChannelError",
+      "id": "native-channel.list_bindings",
+      "idempotency": "none",
+      "input": {
+        "name": "request",
+        "type": "ListChannelBindingsRequest"
+      },
+      "max_exposure": "code_only",
+      "name": "list_bindings",
+      "output": {
+        "type": "ChannelBindingCatalog"
+      },
+      "shape": "unary"
+    },
+    {
+      "deprecation": null,
+      "docs": [
+        " Read one durable binding summary even when its ACP session is currently unavailable."
+      ],
+      "error": "NativeChannelError",
+      "id": "native-channel.binding_summary",
+      "idempotency": "none",
+      "input": {
+        "name": "request",
+        "type": "BindingReference"
+      },
+      "max_exposure": "code_only",
+      "name": "binding_summary",
+      "output": {
+        "type": "ChannelBindingSummary"
+      },
+      "shape": "unary"
+    },
+    {
+      "deprecation": null,
+      "docs": [
         " Read persisted binding identity even when its previous ACP session is unavailable. Runtime",
         " startup uses this to attach a fresh session after a crash without inventing a second route."
       ],
@@ -234,9 +273,9 @@
   "provenance": {
     "generator": "boxology-generator",
     "generator_version": "0.1.1",
-    "semantic_digest": "sha256:c02c9ab2d5a27fb098568119196f2f943f64e57dd6fef98a4d0ba6ac421947ce"
+    "semantic_digest": "sha256:d7539dc77cca2dc0b8bb36d77af11c76455295fa8d0224eab5802698d6b3bb3c"
   },
-  "revision": "sha256:1179e37558c53fcb8f026c92b86d74e0c4ab833470a348593fcfc45dab92d20a",
+  "revision": "sha256:1f8e3d56d8e0630310ffe01bd780bbabeac6eea524da631beaa983d13e917268",
   "schema_format": 1,
   "types": [
     {
@@ -992,6 +1031,107 @@
       ],
       "kind": "struct",
       "name": "ChannelStatus"
+    },
+    {
+      "deprecation": null,
+      "docs": [
+        " Bounded, non-secret operator view of one durable binding. Adapter-specific destination",
+        " metadata remains private to the binding store and is not copied into the catalog."
+      ],
+      "fields": [
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "binding_id",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "channel_id",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "adapter_id",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "session_id",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "lifecycle",
+          "type": "ChannelLifecycle"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "published_sequence",
+          "type": "u64"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "pending_input_count",
+          "type": "u64"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "last_error",
+          "type": "Option<String>"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "updated_at_ms",
+          "type": "u64"
+        }
+      ],
+      "kind": "struct",
+      "name": "ChannelBindingSummary"
+    },
+    {
+      "deprecation": null,
+      "docs": [],
+      "fields": [
+        {
+          "deprecation": null,
+          "docs": [
+            " Newest bindings first. The implementation accepts 1 through 256."
+          ],
+          "name": "limit",
+          "type": "u64"
+        }
+      ],
+      "kind": "struct",
+      "name": "ListChannelBindingsRequest"
+    },
+    {
+      "deprecation": null,
+      "docs": [],
+      "fields": [
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "bindings",
+          "type": "Vec<ChannelBindingSummary>"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "total_bindings",
+          "type": "u64"
+        }
+      ],
+      "kind": "struct",
+      "name": "ChannelBindingCatalog"
     },
     {
       "deprecation": null,

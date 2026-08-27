@@ -1186,6 +1186,217 @@ static __BOXOLOGY_CONTRACT_DESCRIPTOR: ::std::sync::LazyLock<
     let capability_9 = ::boxology_contract::CapabilityDescriptor::new(
         ::boxology_contract::CapabilityId::new(
             box_id.clone(),
+            ::boxology_contract::CapabilityName::new("list_bindings")
+                .expect("generated capability name is valid"),
+        ),
+        ::boxology_contract::TypeDescriptor::structure([
+                ::boxology_contract::FieldDescriptor::new(
+                    "limit",
+                    ::boxology_contract::TypeDescriptor::u64(),
+                    None,
+                ),
+            ])
+            .expect("generated struct descriptor is valid"),
+        ::boxology_contract::TypeDescriptor::structure([
+                ::boxology_contract::FieldDescriptor::new(
+                    "bindings",
+                    ::boxology_contract::TypeDescriptor::list(
+                            ::boxology_contract::TypeDescriptor::structure([
+                                    ::boxology_contract::FieldDescriptor::new(
+                                        "binding_id",
+                                        ::boxology_contract::TypeDescriptor::string(),
+                                        None,
+                                    ),
+                                    ::boxology_contract::FieldDescriptor::new(
+                                        "channel_id",
+                                        ::boxology_contract::TypeDescriptor::string(),
+                                        None,
+                                    ),
+                                    ::boxology_contract::FieldDescriptor::new(
+                                        "adapter_id",
+                                        ::boxology_contract::TypeDescriptor::string(),
+                                        None,
+                                    ),
+                                    ::boxology_contract::FieldDescriptor::new(
+                                        "session_id",
+                                        ::boxology_contract::TypeDescriptor::string(),
+                                        None,
+                                    ),
+                                    ::boxology_contract::FieldDescriptor::new(
+                                        "lifecycle",
+                                        ::boxology_contract::TypeDescriptor::enumeration([
+                                                ::boxology_contract::VariantDescriptor::new(
+                                                    "Binding",
+                                                    ::boxology_contract::VariantPayload::Unit,
+                                                    None,
+                                                ),
+                                                ::boxology_contract::VariantDescriptor::new(
+                                                    "Attached",
+                                                    ::boxology_contract::VariantPayload::Unit,
+                                                    None,
+                                                ),
+                                                ::boxology_contract::VariantDescriptor::new(
+                                                    "Replaying",
+                                                    ::boxology_contract::VariantPayload::Unit,
+                                                    None,
+                                                ),
+                                                ::boxology_contract::VariantDescriptor::new(
+                                                    "Detached",
+                                                    ::boxology_contract::VariantPayload::Unit,
+                                                    None,
+                                                ),
+                                                ::boxology_contract::VariantDescriptor::new(
+                                                    "Failed",
+                                                    ::boxology_contract::VariantPayload::Unit,
+                                                    None,
+                                                ),
+                                            ])
+                                            .expect("generated enum descriptor is valid"),
+                                        None,
+                                    ),
+                                    ::boxology_contract::FieldDescriptor::new(
+                                        "published_sequence",
+                                        ::boxology_contract::TypeDescriptor::u64(),
+                                        None,
+                                    ),
+                                    ::boxology_contract::FieldDescriptor::new(
+                                        "pending_input_count",
+                                        ::boxology_contract::TypeDescriptor::u64(),
+                                        None,
+                                    ),
+                                    ::boxology_contract::FieldDescriptor::new(
+                                        "last_error",
+                                        ::boxology_contract::TypeDescriptor::optional(
+                                                ::boxology_contract::TypeDescriptor::string(),
+                                            )
+                                            .expect("generated optional descriptor is valid"),
+                                        None,
+                                    ),
+                                    ::boxology_contract::FieldDescriptor::new(
+                                        "updated_at_ms",
+                                        ::boxology_contract::TypeDescriptor::u64(),
+                                        None,
+                                    ),
+                                ])
+                                .expect("generated struct descriptor is valid"),
+                        )
+                        .expect("generated list descriptor is valid"),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
+                    "total_bindings",
+                    ::boxology_contract::TypeDescriptor::u64(),
+                    None,
+                ),
+            ])
+            .expect("generated struct descriptor is valid"),
+        error.clone(),
+        ::boxology_contract::CapabilityShape::Unary,
+        ::boxology_contract::ExposureLevel::CodeOnly,
+        ::boxology_contract::Idempotency::None,
+        None,
+    );
+    let capability_10 = ::boxology_contract::CapabilityDescriptor::new(
+        ::boxology_contract::CapabilityId::new(
+            box_id.clone(),
+            ::boxology_contract::CapabilityName::new("binding_summary")
+                .expect("generated capability name is valid"),
+        ),
+        ::boxology_contract::TypeDescriptor::structure([
+                ::boxology_contract::FieldDescriptor::new(
+                    "binding_id",
+                    ::boxology_contract::TypeDescriptor::string(),
+                    None,
+                ),
+            ])
+            .expect("generated struct descriptor is valid"),
+        ::boxology_contract::TypeDescriptor::structure([
+                ::boxology_contract::FieldDescriptor::new(
+                    "binding_id",
+                    ::boxology_contract::TypeDescriptor::string(),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
+                    "channel_id",
+                    ::boxology_contract::TypeDescriptor::string(),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
+                    "adapter_id",
+                    ::boxology_contract::TypeDescriptor::string(),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
+                    "session_id",
+                    ::boxology_contract::TypeDescriptor::string(),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
+                    "lifecycle",
+                    ::boxology_contract::TypeDescriptor::enumeration([
+                            ::boxology_contract::VariantDescriptor::new(
+                                "Binding",
+                                ::boxology_contract::VariantPayload::Unit,
+                                None,
+                            ),
+                            ::boxology_contract::VariantDescriptor::new(
+                                "Attached",
+                                ::boxology_contract::VariantPayload::Unit,
+                                None,
+                            ),
+                            ::boxology_contract::VariantDescriptor::new(
+                                "Replaying",
+                                ::boxology_contract::VariantPayload::Unit,
+                                None,
+                            ),
+                            ::boxology_contract::VariantDescriptor::new(
+                                "Detached",
+                                ::boxology_contract::VariantPayload::Unit,
+                                None,
+                            ),
+                            ::boxology_contract::VariantDescriptor::new(
+                                "Failed",
+                                ::boxology_contract::VariantPayload::Unit,
+                                None,
+                            ),
+                        ])
+                        .expect("generated enum descriptor is valid"),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
+                    "published_sequence",
+                    ::boxology_contract::TypeDescriptor::u64(),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
+                    "pending_input_count",
+                    ::boxology_contract::TypeDescriptor::u64(),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
+                    "last_error",
+                    ::boxology_contract::TypeDescriptor::optional(
+                            ::boxology_contract::TypeDescriptor::string(),
+                        )
+                        .expect("generated optional descriptor is valid"),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
+                    "updated_at_ms",
+                    ::boxology_contract::TypeDescriptor::u64(),
+                    None,
+                ),
+            ])
+            .expect("generated struct descriptor is valid"),
+        error.clone(),
+        ::boxology_contract::CapabilityShape::Unary,
+        ::boxology_contract::ExposureLevel::CodeOnly,
+        ::boxology_contract::Idempotency::None,
+        None,
+    );
+    let capability_11 = ::boxology_contract::CapabilityDescriptor::new(
+        ::boxology_contract::CapabilityId::new(
+            box_id.clone(),
             ::boxology_contract::CapabilityName::new("inspect_binding")
                 .expect("generated capability name is valid"),
         ),
@@ -1268,7 +1479,7 @@ static __BOXOLOGY_CONTRACT_DESCRIPTOR: ::std::sync::LazyLock<
         ::boxology_contract::Idempotency::None,
         None,
     );
-    let capability_10 = ::boxology_contract::CapabilityDescriptor::new(
+    let capability_12 = ::boxology_contract::CapabilityDescriptor::new(
         ::boxology_contract::CapabilityId::new(
             box_id.clone(),
             ::boxology_contract::CapabilityName::new("find_binding")
@@ -1358,7 +1569,7 @@ static __BOXOLOGY_CONTRACT_DESCRIPTOR: ::std::sync::LazyLock<
         ::boxology_contract::Idempotency::None,
         None,
     );
-    let capability_11 = ::boxology_contract::CapabilityDescriptor::new(
+    let capability_13 = ::boxology_contract::CapabilityDescriptor::new(
         ::boxology_contract::CapabilityId::new(
             box_id.clone(),
             ::boxology_contract::CapabilityName::new("unbind_channel")
@@ -1406,9 +1617,11 @@ static __BOXOLOGY_CONTRACT_DESCRIPTOR: ::std::sync::LazyLock<
                 capability_9,
                 capability_10,
                 capability_11,
+                capability_12,
+                capability_13,
             ],
             ::boxology_contract::ContractRevision::new(
-                    "sha256:1179e37558c53fcb8f026c92b86d74e0c4ab833470a348593fcfc45dab92d20a",
+                    "sha256:1f8e3d56d8e0630310ffe01bd780bbabeac6eea524da631beaa983d13e917268",
                 )
                 .expect("generated contract revision is non-empty"),
         )
@@ -1500,6 +1713,28 @@ pub trait NativeChannelDispatch: Send + Sync + 'static {
         request: BindingReference,
     ) -> Pin<
         Box<dyn Future<Output = Result<ChannelStatus, NativeChannelError>> + Send + 'a>,
+    >;
+    fn list_bindings<'a>(
+        &'a self,
+        context: CallContext,
+        request: ListChannelBindingsRequest,
+    ) -> Pin<
+        Box<
+            dyn Future<
+                Output = Result<ChannelBindingCatalog, NativeChannelError>,
+            > + Send + 'a,
+        >,
+    >;
+    fn binding_summary<'a>(
+        &'a self,
+        context: CallContext,
+        request: BindingReference,
+    ) -> Pin<
+        Box<
+            dyn Future<
+                Output = Result<ChannelBindingSummary, NativeChannelError>,
+            > + Send + 'a,
+        >,
     >;
     fn inspect_binding<'a>(
         &'a self,
@@ -2394,6 +2629,219 @@ impl NativeChannelHandle {
             .map_err(|error| conversion_detail("output_decode", error))
             .map_err(CallError::InvalidResponse)
     }
+    pub async fn list_bindings(
+        &self,
+        context: CallContext,
+        request: ListChannelBindingsRequest,
+    ) -> Result<ChannelBindingCatalog, CallError<NativeChannelError>> {
+        let input = request
+            .encode()
+            .map_err(|error| conversion_detail("input_encode", error))
+            .map_err(CallError::ContractViolation)?;
+        let output = self
+            .target
+            .call(&NATIVE_CHANNEL_LIST_BINDINGS, context, input)
+            .await
+            .map_err(|error| {
+                error.into_typed::<NativeChannelError>(&NATIVE_CHANNEL_ERROR_DESCRIPTOR)
+            })?;
+        let output = TypeDescriptor::structure([
+                ::boxology_contract::FieldDescriptor::new(
+                    "bindings",
+                    TypeDescriptor::list(
+                            TypeDescriptor::structure([
+                                    ::boxology_contract::FieldDescriptor::new(
+                                        "binding_id",
+                                        TypeDescriptor::string(),
+                                        None,
+                                    ),
+                                    ::boxology_contract::FieldDescriptor::new(
+                                        "channel_id",
+                                        TypeDescriptor::string(),
+                                        None,
+                                    ),
+                                    ::boxology_contract::FieldDescriptor::new(
+                                        "adapter_id",
+                                        TypeDescriptor::string(),
+                                        None,
+                                    ),
+                                    ::boxology_contract::FieldDescriptor::new(
+                                        "session_id",
+                                        TypeDescriptor::string(),
+                                        None,
+                                    ),
+                                    ::boxology_contract::FieldDescriptor::new(
+                                        "lifecycle",
+                                        TypeDescriptor::enumeration([
+                                                ::boxology_contract::VariantDescriptor::new(
+                                                    "Binding",
+                                                    ::boxology_contract::VariantPayload::Unit,
+                                                    None,
+                                                ),
+                                                ::boxology_contract::VariantDescriptor::new(
+                                                    "Attached",
+                                                    ::boxology_contract::VariantPayload::Unit,
+                                                    None,
+                                                ),
+                                                ::boxology_contract::VariantDescriptor::new(
+                                                    "Replaying",
+                                                    ::boxology_contract::VariantPayload::Unit,
+                                                    None,
+                                                ),
+                                                ::boxology_contract::VariantDescriptor::new(
+                                                    "Detached",
+                                                    ::boxology_contract::VariantPayload::Unit,
+                                                    None,
+                                                ),
+                                                ::boxology_contract::VariantDescriptor::new(
+                                                    "Failed",
+                                                    ::boxology_contract::VariantPayload::Unit,
+                                                    None,
+                                                ),
+                                            ])
+                                            .expect("generated enum descriptor is valid"),
+                                        None,
+                                    ),
+                                    ::boxology_contract::FieldDescriptor::new(
+                                        "published_sequence",
+                                        TypeDescriptor::u64(),
+                                        None,
+                                    ),
+                                    ::boxology_contract::FieldDescriptor::new(
+                                        "pending_input_count",
+                                        TypeDescriptor::u64(),
+                                        None,
+                                    ),
+                                    ::boxology_contract::FieldDescriptor::new(
+                                        "last_error",
+                                        TypeDescriptor::optional(TypeDescriptor::string())
+                                            .expect("generated optional descriptor is valid"),
+                                        None,
+                                    ),
+                                    ::boxology_contract::FieldDescriptor::new(
+                                        "updated_at_ms",
+                                        TypeDescriptor::u64(),
+                                        None,
+                                    ),
+                                ])
+                                .expect("generated struct descriptor is valid"),
+                        )
+                        .expect("generated list descriptor is valid"),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
+                    "total_bindings",
+                    TypeDescriptor::u64(),
+                    None,
+                ),
+            ])
+            .expect("generated struct descriptor is valid")
+            .conform(DecodeRole::ConsumerOutput, output)
+            .map_err(|error| conversion_detail("output_decode", error))
+            .map_err(CallError::InvalidResponse)?;
+        <ChannelBindingCatalog as ContractType>::decode(&output)
+            .map_err(|error| conversion_detail("output_decode", error))
+            .map_err(CallError::InvalidResponse)
+    }
+    pub async fn binding_summary(
+        &self,
+        context: CallContext,
+        request: BindingReference,
+    ) -> Result<ChannelBindingSummary, CallError<NativeChannelError>> {
+        let input = request
+            .encode()
+            .map_err(|error| conversion_detail("input_encode", error))
+            .map_err(CallError::ContractViolation)?;
+        let output = self
+            .target
+            .call(&NATIVE_CHANNEL_BINDING_SUMMARY, context, input)
+            .await
+            .map_err(|error| {
+                error.into_typed::<NativeChannelError>(&NATIVE_CHANNEL_ERROR_DESCRIPTOR)
+            })?;
+        let output = TypeDescriptor::structure([
+                ::boxology_contract::FieldDescriptor::new(
+                    "binding_id",
+                    TypeDescriptor::string(),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
+                    "channel_id",
+                    TypeDescriptor::string(),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
+                    "adapter_id",
+                    TypeDescriptor::string(),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
+                    "session_id",
+                    TypeDescriptor::string(),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
+                    "lifecycle",
+                    TypeDescriptor::enumeration([
+                            ::boxology_contract::VariantDescriptor::new(
+                                "Binding",
+                                ::boxology_contract::VariantPayload::Unit,
+                                None,
+                            ),
+                            ::boxology_contract::VariantDescriptor::new(
+                                "Attached",
+                                ::boxology_contract::VariantPayload::Unit,
+                                None,
+                            ),
+                            ::boxology_contract::VariantDescriptor::new(
+                                "Replaying",
+                                ::boxology_contract::VariantPayload::Unit,
+                                None,
+                            ),
+                            ::boxology_contract::VariantDescriptor::new(
+                                "Detached",
+                                ::boxology_contract::VariantPayload::Unit,
+                                None,
+                            ),
+                            ::boxology_contract::VariantDescriptor::new(
+                                "Failed",
+                                ::boxology_contract::VariantPayload::Unit,
+                                None,
+                            ),
+                        ])
+                        .expect("generated enum descriptor is valid"),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
+                    "published_sequence",
+                    TypeDescriptor::u64(),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
+                    "pending_input_count",
+                    TypeDescriptor::u64(),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
+                    "last_error",
+                    TypeDescriptor::optional(TypeDescriptor::string())
+                        .expect("generated optional descriptor is valid"),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
+                    "updated_at_ms",
+                    TypeDescriptor::u64(),
+                    None,
+                ),
+            ])
+            .expect("generated struct descriptor is valid")
+            .conform(DecodeRole::ConsumerOutput, output)
+            .map_err(|error| conversion_detail("output_decode", error))
+            .map_err(CallError::InvalidResponse)?;
+        <ChannelBindingSummary as ContractType>::decode(&output)
+            .map_err(|error| conversion_detail("output_decode", error))
+            .map_err(CallError::InvalidResponse)
+    }
     pub async fn inspect_binding(
         &self,
         context: CallContext,
@@ -2681,6 +3129,21 @@ static NATIVE_CHANNEL_CHANNEL_STATUS: LazyLock<CapabilityId> = LazyLock::new(|| 
     CapabilityId::new(
         BoxId::new("native-channel").expect("generated box identity is valid"),
         CapabilityName::new("channel_status")
+            .expect("generated capability name is valid"),
+    )
+});
+#[rustfmt::skip]
+static NATIVE_CHANNEL_LIST_BINDINGS: LazyLock<CapabilityId> = LazyLock::new(|| {
+    CapabilityId::new(
+        BoxId::new("native-channel").expect("generated box identity is valid"),
+        CapabilityName::new("list_bindings").expect("generated capability name is valid"),
+    )
+});
+#[rustfmt::skip]
+static NATIVE_CHANNEL_BINDING_SUMMARY: LazyLock<CapabilityId> = LazyLock::new(|| {
+    CapabilityId::new(
+        BoxId::new("native-channel").expect("generated box identity is valid"),
+        CapabilityName::new("binding_summary")
             .expect("generated capability name is valid"),
     )
 });
@@ -5717,6 +6180,395 @@ impl ::boxology_contract::ContractType for ChannelStatus {
     }
 }
 #[rustfmt::skip]
+/// Bounded, non-secret operator view of one durable binding. Adapter-specific destination
+/// metadata remains private to the binding store and is not copied into the catalog.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct ChannelBindingSummary {
+    pub binding_id: ::std::string::String,
+    pub channel_id: ::std::string::String,
+    pub adapter_id: ::std::string::String,
+    pub session_id: ::std::string::String,
+    pub lifecycle: ChannelLifecycle,
+    pub published_sequence: u64,
+    pub pending_input_count: u64,
+    pub last_error: ::core::option::Option<::std::string::String>,
+    pub updated_at_ms: u64,
+}
+#[rustfmt::skip]
+impl ::boxology_contract::ContractType for ChannelBindingSummary {
+    fn encode_value(
+        &self,
+    ) -> ::core::result::Result<
+        ::boxology_contract::ContractValue,
+        ::boxology_contract::EncodeError,
+    > {
+        let mut fields = ::std::vec::Vec::new();
+        if let Some(value) = ::boxology_contract::ContractType::encode_field(
+                &self.binding_id,
+            )
+            .map_err(|error| {
+                error.under(::boxology_contract::PathSegment::Field("binding_id".into()))
+            })?
+        {
+            fields.push(("binding_id".into(), value));
+        }
+        if let Some(value) = ::boxology_contract::ContractType::encode_field(
+                &self.channel_id,
+            )
+            .map_err(|error| {
+                error.under(::boxology_contract::PathSegment::Field("channel_id".into()))
+            })?
+        {
+            fields.push(("channel_id".into(), value));
+        }
+        if let Some(value) = ::boxology_contract::ContractType::encode_field(
+                &self.adapter_id,
+            )
+            .map_err(|error| {
+                error.under(::boxology_contract::PathSegment::Field("adapter_id".into()))
+            })?
+        {
+            fields.push(("adapter_id".into(), value));
+        }
+        if let Some(value) = ::boxology_contract::ContractType::encode_field(
+                &self.session_id,
+            )
+            .map_err(|error| {
+                error.under(::boxology_contract::PathSegment::Field("session_id".into()))
+            })?
+        {
+            fields.push(("session_id".into(), value));
+        }
+        if let Some(value) = ::boxology_contract::ContractType::encode_field(
+                &self.lifecycle,
+            )
+            .map_err(|error| {
+                error.under(::boxology_contract::PathSegment::Field("lifecycle".into()))
+            })?
+        {
+            fields.push(("lifecycle".into(), value));
+        }
+        if let Some(value) = ::boxology_contract::ContractType::encode_field(
+                &self.published_sequence,
+            )
+            .map_err(|error| {
+                error
+                    .under(
+                        ::boxology_contract::PathSegment::Field(
+                            "published_sequence".into(),
+                        ),
+                    )
+            })?
+        {
+            fields.push(("published_sequence".into(), value));
+        }
+        if let Some(value) = ::boxology_contract::ContractType::encode_field(
+                &self.pending_input_count,
+            )
+            .map_err(|error| {
+                error
+                    .under(
+                        ::boxology_contract::PathSegment::Field(
+                            "pending_input_count".into(),
+                        ),
+                    )
+            })?
+        {
+            fields.push(("pending_input_count".into(), value));
+        }
+        if let Some(value) = ::boxology_contract::ContractType::encode_field(
+                &self.last_error,
+            )
+            .map_err(|error| {
+                error.under(::boxology_contract::PathSegment::Field("last_error".into()))
+            })?
+        {
+            fields.push(("last_error".into(), value));
+        }
+        if let Some(value) = ::boxology_contract::ContractType::encode_field(
+                &self.updated_at_ms,
+            )
+            .map_err(|error| {
+                error
+                    .under(
+                        ::boxology_contract::PathSegment::Field("updated_at_ms".into()),
+                    )
+            })?
+        {
+            fields.push(("updated_at_ms".into(), value));
+        }
+        ::boxology_contract::ContractValue::object(fields)
+            .map_err(|_| unreachable!("validated generated field identities are unique"))
+    }
+    fn decode_value(
+        value: &::boxology_contract::ContractValue,
+    ) -> ::core::result::Result<Self, ::boxology_contract::DecodeError> {
+        let ::boxology_contract::ValueRef::Object(fields) = value.view() else {
+            return Err(
+                ::boxology_contract::DecodeError::new(
+                    ::boxology_contract::DecodeErrorKind::KindMismatch,
+                ),
+            );
+        };
+        for (field, _) in fields.entries() {
+            match field {
+                "binding_id" | "channel_id" | "adapter_id" | "session_id" | "lifecycle"
+                | "published_sequence" | "pending_input_count" | "last_error"
+                | "updated_at_ms" => {}
+                _ => {
+                    return Err(
+                        ::boxology_contract::DecodeError::new(
+                                ::boxology_contract::DecodeErrorKind::UnknownField(
+                                    field.into(),
+                                ),
+                            )
+                            .under(::boxology_contract::PathSegment::Field(field.into())),
+                    );
+                }
+            }
+        }
+        Ok(Self {
+            binding_id: <::std::string::String as ::boxology_contract::ContractType>::decode_field(
+                    fields.get("binding_id"),
+                )
+                .map_err(|error| {
+                    error
+                        .under(
+                            ::boxology_contract::PathSegment::Field("binding_id".into()),
+                        )
+                })?,
+            channel_id: <::std::string::String as ::boxology_contract::ContractType>::decode_field(
+                    fields.get("channel_id"),
+                )
+                .map_err(|error| {
+                    error
+                        .under(
+                            ::boxology_contract::PathSegment::Field("channel_id".into()),
+                        )
+                })?,
+            adapter_id: <::std::string::String as ::boxology_contract::ContractType>::decode_field(
+                    fields.get("adapter_id"),
+                )
+                .map_err(|error| {
+                    error
+                        .under(
+                            ::boxology_contract::PathSegment::Field("adapter_id".into()),
+                        )
+                })?,
+            session_id: <::std::string::String as ::boxology_contract::ContractType>::decode_field(
+                    fields.get("session_id"),
+                )
+                .map_err(|error| {
+                    error
+                        .under(
+                            ::boxology_contract::PathSegment::Field("session_id".into()),
+                        )
+                })?,
+            lifecycle: <ChannelLifecycle as ::boxology_contract::ContractType>::decode_field(
+                    fields.get("lifecycle"),
+                )
+                .map_err(|error| {
+                    error
+                        .under(
+                            ::boxology_contract::PathSegment::Field("lifecycle".into()),
+                        )
+                })?,
+            published_sequence: <u64 as ::boxology_contract::ContractType>::decode_field(
+                    fields.get("published_sequence"),
+                )
+                .map_err(|error| {
+                    error
+                        .under(
+                            ::boxology_contract::PathSegment::Field(
+                                "published_sequence".into(),
+                            ),
+                        )
+                })?,
+            pending_input_count: <u64 as ::boxology_contract::ContractType>::decode_field(
+                    fields.get("pending_input_count"),
+                )
+                .map_err(|error| {
+                    error
+                        .under(
+                            ::boxology_contract::PathSegment::Field(
+                                "pending_input_count".into(),
+                            ),
+                        )
+                })?,
+            last_error: <::core::option::Option<
+                ::std::string::String,
+            > as ::boxology_contract::ContractType>::decode_field(
+                    fields.get("last_error"),
+                )
+                .map_err(|error| {
+                    error
+                        .under(
+                            ::boxology_contract::PathSegment::Field("last_error".into()),
+                        )
+                })?,
+            updated_at_ms: <u64 as ::boxology_contract::ContractType>::decode_field(
+                    fields.get("updated_at_ms"),
+                )
+                .map_err(|error| {
+                    error
+                        .under(
+                            ::boxology_contract::PathSegment::Field(
+                                "updated_at_ms".into(),
+                            ),
+                        )
+                })?,
+        })
+    }
+}
+#[rustfmt::skip]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Default)]
+pub struct ListChannelBindingsRequest {
+    /// Newest bindings first. The implementation accepts 1 through 256.
+    pub limit: u64,
+}
+#[rustfmt::skip]
+impl ::boxology_contract::ContractType for ListChannelBindingsRequest {
+    fn encode_value(
+        &self,
+    ) -> ::core::result::Result<
+        ::boxology_contract::ContractValue,
+        ::boxology_contract::EncodeError,
+    > {
+        let mut fields = ::std::vec::Vec::new();
+        if let Some(value) = ::boxology_contract::ContractType::encode_field(&self.limit)
+            .map_err(|error| {
+                error.under(::boxology_contract::PathSegment::Field("limit".into()))
+            })?
+        {
+            fields.push(("limit".into(), value));
+        }
+        ::boxology_contract::ContractValue::object(fields)
+            .map_err(|_| unreachable!("validated generated field identities are unique"))
+    }
+    fn decode_value(
+        value: &::boxology_contract::ContractValue,
+    ) -> ::core::result::Result<Self, ::boxology_contract::DecodeError> {
+        let ::boxology_contract::ValueRef::Object(fields) = value.view() else {
+            return Err(
+                ::boxology_contract::DecodeError::new(
+                    ::boxology_contract::DecodeErrorKind::KindMismatch,
+                ),
+            );
+        };
+        for (field, _) in fields.entries() {
+            match field {
+                "limit" => {}
+                _ => {
+                    return Err(
+                        ::boxology_contract::DecodeError::new(
+                                ::boxology_contract::DecodeErrorKind::UnknownField(
+                                    field.into(),
+                                ),
+                            )
+                            .under(::boxology_contract::PathSegment::Field(field.into())),
+                    );
+                }
+            }
+        }
+        Ok(Self {
+            limit: <u64 as ::boxology_contract::ContractType>::decode_field(
+                    fields.get("limit"),
+                )
+                .map_err(|error| {
+                    error.under(::boxology_contract::PathSegment::Field("limit".into()))
+                })?,
+        })
+    }
+}
+#[rustfmt::skip]
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct ChannelBindingCatalog {
+    pub bindings: ::std::vec::Vec<ChannelBindingSummary>,
+    pub total_bindings: u64,
+}
+#[rustfmt::skip]
+impl ::boxology_contract::ContractType for ChannelBindingCatalog {
+    fn encode_value(
+        &self,
+    ) -> ::core::result::Result<
+        ::boxology_contract::ContractValue,
+        ::boxology_contract::EncodeError,
+    > {
+        let mut fields = ::std::vec::Vec::new();
+        if let Some(value) = ::boxology_contract::ContractType::encode_field(
+                &self.bindings,
+            )
+            .map_err(|error| {
+                error.under(::boxology_contract::PathSegment::Field("bindings".into()))
+            })?
+        {
+            fields.push(("bindings".into(), value));
+        }
+        if let Some(value) = ::boxology_contract::ContractType::encode_field(
+                &self.total_bindings,
+            )
+            .map_err(|error| {
+                error
+                    .under(
+                        ::boxology_contract::PathSegment::Field("total_bindings".into()),
+                    )
+            })?
+        {
+            fields.push(("total_bindings".into(), value));
+        }
+        ::boxology_contract::ContractValue::object(fields)
+            .map_err(|_| unreachable!("validated generated field identities are unique"))
+    }
+    fn decode_value(
+        value: &::boxology_contract::ContractValue,
+    ) -> ::core::result::Result<Self, ::boxology_contract::DecodeError> {
+        let ::boxology_contract::ValueRef::Object(fields) = value.view() else {
+            return Err(
+                ::boxology_contract::DecodeError::new(
+                    ::boxology_contract::DecodeErrorKind::KindMismatch,
+                ),
+            );
+        };
+        for (field, _) in fields.entries() {
+            match field {
+                "bindings" | "total_bindings" => {}
+                _ => {
+                    return Err(
+                        ::boxology_contract::DecodeError::new(
+                                ::boxology_contract::DecodeErrorKind::UnknownField(
+                                    field.into(),
+                                ),
+                            )
+                            .under(::boxology_contract::PathSegment::Field(field.into())),
+                    );
+                }
+            }
+        }
+        Ok(Self {
+            bindings: <::std::vec::Vec<
+                ChannelBindingSummary,
+            > as ::boxology_contract::ContractType>::decode_field(fields.get("bindings"))
+                .map_err(|error| {
+                    error
+                        .under(
+                            ::boxology_contract::PathSegment::Field("bindings".into()),
+                        )
+                })?,
+            total_bindings: <u64 as ::boxology_contract::ContractType>::decode_field(
+                    fields.get("total_bindings"),
+                )
+                .map_err(|error| {
+                    error
+                        .under(
+                            ::boxology_contract::PathSegment::Field(
+                                "total_bindings".into(),
+                            ),
+                        )
+                })?,
+        })
+    }
+}
+#[rustfmt::skip]
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Default)]
 pub struct ChannelReceipt {
     pub accepted: bool,
@@ -6095,7 +6947,8 @@ pub mod test_support {
         NATIVE_CHANNEL_ACCEPT_INTERRUPTING_TURN, NATIVE_CHANNEL_INTERRUPT_AND_DRAIN,
         NATIVE_CHANNEL_PUBLISH_NATIVE_EVENT, NATIVE_CHANNEL_REPLAY_NATIVE_EVENTS,
         NATIVE_CHANNEL_REPLACE_SESSION, NATIVE_CHANNEL_RECOVER_SESSION,
-        NATIVE_CHANNEL_CHANNEL_STATUS, NATIVE_CHANNEL_INSPECT_BINDING,
+        NATIVE_CHANNEL_CHANNEL_STATUS, NATIVE_CHANNEL_LIST_BINDINGS,
+        NATIVE_CHANNEL_BINDING_SUMMARY, NATIVE_CHANNEL_INSPECT_BINDING,
         NATIVE_CHANNEL_FIND_BINDING, NATIVE_CHANNEL_UNBIND_CHANNEL, NativeChannelHandle,
         conversion_detail,
     };
@@ -6198,6 +7051,28 @@ pub mod test_support {
         CallContext,
         super::BindingReference,
     ) -> ChannelStatusFuture + Send + Sync + 'static;
+    type ListBindingsFuture = Pin<
+        Box<
+            dyn Future<
+                Output = Result<super::ChannelBindingCatalog, NativeChannelError>,
+            > + Send + 'static,
+        >,
+    >;
+    type ListBindingsResponder = dyn Fn(
+        CallContext,
+        super::ListChannelBindingsRequest,
+    ) -> ListBindingsFuture + Send + Sync + 'static;
+    type BindingSummaryFuture = Pin<
+        Box<
+            dyn Future<
+                Output = Result<super::ChannelBindingSummary, NativeChannelError>,
+            > + Send + 'static,
+        >,
+    >;
+    type BindingSummaryResponder = dyn Fn(
+        CallContext,
+        super::BindingReference,
+    ) -> BindingSummaryFuture + Send + Sync + 'static;
     type InspectBindingFuture = Pin<
         Box<
             dyn Future<
@@ -6242,6 +7117,8 @@ pub mod test_support {
         replace_session: Option<Arc<ReplaceSessionResponder>>,
         recover_session: Option<Arc<RecoverSessionResponder>>,
         channel_status: Option<Arc<ChannelStatusResponder>>,
+        list_bindings: Option<Arc<ListBindingsResponder>>,
+        binding_summary: Option<Arc<BindingSummaryResponder>>,
         inspect_binding: Option<Arc<InspectBindingResponder>>,
         find_binding: Option<Arc<FindBindingResponder>>,
         unbind_channel: Option<Arc<UnbindChannelResponder>>,
@@ -6364,6 +7241,35 @@ pub mod test_support {
                 + 'static,
         {
             self.channel_status = Some(
+                Arc::new(move |context, request| {
+                    Box::pin(responder(context, request))
+                }),
+            );
+            self
+        }
+        pub fn with_list_bindings<F, Fut>(mut self, responder: F) -> Self
+        where
+            F: Fn(CallContext, super::ListChannelBindingsRequest) -> Fut + Send + Sync
+                + 'static,
+            Fut: Future<
+                    Output = Result<super::ChannelBindingCatalog, NativeChannelError>,
+                > + Send + 'static,
+        {
+            self.list_bindings = Some(
+                Arc::new(move |context, request| {
+                    Box::pin(responder(context, request))
+                }),
+            );
+            self
+        }
+        pub fn with_binding_summary<F, Fut>(mut self, responder: F) -> Self
+        where
+            F: Fn(CallContext, super::BindingReference) -> Fut + Send + Sync + 'static,
+            Fut: Future<
+                    Output = Result<super::ChannelBindingSummary, NativeChannelError>,
+                > + Send + 'static,
+        {
+            self.binding_summary = Some(
                 Arc::new(move |context, request| {
                     Box::pin(responder(context, request))
                 }),
@@ -7053,6 +7959,88 @@ pub mod test_support {
                     }
                 });
             }
+            if capability == &*NATIVE_CHANNEL_LIST_BINDINGS {
+                let Some(responder) = self.list_bindings.clone() else {
+                    return Box::pin(ready(Err(unprogrammed())));
+                };
+                return Box::pin(async move {
+                    let input = TypeDescriptor::structure([
+                            ::boxology_contract::FieldDescriptor::new(
+                                "limit",
+                                TypeDescriptor::u64(),
+                                None,
+                            ),
+                        ])
+                        .expect("generated struct descriptor is valid")
+                        .conform(DecodeRole::ProviderInput, input)
+                        .map_err(|error| {
+                            ErasedCallError::ContractViolation(
+                                conversion_detail("input_decode", error),
+                            )
+                        })?;
+                    let request = <super::ListChannelBindingsRequest as ContractType>::decode(
+                            &input,
+                        )
+                        .map_err(|error| {
+                            ErasedCallError::ContractViolation(
+                                conversion_detail("input_decode", error),
+                            )
+                        })?;
+                    match responder(context, request).await {
+                        Ok(output) => {
+                            output
+                                .encode()
+                                .map_err(|error| {
+                                    ErasedCallError::InvalidResponse(
+                                        conversion_detail("output_encode", error),
+                                    )
+                                })
+                        }
+                        Err(error) => Err(ErasedCallError::from_domain(&error)),
+                    }
+                });
+            }
+            if capability == &*NATIVE_CHANNEL_BINDING_SUMMARY {
+                let Some(responder) = self.binding_summary.clone() else {
+                    return Box::pin(ready(Err(unprogrammed())));
+                };
+                return Box::pin(async move {
+                    let input = TypeDescriptor::structure([
+                            ::boxology_contract::FieldDescriptor::new(
+                                "binding_id",
+                                TypeDescriptor::string(),
+                                None,
+                            ),
+                        ])
+                        .expect("generated struct descriptor is valid")
+                        .conform(DecodeRole::ProviderInput, input)
+                        .map_err(|error| {
+                            ErasedCallError::ContractViolation(
+                                conversion_detail("input_decode", error),
+                            )
+                        })?;
+                    let request = <super::BindingReference as ContractType>::decode(
+                            &input,
+                        )
+                        .map_err(|error| {
+                            ErasedCallError::ContractViolation(
+                                conversion_detail("input_decode", error),
+                            )
+                        })?;
+                    match responder(context, request).await {
+                        Ok(output) => {
+                            output
+                                .encode()
+                                .map_err(|error| {
+                                    ErasedCallError::InvalidResponse(
+                                        conversion_detail("output_encode", error),
+                                    )
+                                })
+                        }
+                        Err(error) => Err(ErasedCallError::from_domain(&error)),
+                    }
+                });
+            }
             if capability == &*NATIVE_CHANNEL_INSPECT_BINDING {
                 let Some(responder) = self.inspect_binding.clone() else {
                     return Box::pin(ready(Err(unprogrammed())));
@@ -7191,8 +8179,8 @@ pub mod test_support {
 #[rustfmt::skip]
 #[doc(hidden)]
 pub const __BOXOLOGY_SEMANTIC_DIGEST: [u8; 32] = [
-    192, 44, 154, 178, 213, 162, 127, 176, 152, 86, 129, 25, 25, 111, 47, 148, 63, 100,
-    229, 125, 214, 254, 249, 138, 77, 11, 166, 172, 66, 25, 71, 206,
+    215, 83, 157, 199, 124, 202, 45, 192, 184, 187, 54, 215, 122, 241, 28, 118, 69, 82,
+    149, 250, 141, 2, 36, 234, 181, 128, 38, 152, 214, 179, 187, 60,
 ];
 #[rustfmt::skip]
 #[doc(hidden)]
@@ -7212,6 +8200,9 @@ macro_rules! __boxology_check_implementation {
         $crate::__boxology_check_implementation!(@ find_recover_session $receiver;
         $($method $validity;)*); $crate::__boxology_check_implementation!(@
         find_channel_status $receiver; $($method $validity;)*);
+        $crate::__boxology_check_implementation!(@ find_list_bindings $receiver;
+        $($method $validity;)*); $crate::__boxology_check_implementation!(@
+        find_binding_summary $receiver; $($method $validity;)*);
         $crate::__boxology_check_implementation!(@ find_inspect_binding $receiver;
         $($method $validity;)*); $crate::__boxology_check_implementation!(@
         find_find_binding $receiver; $($method $validity;)*);
@@ -7261,12 +8252,22 @@ macro_rules! __boxology_check_implementation {
         ::std::boxed::Box < dyn ::core::future::Future < Output = ::core::result::Result
         <$crate::ChannelStatus, $crate::NativeChannelError >, > + ::core::marker::Send +
         'a, >, > { ::std::boxed::Box::pin(self.channel_status(context, input)) } fn
-        inspect_binding <'a > (&'a self, context : ::boxology::CallContext, input :
-        $crate::BindingReference,) -> ::std::pin::Pin < ::std::boxed::Box < dyn
-        ::core::future::Future < Output = ::core::result::Result <$crate::ChannelBinding,
-        $crate::NativeChannelError >, > + ::core::marker::Send + 'a, >, > {
-        ::std::boxed::Box::pin(self.inspect_binding(context, input)) } fn find_binding
-        <'a > (&'a self, context : ::boxology::CallContext, input :
+        list_bindings <'a > (&'a self, context : ::boxology::CallContext, input :
+        $crate::ListChannelBindingsRequest,) -> ::std::pin::Pin < ::std::boxed::Box < dyn
+        ::core::future::Future < Output = ::core::result::Result
+        <$crate::ChannelBindingCatalog, $crate::NativeChannelError >, > +
+        ::core::marker::Send + 'a, >, > { ::std::boxed::Box::pin(self
+        .list_bindings(context, input)) } fn binding_summary <'a > (&'a self, context :
+        ::boxology::CallContext, input : $crate::BindingReference,) -> ::std::pin::Pin <
+        ::std::boxed::Box < dyn ::core::future::Future < Output = ::core::result::Result
+        <$crate::ChannelBindingSummary, $crate::NativeChannelError >, > +
+        ::core::marker::Send + 'a, >, > { ::std::boxed::Box::pin(self
+        .binding_summary(context, input)) } fn inspect_binding <'a > (&'a self, context :
+        ::boxology::CallContext, input : $crate::BindingReference,) -> ::std::pin::Pin <
+        ::std::boxed::Box < dyn ::core::future::Future < Output = ::core::result::Result
+        <$crate::ChannelBinding, $crate::NativeChannelError >, > + ::core::marker::Send +
+        'a, >, > { ::std::boxed::Box::pin(self.inspect_binding(context, input)) } fn
+        find_binding <'a > (&'a self, context : ::boxology::CallContext, input :
         $crate::LocateBindingRequest,) -> ::std::pin::Pin < ::std::boxed::Box < dyn
         ::core::future::Future < Output = ::core::result::Result <$crate::ChannelBinding,
         $crate::NativeChannelError >, > + ::core::marker::Send + 'a, >, > {
@@ -7485,6 +8486,48 @@ macro_rules! __boxology_check_implementation {
         $($rest)*);
     };
     (@ find_channel_status $receiver:ty;) => {
+        compile_error!("Boxology capability implementation is missing");
+    };
+    (@ find_list_bindings $receiver:ty; list_bindings valid; $($rest:tt)*) => {
+        const _ : () = { fn require_service < T : ::core::marker::Send +
+        ::core::marker::Sync + 'static > () {} fn require_future < F :
+        ::core::future::Future < Output = ::core::result::Result
+        <$crate::ChannelBindingCatalog, $crate::NativeChannelError >> +
+        ::core::marker::Send > (_ : F) {} fn check(receiver : &$receiver, context :
+        ::boxology::CallContext, input : $crate::ListChannelBindingsRequest) {
+        require_service::<$receiver > (); require_future(receiver.list_bindings(context,
+        input)); } };
+    };
+    (@ find_list_bindings $receiver:ty; list_bindings invalid; $($rest:tt)*) => {
+        compile_error!("Boxology capability has an invalid structural signature");
+    };
+    (@ find_list_bindings $receiver:ty; $other:ident $validity:ident; $($rest:tt)*) => {
+        $crate::__boxology_check_implementation!(@ find_list_bindings $receiver;
+        $($rest)*);
+    };
+    (@ find_list_bindings $receiver:ty;) => {
+        compile_error!("Boxology capability implementation is missing");
+    };
+    (@ find_binding_summary $receiver:ty; binding_summary valid; $($rest:tt)*) => {
+        const _ : () = { fn require_service < T : ::core::marker::Send +
+        ::core::marker::Sync + 'static > () {} fn require_future < F :
+        ::core::future::Future < Output = ::core::result::Result
+        <$crate::ChannelBindingSummary, $crate::NativeChannelError >> +
+        ::core::marker::Send > (_ : F) {} fn check(receiver : &$receiver, context :
+        ::boxology::CallContext, input : $crate::BindingReference) {
+        require_service::<$receiver > (); require_future(receiver
+        .binding_summary(context, input)); } };
+    };
+    (@ find_binding_summary $receiver:ty; binding_summary invalid; $($rest:tt)*) => {
+        compile_error!("Boxology capability has an invalid structural signature");
+    };
+    (
+        @ find_binding_summary $receiver:ty; $other:ident $validity:ident; $($rest:tt)*
+    ) => {
+        $crate::__boxology_check_implementation!(@ find_binding_summary $receiver;
+        $($rest)*);
+    };
+    (@ find_binding_summary $receiver:ty;) => {
         compile_error!("Boxology capability implementation is missing");
     };
     (@ find_inspect_binding $receiver:ty; inspect_binding valid; $($rest:tt)*) => {

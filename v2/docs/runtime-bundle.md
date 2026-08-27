@@ -8,7 +8,7 @@ platform-specific directory and refuses a dirty source tree. Development builds 
 
 ```text
 crab-v2-<commit>-<platform>/
-├── bin/                  ten production binaries; no test fixtures
+├── bin/                  eleven production binaries; no test fixtures
 ├── agents/
 │   ├── claude/           Claude ACP adapter 0.70.0 + locked production closure
 │   └── codex/            Codex ACP adapter 1.6.2 + locked production closure
@@ -107,3 +107,7 @@ the live v1 `com.crab.runtime` service.
 `~/.crab-v2/bin/crab-v2-agent` reads bounded session status and private adapter diagnostics through
 the same owner-authenticated IPC. It never opens SQLite directly; diagnostic output is emitted only
 for an explicit operator request and may contain sensitive stderr.
+
+`~/.crab-v2/bin/crab-v2-channel` discovers durable native bindings, reports pending work, replays
+bounded raw ACP event pages and exposes an explicit session-CAS interrupt. Adapter-specific
+destination metadata is deliberately absent from its catalog.

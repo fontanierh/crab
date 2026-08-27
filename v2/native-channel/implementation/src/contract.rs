@@ -183,6 +183,30 @@ boxology::contract! {
         pub updated_at_ms: u64,
     }
 
+    /// Bounded, non-secret operator view of one durable binding. Adapter-specific destination
+    /// metadata remains private to the binding store and is not copied into the catalog.
+    pub struct ChannelBindingSummary {
+        pub binding_id: String,
+        pub channel_id: String,
+        pub adapter_id: String,
+        pub session_id: String,
+        pub lifecycle: ChannelLifecycle,
+        pub published_sequence: u64,
+        pub pending_input_count: u64,
+        pub last_error: Option<String>,
+        pub updated_at_ms: u64,
+    }
+
+    pub struct ListChannelBindingsRequest {
+        /// Newest bindings first. The implementation accepts 1 through 256.
+        pub limit: u64,
+    }
+
+    pub struct ChannelBindingCatalog {
+        pub bindings: Vec<ChannelBindingSummary>,
+        pub total_bindings: u64,
+    }
+
     pub struct ChannelReceipt {
         pub accepted: bool,
         pub recorded_at_ms: u64,
@@ -241,6 +265,15 @@ boxology::contract! {
 
     #[capability]
     pub async fn channel_status(request: BindingReference) -> Result<ChannelStatus, NativeChannelError>;
+
+    /// Discover durable bindings without already knowing an opaque binding ID. This capability is
+    /// exposed only through Crab's owner-authenticated local operator transport.
+    #[capability]
+    pub async fn list_bindings(request: ListChannelBindingsRequest) -> Result<ChannelBindingCatalog, NativeChannelError>;
+
+    /// Read one durable binding summary even when its ACP session is currently unavailable.
+    #[capability]
+    pub async fn binding_summary(request: BindingReference) -> Result<ChannelBindingSummary, NativeChannelError>;
 
     /// Read persisted binding identity even when its previous ACP session is unavailable. Runtime
     /// startup uses this to attach a fresh session after a crash without inventing a second route.

@@ -33,6 +33,7 @@ PUBLIC_HELP_BINARIES = (
     "crab-v2-agent",
     "crab-v2-bridge",
     "crab-v2-bridge-mcp",
+    "crab-v2-channel",
     "crab-v2-sub-agent",
     "crab-v2-sub-agent-mcp",
     "crab-v2-trigger",

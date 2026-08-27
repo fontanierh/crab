@@ -67,6 +67,17 @@ Inspect one ACP session without opening runtime state directly:
 
 Diagnostic output may contain raw adapter stderr and is shown only on this explicit owner operation.
 
+Discover native channels and inspect their complete ACP event cursors without opening SQLite:
+
+```sh
+~/.crab-v2/bin/crab-v2-channel --state-dir ~/.crab-v2/state list 100
+~/.crab-v2/bin/crab-v2-channel --state-dir ~/.crab-v2/state status <binding-id>
+~/.crab-v2/bin/crab-v2-channel --state-dir ~/.crab-v2/state events <binding-id> 0 100
+```
+
+`interrupt <binding-id> <expected-session-id> <reason>` is an explicit cooperative cancel action.
+It never discards already accepted Queue or Steer input.
+
 The runtime requires macOS, Python 3, Node.js 22 or newer, and Crab's documented unrestricted-host
 preflight. Authenticate each ACP agent and bridge with its native flow. Credentials, runtime state,
 and logs are never part of a release bundle.
