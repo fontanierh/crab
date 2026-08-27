@@ -17,9 +17,10 @@ crab-v2-bridge-mcp
 Registration is strict and secret-free: executable and working-directory paths are absolute,
 environment variables are referenced only by name, configuration is structured JSON, ingress mode
 and the optional `{channelId, lane}` alert target are fixed in the immutable generation, and restart
-bounds are non-zero. Alert targets receive deduplicated incident and recovery turns in queue mode.
-Start a new package with `desiredRunning: false`; install and inspect it, then reconcile its current
-generation to running.
+bounds are non-zero. Native registration is durably marked `AgentManaged`, so removing unrelated
+runtime JSON cannot stop it and a restart restores its desired state. Alert targets receive
+deduplicated incident and recovery turns in queue mode. Start a new package with
+`desiredRunning: false`; install and inspect it, then reconcile its current generation to running.
 
 Authentication presentations such as QR images, phone codes, or URLs are ephemeral MCP results.
 Crab stores resulting credentials behind a private handle; tool output reveals only whether a

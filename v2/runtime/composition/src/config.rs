@@ -9,7 +9,7 @@ use agent_host_implementation::{
     ConfiguredMcpServer,
 };
 use bridge_host_contract::{
-    AuthenticationMethod, BridgeAlertTarget, BridgeIngressMode, BridgeSpec,
+    AuthenticationMethod, BridgeAlertTarget, BridgeIngressMode, BridgeManagement, BridgeSpec,
 };
 use serde::Deserialize;
 use serde_json::{Map, Value};
@@ -529,6 +529,7 @@ impl BridgeConfig {
                 BridgeIngressConfig::Steer => BridgeIngressMode::Steer,
                 BridgeIngressConfig::InterruptAndSteer => BridgeIngressMode::InterruptAndSteer,
             },
+            management: BridgeManagement::RuntimeConfigured,
             alert_target: self.alert_target.as_ref().map(|target| BridgeAlertTarget {
                 channel_id: target.channel_id.clone(),
                 lane: target.lane.clone(),

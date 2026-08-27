@@ -7,9 +7,9 @@ use agent_client_protocol_rmcp::{McpServerExt as _, McpTool};
 use agent_host_implementation::CRAB_STATE_DIRECTORY_ENV;
 use bridge_host_contract::{
     AuthenticationChallenge, AuthenticationMethod, BeginAuthenticationRequest, BridgeAlertTarget,
-    BridgeAttachment, BridgeCatalog, BridgeIngressMode, BridgeLifecycle, BridgeOutbound,
-    BridgeReceipt, BridgeRecord, BridgeReference, BridgeSpec, BridgeStatus, CredentialLifecycle,
-    CredentialStatus, DeliveryLifecycle, DeliveryReceipt, DeliveryReference,
+    BridgeAttachment, BridgeCatalog, BridgeIngressMode, BridgeLifecycle, BridgeManagement,
+    BridgeOutbound, BridgeReceipt, BridgeRecord, BridgeReference, BridgeSpec, BridgeStatus,
+    CredentialLifecycle, CredentialStatus, DeliveryLifecycle, DeliveryReceipt, DeliveryReference,
     ImportBridgeContentRequest, ImportedBridgeContent, ReconcileBridgeRequest,
     ReplaceBridgeRequest, SubmitAuthenticationRequest,
 };
@@ -238,6 +238,7 @@ impl BridgeSpecInput {
                 .map_err(|_| invalid_input())?,
             authentication_methods: methods,
             ingress_mode: self.ingress_mode.into(),
+            management: BridgeManagement::AgentManaged,
             alert_target: self.alert_target.map(|target| BridgeAlertTarget {
                 channel_id: target.channel_id,
                 lane: target.lane,
@@ -809,6 +810,7 @@ fn record_json(record: BridgeRecord) -> Value {
         "displayName": record.display_name,
         "lifecycle": lifecycle_name(&record.lifecycle),
         "ingressMode": ingress_name(&record.ingress_mode),
+        "management": management_name(&record.management),
         "alertTarget": record.alert_target.map(|target| json!({
             "channelId": target.channel_id,
             "lane": target.lane,
@@ -924,6 +926,14 @@ fn ingress_name(value: &BridgeIngressMode) -> &'static str {
         BridgeIngressMode::Steer => "steer",
         BridgeIngressMode::InterruptAndSteer => "interrupt-and-steer",
         BridgeIngressMode::Unknown { .. } => "unknown",
+    }
+}
+
+fn management_name(value: &BridgeManagement) -> &'static str {
+    match value {
+        BridgeManagement::RuntimeConfigured => "runtime-configured",
+        BridgeManagement::AgentManaged => "agent-managed",
+        BridgeManagement::Unknown { .. } => "unknown",
     }
 }
 

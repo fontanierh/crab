@@ -52,6 +52,13 @@ boxology::contract! {
         InterruptAndSteer,
     }
 
+    /// Durable authority for a bridge registration. Runtime configuration owns only configured
+    /// registrations; agent-managed registrations remain independent of static topology changes.
+    pub enum BridgeManagement {
+        RuntimeConfigured,
+        AgentManaged,
+    }
+
     /// Agent channel that receives actionable supervisor incidents in queue mode.
     pub struct BridgeAlertTarget {
         pub channel_id: String,
@@ -70,6 +77,7 @@ boxology::contract! {
         pub configuration_json: String,
         pub authentication_methods: Vec<AuthenticationMethod>,
         pub ingress_mode: BridgeIngressMode,
+        pub management: BridgeManagement,
         /// Optional and generation-fixed. When absent, supervision remains silent.
         pub alert_target: Option<BridgeAlertTarget>,
         pub desired_running: bool,
@@ -86,6 +94,7 @@ boxology::contract! {
         pub display_name: String,
         pub lifecycle: BridgeLifecycle,
         pub ingress_mode: BridgeIngressMode,
+        pub management: BridgeManagement,
         pub alert_target: Option<BridgeAlertTarget>,
         pub desired_running: bool,
         pub generation: u64,

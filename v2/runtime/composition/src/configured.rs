@@ -8,7 +8,8 @@ use std::{
 use agent_host_contract::{DetachSessionsRequest, SessionReference};
 use boxology_contract::{CallContext, CallError, Caller, CancelToken, TraceContext};
 use bridge_host_contract::{
-    BridgeHostError, BridgeReference, BridgeSpec, ListBridgesRequest, ReplaceBridgeRequest,
+    BridgeHostError, BridgeManagement, BridgeReference, BridgeSpec, ListBridgesRequest,
+    ReplaceBridgeRequest,
 };
 use channel_gateway_contract::{AttachChannelRequest, ChannelAttachmentDisposition};
 use native_channel_contract::{BindingReference, ChannelLifecycle};
@@ -215,6 +216,7 @@ async fn initialize_bridges(
     }
     for (bridge_id, record) in persisted {
         if !configured.contains(&bridge_id)
+            && record.management == BridgeManagement::RuntimeConfigured
             && record.desired_running
             && let Err(error) = bridge_host
                 .stop_bridge(call_context(), BridgeReference { bridge_id })
@@ -655,9 +657,9 @@ mod tests {
     };
     use bridge_host_implementation::{
         AuthenticationMethod, BridgeCredentialSink, BridgeHostState, BridgeInboundSink,
-        BridgeOutbound, BridgePackage, BridgePackageError, BridgePackageFactory, BridgeSpec,
-        InMemoryCredentialStore, PackageChallenge, PackageCredential, PackageCredentialValidation,
-        PackageDelivery, PackageHealth, generated as bridge_host,
+        BridgeManagement, BridgeOutbound, BridgePackage, BridgePackageError, BridgePackageFactory,
+        BridgeSpec, InMemoryCredentialStore, PackageChallenge, PackageCredential,
+        PackageCredentialValidation, PackageDelivery, PackageHealth, generated as bridge_host,
     };
     use channel_gateway_contract::{
         AttachChannelRequest, ChannelAttachmentDisposition, ChannelGatewayError,
@@ -2296,7 +2298,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn configured_bridges_restore_replace_suspend_and_stop_removed_registrations() {
+    async fn configured_bridges_stop_when_removed_but_agent_managed_bridges_survive() {
         let directory = tempfile::tempdir().expect("temporary directory");
         let state = Arc::new(Mutex::new(FakeState::default()));
         let graph = graph(directory.path(), state);
@@ -2347,20 +2349,96 @@ mod tests {
             .await
             .expect("suspended bridge restarts without generation churn");
         assert_eq!(graph.bridge_processes.launches.load(Ordering::SeqCst), 3);
+
+        let mut agent_managed = config
+            .bridge_specs()
+            .expect("bridge specs encode")
+            .remove(0);
+        agent_managed.bridge_id = "signal".into();
+        agent_managed.package_id = "agent.signal".into();
+        agent_managed.display_name = "Signal".into();
+        agent_managed.management = BridgeManagement::AgentManaged;
+        graph
+            .bridge_host
+            .register_bridge(call_context(), agent_managed)
+            .await
+            .expect("agent-managed bridge registers");
+        assert_eq!(graph.bridge_processes.launches.load(Ordering::SeqCst), 4);
+
         config.bridges.clear();
         initialize_bridges(&graph.bridge_host, &config)
             .await
-            .expect("removed bridge stops durably");
-        let removed = graph
+            .expect("removed configured bridge stops without touching agent bridge");
+        let catalog = graph
             .bridge_host
             .list_bridges(call_context(), ListBridgesRequest {})
             .await
-            .expect("removed catalog lists")
+            .expect("reconciled catalog lists");
+        let removed = catalog
             .bridges
-            .remove(0);
+            .iter()
+            .find(|record| record.bridge_id == "whatsapp")
+            .expect("configured bridge remains inspectable");
         assert!(!removed.desired_running);
         assert_eq!(removed.generation, 3);
+        assert_eq!(removed.management, BridgeManagement::RuntimeConfigured);
+        let preserved = catalog
+            .bridges
+            .iter()
+            .find(|record| record.bridge_id == "signal")
+            .expect("agent-managed bridge remains inspectable");
+        assert!(preserved.desired_running);
+        assert_eq!(preserved.generation, 1);
+        assert_eq!(preserved.management, BridgeManagement::AgentManaged);
         assert_eq!(graph.bridge_processes.stops.load(Ordering::SeqCst), 3);
+    }
+
+    #[tokio::test]
+    async fn runtime_restart_restores_agent_managed_bridge_without_static_configuration() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let state = Arc::new(Mutex::new(FakeState::default()));
+        let mut source = config(directory.path().to_path_buf());
+        source
+            .bridges
+            .push(bridge_config(directory.path().to_path_buf()));
+        let mut agent_managed = source
+            .bridge_specs()
+            .expect("bridge spec encodes")
+            .remove(0);
+        agent_managed.management = BridgeManagement::AgentManaged;
+
+        let first = graph(directory.path(), state.clone());
+        first
+            .bridge_host
+            .register_bridge(call_context(), agent_managed)
+            .await
+            .expect("agent-managed bridge starts");
+        assert_eq!(first.bridge_processes.launches.load(Ordering::SeqCst), 1);
+        drop(first);
+
+        let restarted = graph(directory.path(), state);
+        let empty = config(directory.path().to_path_buf());
+        initialize_bridges(&restarted.bridge_host, &empty)
+            .await
+            .expect("static reconciliation preserves agent bridge");
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while restarted.bridge_processes.launches.load(Ordering::SeqCst) == 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("durable desired bridge relaunches");
+
+        let record = restarted
+            .bridge_host
+            .list_bridges(call_context(), ListBridgesRequest {})
+            .await
+            .expect("restarted catalog lists")
+            .bridges
+            .remove(0);
+        assert_eq!(record.management, BridgeManagement::AgentManaged);
+        assert!(record.desired_running);
+        assert_eq!(record.generation, 1);
     }
 
     #[tokio::test]

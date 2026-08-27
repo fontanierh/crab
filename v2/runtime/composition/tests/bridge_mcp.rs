@@ -232,6 +232,9 @@ async fn child_session_bridge_calls_use_authenticated_boxology_ipc() {
             assert_eq!(request["protocolVersion"], 1);
             assert_eq!(request["authentication"], TOKEN);
             assert_eq!(request["capability"], expected);
+            if expected == "bridge-host.register_bridge" {
+                assert_eq!(request["input"]["management"]["tag"], "AgentManaged");
+            }
             let response = json!({
                 "protocolVersion": 1,
                 "requestId": request["requestId"],

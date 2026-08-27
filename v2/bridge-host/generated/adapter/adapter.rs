@@ -1038,6 +1038,23 @@ where
                             None,
                         ),
                         ::boxology_contract::FieldDescriptor::new(
+                            "management",
+                            ::boxology_contract::TypeDescriptor::enumeration([
+                                    ::boxology_contract::VariantDescriptor::new(
+                                        "RuntimeConfigured",
+                                        ::boxology_contract::VariantPayload::Unit,
+                                        None,
+                                    ),
+                                    ::boxology_contract::VariantDescriptor::new(
+                                        "AgentManaged",
+                                        ::boxology_contract::VariantPayload::Unit,
+                                        None,
+                                    ),
+                                ])
+                                .expect("generated enum descriptor is valid"),
+                            None,
+                        ),
+                        ::boxology_contract::FieldDescriptor::new(
                             "alert_target",
                             ::boxology_contract::TypeDescriptor::optional(
                                     ::boxology_contract::TypeDescriptor::structure([
@@ -1251,6 +1268,23 @@ where
                                                 ),
                                                 ::boxology_contract::VariantDescriptor::new(
                                                     "InterruptAndSteer",
+                                                    ::boxology_contract::VariantPayload::Unit,
+                                                    None,
+                                                ),
+                                            ])
+                                            .expect("generated enum descriptor is valid"),
+                                        None,
+                                    ),
+                                    ::boxology_contract::FieldDescriptor::new(
+                                        "management",
+                                        ::boxology_contract::TypeDescriptor::enumeration([
+                                                ::boxology_contract::VariantDescriptor::new(
+                                                    "RuntimeConfigured",
+                                                    ::boxology_contract::VariantPayload::Unit,
+                                                    None,
+                                                ),
+                                                ::boxology_contract::VariantDescriptor::new(
+                                                    "AgentManaged",
                                                     ::boxology_contract::VariantPayload::Unit,
                                                     None,
                                                 ),

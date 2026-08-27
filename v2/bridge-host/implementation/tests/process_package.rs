@@ -4,8 +4,8 @@ use async_trait::async_trait;
 use bridge_host_implementation::{
     AuthenticationMethod, BridgeAttachment, BridgeCredentialReceipt, BridgeCredentialSink,
     BridgeCredentialUpdate, BridgeHostError, BridgeInbound, BridgeInboundSink, BridgeIngressMode,
-    BridgeOutbound, BridgePackageError, BridgePackageFactory, BridgeSpec, ContentUpload,
-    ProcessBridgePackageFactory, StoredContent, TriggerIntent,
+    BridgeManagement, BridgeOutbound, BridgePackageError, BridgePackageFactory, BridgeSpec,
+    ContentUpload, ProcessBridgePackageFactory, StoredContent, TriggerIntent,
 };
 use sha2::{Digest, Sha256};
 
@@ -94,6 +94,7 @@ fn spec(directory: &std::path::Path) -> BridgeSpec {
         configuration_json: "{}".into(),
         authentication_methods: vec![AuthenticationMethod::PhoneCode],
         ingress_mode: BridgeIngressMode::Queue,
+        management: BridgeManagement::AgentManaged,
         alert_target: None,
         desired_running: true,
         health_interval_ms: 1_000,

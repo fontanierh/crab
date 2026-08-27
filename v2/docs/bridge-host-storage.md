@@ -5,6 +5,8 @@ selected outbound delivery. Service-specific behavior stays in agent-installable
 
 ![Bridge host flow](bridge-host-flow.png)
 
+![Bridge management and restart flow](bridge-management-flow.png)
+
 ![Durable bridge incident flow](bridge-incidents-flow.png)
 
 ## Durable layout
@@ -16,12 +18,15 @@ runtime-state/
 └── bridge-content/          host-named media + metadata; directory 0700, files 0600
 ```
 
-- SQLite schema v2 uses WAL, foreign keys, full synchronous writes and fail-closed version checks;
-  existing schema-v1 registrations gain a null alert target without a conflict or new generation.
-- A bridge ID has one immutable generation. Package, configuration or ingress-mode changes use
-  compare-and-swap replacement and append a generation audit row.
+- SQLite schema v3 uses WAL, foreign keys, full synchronous writes and fail-closed version checks.
+  Existing registrations migrate to `RuntimeConfigured` ownership without a conflict or new
+  generation; schema-v1 registrations also gain a null alert target.
+- Each bridge generation is immutable. Package, configuration, management or ingress-mode changes
+  use compare-and-swap replacement and append a generation audit row.
 - Runtime restart preserves desired state and credential handles, invalidates stale health and
-  pending challenges, then restarts desired packages under their configured budget.
+  pending challenges, then restarts desired packages under their configured budget. Startup stops
+  only removed `RuntimeConfigured` registrations; `AgentManaged` bridges survive static topology
+  changes and continue under the same supervisor policy.
 - An optional generation-fixed alert target turns actionable package, service and credential
   failures into durable queue-mode triggers. SQLite owns the incident sequence and enqueue receipt,
   so retries never duplicate a notification. A fully healthy probe closes the episode and emits one
