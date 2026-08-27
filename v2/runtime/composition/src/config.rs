@@ -11,13 +11,14 @@ use agent_host_implementation::{
 use bridge_host_contract::{
     AuthenticationMethod, BridgeAlertTarget, BridgeIngressMode, BridgeManagement, BridgeSpec,
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
+use sha2::{Digest, Sha256};
 
 const CONFIG_SCHEMA: u64 = 1;
 
 /// Secret-free runtime topology loaded from JSON.
-#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RuntimeConfig {
     /// Configuration schema. Only version 1 is accepted.
@@ -34,7 +35,7 @@ pub struct RuntimeConfig {
 }
 
 /// One ACP harness command. Environment values are always read by name at runtime.
-#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AgentConfig {
     /// Stable agent identifier.
@@ -65,7 +66,7 @@ pub struct AgentConfig {
 }
 
 /// ACP profile selected in configuration.
-#[derive(Clone, Copy, Debug, Deserialize, PartialEq)]
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ProtocolConfig {
     /// Stable ACP v1; active work only supports turn-boundary queueing.
@@ -75,7 +76,7 @@ pub enum ProtocolConfig {
 }
 
 /// Explicit steering extension supported by one pinned ACP adapter.
-#[derive(Clone, Copy, Debug, Deserialize, PartialEq)]
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum SteeringExtensionConfig {
     /// Canonical ACP v1 `_session/steering` request.
@@ -83,7 +84,7 @@ pub enum SteeringExtensionConfig {
 }
 
 /// A shell-free command with environment values sourced only by name.
-#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CommandConfig {
     /// Executable name or path.
@@ -97,7 +98,7 @@ pub struct CommandConfig {
 }
 
 /// One stdio MCP server attached by Crab during ACP session setup.
-#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct McpServerConfig {
     /// Human-readable MCP server name.
@@ -113,7 +114,7 @@ pub struct McpServerConfig {
 }
 
 /// One configured logical channel and the ACP session opened for it at startup.
-#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ChannelConfig {
     /// Stable route target used by bridges, schedules and native adapters.
@@ -137,7 +138,7 @@ pub struct ChannelConfig {
 }
 
 /// One continuously drained trigger lane.
-#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct LaneConfig {
     /// Lane name used by trigger producers and routes.
@@ -157,7 +158,7 @@ pub struct LaneConfig {
 }
 
 /// One bridge package and its immutable ingress/supervision policy.
-#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct BridgeConfig {
     /// Stable registration identity.
@@ -200,7 +201,7 @@ pub struct BridgeConfig {
 }
 
 /// Existing native route that receives bridge incident and recovery turns.
-#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct BridgeAlertConfig {
     /// Configured native-channel route key.
@@ -210,7 +211,7 @@ pub struct BridgeAlertConfig {
 }
 
 /// Authentication presentation selected from the generic bridge contract.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum BridgeAuthenticationConfig {
     /// Renderable QR payload.
@@ -228,7 +229,7 @@ pub enum BridgeAuthenticationConfig {
 }
 
 /// How an inbound bridge event contributes to agent work.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum BridgeIngressConfig {
     /// Wait in FIFO order.
@@ -254,6 +255,8 @@ pub enum RuntimeConfigError {
     MissingEnvironment(String),
     /// A bootstrap prompt file could not be read.
     Bootstrap(std::io::Error),
+    /// The resolved semantic topology could not be encoded for attestation.
+    Fingerprint(serde_json::Error),
 }
 
 impl fmt::Display for RuntimeConfigError {
@@ -270,6 +273,9 @@ impl fmt::Display for RuntimeConfigError {
                 )
             }
             Self::Bootstrap(_) => formatter.write_str("channel bootstrap prompt could not be read"),
+            Self::Fingerprint(_) => {
+                formatter.write_str("runtime config fingerprint could not be computed")
+            }
         }
     }
 }
@@ -278,7 +284,7 @@ impl std::error::Error for RuntimeConfigError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Read(error) | Self::Bootstrap(error) => Some(error),
-            Self::Decode(error) => Some(error),
+            Self::Decode(error) | Self::Fingerprint(error) => Some(error),
             _ => None,
         }
     }
@@ -295,6 +301,25 @@ impl RuntimeConfig {
         config.resolve_paths(base);
         config.validate()?;
         Ok(config)
+    }
+
+    /// SHA-256 of resolved secret-free topology and exact referenced bootstrap prompt contents.
+    pub fn configuration_fingerprint(&self) -> Result<String, RuntimeConfigError> {
+        let topology = serde_json::to_vec(self).map_err(RuntimeConfigError::Fingerprint)?;
+        let mut digest = Sha256::new();
+        update_digest(&mut digest, b"crab-v2-runtime-configuration-v1");
+        update_digest(&mut digest, &topology);
+        for channel in &self.channels {
+            update_digest(&mut digest, channel.channel_id.as_bytes());
+            match self.bootstrap_prompt(channel)? {
+                Some(prompt) => {
+                    digest.update([1]);
+                    update_digest(&mut digest, prompt.as_bytes());
+                }
+                None => digest.update([0]),
+            }
+        }
+        Ok(format!("{:x}", digest.finalize()))
     }
 
     pub(crate) fn configured_agents(&self) -> Result<Vec<ConfiguredAgent>, RuntimeConfigError> {
@@ -495,6 +520,11 @@ fn absolute_config_path(path: &Path) -> Result<PathBuf, RuntimeConfigError> {
         .map_err(RuntimeConfigError::Read)
 }
 
+fn update_digest(digest: &mut Sha256, value: &[u8]) {
+    digest.update(u64::try_from(value.len()).unwrap_or(u64::MAX).to_be_bytes());
+    digest.update(value);
+}
+
 impl BridgeConfig {
     fn spec(&self) -> Result<BridgeSpec, RuntimeConfigError> {
         let launch_json = serde_json::to_string(&serde_json::json!({
@@ -593,6 +623,8 @@ mod tests {
     fn strict_config_resolves_paths_and_references_without_secret_values() {
         let directory = tempfile::tempdir().expect("temporary directory");
         let config_path = directory.path().join("runtime.json");
+        std::fs::write(directory.path().join("bootstrap.md"), "bootstrap one")
+            .expect("bootstrap writes");
         std::fs::write(
             &config_path,
             r#"{
@@ -638,6 +670,50 @@ mod tests {
         )
         .expect("config writes");
         let config = RuntimeConfig::load(&config_path).expect("config loads");
+        let fingerprint = config
+            .configuration_fingerprint()
+            .expect("semantic fingerprint computes");
+        assert_eq!(fingerprint.len(), 64);
+        assert_eq!(
+            fingerprint,
+            config
+                .clone()
+                .configuration_fingerprint()
+                .expect("equal topology has equal fingerprint")
+        );
+        let normalized_path = directory.path().join("runtime-normalized.json");
+        let normalized_json = serde_json::from_slice::<serde_json::Value>(
+            &std::fs::read(&config_path).expect("config rereads"),
+        )
+        .expect("config JSON parses");
+        std::fs::write(
+            &normalized_path,
+            serde_json::to_vec_pretty(&normalized_json).expect("normalized config encodes"),
+        )
+        .expect("normalized config writes");
+        assert_eq!(
+            fingerprint,
+            RuntimeConfig::load(normalized_path)
+                .expect("reformatted config loads")
+                .configuration_fingerprint()
+                .expect("reformatted config fingerprints identically")
+        );
+        let mut changed = config.clone();
+        changed.lanes[0].poll_interval_ms += 1;
+        assert_ne!(
+            fingerprint,
+            changed
+                .configuration_fingerprint()
+                .expect("semantic change fingerprints")
+        );
+        std::fs::write(directory.path().join("bootstrap.md"), "bootstrap two")
+            .expect("changed bootstrap writes");
+        assert_ne!(
+            fingerprint,
+            config
+                .configuration_fingerprint()
+                .expect("referenced content fingerprints")
+        );
         assert_eq!(
             config.agents[0].executable,
             directory.path().join("bin/acp")

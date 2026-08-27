@@ -11,11 +11,13 @@ flowchart TB
     CHANNEL["native-channel"]
     AGENT["agent-host<br/>ACP"]
     SUBAGENT["sub-agent-host"]
+    CONTROL["runtime-control<br/>config + process attestation"]
 
     CHILDREN["ACP harness<br/>subprocesses"]
     AUTH["Mandatory authority<br/>no sandbox · yolo permissions<br/>unrestricted FS + network · verified sudo"]
 
     UI <-->|"authenticated · versioned"| IPC
+    IPC -->|"status"| CONTROL
     IPC -->|"attach"| GATEWAY
     IPC <-->|"turn · interrupt · status · replay"| CHANNEL
     GATEWAY -->|"binding lifecycle"| CHANNEL
@@ -44,7 +46,7 @@ flowchart TB
 
     class AGENT agent;
     class SUBAGENT subagent;
-    class CHANNEL,IPC channel;
+    class CHANNEL,IPC,CONTROL channel;
     class GATEWAY channel;
     class BRIDGE bridge;
     class TRIGGER trigger;

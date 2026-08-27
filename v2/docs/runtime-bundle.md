@@ -93,8 +93,9 @@ owner-private environment file, and preserves unavailable values from the prior 
 LaunchAgent. It then gracefully stops
 `com.crab.v2.runtime`, atomically flips `current`, and proves all three readiness facts: the
 manifest still verifies, launchd owns the only `crab-v2` PID, and the owner-authenticated health
-surface reports the configured topology as ready. A failure at any point after cutover restores the
-prior symlink, plist, provenance and process, then verifies that rollback.
+surface reports the configured topology as ready with the same semantic-config fingerprint and
+launchd PID. A failure at any point after cutover restores the prior symlink, plist, provenance and
+process, then verifies that rollback.
 
 ```sh
 python3 ~/.crab-v2/libexec/v2_bundle.py status

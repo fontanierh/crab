@@ -46,8 +46,8 @@ logs and credentials outside releases, and owns the single `com.crab.v2.runtime`
 It stops the old runtime gracefully, switches one `current` symlink, then proves one launchd-owned
 process and a ready configured topology over authenticated local IPC. A bridge awaiting
 authentication or reporting degradation is ready enough to preserve a successful update, while
-remaining unhealthy and actionable. Any structural failure restores and verifies the previous
-release.
+remaining unhealthy and actionable. The health evidence must attest the exact resolved config and
+the launchd-owned PID. Any structural failure restores and verifies the previous release.
 
 The bundled WhatsApp preset intentionally has an empty `inboundPolicy`, so it cannot trigger the
 agent until exact authorized DM IDs or group-and-sender pairs are added to the durable runtime

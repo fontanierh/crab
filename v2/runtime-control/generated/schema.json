@@ -1,0 +1,95 @@
+{
+  "box_id": "runtime-control",
+  "capabilities": [
+    {
+      "deprecation": null,
+      "docs": [],
+      "error": "RuntimeControlError",
+      "id": "runtime-control.runtime_status",
+      "idempotency": "none",
+      "input": {
+        "name": "request",
+        "type": "RuntimeStatusRequest"
+      },
+      "max_exposure": "code_only",
+      "name": "runtime_status",
+      "output": {
+        "type": "RuntimeAttestation"
+      },
+      "shape": "unary"
+    }
+  ],
+  "provenance": {
+    "generator": "boxology-generator",
+    "generator_version": "0.1.1",
+    "semantic_digest": "sha256:f49ca1164665d4ef1a5284ae8356d08e65f2523c4cd63f0b2dd13dd86449d6f0"
+  },
+  "revision": "sha256:93d20d9d1a94d97d7923e52b278b465a8975bfb27e070bf8eec7c33c20a7ebcb",
+  "schema_format": 1,
+  "types": [
+    {
+      "deprecation": null,
+      "docs": [],
+      "fields": [],
+      "kind": "struct",
+      "name": "RuntimeStatusRequest"
+    },
+    {
+      "deprecation": null,
+      "docs": [
+        " Immutable, non-secret evidence captured by the running process before local IPC starts."
+      ],
+      "fields": [
+        {
+          "deprecation": null,
+          "docs": [
+            " SHA-256 of the resolved semantic topology and referenced bootstrap prompt contents.",
+            " An unconfigured draft graph has no fingerprint."
+          ],
+          "name": "configuration_fingerprint",
+          "type": "Option<String>"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "started_at_ms",
+          "type": "u64"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "process_id",
+          "type": "u64"
+        }
+      ],
+      "kind": "struct",
+      "name": "RuntimeAttestation"
+    },
+    {
+      "deprecation": null,
+      "docs": [],
+      "kind": "error",
+      "name": "RuntimeControlError",
+      "variants": [
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "DraftOnly",
+          "payload": "unit"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "InvalidAttestation",
+          "payload": "unit"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "ClockUnavailable",
+          "payload": "unit"
+        }
+      ]
+    }
+  ]
+}

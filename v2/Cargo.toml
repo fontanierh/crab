@@ -10,6 +10,8 @@ members = [
     "native-channel/generated/contract",
     "native-channel/implementation",
     "runtime/composition",
+    "runtime-control/generated/contract",
+    "runtime-control/implementation",
     "sub-agent-host/generated/contract",
     "sub-agent-host/implementation",
     "turn-router/generated/contract",

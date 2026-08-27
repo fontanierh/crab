@@ -478,6 +478,8 @@ dependencies = [
  "channel-gateway-implementation",
  "native-channel-contract",
  "native-channel-implementation",
+ "runtime-control-contract",
+ "runtime-control-implementation",
  "schemars 1.2.2",
  "serde",
  "serde_json",
@@ -1291,6 +1293,24 @@ checksum = "c51c9ae4df8a7fba42103df5c621fa3c37eccf3a3c650879e90fc48b11cc192c"
 dependencies = [
  "hashbrown 0.16.1",
  "thiserror",
+]
+
+[[package]]
+name = "runtime-control-contract"
+version = "0.0.0"
+dependencies = [
+ "boxology-contract",
+]
+
+[[package]]
+name = "runtime-control-implementation"
+version = "0.0.0"
+dependencies = [
+ "boxology",
+ "boxology-contract",
+ "boxology-runtime",
+ "runtime-control-contract",
+ "tokio",
 ]
 
 [[package]]

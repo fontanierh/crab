@@ -13,6 +13,8 @@ boxology-contract = { workspace = true }
 boxology-runtime = { workspace = true, features = ["test-support"] }
 bridge-host-contract = { version = "=0.0.0", path = "../../bridge-host/generated/contract" }
 bridge-host-implementation = { version = "=0.0.0", path = "../../bridge-host/implementation" }
+runtime-control-contract = { version = "=0.0.0", path = "../../runtime-control/generated/contract" }
+runtime-control-implementation = { version = "=0.0.0", path = "../../runtime-control/implementation" }
 channel-gateway-contract = { version = "=0.0.0", path = "../../channel-gateway/generated/contract" }
 channel-gateway-implementation = { version = "=0.0.0", path = "../../channel-gateway/implementation" }
 native-channel-contract = { version = "=0.0.0", path = "../../native-channel/generated/contract" }
@@ -20,6 +22,7 @@ native-channel-implementation = { version = "=0.0.0", path = "../../native-chann
 serde = { workspace = true }
 serde_json = { workspace = true }
 schemars = { workspace = true }
+sha2 = { workspace = true }
 sub-agent-host-contract = { version = "=0.0.0", path = "../../sub-agent-host/generated/contract" }
 sub-agent-host-implementation = { version = "=0.0.0", path = "../../sub-agent-host/implementation" }
 turn-router-contract = { version = "=0.0.0", path = "../../turn-router/generated/contract" }
