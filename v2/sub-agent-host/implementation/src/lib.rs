@@ -12,8 +12,9 @@ use std::{
 
 use boxology_contract::{CallContext, Caller, CancelToken, ErasedCallError, TraceContext};
 use boxology_import_agent_host::{
-    AcpEventDirection, AcpEventKind, AgentInputMode, AgentLifecycle, OpenSessionRequest,
-    PromptDisposition, PromptRequest, ReadEventsRequest, ResumeSessionRequest, SessionReference,
+    AcpEventDirection, AcpEventKind, AgentInputMode, AgentLifecycle, ForkSessionRequest,
+    OpenSessionRequest, PromptDisposition, PromptRequest, ReadEventsRequest, ResumeSessionRequest,
+    SessionReference,
 };
 use generated::AgentHostImport;
 use serde_json::{Value, json};
@@ -553,29 +554,34 @@ impl SubAgentHost {
         let parent_status = self
             .parent_status(context.clone(), &request.parent_session_id)
             .await?;
-        let (realization, bootstrap_prompt) = match request.context_mode {
+        let (mut realization, mut bootstrap_prompt) = match request.context_mode {
             SubAgentContextMode::Fresh => (ContextRealization::FreshSession, None),
             SubAgentContextMode::InheritParent => {
-                if !request.allow_portable_snapshot {
-                    return Err(SubAgentHostError::PortableSnapshotForbidden);
-                }
                 let boundary = request
                     .parent_context_through_sequence
                     .ok_or(SubAgentHostError::InvalidContextBoundary)?;
                 if boundary > parent_status.last_sequence {
                     return Err(SubAgentHostError::InvalidContextBoundary);
                 }
-                (
-                    ContextRealization::PortableSnapshot,
-                    Some(
-                        self.portable_snapshot(
-                            context.clone(),
-                            &request.parent_session_id,
-                            boundary,
-                        )
-                        .await?,
-                    ),
-                )
+                if matches!(parent_status.lifecycle, AgentLifecycle::Ready)
+                    && boundary == parent_status.last_sequence
+                {
+                    (ContextRealization::NativeAcpFork, None)
+                } else if request.allow_portable_snapshot {
+                    (
+                        ContextRealization::PortableSnapshot,
+                        Some(
+                            self.portable_snapshot(
+                                context.clone(),
+                                &request.parent_session_id,
+                                boundary,
+                            )
+                            .await?,
+                        ),
+                    )
+                } else {
+                    return Err(SubAgentHostError::NativeForkUnavailable);
+                }
             }
             SubAgentContextMode::Unknown { .. } => {
                 return Err(SubAgentHostError::InvalidNativePayload);
@@ -589,19 +595,85 @@ impl SubAgentHost {
             return Ok(start.record);
         }
         let metadata_json = sub_agent_metadata(&request, &start.record.sub_agent_id)?;
-        let child = match self
-            .agent_host
-            .open_session(
-                context.clone(),
-                OpenSessionRequest {
-                    agent_id: request.agent_id.clone(),
-                    working_directory: request.working_directory.clone(),
-                    bootstrap_prompt,
-                    metadata_json,
-                },
-            )
-            .await
-        {
+        let opened = if matches!(realization, ContextRealization::NativeAcpFork) {
+            match self
+                .agent_host
+                .fork_session(
+                    context.clone(),
+                    ForkSessionRequest {
+                        parent_session_id: request.parent_session_id.clone(),
+                        expected_parent_sequence: request
+                            .parent_context_through_sequence
+                            .ok_or(SubAgentHostError::InvalidContextBoundary)?,
+                        agent_id: request.agent_id.clone(),
+                        working_directory: request.working_directory.clone(),
+                        metadata_json: metadata_json.clone(),
+                    },
+                )
+                .await
+            {
+                Ok(child) => Ok(child),
+                Err(error)
+                    if request.allow_portable_snapshot && is_native_fork_unavailable(&error) =>
+                {
+                    realization = ContextRealization::PortableSnapshot;
+                    self.store.set_context_realization(
+                        &start.record.sub_agent_id,
+                        &realization,
+                        (self.clock)()?,
+                    )?;
+                    bootstrap_prompt = Some(
+                        match self
+                            .portable_snapshot(
+                                context.clone(),
+                                &request.parent_session_id,
+                                request
+                                    .parent_context_through_sequence
+                                    .ok_or(SubAgentHostError::InvalidContextBoundary)?,
+                            )
+                            .await
+                        {
+                            Ok(snapshot) => snapshot,
+                            Err(snapshot_error) => {
+                                self.store.fail_spawn(
+                                    &start.record.sub_agent_id,
+                                    &format!(
+                                        "portable context snapshot failed: {snapshot_error:?}"
+                                    ),
+                                    (self.clock)()?,
+                                )?;
+                                return Err(snapshot_error);
+                            }
+                        },
+                    );
+                    self.agent_host
+                        .open_session(
+                            context.clone(),
+                            OpenSessionRequest {
+                                agent_id: request.agent_id.clone(),
+                                working_directory: request.working_directory.clone(),
+                                bootstrap_prompt,
+                                metadata_json,
+                            },
+                        )
+                        .await
+                }
+                Err(error) => Err(error),
+            }
+        } else {
+            self.agent_host
+                .open_session(
+                    context.clone(),
+                    OpenSessionRequest {
+                        agent_id: request.agent_id.clone(),
+                        working_directory: request.working_directory.clone(),
+                        bootstrap_prompt,
+                        metadata_json,
+                    },
+                )
+                .await
+        };
+        let child = match opened {
             Ok(child) => child,
             Err(error) => {
                 let mapped = map_child_call(error);
@@ -972,6 +1044,14 @@ fn map_child_call(error: ErasedCallError) -> SubAgentHostError {
     map_session_call(error, SubAgentHostError::UnknownSubAgent)
 }
 
+fn is_native_fork_unavailable(error: &ErasedCallError) -> bool {
+    matches!(
+        error,
+        ErasedCallError::Domain { error_tag, .. }
+            if matches!(error_tag.as_str(), "SessionForkUnavailable" | "SessionForkConflict")
+    )
+}
+
 fn map_session_call(
     error: ErasedCallError,
     unknown_session: SubAgentHostError,
@@ -986,6 +1066,14 @@ fn map_session_call(
             if matches!(error_tag.as_str(), "UnknownRun" | "SteeringUnavailable") =>
         {
             SubAgentHostError::SteeringUnavailable
+        }
+        ErasedCallError::Domain { error_tag, .. }
+            if matches!(
+                error_tag.as_str(),
+                "SessionForkUnavailable" | "SessionForkConflict"
+            ) =>
+        {
+            SubAgentHostError::NativeForkUnavailable
         }
         ErasedCallError::Domain { error_tag, .. }
             if matches!(

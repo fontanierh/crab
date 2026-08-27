@@ -640,11 +640,11 @@ mod tests {
         AcpEvent, AcpEventDirection, AcpEventKind, AcpNegotiation, AcpProtocolProfile,
         AgentCatalog, AgentHostError, AgentInputMode, AgentLifecycle, AgentSession,
         AuthorityAttestation, CompactionReporting, DetachSessionsReport, DetachSessionsRequest,
-        DiscoverAgentsRequest, EventPage, FilesystemAuthority, NetworkAuthority,
-        OpenSessionRequest, OperationReceipt, PermissionAuthority, PermissionRequest,
-        PermissionResolution, PreflightReport, PreflightRequest, PromptAccepted, PromptDisposition,
-        PromptRequest, ReadEventsRequest, ResumeSessionRequest, RootAuthority, RunReference,
-        SandboxAuthority, SessionReference, SessionStatus, SteeringSupport,
+        DiscoverAgentsRequest, EventPage, FilesystemAuthority, ForkSessionRequest,
+        NetworkAuthority, OpenSessionRequest, OperationReceipt, PermissionAuthority,
+        PermissionRequest, PermissionResolution, PreflightReport, PreflightRequest, PromptAccepted,
+        PromptDisposition, PromptRequest, ReadEventsRequest, ResumeSessionRequest, RootAuthority,
+        RunReference, SandboxAuthority, SessionReference, SessionStatus, SteeringSupport,
         generated as agent_host,
     };
     use boxology_contract::{CallContext, CallError};
@@ -914,6 +914,15 @@ mod tests {
                     })
                 }
             }
+        }
+
+        async fn fork_session(
+            &self,
+            context: CallContext,
+            request: ForkSessionRequest,
+        ) -> Result<AgentSession, AgentHostError> {
+            let _ = (context, request);
+            Err(AgentHostError::SessionForkUnavailable)
         }
 
         async fn prompt(

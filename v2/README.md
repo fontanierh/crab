@@ -42,10 +42,10 @@ interrupt as a separate explicit action.
 - ACP v2 draft makes `session/prompt` non-blocking and allows new input during active work. ACP v1
   queues by default; configured adapters may negotiate `_session/steering`. Crab's Claude preset
   enables it and retains ownership when a racing turn is already idle.
-- Crab owns sub-agents as separately supervised ACP subprocesses. Fresh sessions and inherited
-  visible-history snapshots work now; the contract reserves truthful native ACP fork reporting.
-  Parent and child exchange durable non-blocking queue, steer or interrupt messages in both
-  directions.
+- Crab owns sub-agents as separately supervised ACP subprocesses. Fresh sessions are portable;
+  inherited sessions prefer advertised ACP native forks at an exact idle cursor and may explicitly
+  fall back to a visible-history snapshot. Parent and child exchange durable non-blocking queue,
+  steer or interrupt messages in both directions.
 - Agents run only after a fail-closed preflight proves permission bypass, no sandbox, unrestricted
   filesystem/network access and working passwordless `sudo`. Required ACP session options are then
   applied and verified before readiness. The Claude preset requires `bypassPermissions` and Opus;
@@ -53,7 +53,7 @@ interrupt as a separate explicit action.
   macOS probes actively verify the host, exact adapter and network conditions rather than trusting
   configuration claims.
 - Bridges are packages the agent may add. Crab owns supervision, auth state, health and delivery
-  semantics—not service-specific behavior. WhatsApp is the first intended first-party package.
+  semantics—not service-specific behavior. WhatsApp ships as the first first-party package.
 - Tests target useful contract and composition behavior. There is no percentage coverage gate.
 - `agent-host` runs real ACP v1/v2 subprocesses with mandatory authority preflight, durable
   prompts/events/permissions, queue/steer/cancel, explicit native resume, and process-group
@@ -92,14 +92,17 @@ interrupt as a separate explicit action.
   selected output without gaining credential-store access. See the
   [agent bridge boundary](docs/native-bridge-tools.md).
 - `sub-agent-host` composes through the generated `agent-host` import, durably journals both
-  message directions and the complete child ACP stream. After parents recover, eligible children
+  message directions and the complete child ACP stream. Inherited children prefer advertised ACP
+  `session/fork` at an exact idle parent cursor; the fork runs in its own supervised adapter
+  process, and visible-history replay remains an explicit fallback. After parents recover, eligible
+  children
   resume their exact native sessions within a durable restart budget; identities, journals and
   cursors stay continuous, while every non-resumable child fails explicitly without replacement.
   `crab-v2-sub-agent` exposes spawn, bidirectional messaging, cursor events, status and idempotent
   stop through the owner-only local IPC. See the
   [control flow](docs/sub-agent-control.md), [state contract](docs/sub-agent-host-storage.md) and
-  [rendered host flow](docs/sub-agent-host-flow.png) plus
-  [recovery flow](docs/sub-agent-recovery-flow.png).
+  [rendered host flow](docs/sub-agent-host-flow.png), [context flow](docs/sub-agent-context-flow.png)
+  and [recovery flow](docs/sub-agent-recovery-flow.png).
 - Every configured ACP session can receive Crab's six native sub-agent tools through a first-party
   stdio MCP server. Parents and children share the toolset; child-to-parent delivery is enabled only
   when Crab injects child identity. See the [native tool boundary](docs/native-sub-agent-tools.md).

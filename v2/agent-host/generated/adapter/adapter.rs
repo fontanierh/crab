@@ -265,6 +265,72 @@ where
             return Box::pin(async move {
                 let input = ::boxology_contract::TypeDescriptor::structure([
                         ::boxology_contract::FieldDescriptor::new(
+                            "parent_session_id",
+                            ::boxology_contract::TypeDescriptor::string(),
+                            None,
+                        ),
+                        ::boxology_contract::FieldDescriptor::new(
+                            "expected_parent_sequence",
+                            ::boxology_contract::TypeDescriptor::u64(),
+                            None,
+                        ),
+                        ::boxology_contract::FieldDescriptor::new(
+                            "agent_id",
+                            ::boxology_contract::TypeDescriptor::string(),
+                            None,
+                        ),
+                        ::boxology_contract::FieldDescriptor::new(
+                            "working_directory",
+                            ::boxology_contract::TypeDescriptor::string(),
+                            None,
+                        ),
+                        ::boxology_contract::FieldDescriptor::new(
+                            "metadata_json",
+                            ::boxology_contract::TypeDescriptor::string(),
+                            None,
+                        ),
+                    ])
+                    .expect("generated struct descriptor is valid")
+                    .conform(::boxology_contract::DecodeRole::ProviderInput, input)
+                    .map_err(|error| {
+                        ::boxology_contract::ErasedCallError::ContractViolation(
+                            conversion_detail("input_decode", error),
+                        )
+                    })?;
+                let input = <::boxology_generated_contract::ForkSessionRequest as ::boxology_contract::ContractType>::decode(
+                        &input,
+                    )
+                    .map_err(|error| {
+                        ::boxology_contract::ErasedCallError::ContractViolation(
+                            conversion_detail("input_decode", error),
+                        )
+                    })?;
+                match ::boxology_generated_contract::AgentHostDispatch::fork_session(
+                        &self.service,
+                        context,
+                        input,
+                    )
+                    .await
+                {
+                    Ok(output) => {
+                        output
+                            .encode()
+                            .map_err(|error| {
+                                ::boxology_contract::ErasedCallError::InvalidResponse(
+                                    conversion_detail("output_encode", error),
+                                )
+                            })
+                    }
+                    Err(error) => {
+                        Err(::boxology_contract::ErasedCallError::from_domain(&error))
+                    }
+                }
+            });
+        }
+        if capability == capabilities[5].id() {
+            return Box::pin(async move {
+                let input = ::boxology_contract::TypeDescriptor::structure([
+                        ::boxology_contract::FieldDescriptor::new(
                             "session_id",
                             ::boxology_contract::TypeDescriptor::string(),
                             None,
@@ -339,7 +405,7 @@ where
                 }
             });
         }
-        if capability == capabilities[5].id() {
+        if capability == capabilities[6].id() {
             return Box::pin(async move {
                 let input = ::boxology_contract::TypeDescriptor::structure([
                         ::boxology_contract::FieldDescriptor::new(
@@ -395,7 +461,7 @@ where
                 }
             });
         }
-        if capability == capabilities[6].id() {
+        if capability == capabilities[7].id() {
             return Box::pin(async move {
                 let input = ::boxology_contract::TypeDescriptor::structure([
                         ::boxology_contract::FieldDescriptor::new(
@@ -451,7 +517,7 @@ where
                 }
             });
         }
-        if capability == capabilities[7].id() {
+        if capability == capabilities[8].id() {
             return Box::pin(async move {
                 let input = ::boxology_contract::TypeDescriptor::structure([
                         ::boxology_contract::FieldDescriptor::new(
@@ -497,7 +563,7 @@ where
                 }
             });
         }
-        if capability == capabilities[8].id() {
+        if capability == capabilities[9].id() {
             return Box::pin(async move {
                 let input = ::boxology_contract::TypeDescriptor::structure([
                         ::boxology_contract::FieldDescriptor::new(
@@ -548,7 +614,7 @@ where
                 }
             });
         }
-        if capability == capabilities[9].id() {
+        if capability == capabilities[10].id() {
             return Box::pin(async move {
                 let input = ::boxology_contract::TypeDescriptor::structure([])
                     .expect("generated struct descriptor is valid")
@@ -588,7 +654,7 @@ where
                 }
             });
         }
-        if capability == capabilities[10].id() {
+        if capability == capabilities[11].id() {
             return Box::pin(async move {
                 let input = ::boxology_contract::TypeDescriptor::structure([
                         ::boxology_contract::FieldDescriptor::new(

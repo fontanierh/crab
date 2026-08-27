@@ -6,9 +6,10 @@ use agent_host_implementation::{
     AuthorityVerifier, CRAB_AGENT_ID_ENV, CRAB_PARENT_SESSION_ID_ENV, CRAB_SESSION_ID_ENV,
     CRAB_STATE_DIRECTORY_ENV, CRAB_SUB_AGENT_ID_ENV, CRAB_WORKING_DIRECTORY_ENV, ConfiguredAgent,
     ConfiguredMcpServer, DetachSessionsRequest, DiscoverAgentsRequest, FilesystemAuthority,
-    NetworkAuthority, OpenSessionRequest, PermissionAuthority, PermissionRequest, PreflightRequest,
-    PromptDisposition, PromptRequest, ReadEventsRequest, ResumeSessionRequest, RootAuthority,
-    RunReference, SandboxAuthority, SessionReference, SteeringSupport, generated,
+    ForkSessionRequest, NetworkAuthority, OpenSessionRequest, PermissionAuthority,
+    PermissionRequest, PreflightRequest, PromptDisposition, PromptRequest, ReadEventsRequest,
+    ResumeSessionRequest, RootAuthority, RunReference, SandboxAuthority, SessionReference,
+    SteeringSupport, generated,
 };
 use async_trait::async_trait;
 use boxology_contract::{CallContext, Caller, CancelToken, TraceContext};
@@ -86,6 +87,11 @@ fn configured_steering_agent() -> ConfiguredAgent {
         .steering_extension(AgentSteeringExtension::SessionSteeringV1)
 }
 
+fn configured_fork_agent(protocol: AgentProtocol) -> ConfiguredAgent {
+    configured_agent(protocol)
+        .environment([("FIXTURE_SECRET", "not-exposed"), ("ACP_FIXTURE_FORK", "1")])
+}
+
 fn prompt(session_id: &str, turn: &str, mode: AgentInputMode, text: &str) -> PromptRequest {
     PromptRequest {
         session_id: session_id.into(),
@@ -118,6 +124,153 @@ async fn open_fixture(
     )
     .await
     .expect("real ACP subprocess opens")
+}
+
+#[tokio::test]
+async fn native_fork_opens_a_distinct_supervised_session_for_both_protocol_profiles() {
+    for protocol in [AgentProtocol::V1, AgentProtocol::V2] {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let host = AgentHost::open_with_authority_verifier(
+            directory.path().join("agent-host.sqlite"),
+            vec![configured_fork_agent(protocol)],
+            Arc::new(FixtureAuthority),
+        )
+        .expect("host opens");
+        let parent = open_fixture(&host, protocol, directory.path()).await;
+        let parent_status = host
+            .session_status(
+                context(),
+                SessionReference {
+                    session_id: parent.session_id.clone(),
+                },
+            )
+            .await
+            .expect("parent status is readable");
+        let child = host
+            .fork_session(
+                context(),
+                ForkSessionRequest {
+                    parent_session_id: parent.session_id.clone(),
+                    expected_parent_sequence: parent_status.last_sequence,
+                    agent_id: parent.agent_id.clone(),
+                    working_directory: directory.path().to_string_lossy().into_owned(),
+                    metadata_json:
+                        r#"{"crabSubAgent":{"subAgentId":"child","parentSessionId":"parent"}}"#
+                            .into(),
+                },
+            )
+            .await
+            .expect("advertised native fork succeeds");
+
+        assert_ne!(child.session_id, parent.session_id);
+        assert_eq!(child.native_session_id, "fixture-native-fork");
+        assert_eq!(child.agent_id, parent.agent_id);
+        assert_eq!(
+            host.session_status(
+                context(),
+                SessionReference {
+                    session_id: parent.session_id.clone(),
+                },
+            )
+            .await
+            .expect("parent remains live")
+            .lifecycle,
+            AgentLifecycle::Ready
+        );
+        let child_events = host
+            .read_events(
+                context(),
+                ReadEventsRequest {
+                    session_id: child.session_id,
+                    after_sequence: 0,
+                    limit: 1_000,
+                },
+            )
+            .await
+            .expect("child transport is journaled");
+        assert!(
+            child_events
+                .events
+                .iter()
+                .any(|event| event.native_event_json.contains("session/fork"))
+        );
+        assert!(
+            child_events
+                .events
+                .iter()
+                .all(|event| !event.native_event_json.contains("session/new"))
+        );
+    }
+}
+
+#[tokio::test]
+async fn native_fork_fails_before_launch_when_capability_identity_or_cursor_do_not_match() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let host = AgentHost::open_with_authority_verifier(
+        directory.path().join("agent-host.sqlite"),
+        vec![configured_agent(AgentProtocol::V1)],
+        Arc::new(FixtureAuthority),
+    )
+    .expect("host opens");
+    let parent = open_fixture(&host, AgentProtocol::V1, directory.path()).await;
+    let status = host
+        .session_status(
+            context(),
+            SessionReference {
+                session_id: parent.session_id.clone(),
+            },
+        )
+        .await
+        .expect("parent status is readable");
+    let request = ForkSessionRequest {
+        parent_session_id: parent.session_id.clone(),
+        expected_parent_sequence: status.last_sequence,
+        agent_id: parent.agent_id.clone(),
+        working_directory: directory.path().to_string_lossy().into_owned(),
+        metadata_json: "{}".into(),
+    };
+    assert!(matches!(
+        host.fork_session(context(), request).await,
+        Err(AgentHostError::SessionForkUnavailable)
+    ));
+
+    let fork_host = AgentHost::open_with_authority_verifier(
+        directory.path().join("fork-agent-host.sqlite"),
+        vec![configured_fork_agent(AgentProtocol::V1)],
+        Arc::new(FixtureAuthority),
+    )
+    .expect("fork host opens");
+    let fork_parent = open_fixture(&fork_host, AgentProtocol::V1, directory.path()).await;
+    let fork_status = fork_host
+        .session_status(
+            context(),
+            SessionReference {
+                session_id: fork_parent.session_id.clone(),
+            },
+        )
+        .await
+        .expect("fork parent status is readable");
+    for request in [
+        ForkSessionRequest {
+            parent_session_id: fork_parent.session_id.clone(),
+            expected_parent_sequence: fork_status.last_sequence + 1,
+            agent_id: fork_parent.agent_id.clone(),
+            working_directory: directory.path().to_string_lossy().into_owned(),
+            metadata_json: "{}".into(),
+        },
+        ForkSessionRequest {
+            parent_session_id: fork_parent.session_id,
+            expected_parent_sequence: fork_status.last_sequence,
+            agent_id: "different-agent".into(),
+            working_directory: directory.path().to_string_lossy().into_owned(),
+            metadata_json: "{}".into(),
+        },
+    ] {
+        assert!(matches!(
+            fork_host.fork_session(context(), request).await,
+            Err(AgentHostError::SessionForkConflict | AgentHostError::SessionForkUnavailable)
+        ));
+    }
 }
 
 #[tokio::test]

@@ -10,12 +10,14 @@
 | Requested mode | Current realization | Guarantee |
 |---|---|---|
 | Fresh | `FreshSession` | Only explicit child bootstrap metadata and task are sent. |
-| Inherit parent | `PortableSnapshot` | Message events through an immutable parent cursor are injected, capped at 4 MiB. |
-| Native fork | Reserved | The contract can report `NativeAcpFork`, but this release does not claim it. |
+| Inherit parent | `NativeAcpFork` | At the exact idle head, an advertised native fork preserves opaque agent context in a separately supervised process. |
+| Inherit parent fallback | `PortableSnapshot` | When explicitly allowed, message events through an immutable parent cursor are injected, capped at 4 MiB. |
 
-Portable inheritance preserves the visible conversation, including exact native message JSON and
-direction. It does not claim hidden model/provider state. If the caller forbids the portable
-snapshot, spawn fails closed.
+Native inheritance requires the same agent implementation, an advertised draft `session/fork`
+capability, and an unchanged idle parent cursor. Portable inheritance preserves the visible
+conversation, including exact native message JSON and direction, but does not claim hidden
+model/provider state. If native fork is unavailable and the caller forbids the portable snapshot,
+spawn fails closed.
 
 ## Durable layout
 

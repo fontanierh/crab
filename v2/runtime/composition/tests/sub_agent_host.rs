@@ -10,11 +10,11 @@ use agent_host_implementation::{
     AcpEvent, AcpEventDirection, AcpEventKind, AcpNegotiation, AcpProtocolProfile, AgentCatalog,
     AgentHostError, AgentInputMode, AgentLifecycle, AgentSession, AuthorityAttestation,
     CompactionReporting, DetachSessionsReport, DetachSessionsRequest, DiscoverAgentsRequest,
-    EventPage, FilesystemAuthority, NetworkAuthority, OpenSessionRequest, OperationReceipt,
-    PermissionAuthority, PermissionRequest, PermissionResolution, PreflightReport,
-    PreflightRequest, PromptAccepted, PromptDisposition, PromptRequest, ReadEventsRequest,
-    ResumeSessionRequest, RootAuthority, RunReference, SandboxAuthority, SessionReference,
-    SessionStatus, SteeringSupport, generated as agent_host,
+    EventPage, FilesystemAuthority, ForkSessionRequest, NetworkAuthority, OpenSessionRequest,
+    OperationReceipt, PermissionAuthority, PermissionRequest, PermissionResolution,
+    PreflightReport, PreflightRequest, PromptAccepted, PromptDisposition, PromptRequest,
+    ReadEventsRequest, ResumeSessionRequest, RootAuthority, RunReference, SandboxAuthority,
+    SessionReference, SessionStatus, SteeringSupport, generated as agent_host,
 };
 use boxology_contract::{CallContext, Caller, CancelToken, TraceContext};
 use boxology_runtime::CompositionBuilder;
@@ -35,6 +35,8 @@ struct FakeSession {
 struct FakeState {
     sessions: HashMap<String, FakeSession>,
     opened: Vec<OpenSessionRequest>,
+    forked: Vec<ForkSessionRequest>,
+    fork_available: bool,
     next_child: u64,
     next_run: u64,
     resume_mode: FakeResumeMode,
@@ -75,6 +77,8 @@ impl FakeState {
                 },
             )]),
             opened: Vec::new(),
+            forked: Vec::new(),
+            fork_available: false,
             next_child: 0,
             next_run: 0,
             resume_mode: FakeResumeMode::Success,
@@ -178,6 +182,52 @@ impl FakeAgentHost {
                 })
             }
         }
+    }
+
+    async fn fork_session(
+        &self,
+        context: CallContext,
+        request: ForkSessionRequest,
+    ) -> Result<AgentSession, AgentHostError> {
+        let _ = context;
+        let mut state = self.state.lock().expect("fake state lock");
+        if !state.fork_available || request.agent_id != "fake-agent" {
+            return Err(AgentHostError::SessionForkUnavailable);
+        }
+        let parent = state
+            .sessions
+            .get(&request.parent_session_id)
+            .ok_or(AgentHostError::UnknownSession)?;
+        if !matches!(parent.lifecycle, AgentLifecycle::Ready)
+            || parent.active_run_id.is_some()
+            || parent.events.len() as u64 != request.expected_parent_sequence
+        {
+            return Err(AgentHostError::SessionForkConflict);
+        }
+        state.next_child += 1;
+        let session_id = format!("forked-child-{}", state.next_child);
+        state.forked.push(request.clone());
+        state.sessions.insert(
+            session_id.clone(),
+            FakeSession {
+                lifecycle: AgentLifecycle::Ready,
+                active_run_id: None,
+                events: Vec::new(),
+            },
+        );
+        Ok(AgentSession {
+            session_id: session_id.clone(),
+            native_session_id: format!("native-{session_id}"),
+            agent_id: request.agent_id,
+            negotiation: AcpNegotiation {
+                protocol_version: 2,
+                protocol_profile: AcpProtocolProfile::V2Draft,
+                steering: SteeringSupport::AcpV2ConcurrentPrompt,
+                compaction_reporting: CompactionReporting::DraftLifecycleUpdates,
+                agent_capabilities_json: r#"{"session":{"fork":{}}}"#.into(),
+            },
+            authority: authority(),
+        })
     }
 
     async fn prompt(
@@ -669,6 +719,39 @@ async fn sub_agent_host_spawns_both_context_modes_and_routes_live_bidirectionall
 }
 
 #[tokio::test]
+async fn inherited_context_prefers_a_native_acp_fork_when_the_agent_supports_it() {
+    let mut state = FakeState::with_parent();
+    state.fork_available = true;
+    let fake_state = Arc::new(Mutex::new(state));
+    let host_state = SubAgentHostState::open_in_memory().expect("sub-agent state opens");
+    let mut builder = CompositionBuilder::new();
+    let agent = agent_host::register(
+        &mut builder,
+        FakeAgentHost {
+            state: fake_state.clone(),
+        },
+    );
+    let host = sub_agent_host::register(&mut builder, move |imports| {
+        host_state.connect(imports.agent_host)
+    });
+    builder.connect(&host, &agent);
+    let handle = builder.handle::<sub_agent_host_contract::SubAgentHostHandle>(&host);
+    let _composition = builder.start().expect("graph starts");
+
+    let mut request = spawn_request("native-inherited", SubAgentContextMode::InheritParent);
+    request.allow_portable_snapshot = false;
+    let child = handle
+        .spawn(context(), request)
+        .await
+        .expect("native inherited child starts");
+    assert_eq!(child.context_realization, ContextRealization::NativeAcpFork);
+    let state = fake_state.lock().expect("fake state lock");
+    assert_eq!(state.forked.len(), 1);
+    assert_eq!(state.forked[0].expected_parent_sequence, 2);
+    assert!(state.opened.is_empty());
+}
+
+#[tokio::test]
 async fn inherited_context_fails_closed_and_restart_policy_is_accepted() {
     let fake_state = Arc::new(Mutex::new(FakeState::with_parent()));
     let host_state = SubAgentHostState::open_in_memory().expect("sub-agent state opens");
@@ -686,7 +769,7 @@ async fn inherited_context_fails_closed_and_restart_policy_is_accepted() {
     assert_eq!(
         handle.spawn(context(), native_only).await,
         Err(boxology_contract::CallError::Domain(
-            SubAgentHostError::PortableSnapshotForbidden
+            SubAgentHostError::NativeForkUnavailable
         ))
     );
 

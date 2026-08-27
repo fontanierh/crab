@@ -41,6 +41,7 @@ impl FixtureAgent {
             Some("initialize") => self.initialize(&message)?,
             Some("session/new") => self.new_session(&message)?,
             Some("session/resume") => self.resume_session(&message)?,
+            Some("session/fork") => self.fork_session(&message)?,
             Some("session/set_config_option") => self.set_config_option(&message)?,
             Some("session/prompt") => return self.prompt(&message),
             Some("_session/steering") => self.steer(&message)?,
@@ -64,10 +65,17 @@ impl FixtureAgent {
     fn initialize(&self, request: &Value) -> io::Result<()> {
         let result = match self.protocol {
             Protocol::V1 => {
-                let capabilities = if std::env::var_os("ACP_FIXTURE_HIDE_RESUME").is_some() {
+                let mut session_capabilities = serde_json::Map::new();
+                if std::env::var_os("ACP_FIXTURE_HIDE_RESUME").is_none() {
+                    session_capabilities.insert("resume".into(), json!({}));
+                }
+                if std::env::var_os("ACP_FIXTURE_FORK").is_some() {
+                    session_capabilities.insert("fork".into(), json!({}));
+                }
+                let capabilities = if session_capabilities.is_empty() {
                     json!({})
                 } else {
-                    json!({ "sessionCapabilities": { "resume": {} } })
+                    json!({ "sessionCapabilities": session_capabilities })
                 };
                 let mut result = json!({
                     "protocolVersion": 1,
@@ -81,10 +89,17 @@ impl FixtureAgent {
                 result
             }
             Protocol::V2 => {
-                let capabilities = if std::env::var_os("ACP_FIXTURE_HIDE_STDIO_MCP").is_some() {
+                let mut session_capabilities = serde_json::Map::new();
+                if std::env::var_os("ACP_FIXTURE_HIDE_STDIO_MCP").is_none() {
+                    session_capabilities.insert("mcp".into(), json!({ "stdio": {} }));
+                }
+                if std::env::var_os("ACP_FIXTURE_FORK").is_some() {
+                    session_capabilities.insert("fork".into(), json!({}));
+                }
+                let capabilities = if session_capabilities.is_empty() {
                     json!({})
                 } else {
-                    json!({ "session": { "mcp": { "stdio": {} } } })
+                    json!({ "session": session_capabilities })
                 };
                 json!({
                     "protocolVersion": 2,
@@ -114,6 +129,22 @@ impl FixtureAgent {
         self.respond(
             request,
             json!({
+                "configOptions": self.config_options()
+            }),
+        )
+    }
+
+    fn fork_session(&mut self, request: &Value) -> io::Result<()> {
+        if std::env::var_os("ACP_FIXTURE_FORK").is_none()
+            || request.pointer("/params/sessionId") != Some(&json!(self.session_id))
+        {
+            return self.respond_error(request, -32601, "session fork unavailable");
+        }
+        self.session_id = "fixture-native-fork".into();
+        self.respond(
+            request,
+            json!({
+                "sessionId": self.session_id,
                 "configOptions": self.config_options()
             }),
         )
