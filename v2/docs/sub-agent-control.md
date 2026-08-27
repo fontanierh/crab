@@ -8,7 +8,7 @@ each child remains a separately supervised ACP subprocess.
 
 ```text
 crab-v2-sub-agent
-├── spawn          fresh or inherited visible context
+├── spawn          fresh or inherited native/snapshot context
 ├── send-child     queue, steer or interrupt-and-steer
 ├── send-parent    queue, steer or interrupt-and-steer
 ├── events         ordered cursor page with complete ACP JSON
@@ -34,6 +34,17 @@ work before the new input is accepted. Poll `events` with the returned cursor to
 interaction and full native ACP events in order without blocking the parent. `crashRestartLimit`
 defaults to one and bounds exact-session recovery across later runtime crashes; zero disables
 recovery. Spawn and message IDs make retries idempotent; `stop` is idempotent too.
+
+## Context realization
+
+![Sub-agent context realization](sub-agent-context-flow.png)
+
+`inherit` captures an immutable parent event cursor. At the current idle head, Crab prefers an
+advertised ACP `session/fork`, launched through a distinct supervised adapter process with the
+child's own MCP identity and authority checks. A changed cursor, busy parent, unsupported fork, or
+agent mismatch uses the visible-message snapshot only when `allowPortableSnapshot` is true.
+Otherwise spawn fails as `NativeForkUnavailable`. `status` reports `native-acp-fork` or
+`portable-snapshot`; Crab never presents replayed visible history as opaque provider context.
 
 This CLI remains the stable operator control-plane. Parent and child ACP sessions receive the same
 capabilities automatically through Crab's [native stdio-MCP tools](native-sub-agent-tools.md).

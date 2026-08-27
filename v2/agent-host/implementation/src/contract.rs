@@ -134,6 +134,17 @@ boxology::contract! {
         pub session_id: String,
     }
 
+    /// Fork one idle live session into a separately supervised ACP process. The expected cursor
+    /// makes the inherited context boundary immutable rather than racing new parent work.
+    pub struct ForkSessionRequest {
+        pub parent_session_id: String,
+        pub expected_parent_sequence: u64,
+        /// Native forks cannot cross agent implementations; this must match the parent.
+        pub agent_id: String,
+        pub working_directory: String,
+        pub metadata_json: String,
+    }
+
     pub struct AgentSession {
         /// Crab's durable identifier, independent from any agent-specific identifier format.
         pub session_id: String,
@@ -302,6 +313,8 @@ boxology::contract! {
         InvalidCursor,
         InvalidNativePayload,
         SessionResumeUnavailable,
+        SessionForkUnavailable,
+        SessionForkConflict,
         TransportFailed,
         StorageUnavailable,
     }
@@ -323,6 +336,12 @@ boxology::contract! {
     /// original bootstrap prompt or retries prompts that were active when the process failed.
     #[capability]
     pub async fn resume_session(request: ResumeSessionRequest) -> Result<AgentSession, AgentHostError>;
+
+    /// Prefer ACP's native context lineage when an agent advertises draft `session/fork`. The
+    /// child still owns a distinct adapter subprocess, authority attestation, MCP context and
+    /// durable Crab session. Busy parents and changed event cursors fail without taking a fork.
+    #[capability]
+    pub async fn fork_session(request: ForkSessionRequest) -> Result<AgentSession, AgentHostError>;
 
     /// Submit input without waiting for work to finish. `Queue` is portable. `Steer` uses the ACP
     /// v2 prompt lifecycle or a negotiated extension and fails rather than silently becoming

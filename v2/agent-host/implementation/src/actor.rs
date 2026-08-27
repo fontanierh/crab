@@ -11,7 +11,7 @@ use agent_client_protocol::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{Mutex, mpsc, oneshot};
 use uuid::Uuid;
 
 use crate::Clock;
@@ -61,13 +61,14 @@ pub(crate) enum SessionCommand {
 pub(crate) enum SessionLaunch {
     New { bootstrap_prompt: Option<String> },
     Resume { native_session_id: String },
+    Fork { native_parent_session_id: String },
 }
 
 impl SessionLaunch {
     fn bootstrap_prompt(&self) -> Option<String> {
         match self {
             Self::New { bootstrap_prompt } => bootstrap_prompt.clone(),
-            Self::Resume { .. } => None,
+            Self::Resume { .. } | Self::Fork { .. } => None,
         }
     }
 }
@@ -75,6 +76,8 @@ impl SessionLaunch {
 #[derive(Clone)]
 pub(crate) struct SessionHandle {
     pub(crate) commands: mpsc::Sender<SessionCommand>,
+    /// Serializes lifecycle-changing host calls with prompt acceptance for this session.
+    pub(crate) control: Arc<Mutex<()>>,
 }
 
 enum ActorSignal {
@@ -122,6 +125,7 @@ pub(crate) fn spawn_session(
     let (opened_tx, opened_rx) = oneshot::channel();
     let handle = SessionHandle {
         commands: command_tx,
+        control: Arc::new(Mutex::new(())),
     };
     tokio::spawn(async move {
         let result = match agent.protocol {
@@ -464,6 +468,31 @@ async fn initialize_v1(
                 .map_err(|_| AgentHostError::TransportFailed)?;
             native_session_id
         }
+        SessionLaunch::Fork {
+            native_parent_session_id,
+        } => {
+            if response
+                .agent_capabilities
+                .session_capabilities
+                .fork
+                .is_none()
+            {
+                return Err(AgentHostError::SessionForkUnavailable);
+            }
+            connection
+                .send_request(
+                    v1::ForkSessionRequest::new(
+                        v1::SessionId::new(native_parent_session_id.clone()),
+                        working_directory,
+                    )
+                    .mcp_servers(mcp_servers)
+                    .meta(nonempty(metadata)),
+                )
+                .block_task()
+                .await
+                .map_err(|_| AgentHostError::SessionForkUnavailable)?
+                .session_id
+        }
     };
     apply_v1_session_options(connection, &native_session_id, session_options).await?;
     let capabilities = serde_json::to_string(&response.agent_capabilities)
@@ -558,6 +587,32 @@ async fn initialize_v2(
                 .await
                 .map_err(|_| AgentHostError::TransportFailed)?;
             native_session_id
+        }
+        SessionLaunch::Fork {
+            native_parent_session_id,
+        } => {
+            if response
+                .capabilities
+                .session
+                .as_ref()
+                .and_then(|session| session.fork.as_ref())
+                .is_none()
+            {
+                return Err(AgentHostError::SessionForkUnavailable);
+            }
+            connection
+                .send_request(
+                    v2::ForkSessionRequest::new(
+                        v2::SessionId::new(native_parent_session_id.clone()),
+                        v2::AbsolutePath::new(working_directory),
+                    )
+                    .mcp_servers(mcp_servers)
+                    .meta(nonempty(metadata)),
+                )
+                .block_task()
+                .await
+                .map_err(|_| AgentHostError::SessionForkUnavailable)?
+                .session_id
         }
     };
     apply_v2_session_options(connection, &native_session_id, session_options).await?;

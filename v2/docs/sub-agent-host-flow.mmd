@@ -3,13 +3,13 @@ flowchart TB
     subgraph LIVE[" "]
         direction LR
         PARENT["Parent ACP session<br/>continues running"]
-        HOST["Sub-agent host<br/>fresh · inherit snapshot<br/>queue · steer · interrupt"]
+        HOST["Sub-agent host<br/>fresh · native fork · snapshot fallback<br/>queue · steer · interrupt"]
         IMPORT["Generated<br/>agent-host import"]
         CHILD["Child ACP session<br/>separate harness process<br/>agent-owned compaction"]
 
-        PARENT -->|"fixed-cursor snapshot"| HOST
+        PARENT -->|"exact cursor + agent identity"| HOST
         PARENT <-->|"duplex input"| HOST
-        HOST <-->|"open · input · cancel<br/>events · status · close"| IMPORT
+        HOST <-->|"open / fork · input · cancel<br/>events · status · close"| IMPORT
         IMPORT <-->|"ACP session"| CHILD
     end
     DB[("SQLite journal<br/>children · mailboxes · full ordered events")]

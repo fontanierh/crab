@@ -135,6 +135,7 @@ impl AgentHost {
             failed_session_ids: Vec::new(),
         };
         for (session_id, handle) in handles {
+            let _control = handle.control.lock().await;
             let (reply, response) = oneshot::channel();
             let detached = handle
                 .commands
@@ -188,6 +189,22 @@ impl AgentHost {
                 Ok(_) => AgentHostError::SessionClosed,
                 Err(error) => error,
             })
+    }
+
+    fn session_can_fork(session: &AgentSession) -> bool {
+        let Ok(capabilities) =
+            serde_json::from_str::<Value>(&session.negotiation.agent_capabilities_json)
+        else {
+            return false;
+        };
+        let pointer = match session.negotiation.protocol_profile {
+            AcpProtocolProfile::V1Stable => "/sessionCapabilities/fork",
+            AcpProtocolProfile::V2Draft => "/session/fork",
+            AcpProtocolProfile::Unknown { .. } => return false,
+        };
+        capabilities
+            .pointer(pointer)
+            .is_some_and(|capability| !capability.is_null())
     }
 }
 
@@ -333,6 +350,81 @@ impl AgentHost {
         Ok(session)
     }
 
+    pub async fn fork_session(
+        &self,
+        context: boxology::CallContext,
+        request: ForkSessionRequest,
+    ) -> Result<AgentSession, AgentHostError> {
+        let _ = context;
+        let metadata = serde_json::from_str::<Map<String, Value>>(&request.metadata_json)
+            .map_err(|_| AgentHostError::InvalidNativePayload)?;
+        let parent_handle = self.live_session(&request.parent_session_id).await?;
+        let _parent_control = parent_handle.control.lock().await;
+        let parent_status = self.store.status(&request.parent_session_id)?;
+        if !matches!(parent_status.lifecycle, AgentLifecycle::Ready)
+            || parent_status.active_run_id.is_some()
+            || parent_status.last_sequence != request.expected_parent_sequence
+        {
+            return Err(AgentHostError::SessionForkConflict);
+        }
+        let parent = self.store.session(&request.parent_session_id)?;
+        if parent.agent_id != request.agent_id || !Self::session_can_fork(&parent) {
+            return Err(AgentHostError::SessionForkUnavailable);
+        }
+        let agent = self
+            .agents
+            .get(&parent.agent_id)
+            .cloned()
+            .ok_or(AgentHostError::UnknownAgent)?;
+        if agent.protocol.profile() != parent.negotiation.protocol_profile {
+            return Err(AgentHostError::SessionForkUnavailable);
+        }
+        let preflight = self
+            .run_preflight(&parent.agent_id, &request.working_directory)
+            .await?;
+        let session_id = format!("session_{}", Uuid::new_v4());
+        let now_ms = (self.clock)()?;
+        self.store.create_starting_session(
+            &session_id,
+            &parent.agent_id,
+            &preflight.working_directory,
+            &request.metadata_json,
+            &agent.protocol.profile(),
+            &preflight.authority,
+            now_ms,
+        )?;
+        let (handle, opened) = spawn_session(
+            agent,
+            self.store.clone(),
+            self.clock.clone(),
+            session_id.clone(),
+            preflight.working_directory.into(),
+            SessionLaunch::Fork {
+                native_parent_session_id: parent.native_session_id,
+            },
+            metadata,
+            self.state_directory.clone(),
+        );
+        let opened = tokio::time::timeout(CONTROL_TIMEOUT, opened).await;
+        let session = match opened {
+            Ok(Ok(Ok(session))) => session,
+            Ok(Ok(Err(error))) => {
+                self.store
+                    .set_lifecycle(&session_id, &AgentLifecycle::Failed, (self.clock)()?)?;
+                return Err(error);
+            }
+            Ok(Err(_)) | Err(_) => {
+                let (reply, _) = oneshot::channel();
+                let _ = handle.commands.try_send(SessionCommand::Close { reply });
+                self.store
+                    .set_lifecycle(&session_id, &AgentLifecycle::Failed, (self.clock)()?)?;
+                return Err(AgentHostError::TransportFailed);
+            }
+        };
+        self.sessions.write().await.insert(session_id, handle);
+        Ok(session)
+    }
+
     pub async fn prompt(
         &self,
         context: boxology::CallContext,
@@ -340,6 +432,7 @@ impl AgentHost {
     ) -> Result<PromptAccepted, AgentHostError> {
         let _ = context;
         let handle = self.live_session(&request.session_id).await?;
+        let _control = handle.control.lock().await;
         let (reply, response) = oneshot::channel();
         handle
             .commands
@@ -391,6 +484,7 @@ impl AgentHost {
     ) -> Result<OperationReceipt, AgentHostError> {
         let _ = context;
         let handle = self.live_session(&request.session_id).await?;
+        let _control = handle.control.lock().await;
         let (reply, response) = oneshot::channel();
         handle
             .commands
@@ -422,6 +516,7 @@ impl AgentHost {
     ) -> Result<OperationReceipt, AgentHostError> {
         let _ = context;
         let handle = self.live_session(&request.session_id).await?;
+        let _control = handle.control.lock().await;
         let (reply, response) = oneshot::channel();
         handle
             .commands
@@ -489,6 +584,7 @@ mod tests {
                 "preflight",
                 "open_session",
                 "resume_session",
+                "fork_session",
                 "prompt",
                 "read_events",
                 "resolve_permission",

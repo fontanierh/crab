@@ -88,6 +88,16 @@ static __BOXOLOGY_CONTRACT_DESCRIPTOR: ::std::sync::LazyLock<
                 None,
             ),
             ::boxology_contract::VariantDescriptor::new(
+                "SessionForkUnavailable",
+                ::boxology_contract::VariantPayload::Unit,
+                None,
+            ),
+            ::boxology_contract::VariantDescriptor::new(
+                "SessionForkConflict",
+                ::boxology_contract::VariantPayload::Unit,
+                None,
+            ),
+            ::boxology_contract::VariantDescriptor::new(
                 "TransportFailed",
                 ::boxology_contract::VariantPayload::Unit,
                 None,
@@ -729,6 +739,214 @@ static __BOXOLOGY_CONTRACT_DESCRIPTOR: ::std::sync::LazyLock<
     let capability_4 = ::boxology_contract::CapabilityDescriptor::new(
         ::boxology_contract::CapabilityId::new(
             box_id.clone(),
+            ::boxology_contract::CapabilityName::new("fork_session")
+                .expect("generated capability name is valid"),
+        ),
+        ::boxology_contract::TypeDescriptor::structure([
+                ::boxology_contract::FieldDescriptor::new(
+                    "parent_session_id",
+                    ::boxology_contract::TypeDescriptor::string(),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
+                    "expected_parent_sequence",
+                    ::boxology_contract::TypeDescriptor::u64(),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
+                    "agent_id",
+                    ::boxology_contract::TypeDescriptor::string(),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
+                    "working_directory",
+                    ::boxology_contract::TypeDescriptor::string(),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
+                    "metadata_json",
+                    ::boxology_contract::TypeDescriptor::string(),
+                    None,
+                ),
+            ])
+            .expect("generated struct descriptor is valid"),
+        ::boxology_contract::TypeDescriptor::structure([
+                ::boxology_contract::FieldDescriptor::new(
+                    "session_id",
+                    ::boxology_contract::TypeDescriptor::string(),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
+                    "native_session_id",
+                    ::boxology_contract::TypeDescriptor::string(),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
+                    "agent_id",
+                    ::boxology_contract::TypeDescriptor::string(),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
+                    "negotiation",
+                    ::boxology_contract::TypeDescriptor::structure([
+                            ::boxology_contract::FieldDescriptor::new(
+                                "protocol_version",
+                                ::boxology_contract::TypeDescriptor::u64(),
+                                None,
+                            ),
+                            ::boxology_contract::FieldDescriptor::new(
+                                "protocol_profile",
+                                ::boxology_contract::TypeDescriptor::enumeration([
+                                        ::boxology_contract::VariantDescriptor::new(
+                                            "V1Stable",
+                                            ::boxology_contract::VariantPayload::Unit,
+                                            None,
+                                        ),
+                                        ::boxology_contract::VariantDescriptor::new(
+                                            "V2Draft",
+                                            ::boxology_contract::VariantPayload::Unit,
+                                            None,
+                                        ),
+                                    ])
+                                    .expect("generated enum descriptor is valid"),
+                                None,
+                            ),
+                            ::boxology_contract::FieldDescriptor::new(
+                                "steering",
+                                ::boxology_contract::TypeDescriptor::enumeration([
+                                        ::boxology_contract::VariantDescriptor::new(
+                                            "TurnBoundaryQueue",
+                                            ::boxology_contract::VariantPayload::Unit,
+                                            None,
+                                        ),
+                                        ::boxology_contract::VariantDescriptor::new(
+                                            "AcpV2ConcurrentPrompt",
+                                            ::boxology_contract::VariantPayload::Unit,
+                                            None,
+                                        ),
+                                        ::boxology_contract::VariantDescriptor::new(
+                                            "AgentExtension",
+                                            ::boxology_contract::VariantPayload::Unit,
+                                            None,
+                                        ),
+                                    ])
+                                    .expect("generated enum descriptor is valid"),
+                                None,
+                            ),
+                            ::boxology_contract::FieldDescriptor::new(
+                                "compaction_reporting",
+                                ::boxology_contract::TypeDescriptor::enumeration([
+                                        ::boxology_contract::VariantDescriptor::new(
+                                            "OpaqueAgentManaged",
+                                            ::boxology_contract::VariantPayload::Unit,
+                                            None,
+                                        ),
+                                        ::boxology_contract::VariantDescriptor::new(
+                                            "DraftLifecycleUpdates",
+                                            ::boxology_contract::VariantPayload::Unit,
+                                            None,
+                                        ),
+                                    ])
+                                    .expect("generated enum descriptor is valid"),
+                                None,
+                            ),
+                            ::boxology_contract::FieldDescriptor::new(
+                                "agent_capabilities_json",
+                                ::boxology_contract::TypeDescriptor::string(),
+                                None,
+                            ),
+                        ])
+                        .expect("generated struct descriptor is valid"),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
+                    "authority",
+                    ::boxology_contract::TypeDescriptor::structure([
+                            ::boxology_contract::FieldDescriptor::new(
+                                "sandbox",
+                                ::boxology_contract::TypeDescriptor::enumeration([
+                                        ::boxology_contract::VariantDescriptor::new(
+                                            "DisabledAndVerified",
+                                            ::boxology_contract::VariantPayload::Unit,
+                                            None,
+                                        ),
+                                    ])
+                                    .expect("generated enum descriptor is valid"),
+                                None,
+                            ),
+                            ::boxology_contract::FieldDescriptor::new(
+                                "permissions",
+                                ::boxology_contract::TypeDescriptor::enumeration([
+                                        ::boxology_contract::VariantDescriptor::new(
+                                            "YoloAndVerified",
+                                            ::boxology_contract::VariantPayload::Unit,
+                                            None,
+                                        ),
+                                    ])
+                                    .expect("generated enum descriptor is valid"),
+                                None,
+                            ),
+                            ::boxology_contract::FieldDescriptor::new(
+                                "filesystem",
+                                ::boxology_contract::TypeDescriptor::enumeration([
+                                        ::boxology_contract::VariantDescriptor::new(
+                                            "UnrestrictedAndVerified",
+                                            ::boxology_contract::VariantPayload::Unit,
+                                            None,
+                                        ),
+                                    ])
+                                    .expect("generated enum descriptor is valid"),
+                                None,
+                            ),
+                            ::boxology_contract::FieldDescriptor::new(
+                                "network",
+                                ::boxology_contract::TypeDescriptor::enumeration([
+                                        ::boxology_contract::VariantDescriptor::new(
+                                            "UnrestrictedAndVerified",
+                                            ::boxology_contract::VariantPayload::Unit,
+                                            None,
+                                        ),
+                                    ])
+                                    .expect("generated enum descriptor is valid"),
+                                None,
+                            ),
+                            ::boxology_contract::FieldDescriptor::new(
+                                "root",
+                                ::boxology_contract::TypeDescriptor::enumeration([
+                                        ::boxology_contract::VariantDescriptor::new(
+                                            "PasswordlessSudoAndVerified",
+                                            ::boxology_contract::VariantPayload::Unit,
+                                            None,
+                                        ),
+                                    ])
+                                    .expect("generated enum descriptor is valid"),
+                                None,
+                            ),
+                            ::boxology_contract::FieldDescriptor::new(
+                                "verified_at_ms",
+                                ::boxology_contract::TypeDescriptor::u64(),
+                                None,
+                            ),
+                            ::boxology_contract::FieldDescriptor::new(
+                                "evidence_json",
+                                ::boxology_contract::TypeDescriptor::string(),
+                                None,
+                            ),
+                        ])
+                        .expect("generated struct descriptor is valid"),
+                    None,
+                ),
+            ])
+            .expect("generated struct descriptor is valid"),
+        error.clone(),
+        ::boxology_contract::CapabilityShape::Unary,
+        ::boxology_contract::ExposureLevel::CodeOnly,
+        ::boxology_contract::Idempotency::None,
+        None,
+    );
+    let capability_5 = ::boxology_contract::CapabilityDescriptor::new(
+        ::boxology_contract::CapabilityId::new(
+            box_id.clone(),
             ::boxology_contract::CapabilityName::new("prompt")
                 .expect("generated capability name is valid"),
         ),
@@ -839,7 +1057,7 @@ static __BOXOLOGY_CONTRACT_DESCRIPTOR: ::std::sync::LazyLock<
         ::boxology_contract::Idempotency::None,
         None,
     );
-    let capability_5 = ::boxology_contract::CapabilityDescriptor::new(
+    let capability_6 = ::boxology_contract::CapabilityDescriptor::new(
         ::boxology_contract::CapabilityId::new(
             box_id.clone(),
             ::boxology_contract::CapabilityName::new("read_events")
@@ -1009,7 +1227,7 @@ static __BOXOLOGY_CONTRACT_DESCRIPTOR: ::std::sync::LazyLock<
         ::boxology_contract::Idempotency::None,
         None,
     );
-    let capability_6 = ::boxology_contract::CapabilityDescriptor::new(
+    let capability_7 = ::boxology_contract::CapabilityDescriptor::new(
         ::boxology_contract::CapabilityId::new(
             box_id.clone(),
             ::boxology_contract::CapabilityName::new("resolve_permission")
@@ -1064,7 +1282,7 @@ static __BOXOLOGY_CONTRACT_DESCRIPTOR: ::std::sync::LazyLock<
         ::boxology_contract::Idempotency::None,
         None,
     );
-    let capability_7 = ::boxology_contract::CapabilityDescriptor::new(
+    let capability_8 = ::boxology_contract::CapabilityDescriptor::new(
         ::boxology_contract::CapabilityId::new(
             box_id.clone(),
             ::boxology_contract::CapabilityName::new("session_status")
@@ -1157,7 +1375,7 @@ static __BOXOLOGY_CONTRACT_DESCRIPTOR: ::std::sync::LazyLock<
         ::boxology_contract::Idempotency::None,
         None,
     );
-    let capability_8 = ::boxology_contract::CapabilityDescriptor::new(
+    let capability_9 = ::boxology_contract::CapabilityDescriptor::new(
         ::boxology_contract::CapabilityId::new(
             box_id.clone(),
             ::boxology_contract::CapabilityName::new("cancel_run")
@@ -1195,7 +1413,7 @@ static __BOXOLOGY_CONTRACT_DESCRIPTOR: ::std::sync::LazyLock<
         ::boxology_contract::Idempotency::None,
         None,
     );
-    let capability_9 = ::boxology_contract::CapabilityDescriptor::new(
+    let capability_10 = ::boxology_contract::CapabilityDescriptor::new(
         ::boxology_contract::CapabilityId::new(
             box_id.clone(),
             ::boxology_contract::CapabilityName::new("detach_sessions")
@@ -1228,7 +1446,7 @@ static __BOXOLOGY_CONTRACT_DESCRIPTOR: ::std::sync::LazyLock<
         ::boxology_contract::Idempotency::None,
         None,
     );
-    let capability_10 = ::boxology_contract::CapabilityDescriptor::new(
+    let capability_11 = ::boxology_contract::CapabilityDescriptor::new(
         ::boxology_contract::CapabilityId::new(
             box_id.clone(),
             ::boxology_contract::CapabilityName::new("close_session")
@@ -1275,9 +1493,10 @@ static __BOXOLOGY_CONTRACT_DESCRIPTOR: ::std::sync::LazyLock<
                 capability_8,
                 capability_9,
                 capability_10,
+                capability_11,
             ],
             ::boxology_contract::ContractRevision::new(
-                    "sha256:a2e3701742bd201e79f923b3cc3b1218b65b7d876ff68f0e13d3dde44d08f5bb",
+                    "sha256:df36c72216cb7cb12a43fe7bd63b997f4d075d685aadc3cc3d754a83cd750411",
                 )
                 .expect("generated contract revision is non-empty"),
         )
@@ -1322,6 +1541,11 @@ pub trait AgentHostDispatch: Send + Sync + 'static {
         &'a self,
         context: CallContext,
         request: ResumeSessionRequest,
+    ) -> Pin<Box<dyn Future<Output = Result<AgentSession, AgentHostError>> + Send + 'a>>;
+    fn fork_session<'a>(
+        &'a self,
+        context: CallContext,
+        request: ForkSessionRequest,
     ) -> Pin<Box<dyn Future<Output = Result<AgentSession, AgentHostError>> + Send + 'a>>;
     fn prompt<'a>(
         &'a self,
@@ -1823,6 +2047,197 @@ impl AgentHostHandle {
         let output = self
             .target
             .call(&AGENT_HOST_RESUME_SESSION, context, input)
+            .await
+            .map_err(|error| {
+                error.into_typed::<AgentHostError>(&AGENT_HOST_ERROR_DESCRIPTOR)
+            })?;
+        let output = TypeDescriptor::structure([
+                ::boxology_contract::FieldDescriptor::new(
+                    "session_id",
+                    TypeDescriptor::string(),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
+                    "native_session_id",
+                    TypeDescriptor::string(),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
+                    "agent_id",
+                    TypeDescriptor::string(),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
+                    "negotiation",
+                    TypeDescriptor::structure([
+                            ::boxology_contract::FieldDescriptor::new(
+                                "protocol_version",
+                                TypeDescriptor::u64(),
+                                None,
+                            ),
+                            ::boxology_contract::FieldDescriptor::new(
+                                "protocol_profile",
+                                TypeDescriptor::enumeration([
+                                        ::boxology_contract::VariantDescriptor::new(
+                                            "V1Stable",
+                                            ::boxology_contract::VariantPayload::Unit,
+                                            None,
+                                        ),
+                                        ::boxology_contract::VariantDescriptor::new(
+                                            "V2Draft",
+                                            ::boxology_contract::VariantPayload::Unit,
+                                            None,
+                                        ),
+                                    ])
+                                    .expect("generated enum descriptor is valid"),
+                                None,
+                            ),
+                            ::boxology_contract::FieldDescriptor::new(
+                                "steering",
+                                TypeDescriptor::enumeration([
+                                        ::boxology_contract::VariantDescriptor::new(
+                                            "TurnBoundaryQueue",
+                                            ::boxology_contract::VariantPayload::Unit,
+                                            None,
+                                        ),
+                                        ::boxology_contract::VariantDescriptor::new(
+                                            "AcpV2ConcurrentPrompt",
+                                            ::boxology_contract::VariantPayload::Unit,
+                                            None,
+                                        ),
+                                        ::boxology_contract::VariantDescriptor::new(
+                                            "AgentExtension",
+                                            ::boxology_contract::VariantPayload::Unit,
+                                            None,
+                                        ),
+                                    ])
+                                    .expect("generated enum descriptor is valid"),
+                                None,
+                            ),
+                            ::boxology_contract::FieldDescriptor::new(
+                                "compaction_reporting",
+                                TypeDescriptor::enumeration([
+                                        ::boxology_contract::VariantDescriptor::new(
+                                            "OpaqueAgentManaged",
+                                            ::boxology_contract::VariantPayload::Unit,
+                                            None,
+                                        ),
+                                        ::boxology_contract::VariantDescriptor::new(
+                                            "DraftLifecycleUpdates",
+                                            ::boxology_contract::VariantPayload::Unit,
+                                            None,
+                                        ),
+                                    ])
+                                    .expect("generated enum descriptor is valid"),
+                                None,
+                            ),
+                            ::boxology_contract::FieldDescriptor::new(
+                                "agent_capabilities_json",
+                                TypeDescriptor::string(),
+                                None,
+                            ),
+                        ])
+                        .expect("generated struct descriptor is valid"),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
+                    "authority",
+                    TypeDescriptor::structure([
+                            ::boxology_contract::FieldDescriptor::new(
+                                "sandbox",
+                                TypeDescriptor::enumeration([
+                                        ::boxology_contract::VariantDescriptor::new(
+                                            "DisabledAndVerified",
+                                            ::boxology_contract::VariantPayload::Unit,
+                                            None,
+                                        ),
+                                    ])
+                                    .expect("generated enum descriptor is valid"),
+                                None,
+                            ),
+                            ::boxology_contract::FieldDescriptor::new(
+                                "permissions",
+                                TypeDescriptor::enumeration([
+                                        ::boxology_contract::VariantDescriptor::new(
+                                            "YoloAndVerified",
+                                            ::boxology_contract::VariantPayload::Unit,
+                                            None,
+                                        ),
+                                    ])
+                                    .expect("generated enum descriptor is valid"),
+                                None,
+                            ),
+                            ::boxology_contract::FieldDescriptor::new(
+                                "filesystem",
+                                TypeDescriptor::enumeration([
+                                        ::boxology_contract::VariantDescriptor::new(
+                                            "UnrestrictedAndVerified",
+                                            ::boxology_contract::VariantPayload::Unit,
+                                            None,
+                                        ),
+                                    ])
+                                    .expect("generated enum descriptor is valid"),
+                                None,
+                            ),
+                            ::boxology_contract::FieldDescriptor::new(
+                                "network",
+                                TypeDescriptor::enumeration([
+                                        ::boxology_contract::VariantDescriptor::new(
+                                            "UnrestrictedAndVerified",
+                                            ::boxology_contract::VariantPayload::Unit,
+                                            None,
+                                        ),
+                                    ])
+                                    .expect("generated enum descriptor is valid"),
+                                None,
+                            ),
+                            ::boxology_contract::FieldDescriptor::new(
+                                "root",
+                                TypeDescriptor::enumeration([
+                                        ::boxology_contract::VariantDescriptor::new(
+                                            "PasswordlessSudoAndVerified",
+                                            ::boxology_contract::VariantPayload::Unit,
+                                            None,
+                                        ),
+                                    ])
+                                    .expect("generated enum descriptor is valid"),
+                                None,
+                            ),
+                            ::boxology_contract::FieldDescriptor::new(
+                                "verified_at_ms",
+                                TypeDescriptor::u64(),
+                                None,
+                            ),
+                            ::boxology_contract::FieldDescriptor::new(
+                                "evidence_json",
+                                TypeDescriptor::string(),
+                                None,
+                            ),
+                        ])
+                        .expect("generated struct descriptor is valid"),
+                    None,
+                ),
+            ])
+            .expect("generated struct descriptor is valid")
+            .conform(DecodeRole::ConsumerOutput, output)
+            .map_err(|error| conversion_detail("output_decode", error))
+            .map_err(CallError::InvalidResponse)?;
+        <AgentSession as ContractType>::decode(&output)
+            .map_err(|error| conversion_detail("output_decode", error))
+            .map_err(CallError::InvalidResponse)
+    }
+    pub async fn fork_session(
+        &self,
+        context: CallContext,
+        request: ForkSessionRequest,
+    ) -> Result<AgentSession, CallError<AgentHostError>> {
+        let input = request
+            .encode()
+            .map_err(|error| conversion_detail("input_encode", error))
+            .map_err(CallError::ContractViolation)?;
+        let output = self
+            .target
+            .call(&AGENT_HOST_FORK_SESSION, context, input)
             .await
             .map_err(|error| {
                 error.into_typed::<AgentHostError>(&AGENT_HOST_ERROR_DESCRIPTOR)
@@ -2533,6 +2948,13 @@ static AGENT_HOST_RESUME_SESSION: LazyLock<CapabilityId> = LazyLock::new(|| {
     )
 });
 #[rustfmt::skip]
+static AGENT_HOST_FORK_SESSION: LazyLock<CapabilityId> = LazyLock::new(|| {
+    CapabilityId::new(
+        BoxId::new("agent-host").expect("generated box identity is valid"),
+        CapabilityName::new("fork_session").expect("generated capability name is valid"),
+    )
+});
+#[rustfmt::skip]
 static AGENT_HOST_PROMPT: LazyLock<CapabilityId> = LazyLock::new(|| {
     CapabilityId::new(
         BoxId::new("agent-host").expect("generated box identity is valid"),
@@ -2664,6 +3086,16 @@ static AGENT_HOST_ERROR_DESCRIPTOR: LazyLock<TypeDescriptor> = LazyLock::new(|| 
             ),
             ::boxology_contract::VariantDescriptor::new(
                 "SessionResumeUnavailable",
+                ::boxology_contract::VariantPayload::Unit,
+                None,
+            ),
+            ::boxology_contract::VariantDescriptor::new(
+                "SessionForkUnavailable",
+                ::boxology_contract::VariantPayload::Unit,
+                None,
+            ),
+            ::boxology_contract::VariantDescriptor::new(
+                "SessionForkConflict",
                 ::boxology_contract::VariantPayload::Unit,
                 None,
             ),
@@ -4765,6 +5197,176 @@ impl ::boxology_contract::ContractType for ResumeSessionRequest {
                     error
                         .under(
                             ::boxology_contract::PathSegment::Field("session_id".into()),
+                        )
+                })?,
+        })
+    }
+}
+#[rustfmt::skip]
+/// Fork one idle live session into a separately supervised ACP process. The expected cursor
+/// makes the inherited context boundary immutable rather than racing new parent work.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Default)]
+pub struct ForkSessionRequest {
+    pub parent_session_id: ::std::string::String,
+    pub expected_parent_sequence: u64,
+    /// Native forks cannot cross agent implementations; this must match the parent.
+    pub agent_id: ::std::string::String,
+    pub working_directory: ::std::string::String,
+    pub metadata_json: ::std::string::String,
+}
+#[rustfmt::skip]
+impl ::boxology_contract::ContractType for ForkSessionRequest {
+    fn encode_value(
+        &self,
+    ) -> ::core::result::Result<
+        ::boxology_contract::ContractValue,
+        ::boxology_contract::EncodeError,
+    > {
+        let mut fields = ::std::vec::Vec::new();
+        if let Some(value) = ::boxology_contract::ContractType::encode_field(
+                &self.parent_session_id,
+            )
+            .map_err(|error| {
+                error
+                    .under(
+                        ::boxology_contract::PathSegment::Field(
+                            "parent_session_id".into(),
+                        ),
+                    )
+            })?
+        {
+            fields.push(("parent_session_id".into(), value));
+        }
+        if let Some(value) = ::boxology_contract::ContractType::encode_field(
+                &self.expected_parent_sequence,
+            )
+            .map_err(|error| {
+                error
+                    .under(
+                        ::boxology_contract::PathSegment::Field(
+                            "expected_parent_sequence".into(),
+                        ),
+                    )
+            })?
+        {
+            fields.push(("expected_parent_sequence".into(), value));
+        }
+        if let Some(value) = ::boxology_contract::ContractType::encode_field(
+                &self.agent_id,
+            )
+            .map_err(|error| {
+                error.under(::boxology_contract::PathSegment::Field("agent_id".into()))
+            })?
+        {
+            fields.push(("agent_id".into(), value));
+        }
+        if let Some(value) = ::boxology_contract::ContractType::encode_field(
+                &self.working_directory,
+            )
+            .map_err(|error| {
+                error
+                    .under(
+                        ::boxology_contract::PathSegment::Field(
+                            "working_directory".into(),
+                        ),
+                    )
+            })?
+        {
+            fields.push(("working_directory".into(), value));
+        }
+        if let Some(value) = ::boxology_contract::ContractType::encode_field(
+                &self.metadata_json,
+            )
+            .map_err(|error| {
+                error
+                    .under(
+                        ::boxology_contract::PathSegment::Field("metadata_json".into()),
+                    )
+            })?
+        {
+            fields.push(("metadata_json".into(), value));
+        }
+        ::boxology_contract::ContractValue::object(fields)
+            .map_err(|_| unreachable!("validated generated field identities are unique"))
+    }
+    fn decode_value(
+        value: &::boxology_contract::ContractValue,
+    ) -> ::core::result::Result<Self, ::boxology_contract::DecodeError> {
+        let ::boxology_contract::ValueRef::Object(fields) = value.view() else {
+            return Err(
+                ::boxology_contract::DecodeError::new(
+                    ::boxology_contract::DecodeErrorKind::KindMismatch,
+                ),
+            );
+        };
+        for (field, _) in fields.entries() {
+            match field {
+                "parent_session_id" | "expected_parent_sequence" | "agent_id"
+                | "working_directory" | "metadata_json" => {}
+                _ => {
+                    return Err(
+                        ::boxology_contract::DecodeError::new(
+                                ::boxology_contract::DecodeErrorKind::UnknownField(
+                                    field.into(),
+                                ),
+                            )
+                            .under(::boxology_contract::PathSegment::Field(field.into())),
+                    );
+                }
+            }
+        }
+        Ok(Self {
+            parent_session_id: <::std::string::String as ::boxology_contract::ContractType>::decode_field(
+                    fields.get("parent_session_id"),
+                )
+                .map_err(|error| {
+                    error
+                        .under(
+                            ::boxology_contract::PathSegment::Field(
+                                "parent_session_id".into(),
+                            ),
+                        )
+                })?,
+            expected_parent_sequence: <u64 as ::boxology_contract::ContractType>::decode_field(
+                    fields.get("expected_parent_sequence"),
+                )
+                .map_err(|error| {
+                    error
+                        .under(
+                            ::boxology_contract::PathSegment::Field(
+                                "expected_parent_sequence".into(),
+                            ),
+                        )
+                })?,
+            agent_id: <::std::string::String as ::boxology_contract::ContractType>::decode_field(
+                    fields.get("agent_id"),
+                )
+                .map_err(|error| {
+                    error
+                        .under(
+                            ::boxology_contract::PathSegment::Field("agent_id".into()),
+                        )
+                })?,
+            working_directory: <::std::string::String as ::boxology_contract::ContractType>::decode_field(
+                    fields.get("working_directory"),
+                )
+                .map_err(|error| {
+                    error
+                        .under(
+                            ::boxology_contract::PathSegment::Field(
+                                "working_directory".into(),
+                            ),
+                        )
+                })?,
+            metadata_json: <::std::string::String as ::boxology_contract::ContractType>::decode_field(
+                    fields.get("metadata_json"),
+                )
+                .map_err(|error| {
+                    error
+                        .under(
+                            ::boxology_contract::PathSegment::Field(
+                                "metadata_json".into(),
+                            ),
                         )
                 })?,
         })
@@ -7101,6 +7703,8 @@ pub enum AgentHostError {
     InvalidCursor,
     InvalidNativePayload,
     SessionResumeUnavailable,
+    SessionForkUnavailable,
+    SessionForkConflict,
     TransportFailed,
     StorageUnavailable,
     Unknown { tag: ::std::string::String, payload: ::boxology_contract::OpaquePayload },
@@ -7165,6 +7769,12 @@ impl ::boxology_contract::ContractType for AgentHostError {
             }
             Self::SessionResumeUnavailable => {
                 ("SessionResumeUnavailable".into(), ::boxology_contract::SlotValue::Null)
+            }
+            Self::SessionForkUnavailable => {
+                ("SessionForkUnavailable".into(), ::boxology_contract::SlotValue::Null)
+            }
+            Self::SessionForkConflict => {
+                ("SessionForkConflict".into(), ::boxology_contract::SlotValue::Null)
             }
             Self::TransportFailed => {
                 ("TransportFailed".into(), ::boxology_contract::SlotValue::Null)
@@ -7370,6 +7980,28 @@ impl ::boxology_contract::ContractType for AgentHostError {
                         .under(::boxology_contract::PathSegment::Variant(tag.into())),
                 )
             }
+            "SessionForkUnavailable" if matches!(
+                payload, ::boxology_contract::SlotValue::Null
+            ) => Ok(Self::SessionForkUnavailable),
+            "SessionForkUnavailable" => {
+                Err(
+                    ::boxology_contract::DecodeError::new(
+                            ::boxology_contract::DecodeErrorKind::UnexpectedPayload,
+                        )
+                        .under(::boxology_contract::PathSegment::Variant(tag.into())),
+                )
+            }
+            "SessionForkConflict" if matches!(
+                payload, ::boxology_contract::SlotValue::Null
+            ) => Ok(Self::SessionForkConflict),
+            "SessionForkConflict" => {
+                Err(
+                    ::boxology_contract::DecodeError::new(
+                            ::boxology_contract::DecodeErrorKind::UnexpectedPayload,
+                        )
+                        .under(::boxology_contract::PathSegment::Variant(tag.into())),
+                )
+            }
             "TransportFailed" if matches!(
                 payload, ::boxology_contract::SlotValue::Null
             ) => Ok(Self::TransportFailed),
@@ -7453,6 +8085,8 @@ impl ::boxology_contract::ContractError for AgentHostError {
             Self::InvalidCursor => "InvalidCursor",
             Self::InvalidNativePayload => "InvalidNativePayload",
             Self::SessionResumeUnavailable => "SessionResumeUnavailable",
+            Self::SessionForkUnavailable => "SessionForkUnavailable",
+            Self::SessionForkConflict => "SessionForkConflict",
             Self::TransportFailed => "TransportFailed",
             Self::StorageUnavailable => "StorageUnavailable",
             Self::Unknown { tag, .. } => tag,
@@ -7471,10 +8105,10 @@ pub mod test_support {
     };
     use super::{
         AgentHostError, AGENT_HOST_DISCOVER_AGENTS, AGENT_HOST_PREFLIGHT,
-        AGENT_HOST_OPEN_SESSION, AGENT_HOST_RESUME_SESSION, AGENT_HOST_PROMPT,
-        AGENT_HOST_READ_EVENTS, AGENT_HOST_RESOLVE_PERMISSION, AGENT_HOST_SESSION_STATUS,
-        AGENT_HOST_CANCEL_RUN, AGENT_HOST_DETACH_SESSIONS, AGENT_HOST_CLOSE_SESSION,
-        AgentHostHandle, conversion_detail,
+        AGENT_HOST_OPEN_SESSION, AGENT_HOST_RESUME_SESSION, AGENT_HOST_FORK_SESSION,
+        AGENT_HOST_PROMPT, AGENT_HOST_READ_EVENTS, AGENT_HOST_RESOLVE_PERMISSION,
+        AGENT_HOST_SESSION_STATUS, AGENT_HOST_CANCEL_RUN, AGENT_HOST_DETACH_SESSIONS,
+        AGENT_HOST_CLOSE_SESSION, AgentHostHandle, conversion_detail,
     };
     type DiscoverAgentsFuture = Pin<
         Box<
@@ -7520,6 +8154,17 @@ pub mod test_support {
         CallContext,
         super::ResumeSessionRequest,
     ) -> ResumeSessionFuture + Send + Sync + 'static;
+    type ForkSessionFuture = Pin<
+        Box<
+            dyn Future<
+                Output = Result<super::AgentSession, AgentHostError>,
+            > + Send + 'static,
+        >,
+    >;
+    type ForkSessionResponder = dyn Fn(
+        CallContext,
+        super::ForkSessionRequest,
+    ) -> ForkSessionFuture + Send + Sync + 'static;
     type PromptFuture = Pin<
         Box<
             dyn Future<
@@ -7603,6 +8248,7 @@ pub mod test_support {
         preflight: Option<Arc<PreflightResponder>>,
         open_session: Option<Arc<OpenSessionResponder>>,
         resume_session: Option<Arc<ResumeSessionResponder>>,
+        fork_session: Option<Arc<ForkSessionResponder>>,
         prompt: Option<Arc<PromptResponder>>,
         read_events: Option<Arc<ReadEventsResponder>>,
         resolve_permission: Option<Arc<ResolvePermissionResponder>>,
@@ -7663,6 +8309,19 @@ pub mod test_support {
                 + 'static,
         {
             self.resume_session = Some(
+                Arc::new(move |context, request| {
+                    Box::pin(responder(context, request))
+                }),
+            );
+            self
+        }
+        pub fn with_fork_session<F, Fut>(mut self, responder: F) -> Self
+        where
+            F: Fn(CallContext, super::ForkSessionRequest) -> Fut + Send + Sync + 'static,
+            Fut: Future<Output = Result<super::AgentSession, AgentHostError>> + Send
+                + 'static,
+        {
+            self.fork_session = Some(
                 Arc::new(move |context, request| {
                     Box::pin(responder(context, request))
                 }),
@@ -7932,6 +8591,67 @@ pub mod test_support {
                             )
                         })?;
                     let request = <super::ResumeSessionRequest as ContractType>::decode(
+                            &input,
+                        )
+                        .map_err(|error| {
+                            ErasedCallError::ContractViolation(
+                                conversion_detail("input_decode", error),
+                            )
+                        })?;
+                    match responder(context, request).await {
+                        Ok(output) => {
+                            output
+                                .encode()
+                                .map_err(|error| {
+                                    ErasedCallError::InvalidResponse(
+                                        conversion_detail("output_encode", error),
+                                    )
+                                })
+                        }
+                        Err(error) => Err(ErasedCallError::from_domain(&error)),
+                    }
+                });
+            }
+            if capability == &*AGENT_HOST_FORK_SESSION {
+                let Some(responder) = self.fork_session.clone() else {
+                    return Box::pin(ready(Err(unprogrammed())));
+                };
+                return Box::pin(async move {
+                    let input = TypeDescriptor::structure([
+                            ::boxology_contract::FieldDescriptor::new(
+                                "parent_session_id",
+                                TypeDescriptor::string(),
+                                None,
+                            ),
+                            ::boxology_contract::FieldDescriptor::new(
+                                "expected_parent_sequence",
+                                TypeDescriptor::u64(),
+                                None,
+                            ),
+                            ::boxology_contract::FieldDescriptor::new(
+                                "agent_id",
+                                TypeDescriptor::string(),
+                                None,
+                            ),
+                            ::boxology_contract::FieldDescriptor::new(
+                                "working_directory",
+                                TypeDescriptor::string(),
+                                None,
+                            ),
+                            ::boxology_contract::FieldDescriptor::new(
+                                "metadata_json",
+                                TypeDescriptor::string(),
+                                None,
+                            ),
+                        ])
+                        .expect("generated struct descriptor is valid")
+                        .conform(DecodeRole::ProviderInput, input)
+                        .map_err(|error| {
+                            ErasedCallError::ContractViolation(
+                                conversion_detail("input_decode", error),
+                            )
+                        })?;
+                    let request = <super::ForkSessionRequest as ContractType>::decode(
                             &input,
                         )
                         .map_err(|error| {
@@ -8297,8 +9017,8 @@ pub mod test_support {
 #[rustfmt::skip]
 #[doc(hidden)]
 pub const __BOXOLOGY_SEMANTIC_DIGEST: [u8; 32] = [
-    42, 121, 226, 82, 227, 137, 13, 152, 254, 182, 166, 57, 122, 223, 171, 158, 106, 132,
-    130, 108, 51, 102, 228, 145, 127, 220, 220, 244, 60, 219, 122, 44,
+    251, 101, 53, 211, 79, 56, 197, 111, 111, 44, 232, 162, 184, 20, 13, 118, 248, 156,
+    157, 221, 100, 9, 218, 85, 197, 58, 15, 231, 25, 76, 75, 121,
 ];
 #[rustfmt::skip]
 #[doc(hidden)]
@@ -8311,14 +9031,16 @@ macro_rules! __boxology_check_implementation {
         $crate::__boxology_check_implementation!(@ find_open_session $receiver; $($method
         $validity;)*); $crate::__boxology_check_implementation!(@ find_resume_session
         $receiver; $($method $validity;)*); $crate::__boxology_check_implementation!(@
-        find_prompt $receiver; $($method $validity;)*);
-        $crate::__boxology_check_implementation!(@ find_read_events $receiver; $($method
-        $validity;)*); $crate::__boxology_check_implementation!(@ find_resolve_permission
+        find_fork_session $receiver; $($method $validity;)*);
+        $crate::__boxology_check_implementation!(@ find_prompt $receiver; $($method
+        $validity;)*); $crate::__boxology_check_implementation!(@ find_read_events
         $receiver; $($method $validity;)*); $crate::__boxology_check_implementation!(@
-        find_session_status $receiver; $($method $validity;)*);
-        $crate::__boxology_check_implementation!(@ find_cancel_run $receiver; $($method
-        $validity;)*); $crate::__boxology_check_implementation!(@ find_detach_sessions
-        $receiver; $($method $validity;)*); $crate::__boxology_check_implementation!(@
+        find_resolve_permission $receiver; $($method $validity;)*);
+        $crate::__boxology_check_implementation!(@ find_session_status $receiver;
+        $($method $validity;)*); $crate::__boxology_check_implementation!(@
+        find_cancel_run $receiver; $($method $validity;)*);
+        $crate::__boxology_check_implementation!(@ find_detach_sessions $receiver;
+        $($method $validity;)*); $crate::__boxology_check_implementation!(@
         find_close_session $receiver; $($method $validity;)*); impl
         $crate::AgentHostDispatch for $receiver { fn discover_agents <'a > (&'a self,
         context : ::boxology::CallContext, input : $crate::DiscoverAgentsRequest,) ->
@@ -8339,8 +9061,13 @@ macro_rules! __boxology_check_implementation {
         $crate::ResumeSessionRequest,) -> ::std::pin::Pin < ::std::boxed::Box < dyn
         ::core::future::Future < Output = ::core::result::Result <$crate::AgentSession,
         $crate::AgentHostError >, > + ::core::marker::Send + 'a, >, > {
-        ::std::boxed::Box::pin(self.resume_session(context, input)) } fn prompt <'a >
-        (&'a self, context : ::boxology::CallContext, input : $crate::PromptRequest,) ->
+        ::std::boxed::Box::pin(self.resume_session(context, input)) } fn fork_session <'a
+        > (&'a self, context : ::boxology::CallContext, input :
+        $crate::ForkSessionRequest,) -> ::std::pin::Pin < ::std::boxed::Box < dyn
+        ::core::future::Future < Output = ::core::result::Result <$crate::AgentSession,
+        $crate::AgentHostError >, > + ::core::marker::Send + 'a, >, > {
+        ::std::boxed::Box::pin(self.fork_session(context, input)) } fn prompt <'a > (&'a
+        self, context : ::boxology::CallContext, input : $crate::PromptRequest,) ->
         ::std::pin::Pin < ::std::boxed::Box < dyn ::core::future::Future < Output =
         ::core::result::Result <$crate::PromptAccepted, $crate::AgentHostError >, > +
         ::core::marker::Send + 'a, >, > { ::std::boxed::Box::pin(self.prompt(context,
@@ -8449,6 +9176,25 @@ macro_rules! __boxology_check_implementation {
         $($rest)*);
     };
     (@ find_resume_session $receiver:ty;) => {
+        compile_error!("Boxology capability implementation is missing");
+    };
+    (@ find_fork_session $receiver:ty; fork_session valid; $($rest:tt)*) => {
+        const _ : () = { fn require_service < T : ::core::marker::Send +
+        ::core::marker::Sync + 'static > () {} fn require_future < F :
+        ::core::future::Future < Output = ::core::result::Result <$crate::AgentSession,
+        $crate::AgentHostError >> + ::core::marker::Send > (_ : F) {} fn check(receiver :
+        &$receiver, context : ::boxology::CallContext, input :
+        $crate::ForkSessionRequest) { require_service::<$receiver > ();
+        require_future(receiver.fork_session(context, input)); } };
+    };
+    (@ find_fork_session $receiver:ty; fork_session invalid; $($rest:tt)*) => {
+        compile_error!("Boxology capability has an invalid structural signature");
+    };
+    (@ find_fork_session $receiver:ty; $other:ident $validity:ident; $($rest:tt)*) => {
+        $crate::__boxology_check_implementation!(@ find_fork_session $receiver;
+        $($rest)*);
+    };
+    (@ find_fork_session $receiver:ty;) => {
         compile_error!("Boxology capability implementation is missing");
     };
     (@ find_prompt $receiver:ty; prompt valid; $($rest:tt)*) => {

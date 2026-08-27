@@ -8,10 +8,10 @@ extern crate agent_host_contract as boxology_generated_contract;
 use agent_host_implementation::{
     AcpEvent, AcpEventDirection, AcpEventKind, AgentCatalog, AgentHostError, AgentInputMode,
     AgentLifecycle, AgentSession, DetachSessionsReport, DetachSessionsRequest,
-    DiscoverAgentsRequest, EventPage, OpenSessionRequest, OperationReceipt, PermissionRequest,
-    PermissionResolution, PreflightReport, PreflightRequest, PromptAccepted, PromptDisposition,
-    PromptRequest, ReadEventsRequest, ResumeSessionRequest, RunReference, SessionReference,
-    SessionStatus, generated as agent_host,
+    DiscoverAgentsRequest, EventPage, ForkSessionRequest, OpenSessionRequest, OperationReceipt,
+    PermissionRequest, PermissionResolution, PreflightReport, PreflightRequest, PromptAccepted,
+    PromptDisposition, PromptRequest, ReadEventsRequest, ResumeSessionRequest, RunReference,
+    SessionReference, SessionStatus, generated as agent_host,
 };
 use boxology_contract::{CallContext, Caller, CancelToken, TraceContext};
 use boxology_runtime::CompositionBuilder;
@@ -70,6 +70,15 @@ impl FakeAgentHost {
     ) -> Result<AgentSession, AgentHostError> {
         let _ = (context, request);
         Err(AgentHostError::SessionResumeUnavailable)
+    }
+
+    async fn fork_session(
+        &self,
+        context: CallContext,
+        request: ForkSessionRequest,
+    ) -> Result<AgentSession, AgentHostError> {
+        let _ = (context, request);
+        Err(AgentHostError::SessionForkUnavailable)
     }
 
     async fn prompt(

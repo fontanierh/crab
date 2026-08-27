@@ -82,6 +82,27 @@
     {
       "deprecation": null,
       "docs": [
+        " Prefer ACP's native context lineage when an agent advertises draft `session/fork`. The",
+        " child still owns a distinct adapter subprocess, authority attestation, MCP context and",
+        " durable Crab session. Busy parents and changed event cursors fail without taking a fork."
+      ],
+      "error": "AgentHostError",
+      "id": "agent-host.fork_session",
+      "idempotency": "none",
+      "input": {
+        "name": "request",
+        "type": "ForkSessionRequest"
+      },
+      "max_exposure": "code_only",
+      "name": "fork_session",
+      "output": {
+        "type": "AgentSession"
+      },
+      "shape": "unary"
+    },
+    {
+      "deprecation": null,
+      "docs": [
         " Submit input without waiting for work to finish. `Queue` is portable. `Steer` uses the ACP",
         " v2 prompt lifecycle or a negotiated extension and fails rather than silently becoming",
         " queue. `InterruptAndQueue` is one actor operation: it accepts the input and requests",
@@ -218,9 +239,9 @@
   "provenance": {
     "generator": "boxology-generator",
     "generator_version": "0.1.1",
-    "semantic_digest": "sha256:2a79e252e3890d98feb6a6397adfab9e6a84826c3366e4917fdcdcf43cdb7a2c"
+    "semantic_digest": "sha256:fb6535d34f38c56f6f2ce8a2b8140d76f89c9ddd6409da55c53a0fe7194c4b79"
   },
-  "revision": "sha256:a2e3701742bd201e79f923b3cc3b1218b65b7d876ff68f0e13d3dde44d08f5bb",
+  "revision": "sha256:df36c72216cb7cb12a43fe7bd63b997f4d075d685aadc3cc3d754a83cd750411",
   "schema_format": 1,
   "types": [
     {
@@ -704,6 +725,49 @@
       ],
       "kind": "struct",
       "name": "ResumeSessionRequest"
+    },
+    {
+      "deprecation": null,
+      "docs": [
+        " Fork one idle live session into a separately supervised ACP process. The expected cursor",
+        " makes the inherited context boundary immutable rather than racing new parent work."
+      ],
+      "fields": [
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "parent_session_id",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "expected_parent_sequence",
+          "type": "u64"
+        },
+        {
+          "deprecation": null,
+          "docs": [
+            " Native forks cannot cross agent implementations; this must match the parent."
+          ],
+          "name": "agent_id",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "working_directory",
+          "type": "String"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "metadata_json",
+          "type": "String"
+        }
+      ],
+      "kind": "struct",
+      "name": "ForkSessionRequest"
     },
     {
       "deprecation": null,
@@ -1387,6 +1451,18 @@
           "deprecation": null,
           "docs": [],
           "name": "SessionResumeUnavailable",
+          "payload": "unit"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "SessionForkUnavailable",
+          "payload": "unit"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "SessionForkConflict",
           "payload": "unit"
         },
         {

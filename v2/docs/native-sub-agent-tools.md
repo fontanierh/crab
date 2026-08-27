@@ -24,7 +24,9 @@ The MCP process then loads the owner-only token itself and calls generated Boxol
 over Crab's local socket.
 
 Calls acknowledge accepted control work rather than waiting for a child model turn. `inherit`
-reads the parent's current durable ACP event cursor before spawning; `fresh` starts without parent
-history. `crashRestartLimit` defaults to one exact-session recovery and may be set to zero to make
+reads the parent's current durable ACP event cursor before spawning. It prefers an advertised
+native ACP fork when that cursor is still the idle parent head, while its explicit portable
+fallback replays only visible message events. `fresh` starts without parent history.
+`crashRestartLimit` defaults to one exact-session recovery and may be set to zero to make
 the child intentionally ephemeral. Input modes remain `queue`, `steer`, and
 `interrupt-and-steer`; the last is an atomic accept-and-cancel operation at the destination actor.

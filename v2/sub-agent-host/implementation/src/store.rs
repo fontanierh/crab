@@ -242,6 +242,37 @@ impl SubAgentStore {
         self.record(sub_agent_id)
     }
 
+    pub(crate) fn set_context_realization(
+        &self,
+        sub_agent_id: &str,
+        realization: &ContextRealization,
+        now_ms: u64,
+    ) -> Result<(), SubAgentHostError> {
+        let mut connection = self.lock()?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(storage_error)?;
+        let realization = context_realization_tag(realization)?;
+        let changed = transaction
+            .execute(
+                "UPDATE sub_agents SET context_realization = ?2
+                 WHERE sub_agent_id = ?1 AND lifecycle = 'Starting'",
+                params![sub_agent_id, realization],
+            )
+            .map_err(storage_error)?;
+        if changed != 1 {
+            return Err(SubAgentHostError::UnknownSubAgent);
+        }
+        append_event(
+            &transaction,
+            sub_agent_id,
+            &SubAgentEventKind::Lifecycle,
+            &json!({ "contextRealization": realization }).to_string(),
+            now_ms,
+        )?;
+        transaction.commit().map_err(storage_error)
+    }
+
     pub(crate) fn fail_spawn(
         &self,
         sub_agent_id: &str,

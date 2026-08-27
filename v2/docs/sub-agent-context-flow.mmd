@@ -1,0 +1,33 @@
+%%{init: {"theme": "base", "themeVariables": {"fontFamily": "ui-sans-serif, system-ui, sans-serif", "primaryTextColor": "#172033", "lineColor": "#64748b", "edgeLabelBackground": "#ffffff"}, "flowchart": {"curve": "basis", "nodeSpacing": 42, "rankSpacing": 58}}}%%
+flowchart LR
+    REQUEST["spawn child<br/>fresh or inherit"]
+    MODE{"context mode?"}
+    FRESH["new supervised<br/>ACP process + session"]
+    HEAD{"exact cursor<br/>at idle parent head?"}
+    FORK{"same agent advertises<br/>session/fork?"}
+    NATIVE["new supervised ACP process<br/>session/fork(parent native ID)"]
+    FALLBACK{"portable snapshot<br/>explicitly allowed?"}
+    SNAPSHOT["replay visible message events<br/>through immutable cursor"]
+    FAIL["NativeForkUnavailable"]
+    POLICY["verify child authority + policy<br/>attach child MCP identity"]
+    TASK["accept initial task<br/>start realtime journals"]
+
+    REQUEST --> MODE
+    MODE -->|"fresh"| FRESH --> POLICY
+    MODE -->|"inherit"| HEAD
+    HEAD -->|"yes"| FORK
+    HEAD -->|"no"| FALLBACK
+    FORK -->|"yes"| NATIVE --> POLICY
+    FORK -->|"no / rejected"| FALLBACK
+    FALLBACK -->|"yes"| SNAPSHOT --> FRESH
+    FALLBACK -->|"no"| FAIL
+    POLICY --> TASK
+
+    classDef decision fill:#fef3c7,stroke:#d97706,stroke-width:2px,color:#78350f;
+    classDef runtime fill:#dbeafe,stroke:#2563eb,stroke-width:2px,color:#172554;
+    classDef success fill:#dcfce7,stroke:#16a34a,stroke-width:2px,color:#14532d;
+    classDef failure fill:#fee2e2,stroke:#dc2626,stroke-width:2px,color:#7f1d1d;
+    class MODE,HEAD,FORK,FALLBACK decision;
+    class REQUEST,FRESH,NATIVE,SNAPSHOT,POLICY runtime;
+    class TASK success;
+    class FAIL failure;
