@@ -30,6 +30,8 @@ operators never open Crab's databases or credential store.
 | `bridge-host.suspend_bridge` | `bridge-host` |
 | `bridge-host.stop_bridge` | `bridge-host` |
 | `agent-host.session_status` | `agent-host` |
+| `agent-host.list_sessions` | `agent-host` |
+| `agent-host.read_diagnostics` | `agent-host` |
 | `sub-agent-host.spawn` | `sub-agent-host` |
 | `sub-agent-host.send_to_child` | `sub-agent-host` |
 | `sub-agent-host.send_to_parent` | `sub-agent-host` |
@@ -46,11 +48,12 @@ operators never open Crab's databases or credential store.
   qualified capability and canonical Boxology JSON input. Unknown fields and capabilities fail
   closed.
 - Responses preserve Boxology domain-error tags and canonical contract output. The bridge CLI
-  exposes auth presentations but never credential handles or material.
+  exposes auth presentations but never credential handles or material. Private agent diagnostics
+  cross only on an explicit operator request and are never available to agent MCP tools.
 - Client disconnect only closes that transport connection. Session replacement and shutdown remain
   explicit Crab operations.
 - The token is loaded from the state directory by the local client. It never appears in CLI
   arguments, output or trigger records.
 
-See [bridge operations](bridge-operations.md) and
+See [private agent diagnostics](agent-diagnostics.md), [bridge operations](bridge-operations.md) and
 [realtime sub-agent control](sub-agent-control.md) for the typed operator workflows.

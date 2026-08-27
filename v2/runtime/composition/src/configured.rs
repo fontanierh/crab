@@ -638,12 +638,14 @@ mod tests {
     };
     use agent_host_implementation::{
         AcpEvent, AcpEventDirection, AcpEventKind, AcpNegotiation, AcpProtocolProfile,
-        AgentCatalog, AgentHostError, AgentInputMode, AgentLifecycle, AgentSession,
+        AgentCatalog, AgentDiagnostic, AgentDiagnosticKind, AgentDiagnosticPage, AgentHostError,
+        AgentInputMode, AgentLifecycle, AgentSession, AgentSessionCatalog, AgentSessionSummary,
         AuthorityAttestation, CompactionReporting, DetachSessionsReport, DetachSessionsRequest,
         DiscoverAgentsRequest, EventPage, FilesystemAuthority, ForkSessionRequest,
-        NetworkAuthority, OpenSessionRequest, OperationReceipt, PermissionAuthority,
-        PermissionRequest, PermissionResolution, PreflightReport, PreflightRequest, PromptAccepted,
-        PromptDisposition, PromptRequest, ReadEventsRequest, ResumeSessionRequest, RootAuthority,
+        ListAgentSessionsRequest, NetworkAuthority, OpenSessionRequest, OperationReceipt,
+        PermissionAuthority, PermissionRequest, PermissionResolution, PreflightReport,
+        PreflightRequest, PromptAccepted, PromptDisposition, PromptRequest,
+        ReadAgentDiagnosticsRequest, ReadEventsRequest, ResumeSessionRequest, RootAuthority,
         RunReference, SandboxAuthority, SessionReference, SessionStatus, SteeringSupport,
         generated as agent_host,
     };
@@ -1070,6 +1072,79 @@ mod tests {
                     .filter(|event| event.session_id == request.session_id)
                     .count() as u64,
                 active_run_id,
+            })
+        }
+
+        async fn read_diagnostics(
+            &self,
+            context: CallContext,
+            request: ReadAgentDiagnosticsRequest,
+        ) -> Result<AgentDiagnosticPage, AgentHostError> {
+            let _ = context;
+            let state = self.state.lock().expect("fake state lock");
+            if !state.live_sessions.contains(&request.session_id) {
+                return Err(AgentHostError::UnknownSession);
+            }
+            if request.after_sequence > 1 {
+                return Err(AgentHostError::InvalidCursor);
+            }
+            let diagnostics = (request.after_sequence == 0 && request.limit > 0)
+                .then(|| AgentDiagnostic {
+                    session_id: request.session_id,
+                    sequence: 1,
+                    observed_at_ms: 7,
+                    kind: AgentDiagnosticKind::AdapterStderr,
+                    message: "fixture adapter detail".into(),
+                })
+                .into_iter()
+                .collect();
+            Ok(AgentDiagnosticPage {
+                diagnostics,
+                next_sequence: 1,
+                caught_up: true,
+                oldest_retained_sequence: 1,
+            })
+        }
+
+        async fn list_sessions(
+            &self,
+            context: CallContext,
+            request: ListAgentSessionsRequest,
+        ) -> Result<AgentSessionCatalog, AgentHostError> {
+            let _ = context;
+            if request.limit == 0 {
+                return Err(AgentHostError::InvalidCursor);
+            }
+            let state = self.state.lock().expect("fake state lock");
+            let mut session_ids = state.live_sessions.iter().cloned().collect::<Vec<_>>();
+            session_ids.sort();
+            let total_sessions = session_ids.len() as u64;
+            let sessions = session_ids
+                .into_iter()
+                .take(request.limit as usize)
+                .map(|session_id| AgentSessionSummary {
+                    native_session_id: Some(format!("native-{session_id}")),
+                    agent_id: "fake".into(),
+                    working_directory: "/fixture".into(),
+                    lifecycle: if state.active_runs.contains_key(&session_id) {
+                        AgentLifecycle::Busy
+                    } else {
+                        AgentLifecycle::Ready
+                    },
+                    last_event_sequence: state
+                        .events
+                        .iter()
+                        .filter(|event| event.session_id == session_id)
+                        .count() as u64,
+                    last_diagnostic_sequence: 1,
+                    active_run_id: state.active_runs.get(&session_id).cloned(),
+                    updated_at_ms: 1,
+                    session_id,
+                })
+                .collect();
+            Ok(AgentSessionCatalog {
+                sessions,
+                total_sessions,
             })
         }
 
@@ -1731,6 +1806,30 @@ mod tests {
         assert_eq!(second.binding_id, first.binding_id);
         assert_eq!(second.session_id, sessions[0]);
         assert_eq!(state.lock().expect("fake state lock").next_session, 1);
+
+        let diagnostic_client = ChannelIpcClient::from_state_directory(directory.path())
+            .expect("diagnostic client opens");
+        let catalog = diagnostic_client
+            .list_agent_sessions(ListAgentSessionsRequest { limit: 100 })
+            .await
+            .expect("session catalog crosses authenticated IPC");
+        assert_eq!(catalog.total_sessions, 1);
+        assert_eq!(catalog.sessions[0].session_id, sessions[0]);
+        assert_eq!(catalog.sessions[0].last_diagnostic_sequence, 1);
+        let diagnostics = diagnostic_client
+            .read_agent_diagnostics(ReadAgentDiagnosticsRequest {
+                session_id: sessions[0].clone(),
+                after_sequence: 0,
+                limit: 100,
+            })
+            .await
+            .expect("private diagnostics cross authenticated IPC");
+        assert_eq!(diagnostics.diagnostics.len(), 1);
+        assert_eq!(
+            diagnostics.diagnostics[0].kind,
+            AgentDiagnosticKind::AdapterStderr
+        );
+        assert_eq!(diagnostics.diagnostics[0].message, "fixture adapter detail");
 
         let valid_token = std::fs::read_to_string(paths.token()).expect("token reads");
         std::fs::write(paths.token(), "0".repeat(64)).expect("test token changes");

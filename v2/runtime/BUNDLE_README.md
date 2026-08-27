@@ -56,6 +56,17 @@ Check all layers without exposing the captured environment:
 python3 ~/.crab-v2/libexec/v2_bundle.py status
 ```
 
+Inspect one ACP session without opening runtime state directly:
+
+```sh
+~/.crab-v2/bin/crab-v2-agent --state-dir ~/.crab-v2/state status <session-id>
+~/.crab-v2/bin/crab-v2-agent --state-dir ~/.crab-v2/state list 100
+~/.crab-v2/bin/crab-v2-agent --state-dir ~/.crab-v2/state \
+  diagnostics <session-id> 0 100
+```
+
+Diagnostic output may contain raw adapter stderr and is shown only on this explicit owner operation.
+
 The runtime requires macOS, Python 3, Node.js 22 or newer, and Crab's documented unrestricted-host
 preflight. Authenticate each ACP agent and bridge with its native flow. Credentials, runtime state,
 and logs are never part of a release bundle.

@@ -63,6 +63,9 @@ impl FixtureAgent {
     }
 
     fn initialize(&self, request: &Value) -> io::Result<()> {
+        if let Ok(message) = std::env::var("ACP_FIXTURE_STDERR") {
+            eprintln!("{message}");
+        }
         let result = match self.protocol {
             Protocol::V1 => {
                 let mut session_capabilities = serde_json::Map::new();
@@ -210,6 +213,7 @@ impl FixtureAgent {
             .unwrap_or_default()
             .to_owned();
         if text == "crash" {
+            eprintln!("fixture transport crashed");
             return Ok(false);
         }
         if text == "error" {

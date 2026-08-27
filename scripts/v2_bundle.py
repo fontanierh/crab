@@ -30,6 +30,7 @@ CODEX_ADAPTER_VERSION = "1.6.2"
 PUBLIC_HELP_BINARIES = (
     "crab-v2",
     "crab-v2-acp-channel",
+    "crab-v2-agent",
     "crab-v2-bridge",
     "crab-v2-bridge-mcp",
     "crab-v2-sub-agent",

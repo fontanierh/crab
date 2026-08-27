@@ -9,7 +9,10 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use agent_host_contract::{AgentHostHandle, SessionReference, SessionStatus};
+use agent_host_contract::{
+    AgentDiagnosticPage, AgentHostHandle, AgentSessionCatalog, ListAgentSessionsRequest,
+    ReadAgentDiagnosticsRequest, SessionReference, SessionStatus,
+};
 use boxology_contract::{
     CallContext, CallError, Caller, CancelToken, CapabilityDescriptor, ContractDescriptor,
     ContractError, ContractType, DecodeRole, TraceContext,
@@ -72,6 +75,8 @@ const BRIDGE_STATUS: &str = "bridge-host.bridge_status";
 const STOP_BRIDGE: &str = "bridge-host.stop_bridge";
 const SUSPEND_BRIDGE: &str = "bridge-host.suspend_bridge";
 const AGENT_SESSION_STATUS: &str = "agent-host.session_status";
+const LIST_AGENT_SESSIONS: &str = "agent-host.list_sessions";
+const READ_AGENT_DIAGNOSTICS: &str = "agent-host.read_diagnostics";
 const SPAWN_SUB_AGENT: &str = "sub-agent-host.spawn";
 const SEND_TO_CHILD: &str = "sub-agent-host.send_to_child";
 const SEND_TO_PARENT: &str = "sub-agent-host.send_to_parent";
@@ -512,6 +517,32 @@ impl ChannelIpcClient {
         .await
     }
 
+    /// List the newest non-secret session identities and private journal cursors.
+    pub async fn list_agent_sessions(
+        &self,
+        request: ListAgentSessionsRequest,
+    ) -> Result<AgentSessionCatalog, ChannelIpcClientError> {
+        self.invoke(
+            LIST_AGENT_SESSIONS,
+            agent_host_contract::contract_descriptor(),
+            request,
+        )
+        .await
+    }
+
+    /// Read bounded private adapter diagnostics through the owner-authenticated operator seam.
+    pub async fn read_agent_diagnostics(
+        &self,
+        request: ReadAgentDiagnosticsRequest,
+    ) -> Result<AgentDiagnosticPage, ChannelIpcClientError> {
+        self.invoke(
+            READ_AGENT_DIAGNOSTICS,
+            agent_host_contract::contract_descriptor(),
+            request,
+        )
+        .await
+    }
+
     /// Durably deliver one queue, steer or interrupt-and-steer input to the child.
     pub async fn send_to_child(
         &self,
@@ -881,6 +912,22 @@ async fn dispatch(request: WireRequest, capabilities: IpcCapabilities) -> WireOu
                 &request.input,
                 AGENT_SESSION_STATUS,
                 |input| agent_host.session_status(call_context(), input),
+            )
+            .await
+        }
+        LIST_AGENT_SESSIONS => {
+            invoke_agent::<ListAgentSessionsRequest, AgentSessionCatalog, _, _>(
+                &request.input,
+                LIST_AGENT_SESSIONS,
+                |input| agent_host.list_sessions(call_context(), input),
+            )
+            .await
+        }
+        READ_AGENT_DIAGNOSTICS => {
+            invoke_agent::<ReadAgentDiagnosticsRequest, AgentDiagnosticPage, _, _>(
+                &request.input,
+                READ_AGENT_DIAGNOSTICS,
+                |input| agent_host.read_diagnostics(call_context(), input),
             )
             .await
         }

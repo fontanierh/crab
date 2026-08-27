@@ -60,7 +60,9 @@ interrupt as a separate explicit action.
   shutdown. Recovery preserves both session IDs and the event cursor while revalidating authority,
   MCP tools and required policy; it never replays bootstrap or owns compaction. Graceful runtime
   shutdown detaches the host-owned live set without native close, while explicit close remains
-  destructive. See the [resume flow](docs/agent-session-resume.md) and
+  destructive. Bounded adapter stderr and terminal causes remain available only through the
+  owner-authenticated `crab-v2-agent` operator CLI. See the
+  [private diagnostics](docs/agent-diagnostics.md), [resume flow](docs/agent-session-resume.md) and
   [detach flow](docs/runtime-detach.md). Its
   [state contract](docs/agent-host-storage.md) is schema-versioned from day one; the
   [rendered flow](docs/agent-host-flow.png) shows the process boundary.

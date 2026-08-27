@@ -8,9 +8,12 @@ view.
 
 ## Schema lifecycle
 
-- `PRAGMA user_version = 2` creates `sessions`, `prompts`, `events`, and `permissions` atomically.
+- `PRAGMA user_version = 3` creates `sessions`, `prompts`, `events`, `permissions`, and private
+  `diagnostics` atomically.
 - Schema v1 migrates additively: prompts gain nullable `interrupted_run_id` and
   `cancel_requested_at_ms` receipt fields.
+- Schema v2 migrates additively: sessions gain a diagnostic cursor and the bounded diagnostics
+  journal is created.
 - WAL mode, foreign keys, a five-second busy timeout, and full synchronous writes are mandatory.
 - Unknown schema versions fail closed with `StorageUnavailable`.
 - A process cannot survive a Crab restart. Reopening marks `Starting`, `Ready`, `Busy`, `Detaching`
@@ -24,6 +27,9 @@ view.
 - `(session_id, client_turn_id)` deduplicates one immutable prompt; a changed retry is rejected.
 - `native_prompt_json` is the exact JSON array carried in ACP's `prompt` field.
 - Native stdin/stdout JSON-RPC lines are stored byte-for-byte with direction and per-session order.
+- Adapter stderr never becomes a native event. The newest 512 private diagnostics per session are
+  retained separately with 16 KiB message caps and monotonic cursors; explicit operator reads are
+  described in [Private agent diagnostics](agent-diagnostics.md).
 - Every accepted run ends with exactly one `RunFinished` event. A native ACP terminal response or
   idle update remains authoritative; if a prompt instead returns a JSON-RPC error, Crab preserves
   that error and atomically appends a minimal `crab/run_finished` lifecycle notification before

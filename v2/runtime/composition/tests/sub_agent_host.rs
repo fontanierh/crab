@@ -8,13 +8,15 @@ extern crate agent_host_contract as boxology_generated_contract;
 
 use agent_host_implementation::{
     AcpEvent, AcpEventDirection, AcpEventKind, AcpNegotiation, AcpProtocolProfile, AgentCatalog,
-    AgentHostError, AgentInputMode, AgentLifecycle, AgentSession, AuthorityAttestation,
-    CompactionReporting, DetachSessionsReport, DetachSessionsRequest, DiscoverAgentsRequest,
-    EventPage, FilesystemAuthority, ForkSessionRequest, NetworkAuthority, OpenSessionRequest,
+    AgentDiagnosticPage, AgentHostError, AgentInputMode, AgentLifecycle, AgentSession,
+    AgentSessionCatalog, AuthorityAttestation, CompactionReporting, DetachSessionsReport,
+    DetachSessionsRequest, DiscoverAgentsRequest, EventPage, FilesystemAuthority,
+    ForkSessionRequest, ListAgentSessionsRequest, NetworkAuthority, OpenSessionRequest,
     OperationReceipt, PermissionAuthority, PermissionRequest, PermissionResolution,
     PreflightReport, PreflightRequest, PromptAccepted, PromptDisposition, PromptRequest,
-    ReadEventsRequest, ResumeSessionRequest, RootAuthority, RunReference, SandboxAuthority,
-    SessionReference, SessionStatus, SteeringSupport, generated as agent_host,
+    ReadAgentDiagnosticsRequest, ReadEventsRequest, ResumeSessionRequest, RootAuthority,
+    RunReference, SandboxAuthority, SessionReference, SessionStatus, SteeringSupport,
+    generated as agent_host,
 };
 use boxology_contract::{CallContext, Caller, CancelToken, TraceContext};
 use boxology_runtime::CompositionBuilder;
@@ -371,6 +373,37 @@ impl FakeAgentHost {
             lifecycle: session.lifecycle.clone(),
             last_sequence: session.events.len() as u64,
             active_run_id: session.active_run_id.clone(),
+        })
+    }
+
+    async fn read_diagnostics(
+        &self,
+        context: CallContext,
+        request: ReadAgentDiagnosticsRequest,
+    ) -> Result<AgentDiagnosticPage, AgentHostError> {
+        let _ = context;
+        let state = self.state.lock().expect("fake state lock");
+        if !state.sessions.contains_key(&request.session_id) {
+            return Err(AgentHostError::UnknownSession);
+        }
+        Ok(AgentDiagnosticPage {
+            diagnostics: Vec::new(),
+            next_sequence: request.after_sequence,
+            caught_up: true,
+            oldest_retained_sequence: 1,
+        })
+    }
+
+    async fn list_sessions(
+        &self,
+        context: CallContext,
+        request: ListAgentSessionsRequest,
+    ) -> Result<AgentSessionCatalog, AgentHostError> {
+        let _ = (context, request);
+        let state = self.state.lock().expect("fake state lock");
+        Ok(AgentSessionCatalog {
+            sessions: Vec::new(),
+            total_sessions: state.sessions.len() as u64,
         })
     }
 

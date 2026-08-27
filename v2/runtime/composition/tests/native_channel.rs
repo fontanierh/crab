@@ -6,12 +6,13 @@ use std::{
 extern crate agent_host_contract as boxology_generated_contract;
 
 use agent_host_implementation::{
-    AcpEvent, AcpEventDirection, AcpEventKind, AgentCatalog, AgentHostError, AgentInputMode,
-    AgentLifecycle, AgentSession, DetachSessionsReport, DetachSessionsRequest,
-    DiscoverAgentsRequest, EventPage, ForkSessionRequest, OpenSessionRequest, OperationReceipt,
-    PermissionRequest, PermissionResolution, PreflightReport, PreflightRequest, PromptAccepted,
-    PromptDisposition, PromptRequest, ReadEventsRequest, ResumeSessionRequest, RunReference,
-    SessionReference, SessionStatus, generated as agent_host,
+    AcpEvent, AcpEventDirection, AcpEventKind, AgentCatalog, AgentDiagnosticPage, AgentHostError,
+    AgentInputMode, AgentLifecycle, AgentSession, AgentSessionCatalog, DetachSessionsReport,
+    DetachSessionsRequest, DiscoverAgentsRequest, EventPage, ForkSessionRequest,
+    ListAgentSessionsRequest, OpenSessionRequest, OperationReceipt, PermissionRequest,
+    PermissionResolution, PreflightReport, PreflightRequest, PromptAccepted, PromptDisposition,
+    PromptRequest, ReadAgentDiagnosticsRequest, ReadEventsRequest, ResumeSessionRequest,
+    RunReference, SessionReference, SessionStatus, generated as agent_host,
 };
 use boxology_contract::{CallContext, Caller, CancelToken, TraceContext};
 use boxology_runtime::CompositionBuilder;
@@ -233,6 +234,35 @@ impl FakeAgentHost {
             },
             last_sequence: state.events.len() as u64,
             active_run_id: state.active_run_id.clone(),
+        })
+    }
+
+    async fn read_diagnostics(
+        &self,
+        context: CallContext,
+        request: ReadAgentDiagnosticsRequest,
+    ) -> Result<AgentDiagnosticPage, AgentHostError> {
+        let _ = context;
+        if request.session_id != "session-1" {
+            return Err(AgentHostError::UnknownSession);
+        }
+        Ok(AgentDiagnosticPage {
+            diagnostics: Vec::new(),
+            next_sequence: request.after_sequence,
+            caught_up: true,
+            oldest_retained_sequence: 1,
+        })
+    }
+
+    async fn list_sessions(
+        &self,
+        context: CallContext,
+        request: ListAgentSessionsRequest,
+    ) -> Result<AgentSessionCatalog, AgentHostError> {
+        let _ = (context, request);
+        Ok(AgentSessionCatalog {
+            sessions: Vec::new(),
+            total_sessions: 1,
         })
     }
 
