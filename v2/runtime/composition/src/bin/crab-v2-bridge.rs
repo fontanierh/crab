@@ -5,12 +5,12 @@ use std::{ffi::OsString, io::Read as _, path::PathBuf, process::ExitCode};
 use bridge_host_contract::{
     AuthenticationChallenge, AuthenticationMethod, BeginAuthenticationRequest, BridgeCatalog,
     BridgeLifecycle, BridgeReceipt, BridgeReference, BridgeStatus, CredentialLifecycle,
-    CredentialStatus, ReconcileBridgeRequest, SubmitAuthenticationRequest,
+    CredentialStatus, ReconcileBridgeRequest, SubmitAuthenticationRequest, UnregisterBridgeRequest,
 };
 use crab_v2_runtime::ChannelIpcClient;
 use serde_json::{Value, json};
 
-const USAGE: &str = "usage: crab-v2-bridge --state-dir <directory> <list | status <bridge> | reconcile <bridge> <generation> <true|false> | auth-begin <bridge> <auto|qr-code|phone-code|oauth|browser|terminal|manual> <context-json> | auth-submit <bridge> <challenge> <empty|stdin> | credentials-validate <bridge> | credentials-invalidate <bridge> | suspend <bridge> | stop <bridge>>";
+const USAGE: &str = "usage: crab-v2-bridge --state-dir <directory> <list | status <bridge> | reconcile <bridge> <generation> <true|false> | unregister <bridge> <generation> | auth-begin <bridge> <auto|qr-code|phone-code|oauth|browser|terminal|manual> <context-json> | auth-submit <bridge> <challenge> <empty|stdin> | credentials-validate <bridge> | credentials-invalidate <bridge> | suspend <bridge> | stop <bridge>>";
 const MAX_AUTH_RESPONSE_BYTES: u64 = 64 * 1024;
 
 #[tokio::main]
@@ -73,6 +73,16 @@ async fn execute(
             })
             .await
             .map(status_json),
+        BridgeCommand::Unregister {
+            bridge_id,
+            expected_generation,
+        } => client
+            .unregister_bridge(UnregisterBridgeRequest {
+                bridge_id,
+                expected_generation,
+            })
+            .await
+            .map(receipt_json),
         BridgeCommand::AuthBegin {
             bridge_id,
             preferred_method,
@@ -159,6 +169,10 @@ enum BridgeCommand {
         expected_generation: u64,
         desired_running: bool,
     },
+    Unregister {
+        bridge_id: String,
+        expected_generation: u64,
+    },
     AuthBegin {
         bridge_id: String,
         preferred_method: Option<AuthenticationMethod>,
@@ -215,6 +229,10 @@ fn parse_arguments(mut values: impl Iterator<Item = OsString>) -> Result<Option<
             bridge_id: required_text(&mut values)?,
             expected_generation: required_text(&mut values)?.parse().map_err(|_| ())?,
             desired_running: parse_bool(&required_text(&mut values)?).ok_or(())?,
+        },
+        "unregister" => BridgeCommand::Unregister {
+            bridge_id: required_text(&mut values)?,
+            expected_generation: required_text(&mut values)?.parse().map_err(|_| ())?,
         },
         "auth-begin" => BridgeCommand::AuthBegin {
             bridge_id: required_text(&mut values)?,
@@ -397,6 +415,7 @@ fn lifecycle_name(value: &BridgeLifecycle) -> &'static str {
         BridgeLifecycle::Degraded => "degraded",
         BridgeLifecycle::BackingOff => "backing-off",
         BridgeLifecycle::Stopped => "stopped",
+        BridgeLifecycle::Unregistered => "unregistered",
         BridgeLifecycle::Failed => "failed",
         BridgeLifecycle::Unknown { .. } => "unknown",
     }
@@ -511,6 +530,13 @@ mod tests {
                 bridge_id: "whatsapp".into(),
                 expected_generation: 2,
                 desired_running: true,
+            }
+        );
+        assert_eq!(
+            parse(&["--state-dir", "/tmp/crab", "unregister", "whatsapp", "3",]),
+            BridgeCommand::Unregister {
+                bridge_id: "whatsapp".into(),
+                expected_generation: 3,
             }
         );
     }

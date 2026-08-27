@@ -11,7 +11,7 @@ use bridge_host_contract::{
     BridgeOutbound, BridgeReceipt, BridgeRecord, BridgeReference, BridgeSpec, BridgeStatus,
     CredentialLifecycle, CredentialStatus, DeliveryLifecycle, DeliveryReceipt, DeliveryReference,
     ImportBridgeContentRequest, ImportedBridgeContent, ReconcileBridgeRequest,
-    ReplaceBridgeRequest, SubmitAuthenticationRequest,
+    ReplaceBridgeRequest, SubmitAuthenticationRequest, UnregisterBridgeRequest,
 };
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -55,6 +55,7 @@ pub async fn run_bridge_mcp_stdio() -> Result<(), BridgeMcpError> {
         .tool(RegisterTool(context.clone()))
         .tool(ListTool(context.clone()))
         .tool(ReplaceTool(context.clone()))
+        .tool(UnregisterTool(context.clone()))
         .tool(ReconcileTool(context.clone()))
         .tool(ReferenceTool::new(
             context.clone(),
@@ -273,6 +274,13 @@ struct ReconcileInput {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct UnregisterInput {
+    bridge_id: String,
+    expected_generation: u64,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct ReferenceInput {
     bridge_id: String,
 }
@@ -444,6 +452,39 @@ impl McpTool<mcp::Client> for ReplaceTool {
             })
             .await
             .map(record_json)
+            .map_err(ipc_error)
+    }
+}
+
+#[derive(Clone)]
+struct UnregisterTool(BridgeContext);
+
+impl McpTool<mcp::Client> for UnregisterTool {
+    type Input = UnregisterInput;
+    type Output = Value;
+
+    fn name(&self) -> String {
+        "unregister_bridge".into()
+    }
+
+    fn description(&self) -> String {
+        "Retire one agent-managed bridge with generation compare-and-swap. Credentials are revoked; the tombstone and referenced message content remain auditable.".into()
+    }
+
+    async fn call_tool(
+        &self,
+        input: Self::Input,
+        _connection: agent_client_protocol::mcp_server::McpConnectionTo<mcp::Client>,
+    ) -> Result<Self::Output, Error> {
+        validate_text(&input.bridge_id)?;
+        self.0
+            .client()?
+            .unregister_bridge(UnregisterBridgeRequest {
+                bridge_id: input.bridge_id,
+                expected_generation: input.expected_generation,
+            })
+            .await
+            .map(receipt_json)
             .map_err(ipc_error)
     }
 }
@@ -933,6 +974,7 @@ fn lifecycle_name(value: &BridgeLifecycle) -> &'static str {
         BridgeLifecycle::Degraded => "degraded",
         BridgeLifecycle::BackingOff => "backing-off",
         BridgeLifecycle::Stopped => "stopped",
+        BridgeLifecycle::Unregistered => "unregistered",
         BridgeLifecycle::Failed => "failed",
         BridgeLifecycle::Unknown { .. } => "unknown",
     }

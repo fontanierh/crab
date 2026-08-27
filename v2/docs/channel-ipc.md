@@ -17,6 +17,7 @@ operators never open Crab's databases or credential store.
 | `bridge-host.register_bridge` | `bridge-host` |
 | `bridge-host.list_bridges` | `bridge-host` |
 | `bridge-host.replace_bridge` | `bridge-host` |
+| `bridge-host.unregister_bridge` | `bridge-host` |
 | `bridge-host.reconcile_bridge` | `bridge-host` |
 | `bridge-host.begin_authentication` | `bridge-host` |
 | `bridge-host.submit_authentication` | `bridge-host` |

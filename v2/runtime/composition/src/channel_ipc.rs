@@ -20,7 +20,7 @@ use bridge_host_contract::{
     BridgeOutbound, BridgeReceipt, BridgeRecord, BridgeReference, BridgeSpec, BridgeStatus,
     CredentialStatus, DeliveryReceipt, DeliveryReference, ImportBridgeContentRequest,
     ImportedBridgeContent, ListBridgesRequest, ReconcileBridgeRequest, ReplaceBridgeRequest,
-    SubmitAuthenticationRequest,
+    SubmitAuthenticationRequest, UnregisterBridgeRequest,
 };
 use channel_gateway_contract::{AttachChannelRequest, ChannelAttachment, ChannelGatewayHandle};
 use native_channel_contract::{
@@ -59,6 +59,7 @@ const ENQUEUE_TRIGGER: &str = "trigger-inbox.enqueue";
 const REGISTER_BRIDGE: &str = "bridge-host.register_bridge";
 const LIST_BRIDGES: &str = "bridge-host.list_bridges";
 const REPLACE_BRIDGE: &str = "bridge-host.replace_bridge";
+const UNREGISTER_BRIDGE: &str = "bridge-host.unregister_bridge";
 const RECONCILE_BRIDGE: &str = "bridge-host.reconcile_bridge";
 const BEGIN_AUTHENTICATION: &str = "bridge-host.begin_authentication";
 const SUBMIT_AUTHENTICATION: &str = "bridge-host.submit_authentication";
@@ -323,6 +324,19 @@ impl ChannelIpcClient {
     ) -> Result<BridgeRecord, ChannelIpcClientError> {
         self.invoke(
             REPLACE_BRIDGE,
+            bridge_host_contract::contract_descriptor(),
+            request,
+        )
+        .await
+    }
+
+    /// Permanently retire one agent-managed registration under generation control.
+    pub async fn unregister_bridge(
+        &self,
+        request: UnregisterBridgeRequest,
+    ) -> Result<BridgeReceipt, ChannelIpcClientError> {
+        self.invoke(
+            UNREGISTER_BRIDGE,
             bridge_host_contract::contract_descriptor(),
             request,
         )
@@ -952,6 +966,14 @@ async fn dispatch(request: WireRequest, capabilities: IpcCapabilities) -> WireOu
                 &request.input,
                 REPLACE_BRIDGE,
                 |input| bridge_host.replace_bridge(call_context(), input),
+            )
+            .await
+        }
+        UNREGISTER_BRIDGE => {
+            invoke_bridge::<UnregisterBridgeRequest, BridgeReceipt, _, _>(
+                &request.input,
+                UNREGISTER_BRIDGE,
+                |input| bridge_host.unregister_bridge(call_context(), input),
             )
             .await
         }

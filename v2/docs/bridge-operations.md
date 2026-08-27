@@ -9,7 +9,7 @@ IPC token, calls generated `bridge-host` capabilities, and prints one JSON objec
 runtime composition/
 └── crab-v2-bridge
     ├── catalog + status
-    ├── reconcile + suspend + stop
+    ├── reconcile + suspend + stop + unregister
     ├── auth challenge presentation
     └── credential validate + invalidate
          └── owner-only IPC → bridge-host → private credential store
@@ -66,11 +66,14 @@ crab-v2-bridge --state-dir "$CRAB_V2_STATE" credentials-invalidate whatsapp
 crab-v2-bridge --state-dir "$CRAB_V2_STATE" reconcile whatsapp <generation> true
 crab-v2-bridge --state-dir "$CRAB_V2_STATE" suspend whatsapp
 crab-v2-bridge --state-dir "$CRAB_V2_STATE" stop whatsapp
+crab-v2-bridge --state-dir "$CRAB_V2_STATE" unregister whatsapp <generation>
 ```
 
 `suspend` halts the current process while preserving desired state. `reconcile` applies the declared
-generation and desired state through the supervisor. `stop` durably disables the bridge. Domain
-failures retain their stable Boxology code on stderr and return a non-zero status.
+generation and desired state through the supervisor. `stop` durably disables the bridge.
+`unregister` is generation-CAS protected and rejects runtime-configured registrations; it revokes
+credentials while retaining an auditable tombstone and message/content references. Domain failures
+retain their stable Boxology code on stderr and return a non-zero status.
 
 ACP agents receive the broader install, generation, authentication and selected-delivery lifecycle
 through the first-party [native bridge tools](native-bridge-tools.md). Both surfaces share this
