@@ -4,8 +4,9 @@ mod store;
 pub use contract::*;
 
 use std::{
+    collections::HashMap,
     path::Path,
-    sync::Arc,
+    sync::{Arc, Mutex as StdMutex, PoisonError, Weak},
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -16,9 +17,10 @@ use boxology_import_agent_host::{
 };
 use generated::AgentHostImport;
 use store::ChannelStore;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, OwnedMutexGuard};
 
 const EVENT_PAGE_LIMIT: u64 = 1_000;
+const MAX_CHANNEL_IDENTIFIER_BYTES: usize = 256;
 const MAX_NATIVE_PROMPT_BYTES: usize = 2 * 1024 * 1024;
 
 type Clock = Arc<dyn Fn() -> Result<u64, NativeChannelError> + Send + Sync>;
@@ -49,7 +51,7 @@ impl NativeChannelState {
         NativeChannel {
             agent_host,
             store: Arc::new(self.store),
-            operations: Arc::new(Mutex::new(())),
+            operations: OperationLocks::default(),
             clock: Arc::new(system_time_ms),
         }
     }
@@ -59,7 +61,7 @@ impl NativeChannelState {
 pub struct NativeChannel {
     agent_host: AgentHostImport,
     store: Arc<ChannelStore>,
-    operations: Arc<Mutex<()>>,
+    operations: OperationLocks,
     clock: Clock,
 }
 
@@ -189,7 +191,10 @@ impl NativeChannel {
         context: CallContext,
         request: BindChannelRequest,
     ) -> Result<ChannelBinding, NativeChannelError> {
-        let _operation = self.operations.lock().await;
+        let _operation = self
+            .operations
+            .lock_attachment(&request.adapter_id, &request.channel_id)
+            .await?;
         self.require_available_session(context, &request.session_id)
             .await?;
         self.store.bind(&request, (self.clock)()?)
@@ -200,8 +205,8 @@ impl NativeChannel {
         context: CallContext,
         request: ChannelTurn,
     ) -> Result<AcceptedTurn, NativeChannelError> {
-        let _operation = self.operations.lock().await;
         validate_turn(&request)?;
+        let _operation = self.operations.lock_binding(&request.binding_id).await?;
         let binding = self.store.binding(&request.binding_id)?;
         require_attached(&binding)?;
         if let Some(existing) = self
@@ -242,12 +247,15 @@ impl NativeChannel {
         context: CallContext,
         request: InterruptingTurnRequest,
     ) -> Result<AcceptedTurn, NativeChannelError> {
-        let _operation = self.operations.lock().await;
         validate_turn(&request.turn)?;
         if !matches!(request.turn.mode, ChannelInputMode::Queue) || request.reason.trim().is_empty()
         {
             return Err(NativeChannelError::InvalidNativePayload);
         }
+        let _operation = self
+            .operations
+            .lock_binding(&request.turn.binding_id)
+            .await?;
         let binding = self.store.binding(&request.turn.binding_id)?;
         require_attached(&binding)?;
         if let Some(existing) =
@@ -293,7 +301,7 @@ impl NativeChannel {
         context: CallContext,
         request: InterruptRequest,
     ) -> Result<InterruptReceipt, NativeChannelError> {
-        let _operation = self.operations.lock().await;
+        let _operation = self.operations.lock_binding(&request.binding_id).await?;
         let binding = self.store.binding(&request.binding_id)?;
         require_attached(&binding)?;
         if binding.session_id != request.expected_session_id {
@@ -346,10 +354,10 @@ impl NativeChannel {
         context: CallContext,
         request: NativeChannelEvent,
     ) -> Result<PublishReceipt, NativeChannelError> {
-        let _operation = self.operations.lock().await;
         if request.sequence == 0 {
             return Err(NativeChannelError::SequenceGap);
         }
+        let _operation = self.operations.lock_binding(&request.binding_id).await?;
         let binding = self.store.binding(&request.binding_id)?;
         require_attached(&binding)?;
         if binding.session_id != request.session_id {
@@ -373,7 +381,7 @@ impl NativeChannel {
         context: CallContext,
         request: ReplayRequest,
     ) -> Result<PublishedEventPage, NativeChannelError> {
-        let _operation = self.operations.lock().await;
+        let _operation = self.operations.lock_binding(&request.binding_id).await?;
         let binding = self.store.binding(&request.binding_id)?;
         self.authoritative_page(context, &binding, request.after_sequence, request.limit)
             .await
@@ -384,7 +392,7 @@ impl NativeChannel {
         context: CallContext,
         request: ReplaceSessionRequest,
     ) -> Result<ChannelBinding, NativeChannelError> {
-        let _operation = self.operations.lock().await;
+        let _operation = self.operations.lock_binding(&request.binding_id).await?;
         let binding = self.store.binding(&request.binding_id)?;
         if binding.session_id != request.expected_session_id {
             return Err(NativeChannelError::SessionMismatch);
@@ -409,7 +417,7 @@ impl NativeChannel {
         context: CallContext,
         request: RecoverSessionRequest,
     ) -> Result<ChannelBinding, NativeChannelError> {
-        let _operation = self.operations.lock().await;
+        let _operation = self.operations.lock_binding(&request.binding_id).await?;
         let binding = self.store.binding(&request.binding_id)?;
         if binding.session_id != request.expected_session_id {
             return Err(NativeChannelError::SessionMismatch);
@@ -428,7 +436,7 @@ impl NativeChannel {
         context: CallContext,
         request: BindingReference,
     ) -> Result<ChannelStatus, NativeChannelError> {
-        let _operation = self.operations.lock().await;
+        let _operation = self.operations.lock_binding(&request.binding_id).await?;
         let binding = self.store.binding(&request.binding_id)?;
         require_attached(&binding)?;
         let status = self.refresh_turn_state(context, &binding).await?;
@@ -488,14 +496,83 @@ impl NativeChannel {
         request: BindingReference,
     ) -> Result<ChannelReceipt, NativeChannelError> {
         let _ = context;
-        let _operation = self.operations.lock().await;
+        let _operation = self.operations.lock_binding(&request.binding_id).await?;
         self.store.detach(&request.binding_id, (self.clock)()?)
     }
 }
 
+#[derive(Eq, Hash, PartialEq)]
+enum OperationIdentity {
+    Attachment {
+        adapter_id: String,
+        channel_id: String,
+    },
+    Binding(String),
+}
+
+#[derive(Default)]
+struct OperationLocks {
+    locks: StdMutex<HashMap<OperationIdentity, WeakOperationLock>>,
+}
+
+type WeakOperationLock = Weak<Mutex<()>>;
+
+impl OperationLocks {
+    async fn lock_attachment(
+        &self,
+        adapter_id: &str,
+        channel_id: &str,
+    ) -> Result<OwnedMutexGuard<()>, NativeChannelError> {
+        if !valid_identifier(adapter_id) || !valid_identifier(channel_id) {
+            return Err(NativeChannelError::InvalidNativePayload);
+        }
+        Ok(self
+            .lock(OperationIdentity::Attachment {
+                adapter_id: adapter_id.to_owned(),
+                channel_id: channel_id.to_owned(),
+            })
+            .await)
+    }
+
+    async fn lock_binding(
+        &self,
+        binding_id: &str,
+    ) -> Result<OwnedMutexGuard<()>, NativeChannelError> {
+        if !valid_identifier(binding_id) {
+            return Err(NativeChannelError::InvalidNativePayload);
+        }
+        Ok(self
+            .lock(OperationIdentity::Binding(binding_id.to_owned()))
+            .await)
+    }
+
+    async fn lock(&self, identity: OperationIdentity) -> OwnedMutexGuard<()> {
+        let lock = {
+            let mut locks = self.locks.lock().unwrap_or_else(PoisonError::into_inner);
+            locks.retain(|_, lock| lock.strong_count() > 0);
+            if let Some(lock) = locks.get(&identity).and_then(Weak::upgrade) {
+                lock
+            } else {
+                let lock = Arc::new(Mutex::new(()));
+                locks.insert(identity, Arc::downgrade(&lock));
+                lock
+            }
+        };
+        lock.lock_owned().await
+    }
+
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.locks
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .len()
+    }
+}
+
 fn validate_turn(request: &ChannelTurn) -> Result<(), NativeChannelError> {
-    if request.binding_id.trim().is_empty()
-        || request.client_turn_id.trim().is_empty()
+    if !valid_identifier(&request.binding_id)
+        || !valid_identifier(&request.client_turn_id)
         || request.native_prompt_json.len() > MAX_NATIVE_PROMPT_BYTES
     {
         return Err(NativeChannelError::InvalidNativePayload);
@@ -506,6 +583,10 @@ fn validate_turn(request: &ChannelTurn) -> Result<(), NativeChannelError> {
         return Err(NativeChannelError::InvalidNativePayload);
     }
     Ok(())
+}
+
+fn valid_identifier(value: &str) -> bool {
+    !value.trim().is_empty() && value.len() <= MAX_CHANNEL_IDENTIFIER_BYTES
 }
 
 fn require_attached(binding: &ChannelBinding) -> Result<(), NativeChannelError> {
@@ -643,11 +724,14 @@ pub mod generated {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use boxology_contract::CapabilityId;
+    use tokio::time::timeout;
 
     use super::{
-        ChannelInputMode, ChannelTurn, MAX_NATIVE_PROMPT_BYTES, NativeChannelError, generated,
-        validate_turn,
+        ChannelInputMode, ChannelTurn, MAX_CHANNEL_IDENTIFIER_BYTES, MAX_NATIVE_PROMPT_BYTES,
+        NativeChannelError, OperationLocks, generated, validate_turn,
     };
 
     #[test]
@@ -699,5 +783,78 @@ mod tests {
             validate_turn(&turn),
             Err(NativeChannelError::InvalidNativePayload)
         );
+    }
+
+    #[test]
+    fn native_turn_rejects_oversized_lane_identifiers() {
+        let turn = ChannelTurn {
+            binding_id: "b".repeat(MAX_CHANNEL_IDENTIFIER_BYTES + 1),
+            client_turn_id: "turn-1".into(),
+            received_at_ms: 1,
+            mode: ChannelInputMode::Queue,
+            native_prompt_json: "[]".into(),
+        };
+
+        assert_eq!(
+            validate_turn(&turn),
+            Err(NativeChannelError::InvalidNativePayload)
+        );
+    }
+
+    #[tokio::test]
+    async fn operation_locks_isolate_identities_and_prune() {
+        let locks = OperationLocks::default();
+        let first_binding = locks
+            .lock_binding("binding-a")
+            .await
+            .expect("valid binding");
+        let first_attachment = locks
+            .lock_attachment("t3code", "channel-a")
+            .await
+            .expect("valid attachment");
+
+        let other_binding = timeout(Duration::from_millis(100), locks.lock_binding("binding-b"))
+            .await
+            .expect("unrelated binding does not wait")
+            .expect("valid binding");
+        let other_attachment = timeout(
+            Duration::from_millis(100),
+            locks.lock_attachment("t3code", "channel-b"),
+        )
+        .await
+        .expect("unrelated attachment does not wait")
+        .expect("valid attachment");
+        assert!(
+            timeout(Duration::from_millis(20), locks.lock_binding("binding-a"))
+                .await
+                .is_err()
+        );
+        assert!(
+            timeout(
+                Duration::from_millis(20),
+                locks.lock_attachment("t3code", "channel-a")
+            )
+            .await
+            .is_err()
+        );
+
+        drop(first_binding);
+        drop(first_attachment);
+        let matching_binding = locks
+            .lock_binding("binding-a")
+            .await
+            .expect("valid binding");
+        let matching_attachment = locks
+            .lock_attachment("t3code", "channel-a")
+            .await
+            .expect("valid attachment");
+        drop(matching_binding);
+        drop(matching_attachment);
+        drop(other_binding);
+        drop(other_attachment);
+
+        let fresh = locks.lock_binding("fresh").await.expect("valid binding");
+        assert_eq!(locks.len(), 1);
+        drop(fresh);
     }
 }
