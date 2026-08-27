@@ -58,5 +58,6 @@ operators never open Crab's databases or credential store.
   arguments, output or trigger records.
 
 See [native channel operations](channel-operations.md),
-[private agent diagnostics](agent-diagnostics.md), [bridge operations](bridge-operations.md) and
-[realtime sub-agent control](sub-agent-control.md) for the typed operator workflows.
+[private agent diagnostics](agent-diagnostics.md), [bridge operations](bridge-operations.md),
+[configuration-aware runtime health](runtime-health.md) and [realtime sub-agent
+control](sub-agent-control.md) for the typed operator workflows.

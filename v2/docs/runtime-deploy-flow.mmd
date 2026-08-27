@@ -28,7 +28,7 @@ flowchart TB
     subgraph PROOF["Readiness proof"]
         HASH["Bundle hashes valid"]
         PID["Exactly one launchd-owned PID"]
-        IPC["Authenticated local IPC responds"]
+        IPC["Configured topology reports ready<br/>over authenticated local IPC"]
     end
     HASH --> READY
     PID --> READY

@@ -29,6 +29,25 @@ SOURCE = {
 }
 
 
+def runtime_health_report(
+    *,
+    ready: bool = True,
+    healthy: bool = True,
+    errors: list[str] | None = None,
+    needs_action: list[str] | None = None,
+) -> dict[str, object]:
+    return {
+        "schemaVersion": 1,
+        "observedAtMs": 42,
+        "ready": ready,
+        "healthy": healthy,
+        "channels": [],
+        "bridges": [],
+        "errors": errors or [],
+        "needsAction": needs_action or [],
+    }
+
+
 def fixture_bundle(parent: Path) -> Path:
     bundle = parent / "bundle"
     (bundle / "bin").mkdir(parents=True)
@@ -159,6 +178,29 @@ class BundleVerifierTests(unittest.TestCase):
                 with self.assertRaises(BundleError):
                     verify_bundle(bundle)
 
+    def test_runtime_health_output_is_strict_and_preserves_ready_vs_healthy(self) -> None:
+        waiting_for_auth = runtime_health_report(
+            healthy=False,
+            needs_action=["authenticate bridge whatsapp"],
+        )
+        parsed = bundle_tool.parse_runtime_health(json.dumps(waiting_for_auth))
+        self.assertTrue(parsed["ready"])
+        self.assertFalse(parsed["healthy"])
+        self.assertEqual(parsed["needsAction"], ["authenticate bridge whatsapp"])
+
+        invalid_reports = [
+            {**waiting_for_auth, "ready": 1},
+            {**waiting_for_auth, "healthy": True, "ready": False},
+            {**waiting_for_auth, "observedAtMs": True},
+            {**waiting_for_auth, "errors": [1]},
+            {**waiting_for_auth, "channels": ["not an object"]},
+            {**waiting_for_auth, "bridges": [42]},
+            {key: value for key, value in waiting_for_auth.items() if key != "channels"},
+        ]
+        for invalid in invalid_reports:
+            with self.subTest(invalid=invalid), self.assertRaises(BundleError):
+                bundle_tool.parse_runtime_health(json.dumps(invalid))
+
     @unittest.skipUnless(hasattr(os, "symlink"), "symlinks unavailable")
     def test_absolute_and_escaping_symlinks_are_rejected(self) -> None:
         for target in ("/private/tmp/outside", "../../outside"):
@@ -252,6 +294,45 @@ class ServiceDeploymentTests(unittest.TestCase):
         if state.pid is None:
             raise BundleError("not running")
         return state.pid
+
+    @mock.patch("scripts.v2_bundle.runtime_processes", return_value=[7000])
+    def test_production_readiness_accepts_actionable_health_but_rejects_unready(
+        self, _processes: mock.Mock
+    ) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            parent = Path(raw)
+            bundle = fixture_bundle(parent)
+            root = parent / "service"
+            root.mkdir()
+            paths = service_paths(root, launch_agents=parent / "LaunchAgents")
+            paths.current.symlink_to(bundle)
+            launchd = FakeLaunchd()
+            launchd.loaded = True
+
+            pid = bundle_tool.production_readiness(
+                paths,
+                launchd,
+                timeout_seconds=0,
+                health=lambda _paths: runtime_health_report(
+                    healthy=False,
+                    needs_action=["authenticate bridge whatsapp"],
+                ),
+            )
+            self.assertEqual(pid, 7000)
+
+            with self.assertRaisesRegex(
+                BundleError, "configured channel primary is missing"
+            ):
+                bundle_tool.production_readiness(
+                    paths,
+                    launchd,
+                    timeout_seconds=0,
+                    health=lambda _paths: runtime_health_report(
+                        ready=False,
+                        healthy=False,
+                        errors=["configured channel primary is missing"],
+                    ),
+                )
 
     @mock.patch("scripts.v2_bundle.require_runtime_node")
     def test_first_install_selects_the_codex_bundle_preset(
@@ -355,10 +436,31 @@ class ServiceDeploymentTests(unittest.TestCase):
                 launchd=launchd,
                 launch_agents=launch_agents,
                 processes=lambda: [launchd.pid],
+                health=lambda _paths: runtime_health_report(),
             )
             self.assertTrue(status["healthy"])
             self.assertTrue(status["ipcReady"])
+            self.assertTrue(status["topologyReady"])
+            self.assertTrue(status["topologyHealthy"])
             self.assertNotIn("EnvironmentVariables", json.dumps(status))
+
+            degraded = service_status(
+                root,
+                launchd=launchd,
+                launch_agents=launch_agents,
+                processes=lambda: [launchd.pid],
+                health=lambda _paths: runtime_health_report(
+                    healthy=False,
+                    needs_action=["authenticate bridge whatsapp"],
+                ),
+            )
+            self.assertTrue(degraded["ipcReady"])
+            self.assertTrue(degraded["topologyReady"])
+            self.assertFalse(degraded["topologyHealthy"])
+            self.assertFalse(degraded["healthy"])
+            self.assertEqual(
+                degraded["needsAction"], ["authenticate bridge whatsapp"]
+            )
 
     @mock.patch("scripts.v2_bundle.require_runtime_node")
     def test_update_preserves_unavailable_credential_environment(
@@ -585,6 +687,7 @@ class BundleBuildPolicyTests(unittest.TestCase):
                 "crab-v2-bridge",
                 "crab-v2-bridge-mcp",
                 "crab-v2-channel",
+                "crab-v2-health",
                 "crab-v2-sub-agent",
                 "crab-v2-sub-agent-mcp",
                 "crab-v2-trigger",

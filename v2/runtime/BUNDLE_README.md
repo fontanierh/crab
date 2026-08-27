@@ -44,7 +44,10 @@ is omitted.
 Deployment copies the bundle into an immutable release under `~/.crab-v2`, keeps config, state,
 logs and credentials outside releases, and owns the single `com.crab.v2.runtime` user LaunchAgent.
 It stops the old runtime gracefully, switches one `current` symlink, then proves one launchd-owned
-process and authenticated local IPC. Any failure restores and verifies the previous release.
+process and a ready configured topology over authenticated local IPC. A bridge awaiting
+authentication or reporting degradation is ready enough to preserve a successful update, while
+remaining unhealthy and actionable. Any structural failure restores and verifies the previous
+release.
 
 The bundled WhatsApp preset intentionally has an empty `inboundPolicy`, so it cannot trigger the
 agent until exact authorized DM IDs or group-and-sender pairs are added to the durable runtime
@@ -54,6 +57,16 @@ Check all layers without exposing the captured environment:
 
 ```sh
 python3 ~/.crab-v2/libexec/v2_bundle.py status
+```
+
+Status fails unless the complete configured topology is healthy and returns explicit
+`needsAction` entries for authentication or degradation. Inspect the same owner-only evidence
+directly with:
+
+```sh
+~/.crab-v2/bin/crab-v2-health \
+  --config ~/.crab-v2/config/runtime.json \
+  --state-dir ~/.crab-v2/state
 ```
 
 Inspect one ACP session without opening runtime state directly:

@@ -8,7 +8,7 @@ platform-specific directory and refuses a dirty source tree. Development builds 
 
 ```text
 crab-v2-<commit>-<platform>/
-├── bin/                  eleven production binaries; no test fixtures
+├── bin/                  twelve production binaries; no test fixtures
 ├── agents/
 │   ├── claude/           Claude ACP adapter 0.70.0 + locked production closure
 │   └── codex/            Codex ACP adapter 1.6.2 + locked production closure
@@ -91,18 +91,31 @@ The command verifies both source and copied bundles, requires a clean host-match
 captures only config-declared environment names from the ambient process and an optional
 owner-private environment file, and preserves unavailable values from the prior owner-only
 LaunchAgent. It then gracefully stops
-`com.crab.v2.runtime`, atomically flips `current`,
-and proves all three readiness facts: the manifest still verifies, launchd owns the only `crab-v2`
-PID, and the owner-authenticated bridge IPC responds. A failure at any point after cutover restores
-the prior symlink, plist, provenance and process, then verifies that rollback.
+`com.crab.v2.runtime`, atomically flips `current`, and proves all three readiness facts: the
+manifest still verifies, launchd owns the only `crab-v2` PID, and the owner-authenticated health
+surface reports the configured topology as ready. A failure at any point after cutover restores the
+prior symlink, plist, provenance and process, then verifies that rollback.
 
 ```sh
 python3 ~/.crab-v2/libexec/v2_bundle.py status
 ```
 
-Status checks the release, stable links, exact managed plist, provenance, singleton PID and local
-IPC. Its JSON never includes environment values. This v2 label and service root are separate from
-the live v1 `com.crab.runtime` service.
+Status checks the release, stable links, exact managed plist, provenance, singleton PID and the
+configured topology over local IPC. `topologyReady` means a release is structurally usable;
+`topologyHealthy` requires every configured channel and desired bridge to be fully healthy. A bridge
+awaiting authentication or reporting degradation remains ready, so an update is not rolled back,
+but status fails and reports an explicit `needsAction`. Its JSON never includes environment values.
+This v2 label and service root are separate from the live v1 `com.crab.runtime` service.
+
+The same evidence is available directly:
+
+```sh
+~/.crab-v2/bin/crab-v2-health \
+  --config ~/.crab-v2/config/runtime.json \
+  --state-dir ~/.crab-v2/state
+```
+
+See the [runtime health contract](runtime-health.md) and [rendered flow](runtime-health-flow.png).
 
 `~/.crab-v2/bin/crab-v2-agent` reads bounded session status and private adapter diagnostics through
 the same owner-authenticated IPC. It never opens SQLite directly; diagnostic output is emitted only

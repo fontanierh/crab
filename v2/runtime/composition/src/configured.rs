@@ -694,6 +694,7 @@ mod tests {
         BridgeIngressConfig, ChannelConfig, ChannelIpcClient, ChannelIpcClientError,
         ChannelIpcPaths, ChannelIpcStartupError, CommandConfig, LaneConfig, ProtocolConfig,
         RuntimeConfig, acp_channel::AcpChannelFacade, channel_ipc::ChannelIpcServer,
+        inspect_runtime_health,
     };
 
     #[derive(Clone, Copy, Default)]
@@ -1824,6 +1825,11 @@ mod tests {
             .expect("binding summary crosses authenticated IPC");
         assert_eq!(binding_summary.pending_input_count, 0);
         assert_eq!(binding_summary.lifecycle, ChannelLifecycle::Attached);
+        let health = inspect_runtime_health(&channel_client, &config)
+            .await
+            .expect("configured health aggregates through authenticated IPC");
+        assert!(health.is_ready());
+        assert!(health.is_healthy());
 
         let diagnostic_client = ChannelIpcClient::from_state_directory(directory.path())
             .expect("diagnostic client opens");

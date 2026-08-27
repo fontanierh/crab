@@ -16,6 +16,7 @@ mod bridge_mcp;
 mod channel_ipc;
 mod config;
 mod configured;
+mod runtime_health;
 mod sub_agent_mcp;
 
 pub use acp_channel::{AcpChannelError, AcpChannelOptions, run_acp_channel_stdio};
@@ -25,6 +26,7 @@ pub use channel_ipc::{
 };
 pub use config::*;
 pub use configured::*;
+pub use runtime_health::{RuntimeHealthError, RuntimeHealthReport, inspect_runtime_health};
 pub use sub_agent_mcp::{SubAgentMcpError, run_sub_agent_mcp_stdio};
 
 use agent_host_implementation::{
