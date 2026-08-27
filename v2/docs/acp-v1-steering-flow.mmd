@@ -1,0 +1,20 @@
+flowchart LR
+    C["runtime config<br/>requires extension"] --> I["ACP initialize"]
+    I --> A{"steering.supported<br/>is true?"}
+    A -->|no| F["session Failed"]
+    A -->|yes| R["session Ready"]
+    R --> S["Steer during<br/>active run"]
+    S --> X["_session/steering<br/>idleBehavior: promptRequired"]
+    X --> O{"adapter outcome"}
+    O -->|injected| D["same durable run"]
+    O -->|promptRequired| T["finish old run"]
+    T --> P["normal session/prompt"]
+    P --> N["new durable run"]
+    O -->|anything else| F
+
+    classDef config fill:#e8f1ff,stroke:#2260a8,color:#12243a;
+    classDef good fill:#e8f8ee,stroke:#237a47,color:#153723;
+    classDef bad fill:#fdebec,stroke:#b43a43,color:#4d171b;
+    class C,I,A,R,S,X,O,T,P config;
+    class D,N good;
+    class F bad;

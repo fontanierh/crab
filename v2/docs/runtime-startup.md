@@ -48,7 +48,9 @@ session closed.
 agent preset. It pins the official Claude ACP adapter to `0.70.0`, selects
 `mode=bypassPermissions`, and selects the exact service-token picker ID `model=opus`, whose ACP
 descriptor identifies Opus 5. The exact effective value makes a future rewrite fail closed. The
-package pin and resolved model are separate things.
+package pin and resolved model are separate things. `steeringExtension=sessionSteeringV1` also
+requires the adapter's advertised `_session/steering` support. Active follow-ups are injected; an
+idle race returns control to Crab and continues through a lifecycle-owned `session/prompt`.
 
 The preset uses Crab's shell-free `crab-v2-claude-authority-probe`. On macOS it actively checks the
 exact adapter version, non-root bypass eligibility, `launchctl`'s `sandboxed = no` result, writes in

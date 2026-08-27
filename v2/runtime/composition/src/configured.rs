@@ -1249,6 +1249,7 @@ mod tests {
                 session_options: std::collections::BTreeMap::new(),
                 session_mcp_servers: Vec::new(),
                 protocol: ProtocolConfig::V2,
+                steering_extension: None,
                 authority_probe: CommandConfig {
                     executable: "unused".into(),
                     arguments: Vec::new(),

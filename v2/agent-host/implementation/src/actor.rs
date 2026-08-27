@@ -6,10 +6,10 @@ use std::{
 };
 
 use agent_client_protocol::{
-    AcpAgent, Agent, ConnectionTo, LineDirection, Responder,
+    AcpAgent, Agent, ConnectionTo, JsonRpcRequest, JsonRpcResponse, LineDirection, Responder,
     schema::{ProtocolVersion, v1, v2},
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use tokio::sync::{mpsc, oneshot};
 use uuid::Uuid;
@@ -22,6 +22,24 @@ use crate::{
     ConfiguredMcpServer, OperationReceipt, PromptAccepted, PromptDisposition, PromptRequest,
     store::AgentStore,
 };
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonRpcRequest)]
+#[request(method = "_session/steering", response = SessionSteeringResponse)]
+#[serde(rename_all = "camelCase")]
+struct SessionSteeringRequest {
+    session_id: v1::SessionId,
+    prompt: Vec<v1::ContentBlock>,
+    #[serde(rename = "_meta")]
+    meta: Map<String, Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonRpcResponse)]
+#[serde(rename_all = "camelCase")]
+struct SessionSteeringResponse {
+    outcome: String,
+    #[serde(default)]
+    reason: Option<String>,
+}
 
 pub(crate) enum SessionCommand {
     Prompt {
@@ -208,6 +226,7 @@ async fn run_v1_session(
                 &agent.agent_id,
                 &agent.session_options,
                 &agent.session_mcp_servers,
+                agent.steering_extension,
                 state_directory.as_deref(),
                 &launch,
             )
@@ -219,6 +238,10 @@ async fn run_v1_session(
                     return Err(acp_error(error));
                 }
             };
+            let steering_enabled = matches!(
+                session.negotiation.steering,
+                crate::SteeringSupport::AgentExtension
+            );
             let _ = opened_tx.send(Ok(session.clone()));
             run_v1_loop(
                 connection,
@@ -230,6 +253,7 @@ async fn run_v1_session(
                 command_rx,
                 signal_rx,
                 signal_tx,
+                steering_enabled,
             )
             .await
             .map_err(acp_error)
@@ -366,6 +390,7 @@ async fn initialize_v1(
     agent_id: &str,
     session_options: &BTreeMap<String, String>,
     mcp_servers: &[ConfiguredMcpServer],
+    steering_extension: Option<crate::AgentSteeringExtension>,
     state_directory: Option<&std::path::Path>,
     launch: &SessionLaunch,
 ) -> Result<AgentSession, AgentHostError> {
@@ -379,6 +404,24 @@ async fn initialize_v1(
     if response.protocol_version != ProtocolVersion::V1 {
         return Err(AgentHostError::UnsupportedProtocolProfile);
     }
+    let steering = match steering_extension {
+        Some(crate::AgentSteeringExtension::SessionSteeringV1)
+            if response
+                .meta
+                .as_ref()
+                .and_then(|meta| meta.get("steering"))
+                .and_then(Value::as_object)
+                .and_then(|steering| steering.get("supported"))
+                .and_then(Value::as_bool)
+                == Some(true) =>
+        {
+            crate::SteeringSupport::AgentExtension
+        }
+        Some(crate::AgentSteeringExtension::SessionSteeringV1) => {
+            return Err(AgentHostError::ProtocolNegotiationFailed);
+        }
+        None => crate::SteeringSupport::TurnBoundaryQueue,
+    };
     let mcp_servers = build_v1_mcp_servers(
         mcp_servers,
         state_directory,
@@ -432,7 +475,7 @@ async fn initialize_v1(
         &AcpNegotiation {
             protocol_version: 1,
             protocol_profile: crate::AcpProtocolProfile::V1Stable,
-            steering: crate::SteeringSupport::TurnBoundaryQueue,
+            steering,
             compaction_reporting: crate::CompactionReporting::OpaqueAgentManaged,
             agent_capabilities_json: capabilities,
         },
@@ -711,6 +754,7 @@ async fn run_v1_loop(
     mut commands: mpsc::Receiver<SessionCommand>,
     mut signals: mpsc::UnboundedReceiver<ActorSignal>,
     signal_tx: mpsc::UnboundedSender<ActorSignal>,
+    steering_enabled: bool,
 ) -> Result<(), AgentHostError> {
     let mut state = ActorState {
         active_run_id: None,
@@ -733,7 +777,9 @@ async fn run_v1_loop(
             },
             reply,
             &signal_tx,
-        );
+            steering_enabled,
+        )
+        .await;
     }
 
     loop {
@@ -742,8 +788,8 @@ async fn run_v1_loop(
                 Some(SessionCommand::Prompt { request, reply }) => {
                     accept_v1_prompt(
                         &connection, &store, &clock, &session_id, &native_session_id,
-                        &mut state, request, reply, &signal_tx,
-                    );
+                        &mut state, request, reply, &signal_tx, steering_enabled,
+                    ).await;
                 }
                 Some(SessionCommand::Cancel { run_id, reply }) => {
                     let result = cancel_v1(
@@ -920,7 +966,7 @@ async fn run_v2_loop(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn accept_v1_prompt(
+async fn accept_v1_prompt(
     connection: &ConnectionTo<Agent>,
     store: &AgentStore,
     clock: &Clock,
@@ -930,6 +976,7 @@ fn accept_v1_prompt(
     request: PromptRequest,
     reply: oneshot::Sender<Result<PromptAccepted, AgentHostError>>,
     signals: &mpsc::UnboundedSender<ActorSignal>,
+    steering_enabled: bool,
 ) {
     let result = accept_v1_prompt_inner(
         connection,
@@ -940,12 +987,14 @@ fn accept_v1_prompt(
         state,
         request,
         signals,
-    );
+        steering_enabled,
+    )
+    .await;
     let _ = reply.send(result);
 }
 
 #[allow(clippy::too_many_arguments)]
-fn accept_v1_prompt_inner(
+async fn accept_v1_prompt_inner(
     connection: &ConnectionTo<Agent>,
     store: &AgentStore,
     clock: &Clock,
@@ -954,12 +1003,59 @@ fn accept_v1_prompt_inner(
     state: &mut ActorState,
     request: PromptRequest,
     signals: &mpsc::UnboundedSender<ActorSignal>,
+    steering_enabled: bool,
 ) -> Result<PromptAccepted, AgentHostError> {
     validate_prompt(session_id, &request)?;
-    if !matches!(request.mode, AgentInputMode::Queue) {
-        return Err(AgentHostError::SteeringUnavailable);
-    }
     let content = parse_v1_prompt(&request.native_prompt_json)?;
+    if let Some(accepted) = store.existing_prompt(&request)? {
+        return Ok(accepted);
+    }
+    if matches!(request.mode, AgentInputMode::Unknown { .. }) {
+        return Err(AgentHostError::InvalidNativePayload);
+    }
+    if matches!(request.mode, AgentInputMode::Steer) && state.active_run_id.is_some() {
+        if !steering_enabled {
+            return Err(AgentHostError::SteeringUnavailable);
+        }
+        let active_run_id = state
+            .active_run_id
+            .clone()
+            .expect("busy v1 session has an active run");
+        let response = match connection
+            .send_request(SessionSteeringRequest {
+                session_id: v1::SessionId::new(native_session_id.to_owned()),
+                prompt: content.clone(),
+                meta: Map::from_iter([(
+                    "steering".into(),
+                    json!({ "idleBehavior": "promptRequired" }),
+                )]),
+            })
+            .block_task()
+            .await
+        {
+            Ok(response) => response,
+            Err(_) => {
+                let _ = signals.send(ActorSignal::Fatal);
+                return Err(AgentHostError::TransportFailed);
+            }
+        };
+        match (response.outcome.as_str(), response.reason.as_deref()) {
+            ("injected", _) => {
+                let disposition = PromptDisposition::ContributedToActiveWork;
+                let (accepted, _) =
+                    store.accept_prompt(&request, &active_run_id, &disposition, false, clock()?)?;
+                return Ok(accepted);
+            }
+            ("promptRequired", Some("noRunningTurn")) => {
+                store.complete_run(session_id, &active_run_id, "Completed", clock()?)?;
+                state.active_run_id = None;
+            }
+            _ => {
+                let _ = signals.send(ActorSignal::Fatal);
+                return Err(AgentHostError::TransportFailed);
+            }
+        }
+    }
     let run_id = new_run_id();
     let busy = state.active_run_id.is_some();
     let disposition = if busy {

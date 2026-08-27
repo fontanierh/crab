@@ -35,6 +35,13 @@ pub enum AgentProtocol {
     V2,
 }
 
+/// Optional agent extension negotiated on top of a stable ACP profile.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AgentSteeringExtension {
+    /// Canonical ACP v1 `_session/steering` request with host-owned idle fallback.
+    SessionSteeringV1,
+}
+
 impl AgentProtocol {
     pub(crate) fn profile(self) -> AcpProtocolProfile {
         match self {
@@ -178,6 +185,8 @@ pub struct ConfiguredAgent {
     pub session_mcp_servers: Vec<ConfiguredMcpServer>,
     /// Protocol profile required from the subprocess.
     pub protocol: AgentProtocol,
+    /// Optional steering extension. Crab still verifies the matching initialize metadata.
+    pub steering_extension: Option<AgentSteeringExtension>,
     /// Agent-specific no-sandbox and permission-bypass probe.
     pub authority_probe: AuthorityProbeConfig,
 }
@@ -201,6 +210,7 @@ impl ConfiguredAgent {
             session_options: BTreeMap::new(),
             session_mcp_servers: Vec::new(),
             protocol,
+            steering_extension: None,
             authority_probe,
         }
     }
@@ -256,6 +266,13 @@ impl ConfiguredAgent {
         self
     }
 
+    /// Require one explicitly supported steering extension.
+    #[must_use]
+    pub fn steering_extension(mut self, extension: AgentSteeringExtension) -> Self {
+        self.steering_extension = Some(extension);
+        self
+    }
+
     pub(crate) fn validate(&self) -> Result<(), AgentHostError> {
         if self.agent_id.trim().is_empty()
             || self.display_name.trim().is_empty()
@@ -277,6 +294,7 @@ impl ConfiguredAgent {
                 .collect::<std::collections::HashSet<_>>()
                 .len()
                 != self.session_mcp_servers.len()
+            || (self.steering_extension.is_some() && self.protocol != AgentProtocol::V1)
         {
             return Err(AgentHostError::InvalidConfiguration);
         }

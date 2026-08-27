@@ -6,9 +6,9 @@ mod store;
 
 pub use authority::{AuthorityVerifier, SystemAuthorityVerifier};
 pub use config::{
-    AgentProtocol, AuthorityProbeConfig, CRAB_AGENT_ID_ENV, CRAB_PARENT_SESSION_ID_ENV,
-    CRAB_SESSION_ID_ENV, CRAB_STATE_DIRECTORY_ENV, CRAB_SUB_AGENT_ID_ENV,
-    CRAB_WORKING_DIRECTORY_ENV, ConfiguredAgent, ConfiguredMcpServer,
+    AgentProtocol, AgentSteeringExtension, AuthorityProbeConfig, CRAB_AGENT_ID_ENV,
+    CRAB_PARENT_SESSION_ID_ENV, CRAB_SESSION_ID_ENV, CRAB_STATE_DIRECTORY_ENV,
+    CRAB_SUB_AGENT_ID_ENV, CRAB_WORKING_DIRECTORY_ENV, ConfiguredAgent, ConfiguredMcpServer,
 };
 pub use contract::*;
 

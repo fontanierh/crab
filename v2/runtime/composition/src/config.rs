@@ -5,7 +5,8 @@ use std::{
 };
 
 use agent_host_implementation::{
-    AgentProtocol, AuthorityProbeConfig, ConfiguredAgent, ConfiguredMcpServer,
+    AgentProtocol, AgentSteeringExtension, AuthorityProbeConfig, ConfiguredAgent,
+    ConfiguredMcpServer,
 };
 use bridge_host_contract::{AuthenticationMethod, BridgeIngressMode, BridgeSpec};
 use serde::Deserialize;
@@ -54,6 +55,9 @@ pub struct AgentConfig {
     pub session_mcp_servers: Vec<McpServerConfig>,
     /// ACP wire profile required from the command.
     pub protocol: ProtocolConfig,
+    /// Optional extension that must also be advertised during ACP initialization.
+    #[serde(default)]
+    pub steering_extension: Option<SteeringExtensionConfig>,
     /// Agent-specific command that proves yolo/no-sandbox authority.
     pub authority_probe: CommandConfig,
 }
@@ -66,6 +70,14 @@ pub enum ProtocolConfig {
     V1,
     /// Draft ACP v2; active work may support concurrent steering.
     V2,
+}
+
+/// Explicit steering extension supported by one pinned ACP adapter.
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub enum SteeringExtensionConfig {
+    /// Canonical ACP v1 `_session/steering` request.
+    SessionSteeringV1,
 }
 
 /// A shell-free command with environment values sourced only by name.
@@ -286,7 +298,7 @@ impl RuntimeConfig {
                             .environment(environment_values(&server.environment_from)?))
                     })
                     .collect::<Result<Vec<_>, RuntimeConfigError>>()?;
-                Ok(ConfiguredAgent::new(
+                let configured = ConfiguredAgent::new(
                     &agent.agent_id,
                     &agent.display_name,
                     &agent.executable,
@@ -301,7 +313,13 @@ impl RuntimeConfig {
                 .arguments(agent.arguments.clone())
                 .environment(environment)
                 .session_options(agent.session_options.clone())
-                .session_mcp_servers(mcp_servers))
+                .session_mcp_servers(mcp_servers);
+                Ok(match agent.steering_extension {
+                    Some(SteeringExtensionConfig::SessionSteeringV1) => {
+                        configured.steering_extension(AgentSteeringExtension::SessionSteeringV1)
+                    }
+                    None => configured,
+                })
             })
             .collect()
     }
@@ -373,6 +391,7 @@ impl RuntimeConfig {
                     .session_options
                     .iter()
                     .any(|(name, value)| name.trim().is_empty() || value.trim().is_empty())
+                || (agent.steering_extension.is_some() && agent.protocol != ProtocolConfig::V1)
             {
                 return Err(RuntimeConfigError::InvalidTopology);
             }
@@ -615,6 +634,14 @@ mod tests {
         assert!(spec.launch_json.contains("PATH"));
         assert!(!spec.launch_json.contains("secret"));
         assert_eq!(spec.authentication_methods.len(), 2);
+
+        let mut invalid = config.clone();
+        invalid.agents[0].steering_extension =
+            Some(super::SteeringExtensionConfig::SessionSteeringV1);
+        assert!(matches!(
+            invalid.validate(),
+            Err(RuntimeConfigError::InvalidTopology)
+        ));
     }
 
     #[test]
@@ -644,6 +671,10 @@ mod tests {
         );
         assert_eq!(agent.environment_from, ["PATH", "CLAUDE_CODE_OAUTH_TOKEN"]);
         assert_eq!(agent.protocol, super::ProtocolConfig::V1);
+        assert_eq!(
+            agent.steering_extension,
+            Some(super::SteeringExtensionConfig::SessionSteeringV1)
+        );
         assert_eq!(
             agent.session_options.get("mode").map(String::as_str),
             Some("bypassPermissions")
@@ -685,6 +716,10 @@ mod tests {
         assert_eq!(agent.arguments, Vec::<String>::new());
         assert_eq!(agent.environment_from, ["PATH", "CLAUDE_CODE_OAUTH_TOKEN"]);
         assert_eq!(agent.protocol, super::ProtocolConfig::V1);
+        assert_eq!(
+            agent.steering_extension,
+            Some(super::SteeringExtensionConfig::SessionSteeringV1)
+        );
         assert_eq!(
             agent.session_options.get("mode").map(String::as_str),
             Some("bypassPermissions")
