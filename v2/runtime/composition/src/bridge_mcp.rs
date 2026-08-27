@@ -191,7 +191,7 @@ struct BridgeSpecInput {
 }
 
 impl BridgeSpecInput {
-    fn into_contract(self) -> Result<BridgeSpec, Error> {
+    fn into_contract(self, management: BridgeManagement) -> Result<BridgeSpec, Error> {
         validate_text(&self.bridge_id)?;
         validate_text(&self.package_id)?;
         validate_text(&self.display_name)?;
@@ -238,7 +238,7 @@ impl BridgeSpecInput {
                 .map_err(|_| invalid_input())?,
             authentication_methods: methods,
             ingress_mode: self.ingress_mode.into(),
-            management: BridgeManagement::AgentManaged,
+            management,
             alert_target: self.alert_target.map(|target| BridgeAlertTarget {
                 channel_id: target.channel_id,
                 lane: target.lane,
@@ -378,7 +378,7 @@ impl McpTool<mcp::Client> for RegisterTool {
     ) -> Result<Self::Output, Error> {
         self.0
             .client()?
-            .register_bridge(input.into_contract()?)
+            .register_bridge(input.into_contract(BridgeManagement::AgentManaged)?)
             .await
             .map(record_json)
             .map_err(ipc_error)
@@ -434,11 +434,13 @@ impl McpTool<mcp::Client> for ReplaceTool {
         input: Self::Input,
         _connection: agent_client_protocol::mcp_server::McpConnectionTo<mcp::Client>,
     ) -> Result<Self::Output, Error> {
-        self.0
-            .client()?
+        let client = self.0.client()?;
+        let catalog = client.list_bridges().await.map_err(ipc_error)?;
+        let management = replacement_management(&catalog, &input.spec.bridge_id)?;
+        client
             .replace_bridge(ReplaceBridgeRequest {
                 expected_generation: input.expected_generation,
-                spec: input.spec.into_contract()?,
+                spec: input.spec.into_contract(management)?,
             })
             .await
             .map(record_json)
@@ -778,6 +780,18 @@ fn valid_environment_names(names: &[String]) -> bool {
     })
 }
 
+fn replacement_management(
+    catalog: &BridgeCatalog,
+    bridge_id: &str,
+) -> Result<BridgeManagement, Error> {
+    catalog
+        .bridges
+        .iter()
+        .find(|record| record.bridge_id == bridge_id)
+        .map(|record| record.management.clone())
+        .ok_or_else(|| domain_error("UnknownBridge"))
+}
+
 fn validate_text(value: &str) -> Result<(), Error> {
     if value.trim().is_empty() {
         Err(invalid_input())
@@ -792,6 +806,10 @@ fn invalid_input() -> Error {
 
 fn invalid_output() -> Error {
     Error::internal_error().data(json!({"kind":"internal","code":"InvalidProviderOutput"}))
+}
+
+fn domain_error(code: &str) -> Error {
+    Error::internal_error().data(json!({"kind":"domain","code":code}))
 }
 
 fn ipc_error(error: ChannelIpcClientError) -> Error {
@@ -976,11 +994,31 @@ fn delivery_name(value: &DeliveryLifecycle) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use bridge_host_contract::{CredentialLifecycle, CredentialStatus};
+    use bridge_host_contract::{
+        BridgeCatalog, BridgeIngressMode, BridgeLifecycle, BridgeManagement, BridgeRecord,
+        CredentialLifecycle, CredentialStatus,
+    };
+    use serde_json::json;
 
     use super::{
-        AuthenticationMethodInput, IngressModeInput, credential_json, valid_environment_names,
+        AuthenticationMethodInput, BridgeSpecInput, IngressModeInput, credential_json,
+        replacement_management, valid_environment_names,
     };
+
+    fn bridge_record(bridge_id: &str, management: BridgeManagement) -> BridgeRecord {
+        BridgeRecord {
+            bridge_id: bridge_id.into(),
+            package_id: "fixture".into(),
+            display_name: "Fixture".into(),
+            lifecycle: BridgeLifecycle::Stopped,
+            ingress_mode: BridgeIngressMode::Queue,
+            management,
+            alert_target: None,
+            desired_running: false,
+            generation: 7,
+            registered_at_ms: 1,
+        }
+    }
 
     #[test]
     fn tool_enums_and_environment_names_are_strict() {
@@ -997,6 +1035,53 @@ mod tests {
         assert!(valid_environment_names(&["PATH".into()]));
         assert!(!valid_environment_names(&["PATH".into(), "PATH".into()]));
         assert!(!valid_environment_names(&["BAD=VALUE".into()]));
+    }
+
+    #[test]
+    fn replacement_preserves_registered_management_and_missing_ids_fail_closed() {
+        let catalog = BridgeCatalog {
+            bridges: vec![
+                bridge_record("configured", BridgeManagement::RuntimeConfigured),
+                bridge_record("agent", BridgeManagement::AgentManaged),
+            ],
+        };
+        assert_eq!(
+            replacement_management(&catalog, "configured").expect("configured bridge exists"),
+            BridgeManagement::RuntimeConfigured
+        );
+        assert_eq!(
+            replacement_management(&catalog, "agent").expect("agent bridge exists"),
+            BridgeManagement::AgentManaged
+        );
+        assert!(replacement_management(&catalog, "missing").is_err());
+
+        let input = serde_json::from_value::<BridgeSpecInput>(json!({
+            "bridgeId": "configured",
+            "packageId": "fixture",
+            "displayName": "Fixture",
+            "launch": {
+                "executable": "/fixture/bridge",
+                "arguments": [],
+                "workingDirectory": "/fixture",
+                "environmentNames": []
+            },
+            "configuration": {},
+            "authenticationMethods": [],
+            "ingressMode": "queue",
+            "desiredRunning": false,
+            "healthIntervalMs": 1,
+            "credentialValidationIntervalMs": 1,
+            "restartLimit": 1,
+            "restartWindowMs": 1
+        }))
+        .expect("bridge input decodes");
+        assert_eq!(
+            input
+                .into_contract(BridgeManagement::RuntimeConfigured)
+                .expect("bridge input converts")
+                .management,
+            BridgeManagement::RuntimeConfigured
+        );
     }
 
     #[test]
