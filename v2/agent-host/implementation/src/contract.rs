@@ -170,8 +170,8 @@ boxology::contract! {
         /// Stable caller key used to deduplicate a retried turn.
         pub client_turn_id: String,
         pub mode: AgentInputMode,
-        /// Exact JSON array carried in ACP's `prompt` field. Crab must not narrow multimodal ACP
-        /// content blocks.
+        /// Exact JSON array carried in ACP's `prompt` field, capped at 2 MiB. Crab must not narrow
+        /// multimodal ACP content blocks; larger content travels by reference.
         pub native_prompt_json: String,
     }
 

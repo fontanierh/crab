@@ -9,7 +9,7 @@ pub fn implementation_descriptor() -> ::boxology_contract::ImplementationDescrip
                         ::boxology_contract::BoxId::new("agent-host")
                             .expect("generated import package id is valid"),
                         ::boxology_contract::ContractRevision::new(
-                                "sha256:bef07aa4e7b9e2033d2056da616eb203c8b27dfa0285421e117118128e86d2b0",
+                                "sha256:a17d5d88d02656890d2274acd81cbb6852eecf65fa61255159a4fe1ccc052146",
                             )
                             .expect("generated import revision is valid"),
                         [

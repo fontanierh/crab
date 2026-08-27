@@ -891,7 +891,7 @@ static __BOXOLOGY_CONTRACT_DESCRIPTOR: ::std::sync::LazyLock<
                 capability_6,
             ],
             ::boxology_contract::ContractRevision::new(
-                    "sha256:6fc49b785cf181cdf648767ac0c1a8220b7676e14812178356dac871cba96ffd",
+                    "sha256:204613e9b77d1e59accbf394f520ffec273471e6cf10ff968c5d87eb1c3c29ea",
                 )
                 .expect("generated contract revision is non-empty"),
         )
@@ -2475,7 +2475,8 @@ pub struct SpawnSubAgentRequest {
     pub parent_context_through_sequence: ::core::option::Option<u64>,
     /// Permit a visible-history snapshot when native ACP session fork is unavailable.
     pub allow_portable_snapshot: bool,
-    /// Exact ACP-compatible initial task content.
+    /// Exact ACP-compatible initial task content, capped at 2 MiB. Larger content travels by
+    /// reference.
     pub native_task_prompt_json: ::std::string::String,
     pub metadata_json: ::std::string::String,
     /// Zero disables crash restart. Resume is allowed only when the ACP session can be restored.
@@ -3090,6 +3091,7 @@ pub struct SendToChildRequest {
     pub sub_agent_id: ::std::string::String,
     pub client_message_id: ::std::string::String,
     pub mode: SubAgentInputMode,
+    /// Exact ACP-compatible prompt content, capped at 2 MiB.
     pub native_prompt_json: ::std::string::String,
 }
 #[rustfmt::skip]
@@ -5801,8 +5803,8 @@ pub mod test_support {
 #[rustfmt::skip]
 #[doc(hidden)]
 pub const __BOXOLOGY_SEMANTIC_DIGEST: [u8; 32] = [
-    226, 23, 2, 254, 140, 102, 249, 188, 107, 192, 222, 136, 53, 44, 85, 251, 29, 127,
-    74, 158, 194, 226, 49, 222, 127, 2, 152, 101, 19, 51, 22, 135,
+    8, 103, 128, 99, 170, 26, 119, 78, 42, 168, 141, 117, 21, 29, 140, 93, 102, 166, 23,
+    152, 205, 191, 172, 224, 64, 138, 28, 149, 37, 200, 137, 240,
 ];
 #[rustfmt::skip]
 #[doc(hidden)]

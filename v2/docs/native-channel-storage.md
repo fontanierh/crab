@@ -24,6 +24,8 @@ and sequence instead of copying it into a second event journal.
 
 - One live `(adapter_id, channel_id)` binding targets exactly one ACP session.
 - `(binding_id, session_id, client_turn_id)` deduplicates an immutable channel turn.
+- Native prompt JSON is capped at 2 MiB before parsing or durable turn storage. Larger media uses
+  resource links or content handles.
 - Queue and steer map through a generated Boxology `agent-host` import; no implementation crate is
   linked across the box boundary.
 - Replay reads every ordered ACP event, including client-to-agent messages and tool activity, even

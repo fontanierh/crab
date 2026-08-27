@@ -1734,7 +1734,7 @@ static __BOXOLOGY_CONTRACT_DESCRIPTOR: ::std::sync::LazyLock<
                 capability_13,
             ],
             ::boxology_contract::ContractRevision::new(
-                    "sha256:bef07aa4e7b9e2033d2056da616eb203c8b27dfa0285421e117118128e86d2b0",
+                    "sha256:a17d5d88d02656890d2274acd81cbb6852eecf65fa61255159a4fe1ccc052146",
                 )
                 .expect("generated contract revision is non-empty"),
         )
@@ -6148,8 +6148,8 @@ pub struct PromptRequest {
     /// Stable caller key used to deduplicate a retried turn.
     pub client_turn_id: ::std::string::String,
     pub mode: AgentInputMode,
-    /// Exact JSON array carried in ACP's `prompt` field. Crab must not narrow multimodal ACP
-    /// content blocks.
+    /// Exact JSON array carried in ACP's `prompt` field, capped at 2 MiB. Crab must not narrow
+    /// multimodal ACP content blocks; larger content travels by reference.
     pub native_prompt_json: ::std::string::String,
 }
 #[rustfmt::skip]
@@ -10571,8 +10571,8 @@ pub mod test_support {
 #[rustfmt::skip]
 #[doc(hidden)]
 pub const __BOXOLOGY_SEMANTIC_DIGEST: [u8; 32] = [
-    243, 191, 189, 170, 154, 38, 109, 90, 251, 112, 255, 88, 204, 179, 108, 101, 235,
-    239, 138, 192, 0, 91, 188, 223, 214, 234, 5, 244, 210, 234, 134, 166,
+    53, 253, 5, 169, 199, 214, 218, 15, 101, 169, 242, 251, 217, 74, 78, 148, 46, 166,
+    27, 189, 125, 0, 47, 185, 127, 233, 202, 123, 111, 194, 231, 111,
 ];
 #[rustfmt::skip]
 #[doc(hidden)]

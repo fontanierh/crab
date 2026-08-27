@@ -55,7 +55,8 @@ boxology::contract! {
         pub parent_context_through_sequence: Option<u64>,
         /// Permit a visible-history snapshot when native ACP session fork is unavailable.
         pub allow_portable_snapshot: bool,
-        /// Exact ACP-compatible initial task content.
+        /// Exact ACP-compatible initial task content, capped at 2 MiB. Larger content travels by
+        /// reference.
         pub native_task_prompt_json: String,
         pub metadata_json: String,
         /// Zero disables crash restart. Resume is allowed only when the ACP session can be restored.
@@ -81,6 +82,7 @@ boxology::contract! {
         pub sub_agent_id: String,
         pub client_message_id: String,
         pub mode: SubAgentInputMode,
+        /// Exact ACP-compatible prompt content, capped at 2 MiB.
         pub native_prompt_json: String,
     }
 

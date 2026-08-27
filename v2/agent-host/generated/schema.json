@@ -278,9 +278,9 @@
   "provenance": {
     "generator": "boxology-generator",
     "generator_version": "0.1.1",
-    "semantic_digest": "sha256:f3bfbdaa9a266d5afb70ff58ccb36c65ebef8ac0005bbcdfd6ea05f4d2ea86a6"
+    "semantic_digest": "sha256:35fd05a9c7d6da0f65a9f2fbd94a4e942ea61bbd7d002fb97fe9ca7b6fc2e76f"
   },
-  "revision": "sha256:bef07aa4e7b9e2033d2056da616eb203c8b27dfa0285421e117118128e86d2b0",
+  "revision": "sha256:a17d5d88d02656890d2274acd81cbb6852eecf65fa61255159a4fe1ccc052146",
   "schema_format": 1,
   "types": [
     {
@@ -907,8 +907,8 @@
         {
           "deprecation": null,
           "docs": [
-            " Exact JSON array carried in ACP's `prompt` field. Crab must not narrow multimodal ACP",
-            " content blocks."
+            " Exact JSON array carried in ACP's `prompt` field, capped at 2 MiB. Crab must not narrow",
+            " multimodal ACP content blocks; larger content travels by reference."
           ],
           "name": "native_prompt_json",
           "type": "String"

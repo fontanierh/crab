@@ -1621,7 +1621,7 @@ static __BOXOLOGY_CONTRACT_DESCRIPTOR: ::std::sync::LazyLock<
                 capability_13,
             ],
             ::boxology_contract::ContractRevision::new(
-                    "sha256:1f8e3d56d8e0630310ffe01bd780bbabeac6eea524da631beaa983d13e917268",
+                    "sha256:0d711ed187fab88500737d701ceac310aa7c7ba4e027195e38a5536996bf6534",
                 )
                 .expect("generated contract revision is non-empty"),
         )
@@ -3822,7 +3822,8 @@ pub struct ChannelTurn {
     pub client_turn_id: ::std::string::String,
     pub received_at_ms: u64,
     pub mode: ChannelInputMode,
-    /// Exact ACP-compatible prompt JSON, including attachments and other rich content.
+    /// Exact ACP-compatible prompt JSON, including attachments and other rich content, capped
+    /// at 2 MiB. Larger content travels by reference.
     pub native_prompt_json: ::std::string::String,
 }
 #[rustfmt::skip]
@@ -8179,8 +8180,8 @@ pub mod test_support {
 #[rustfmt::skip]
 #[doc(hidden)]
 pub const __BOXOLOGY_SEMANTIC_DIGEST: [u8; 32] = [
-    215, 83, 157, 199, 124, 202, 45, 192, 184, 187, 54, 215, 122, 241, 28, 118, 69, 82,
-    149, 250, 141, 2, 36, 234, 181, 128, 38, 152, 214, 179, 187, 60,
+    110, 3, 167, 22, 31, 93, 253, 155, 15, 159, 164, 143, 156, 72, 32, 22, 135, 202, 45,
+    99, 73, 151, 44, 156, 204, 148, 73, 75, 169, 229, 126, 110,
 ];
 #[rustfmt::skip]
 #[doc(hidden)]
