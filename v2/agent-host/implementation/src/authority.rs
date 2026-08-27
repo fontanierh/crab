@@ -17,7 +17,7 @@ use crate::{
     PermissionAuthority, RootAuthority, SandboxAuthority,
 };
 
-const MAX_PROBE_OUTPUT_BYTES: usize = 64 * 1024;
+const MAX_AUTHORITY_COMMAND_OUTPUT_BYTES: usize = 64 * 1024;
 const AUTHORITY_COMMAND_TIMEOUT: Duration = Duration::from_secs(10);
 const COMMAND_TERMINATION_GRACE: Duration = Duration::from_secs(1);
 
@@ -102,7 +102,7 @@ impl AuthorityVerifier for SystemAuthorityVerifier {
                     AgentHostError::PreflightFailed
                 }
             })?;
-        if !probe.status.success() || probe.stdout.len() > MAX_PROBE_OUTPUT_BYTES {
+        if !probe.status.success() {
             return Err(AgentHostError::PreflightFailed);
         }
         let report: AgentProbeOutput =
@@ -190,12 +190,20 @@ async fn command_output(mut command: Command, timeout: Duration) -> io::Result<O
     Err(error)
 }
 
-async fn read_output<R>(mut reader: R) -> io::Result<Vec<u8>>
+async fn read_output<R>(reader: R) -> io::Result<Vec<u8>>
 where
     R: tokio::io::AsyncRead + Unpin,
 {
-    let mut output = Vec::new();
-    reader.read_to_end(&mut output).await?;
+    let limit = u64::try_from(MAX_AUTHORITY_COMMAND_OUTPUT_BYTES)
+        .map_err(|_| io::Error::other("authority output limit is invalid"))?;
+    let mut output = Vec::with_capacity(MAX_AUTHORITY_COMMAND_OUTPUT_BYTES.min(8 * 1024));
+    reader.take(limit + 1).read_to_end(&mut output).await?;
+    if output.len() > MAX_AUTHORITY_COMMAND_OUTPUT_BYTES {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "authority command output exceeded its limit",
+        ));
+    }
     Ok(output)
 }
 
@@ -234,12 +242,28 @@ impl Drop for ProcessGroupGuard {
 
 #[cfg(all(test, unix))]
 mod tests {
-    use std::{io, time::Duration};
+    use std::{io, path::Path, time::Duration};
 
     use nix::{errno::Errno, sys::signal::kill, unistd::Pid};
     use tokio::process::Command;
 
     use super::command_output;
+
+    async fn assert_process_terminated(child_pid_path: &Path) {
+        let child_pid = tokio::fs::read_to_string(child_pid_path)
+            .await
+            .expect("fixture recorded descendant pid")
+            .parse::<i32>()
+            .expect("descendant pid is numeric");
+        let child_pid = Pid::from_raw(child_pid);
+        for _ in 0..50 {
+            if matches!(kill(child_pid, None), Err(Errno::ESRCH)) {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        panic!("authority command descendant survived cleanup");
+    }
 
     #[tokio::test]
     async fn timed_out_command_terminates_its_descendant_process_group() {
@@ -258,21 +282,32 @@ mod tests {
             .expect_err("silent command must time out");
         assert_eq!(error.kind(), io::ErrorKind::TimedOut);
 
-        let child_pid = tokio::fs::read_to_string(&child_pid_path)
-            .await
-            .expect("fixture recorded descendant pid")
-            .parse::<i32>()
-            .expect("descendant pid is numeric");
-        let child_pid = Pid::from_raw(child_pid);
-        let mut terminated = false;
-        for _ in 0..50 {
-            if matches!(kill(child_pid, None), Err(Errno::ESRCH)) {
-                terminated = true;
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(20)).await;
+        assert_process_terminated(&child_pid_path).await;
+    }
+
+    #[tokio::test]
+    async fn output_overflow_terminates_stdout_and_stderr_process_groups() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        for (stream, redirect) in [("stdout", ""), ("stderr", ">&2")] {
+            let child_pid_path = directory.path().join(format!("{stream}.pid"));
+            let script = format!(
+                "/bin/sleep 60 & child=$!; printf '%s' \"$child\" > \"$1\"; \
+                 /usr/bin/head -c 70000 /dev/zero {redirect}; wait"
+            );
+            let mut command = Command::new("/bin/sh");
+            command.args([
+                "-c",
+                &script,
+                "authority-output-test",
+                &child_pid_path.to_string_lossy(),
+            ]);
+
+            let error = command_output(command, Duration::from_secs(5))
+                .await
+                .expect_err("oversized output must fail closed");
+            assert_eq!(error.kind(), io::ErrorKind::InvalidData, "{stream}");
+            assert_process_terminated(&child_pid_path).await;
         }
-        assert!(terminated, "timed-out descendant process survived cleanup");
     }
 }
 

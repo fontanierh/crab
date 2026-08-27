@@ -51,8 +51,10 @@ session closed.
 Direct preflight, open, resume and fork all share one fail-closed authority boundary. Verification
 has a 30-second total deadline. The passwordless-sudo and agent-policy subprocesses each have a
 10-second deadline and run in isolated process groups; timeout sends `SIGTERM`, waits one second,
-then sends `SIGKILL` and reaps the direct child. A timeout returns `AuthorityUnavailable` before a
-new session row or ACP subprocess exists.
+then sends `SIGKILL` and reaps the direct child. Stdout and stderr are independently capped at 64
+KiB; overflow takes the same cleanup path. A timeout returns `AuthorityUnavailable`, while malformed
+or oversized agent evidence returns `PreflightFailed`, before a new session row or ACP subprocess
+exists.
 
 ![Bounded authority preflight](authority-timeout-flow.png)
 

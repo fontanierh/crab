@@ -3,8 +3,8 @@ flowchart LR
     CALL["preflight · open<br/>resume · fork"]
     TOTAL{"Authority verifier<br/>30s total deadline"}
     FS["Canonical workspace<br/>write probe"]
-    SUDO["sudo -n id -u<br/>10s command deadline"]
-    PROBE["Agent policy probe<br/>10s command deadline"]
+    SUDO["sudo -n id -u<br/>10s · 64 KiB / stream"]
+    PROBE["Agent policy probe<br/>10s · 64 KiB / stream"]
     READY["Verified authority<br/>session may start"]
     STOP["Cancel verifier<br/>TERM process group<br/>1s grace → KILL"]
     REJECT["AuthorityUnavailable<br/>no session row created"]
