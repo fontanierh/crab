@@ -21,7 +21,7 @@ use generated::AgentHostImport;
 use serde_json::{Value, json};
 use store::{InteractionDirection, RecoveryCandidate, SubAgentStore, spawn_fingerprint};
 use tokio::{
-    sync::{Mutex, oneshot},
+    sync::{Mutex, OwnedMutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard, oneshot},
     task::JoinHandle,
 };
 use uuid::Uuid;
@@ -34,6 +34,62 @@ const PUMP_FAILURE_LIMIT: u8 = 3;
 const INITIAL_TASK_MESSAGE_ID: &str = "__initial_task__";
 
 type Clock = Arc<dyn Fn() -> Result<u64, SubAgentHostError> + Send + Sync>;
+
+#[derive(Default)]
+struct SpawnLocks {
+    locks: StdMutex<HashMap<String, Weak<Mutex<()>>>>,
+}
+
+impl SpawnLocks {
+    async fn lock(&self, client_sub_agent_id: &str) -> OwnedMutexGuard<()> {
+        let lock = {
+            let mut locks = self.locks.lock().unwrap_or_else(PoisonError::into_inner);
+            locks.retain(|_, lock| lock.strong_count() > 0);
+            if let Some(lock) = locks.get(client_sub_agent_id).and_then(Weak::upgrade) {
+                lock
+            } else {
+                let lock = Arc::new(Mutex::new(()));
+                locks.insert(client_sub_agent_id.to_owned(), Arc::downgrade(&lock));
+                lock
+            }
+        };
+        lock.lock_owned().await
+    }
+
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.locks
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .len()
+    }
+}
+
+struct SpawnOperation<'a> {
+    _identity: OwnedMutexGuard<()>,
+    _recovery: RwLockReadGuard<'a, ()>,
+}
+
+#[derive(Default)]
+struct SubAgentOperations {
+    spawn_locks: SpawnLocks,
+    recovery: RwLock<()>,
+}
+
+impl SubAgentOperations {
+    async fn spawn(&self, client_sub_agent_id: &str) -> SpawnOperation<'_> {
+        let identity = self.spawn_locks.lock(client_sub_agent_id).await;
+        let recovery = self.recovery.read().await;
+        SpawnOperation {
+            _identity: identity,
+            _recovery: recovery,
+        }
+    }
+
+    async fn recover(&self) -> RwLockWriteGuard<'_, ()> {
+        self.recovery.write().await
+    }
+}
 
 struct PumpTask {
     token: Uuid,
@@ -136,7 +192,7 @@ impl SubAgentHostState {
         SubAgentHost {
             agent_host: Arc::new(agent_host),
             store: Arc::new(self.store),
-            spawn_operations: Arc::new(Mutex::new(())),
+            operations: Arc::new(SubAgentOperations::default()),
             pumps: Arc::new(PumpRegistry::default()),
             clock: Arc::new(system_time_ms),
         }
@@ -147,7 +203,7 @@ impl SubAgentHostState {
 pub struct SubAgentHost {
     agent_host: Arc<AgentHostImport>,
     store: Arc<SubAgentStore>,
-    spawn_operations: Arc<Mutex<()>>,
+    operations: Arc<SubAgentOperations>,
     pumps: Arc<PumpRegistry>,
     clock: Clock,
 }
@@ -615,8 +671,8 @@ impl SubAgentHost {
         context: CallContext,
         request: SpawnSubAgentRequest,
     ) -> Result<SubAgentRecord, SubAgentHostError> {
-        let _spawn = self.spawn_operations.lock().await;
         validate_spawn(&request)?;
+        let _spawn = self.operations.spawn(&request.client_sub_agent_id).await;
         let fingerprint = spawn_fingerprint(&request)?;
         if let Some(existing) = self
             .store
@@ -940,7 +996,7 @@ impl SubAgentHost {
         request: RecoverSubAgentsRequest,
     ) -> Result<SubAgentRecoveryReport, SubAgentHostError> {
         let _ = request;
-        let _spawn = self.spawn_operations.lock().await;
+        let _recovery = self.operations.recover().await;
         let candidates = self.store.recovery_candidates()?;
         let mut recoveries = Vec::with_capacity(candidates.len());
         for candidate in &candidates {
@@ -1238,8 +1294,57 @@ mod tests {
 
     use super::{
         MAX_NATIVE_PROMPT_BYTES, PumpRegistry, SubAgentContextMode, SubAgentHostError,
-        SubAgentInputMode, generated, validate_prompt,
+        SubAgentInputMode, SubAgentOperations, generated, validate_prompt,
     };
+
+    #[tokio::test]
+    async fn unrelated_spawns_are_concurrent_and_recovery_is_exclusive() {
+        let operations = Arc::new(SubAgentOperations::default());
+        let spawn_a = operations.spawn("client-a").await;
+
+        let spawn_b =
+            tokio::time::timeout(Duration::from_millis(100), operations.spawn("client-b"))
+                .await
+                .expect("client B is not blocked by client A");
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), operations.spawn("client-a"))
+                .await
+                .is_err(),
+            "the same client ID remains serialized"
+        );
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), operations.recover())
+                .await
+                .is_err(),
+            "recovery waits for active spawns"
+        );
+
+        drop(spawn_a);
+        drop(spawn_b);
+        let recovery = tokio::time::timeout(Duration::from_millis(100), operations.recover())
+            .await
+            .expect("recovery starts after active spawns finish");
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), operations.spawn("client-c"))
+                .await
+                .is_err(),
+            "new spawns wait for recovery"
+        );
+        drop(recovery);
+
+        let spawn_c =
+            tokio::time::timeout(Duration::from_millis(100), operations.spawn("client-c"))
+                .await
+                .expect("spawning resumes after recovery");
+        drop(spawn_c);
+        let spawn_d = operations.spawn("client-d").await;
+        assert_eq!(
+            operations.spawn_locks.len(),
+            1,
+            "idle identity locks are pruned"
+        );
+        drop(spawn_d);
+    }
 
     async fn wait_until_empty(registry: &PumpRegistry) {
         tokio::time::timeout(Duration::from_secs(1), async {
