@@ -162,9 +162,11 @@ interrupt as a separate explicit action.
   recipe](docs/runtime-bundle.md).
 - The first native UI ships in the Crab fork of T3 Code. Its built-in provider runs across web,
   desktop and mobile; `crab-v2-acp-channel` attaches each T3 thread to the single Crab-owned runtime
-  without transferring session or tool authority. The facade caps outstanding prompt responders at
-  128, consumes matched run completions and retains only 256 early-race completions from the full
-  session stream. See the [rendered completion boundary](docs/acp-facade-completions.png) and the
+  without transferring session or tool authority. Each facade admits at most 128 live sessions,
+  serializes same-ID attachment and prunes idle keyed locks. It also caps outstanding prompt
+  responders at 128, consumes matched run completions and retains only 256 early-race completions
+  from the full session stream. See the [rendered session admission](docs/acp-facade-session-admission.png),
+  [rendered completion boundary](docs/acp-facade-completions.png) and the
   [decision and attach seam](docs/acp-native-ui.md) and
   [rendered facade flow](docs/acp-channel-facade-flow.png).
 

@@ -5,7 +5,7 @@ use std::{
     fmt,
     path::{Path, PathBuf},
     sync::{
-        Arc,
+        Arc, Mutex as StdMutex, PoisonError, Weak,
         atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::{Duration, SystemTime, UNIX_EPOCH},
@@ -30,7 +30,7 @@ use native_channel_contract::{
     NativeEventKind, ReplayRequest,
 };
 use serde_json::{Map, Value, json};
-use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore, oneshot};
+use tokio::sync::{Mutex, OwnedMutexGuard, OwnedSemaphorePermit, Semaphore, oneshot};
 use uuid::Uuid;
 
 use crate::{ChannelIpcClient, ChannelIpcClientError, native_stdio};
@@ -39,6 +39,8 @@ const AUTH_METHOD: &str = "crab-local";
 const DEFAULT_ADAPTER: &str = "t3code";
 const REPLAY_LIMIT: u64 = 256;
 const EARLY_COMPLETION_CAPACITY: usize = 256;
+const MAX_FACADE_SESSIONS: usize = 128;
+const MAX_FACADE_SESSION_ID_BYTES: usize = 256;
 const MAX_OUTSTANDING_PROMPTS: usize = 128;
 const IDLE_POLL: Duration = Duration::from_millis(25);
 const ERROR_POLL: Duration = Duration::from_millis(100);
@@ -137,6 +139,8 @@ pub(crate) struct AcpChannelFacade {
     options: AcpChannelOptions,
     authenticated: Arc<AtomicBool>,
     sessions: Arc<Mutex<HashMap<String, Arc<FacadeSession>>>>,
+    session_attach_locks: Arc<SessionAttachLocks>,
+    session_slots: Arc<Semaphore>,
 }
 
 impl AcpChannelFacade {
@@ -146,6 +150,8 @@ impl AcpChannelFacade {
             options,
             authenticated: Arc::new(AtomicBool::new(false)),
             sessions: Arc::new(Mutex::new(HashMap::new())),
+            session_attach_locks: Arc::new(SessionAttachLocks::default()),
+            session_slots: Arc::new(Semaphore::new(MAX_FACADE_SESSIONS)),
         }
     }
 
@@ -287,7 +293,7 @@ impl AcpChannelFacade {
             return responder.respond_with_error(agent_client_protocol::Error::invalid_params());
         }
         let facade_session_id = request.session_id.to_string();
-        if facade_session_id.trim().is_empty() {
+        if !valid_facade_session_id(&facade_session_id) {
             return responder.respond_with_error(agent_client_protocol::Error::invalid_params());
         }
         match self
@@ -306,16 +312,25 @@ impl AcpChannelFacade {
         connection: &ConnectionTo<Client>,
         replay_existing: bool,
     ) -> Result<(), agent_client_protocol::Error> {
+        if !valid_facade_session_id(facade_session_id) {
+            return Err(agent_client_protocol::Error::invalid_params());
+        }
         let working_directory = working_directory
             .to_str()
             .filter(|_| working_directory.is_absolute())
             .ok_or_else(agent_client_protocol::Error::invalid_params)?;
+        let _attach = self.session_attach_locks.lock(facade_session_id).await;
         if let Some(existing) = self.sessions.lock().await.get(facade_session_id).cloned() {
             if existing.working_directory != working_directory {
                 return Err(agent_client_protocol::Error::invalid_params());
             }
             return Ok(());
         }
+        let session_slot = self
+            .session_slots
+            .clone()
+            .try_acquire_owned()
+            .map_err(|_| stable_internal_error())?;
         let attachment = self
             .client
             .attach_channel(AttachChannelRequest {
@@ -342,6 +357,7 @@ impl AcpChannelFacade {
             working_directory,
             attachment.binding_id,
             attachment.session_id,
+            session_slot,
         ));
         if replay_existing {
             while replay_available(&self.client, &session, connection)
@@ -452,6 +468,36 @@ impl AcpChannelFacade {
     }
 }
 
+#[derive(Default)]
+struct SessionAttachLocks {
+    locks: StdMutex<HashMap<String, Weak<Mutex<()>>>>,
+}
+
+impl SessionAttachLocks {
+    async fn lock(&self, facade_session_id: &str) -> OwnedMutexGuard<()> {
+        let lock = {
+            let mut locks = self.locks.lock().unwrap_or_else(PoisonError::into_inner);
+            locks.retain(|_, lock| lock.strong_count() > 0);
+            if let Some(lock) = locks.get(facade_session_id).and_then(Weak::upgrade) {
+                lock
+            } else {
+                let lock = Arc::new(Mutex::new(()));
+                locks.insert(facade_session_id.to_owned(), Arc::downgrade(&lock));
+                lock
+            }
+        };
+        lock.lock_owned().await
+    }
+
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.locks
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .len()
+    }
+}
+
 struct FacadeSession {
     facade_session_id: String,
     working_directory: String,
@@ -460,6 +506,7 @@ struct FacadeSession {
     cursor: AtomicU64,
     completions: RunCompletions,
     prompt_slots: Arc<Semaphore>,
+    _session_slot: OwnedSemaphorePermit,
 }
 
 impl FacadeSession {
@@ -468,6 +515,7 @@ impl FacadeSession {
         working_directory: &str,
         binding_id: String,
         physical_session_id: String,
+        session_slot: OwnedSemaphorePermit,
     ) -> Self {
         Self {
             facade_session_id: facade_session_id.to_owned(),
@@ -477,6 +525,7 @@ impl FacadeSession {
             cursor: AtomicU64::new(0),
             completions: RunCompletions::default(),
             prompt_slots: Arc::new(Semaphore::new(MAX_OUTSTANDING_PROMPTS)),
+            _session_slot: session_slot,
         }
     }
 
@@ -678,6 +727,10 @@ fn supported_workspace(cwd: &Path, additional: &[PathBuf], mcp_server_count: usi
     cwd.is_absolute() && additional.is_empty() && mcp_server_count == 0
 }
 
+fn valid_facade_session_id(facade_session_id: &str) -> bool {
+    !facade_session_id.trim().is_empty() && facade_session_id.len() <= MAX_FACADE_SESSION_ID_BYTES
+}
+
 fn input_mode(
     meta: Option<&Map<String, Value>>,
 ) -> Result<ChannelInputMode, agent_client_protocol::Error> {
@@ -722,17 +775,36 @@ mod tests {
     use std::{
         path::{Path, PathBuf},
         sync::Arc,
+        time::Duration,
     };
 
     use agent_client_protocol::schema::v1::{SessionNotification, SessionUpdate, StopReason};
     use serde_json::json;
 
     use super::{
-        EARLY_COMPLETION_CAPACITY, FacadeSession, MAX_OUTSTANDING_PROMPTS, RunCompletion,
-        RunCompletions, input_mode, project_session_update_to_v1, stop_reason, supported_workspace,
-        turn_id,
+        EARLY_COMPLETION_CAPACITY, FacadeSession, MAX_FACADE_SESSION_ID_BYTES, MAX_FACADE_SESSIONS,
+        MAX_OUTSTANDING_PROMPTS, RunCompletion, RunCompletions, SessionAttachLocks, input_mode,
+        project_session_update_to_v1, stop_reason, supported_workspace, turn_id,
+        valid_facade_session_id,
     };
     use native_channel_contract::ChannelInputMode;
+    use tokio::{sync::Semaphore, time::timeout};
+
+    fn facade_session() -> (Arc<Semaphore>, FacadeSession) {
+        let session_slots = Arc::new(Semaphore::new(1));
+        let session_slot = session_slots
+            .clone()
+            .try_acquire_owned()
+            .expect("facade session slot");
+        let session = FacadeSession::new(
+            "facade-session",
+            "/tmp/workspace",
+            "binding-1".into(),
+            "physical-1".into(),
+            session_slot,
+        );
+        (session_slots, session)
+    }
 
     #[test]
     fn crab_prompt_metadata_is_explicit_and_strict() {
@@ -777,6 +849,44 @@ mod tests {
             0,
         ));
         assert!(!supported_workspace(Path::new("relative"), &[], 0));
+    }
+
+    #[test]
+    fn facade_session_ids_are_bounded() {
+        assert!(valid_facade_session_id("session-1"));
+        assert!(valid_facade_session_id(
+            &"a".repeat(MAX_FACADE_SESSION_ID_BYTES)
+        ));
+        assert!(!valid_facade_session_id("   "));
+        assert!(!valid_facade_session_id(
+            &"a".repeat(MAX_FACADE_SESSION_ID_BYTES + 1)
+        ));
+    }
+
+    #[tokio::test]
+    async fn facade_attach_locks_serialize_only_matching_session_ids_and_prune() {
+        let locks = SessionAttachLocks::default();
+        let first = locks.lock("same").await;
+
+        let unrelated = timeout(Duration::from_millis(100), locks.lock("other"))
+            .await
+            .expect("unrelated session does not wait");
+        assert!(
+            timeout(Duration::from_millis(20), locks.lock("same"))
+                .await
+                .is_err()
+        );
+
+        drop(first);
+        let matching = timeout(Duration::from_millis(100), locks.lock("same"))
+            .await
+            .expect("matching session proceeds after release");
+        drop(matching);
+        drop(unrelated);
+
+        let fresh = locks.lock("fresh").await;
+        assert_eq!(locks.len(), 1);
+        drop(fresh);
     }
 
     #[test]
@@ -862,17 +972,36 @@ mod tests {
 
     #[test]
     fn facade_session_caps_outstanding_prompt_responders() {
-        let session = FacadeSession::new(
-            "facade-session",
-            "/tmp/workspace",
-            "binding-1".into(),
-            "physical-1".into(),
-        );
+        let (_, session) = facade_session();
         let slots = (0..MAX_OUTSTANDING_PROMPTS)
             .map(|_| session.try_prompt_slot().expect("slot remains"))
             .collect::<Vec<_>>();
         assert!(session.try_prompt_slot().is_none());
         drop(slots);
         assert!(session.try_prompt_slot().is_some());
+    }
+
+    #[test]
+    fn facade_session_admission_is_hard_capped_and_released() {
+        let session_slots = Arc::new(Semaphore::new(MAX_FACADE_SESSIONS));
+        let mut sessions = (0..MAX_FACADE_SESSIONS)
+            .map(|sequence| {
+                let session_slot = session_slots
+                    .clone()
+                    .try_acquire_owned()
+                    .expect("slot remains within cap");
+                FacadeSession::new(
+                    &format!("facade-{sequence}"),
+                    "/tmp/workspace",
+                    format!("binding-{sequence}"),
+                    format!("physical-{sequence}"),
+                    session_slot,
+                )
+            })
+            .collect::<Vec<_>>();
+        assert!(session_slots.clone().try_acquire_owned().is_err());
+
+        sessions.pop();
+        assert!(session_slots.clone().try_acquire_owned().is_ok());
     }
 }
