@@ -28,7 +28,7 @@ versioned local IPC transport. It must never launch or own the underlying ACP ag
 
 The complete attach slice is implemented. Crab supplies the authenticated local Boxology transport
 and ACP stdio facade; the Crab fork of T3 ships a built-in provider across web, desktop and mobile.
-The compatibility point is `fontanierh/t3code@82f517c`.
+The compatibility point is `fontanierh/t3code@aacb957`.
 
 ![ACP stdio facade flow](acp-channel-facade-flow.png)
 
