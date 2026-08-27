@@ -54,6 +54,8 @@ const MAX_REQUEST_BYTES: usize = 2 * 1024 * 1024;
 const MAX_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
 const MAX_JSON_DEPTH: usize = 128;
 const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
+const DEFAULT_CONNECTION_TIMEOUT: Duration = Duration::from_secs(30);
+const MAX_ACTIVE_CONNECTIONS: usize = 64;
 const SOCKET_FILE: &str = "channel-ipc.sock";
 const TOKEN_FILE: &str = "channel-ipc.token";
 
@@ -746,6 +748,27 @@ pub(crate) struct ChannelIpcServer {
     task: Option<JoinHandle<io::Result<()>>>,
 }
 
+#[derive(Clone, Copy)]
+pub(crate) struct ChannelIpcServerLimits {
+    max_connections: usize,
+    connection_timeout: Duration,
+}
+
+impl ChannelIpcServerLimits {
+    const PRODUCTION: Self = Self {
+        max_connections: MAX_ACTIVE_CONNECTIONS,
+        connection_timeout: DEFAULT_CONNECTION_TIMEOUT,
+    };
+
+    #[cfg(test)]
+    pub(crate) const fn testing(max_connections: usize, connection_timeout: Duration) -> Self {
+        Self {
+            max_connections,
+            connection_timeout,
+        }
+    }
+}
+
 #[derive(Clone)]
 pub(crate) struct ChannelIpcCapabilities {
     agent_host: AgentHostHandle,
@@ -784,6 +807,14 @@ impl ChannelIpcServer {
         paths: ChannelIpcPaths,
         capabilities: ChannelIpcCapabilities,
     ) -> Result<Self, ChannelIpcStartupError> {
+        Self::start_with_limits(paths, capabilities, ChannelIpcServerLimits::PRODUCTION).await
+    }
+
+    pub(crate) async fn start_with_limits(
+        paths: ChannelIpcPaths,
+        capabilities: ChannelIpcCapabilities,
+        limits: ChannelIpcServerLimits,
+    ) -> Result<Self, ChannelIpcStartupError> {
         let authentication = load_or_create_token(&paths.token)?;
         prepare_socket(&paths.socket).await?;
         let listener = UnixListener::bind(&paths.socket)?;
@@ -793,7 +824,7 @@ impl ChannelIpcServer {
         let socket_path = paths.socket.clone();
         let server_socket = socket_path.clone();
         let task = tokio::spawn(async move {
-            let result = serve(listener, receiver, authentication, capabilities).await;
+            let result = serve(listener, receiver, authentication, capabilities, limits).await;
             if result.is_err() {
                 failed_sender.send_replace(true);
             }
@@ -901,9 +932,21 @@ async fn serve(
     mut shutdown: watch::Receiver<bool>,
     authentication: String,
     capabilities: ChannelIpcCapabilities,
+    limits: ChannelIpcServerLimits,
 ) -> io::Result<()> {
     let mut connections = JoinSet::new();
     loop {
+        if connections.len() >= limits.max_connections {
+            tokio::select! {
+                changed = shutdown.changed() => {
+                    if changed.is_err() || *shutdown.borrow() {
+                        break;
+                    }
+                }
+                _ = connections.join_next() => {}
+            }
+            continue;
+        }
         tokio::select! {
             changed = shutdown.changed() => {
                 if changed.is_err() || *shutdown.borrow() {
@@ -912,11 +955,15 @@ async fn serve(
             }
             accepted = listener.accept() => {
                 let (stream, _) = accepted?;
-                connections.spawn(handle_connection(
-                    stream,
-                    authentication.clone(),
-                    capabilities.clone(),
-                ));
+                let authentication = authentication.clone();
+                let capabilities = capabilities.clone();
+                connections.spawn(async move {
+                    let _ = tokio::time::timeout(
+                        limits.connection_timeout,
+                        handle_connection(stream, authentication, capabilities),
+                    )
+                    .await;
+                });
             }
             _ = connections.join_next(), if !connections.is_empty() => {}
         }

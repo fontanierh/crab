@@ -687,7 +687,12 @@ mod tests {
         SubAgentEventKind, SubAgentInputMode, SubAgentLifecycle, SubAgentReference,
     };
     use sub_agent_host_implementation::{SubAgentHostState, generated as sub_agent_host};
-    use tokio::{sync::watch, task::JoinSet};
+    use tokio::{
+        io::{AsyncReadExt as _, AsyncWriteExt as _},
+        net::UnixStream,
+        sync::watch,
+        task::JoinSet,
+    };
     use trigger_inbox_contract::{
         EnqueueTrigger, TriggerMode, TriggerReference, TriggerSource, TriggerState,
     };
@@ -706,7 +711,7 @@ mod tests {
         ChannelIpcPaths, ChannelIpcStartupError, CommandConfig, LaneConfig, ProtocolConfig,
         RuntimeConfig,
         acp_channel::AcpChannelFacade,
-        channel_ipc::{ChannelIpcCapabilities, ChannelIpcServer},
+        channel_ipc::{ChannelIpcCapabilities, ChannelIpcServer, ChannelIpcServerLimits},
         inspect_runtime_health,
     };
 
@@ -1945,6 +1950,66 @@ mod tests {
             .await
             .expect("restarted IPC shuts down");
         assert!(close_sessions(&graph.agent_host, &sessions).await);
+    }
+
+    #[tokio::test]
+    async fn bounded_ipc_server_expires_stalled_peers_and_recovers_capacity() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let graph = graph(directory.path(), Arc::new(Mutex::new(FakeState::default())));
+        let paths = ChannelIpcPaths::for_state_directory(directory.path()).expect("paths resolve");
+        let mut server = ChannelIpcServer::start_with_limits(
+            paths.clone(),
+            graph.ipc_capabilities(),
+            ChannelIpcServerLimits::testing(2, Duration::from_millis(20)),
+        )
+        .await
+        .expect("bounded IPC starts");
+        let mut stalled = Vec::new();
+        for _ in 0..2 {
+            let mut stream = UnixStream::connect(paths.socket())
+                .await
+                .expect("stalled peer connects");
+            stream
+                .write_all(b"{")
+                .await
+                .expect("partial request writes");
+            stalled.push(stream);
+        }
+        for mut stream in stalled {
+            let mut byte = [0_u8; 1];
+            let read = tokio::time::timeout(Duration::from_secs(1), stream.read(&mut byte))
+                .await
+                .expect("stalled peer is closed within the test bound")
+                .expect("socket read completes");
+            assert_eq!(read, 0, "expired requests close without a response");
+        }
+
+        let status = tokio::time::timeout(
+            Duration::from_secs(1),
+            ChannelIpcClient::from_state_directory(directory.path())
+                .expect("client opens")
+                .runtime_status(),
+        )
+        .await
+        .expect("capacity recovers")
+        .expect("valid request succeeds");
+        assert_eq!(status.process_id, u64::from(std::process::id()));
+
+        let mut active = Vec::new();
+        for _ in 0..2 {
+            let mut stream = UnixStream::connect(paths.socket())
+                .await
+                .expect("active peer connects");
+            stream
+                .write_all(b"{")
+                .await
+                .expect("active partial request writes");
+            active.push(stream);
+        }
+        tokio::time::timeout(Duration::from_secs(1), server.shutdown())
+            .await
+            .expect("shutdown remains prompt at capacity")
+            .expect("IPC shuts down");
     }
 
     #[tokio::test]

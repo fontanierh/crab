@@ -1,8 +1,9 @@
 %%{init: {"theme": "base", "themeVariables": {"fontFamily": "ui-sans-serif, system-ui, sans-serif", "primaryTextColor": "#172033", "lineColor": "#64748b", "edgeLabelBackground": "#ffffff"}, "flowchart": {"curve": "basis", "nodeSpacing": 44, "rankSpacing": 58}}}%%
-flowchart LR
+flowchart TB
     UI["T3 provider or native UI"]
     PRODUCER["cron · self-work · operator<br/>crab-v2-trigger"]
     AUTH["0600 token<br/>version · request ID · bounded frame"]
+    LIMIT["Server admission<br/>64 active · 30s lifetime"]
     IPC["Crab local IPC<br/>canonical Boxology JSON"]
     GATEWAY["channel-gateway<br/>attach · reuse · recover"]
     INBOX["trigger-inbox<br/>durable · idempotent enqueue"]
@@ -10,7 +11,7 @@ flowchart LR
     CHANNEL["native-channel<br/>turn · interrupt · status · replay"]
     HOST["agent-host<br/>Crab-owned ACP process"]
 
-    UI --> AUTH --> IPC
+    UI --> AUTH --> LIMIT --> IPC
     PRODUCER --> AUTH
     IPC -->|"attach"| GATEWAY
     IPC <-->|"native operations"| CHANNEL
@@ -25,6 +26,6 @@ flowchart LR
     classDef channel fill:#dbeafe,stroke:#2563eb,stroke-width:2px,color:#172554;
     classDef agent fill:#ede9fe,stroke:#7c3aed,stroke-width:2px,color:#2e1065;
     class UI,PRODUCER client;
-    class AUTH guard;
+    class AUTH,LIMIT guard;
     class IPC,GATEWAY,INBOX,ROUTER,CHANNEL channel;
     class HOST agent;
