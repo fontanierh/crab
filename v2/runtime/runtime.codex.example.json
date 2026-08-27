@@ -5,7 +5,10 @@
       "agentId": "codex",
       "displayName": "Codex GPT-5.6-Sol",
       "executable": "npx",
-      "arguments": ["--yes", "@agentclientprotocol/codex-acp@1.6.2"],
+      "arguments": [
+        "--yes",
+        "https://github.com/fontanierh/codex-acp/releases/download/crab-v1.7.0-2/agentclientprotocol-codex-acp-1.7.0-crab.2.tgz"
+      ],
       "environmentFrom": ["PATH"],
       "sessionOptions": {
         "mode": "agent-full-access",
@@ -27,6 +30,7 @@
         }
       ],
       "protocol": "v1",
+      "steeringExtension": "sessionSteeringV1",
       "authorityProbe": {
         "executable": "../target/release/crab-v2-codex-authority-probe",
         "arguments": [],

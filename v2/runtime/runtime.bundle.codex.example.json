@@ -27,6 +27,7 @@
         }
       ],
       "protocol": "v1",
+      "steeringExtension": "sessionSteeringV1",
       "authorityProbe": {
         "executable": "../bin/crab-v2-codex-authority-probe",
         "arguments": [

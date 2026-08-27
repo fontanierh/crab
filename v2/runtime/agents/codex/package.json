@@ -7,6 +7,7 @@
     "node": ">=22"
   },
   "dependencies": {
-    "@agentclientprotocol/codex-acp": "1.6.2"
+    "@agentclientprotocol/codex-acp": "https://github.com/fontanierh/codex-acp/releases/download/crab-v1.7.0-2/agentclientprotocol-codex-acp-1.7.0-crab.2.tgz",
+    "@openai/codex": "0.150.1"
   }
 }
