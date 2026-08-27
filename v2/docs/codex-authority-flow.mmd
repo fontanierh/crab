@@ -1,5 +1,6 @@
 flowchart LR
-    P["Codex authority probe"] --> A["ACP adapter<br/>exactly 1.6.2"]
+    P["Codex authority probe"] --> A["Codex ACP<br/>1.7.0-crab.2"]
+    A --> V["Codex CLI<br/>0.150.1"]
     P --> S["macOS reports<br/>sandboxed = no"]
     P --> F["home + temp<br/>writes succeed"]
     P --> N["OpenAI TCP<br/>connects"]
@@ -12,11 +13,12 @@ flowchart LR
     H -->|no| X["startup Failed"]
     H -->|yes| C["ACP session policy"]
     C --> M["full access + GPT-5.6-Sol<br/>+ high reasoning"]
-    M --> R["session Ready"]
+    M --> T["Queue + Steer<br/>+ Interrupt"]
+    T --> R["session Ready"]
 
     classDef input fill:#e8f1ff,stroke:#2260a8,color:#12243a;
     classDef good fill:#e8f8ee,stroke:#237a47,color:#153723;
     classDef bad fill:#fdebec,stroke:#b43a43,color:#4d171b;
-    class P,A,S,F,N,H,C,M input;
+    class P,A,V,S,F,N,H,C,M,T input;
     class R good;
     class X bad;

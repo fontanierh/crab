@@ -10,6 +10,8 @@ from unittest import mock
 
 from scripts import v2_bundle as bundle_tool
 from scripts.v2_bundle import (
+    CODEX_ADAPTER_VERSION,
+    CODEX_CLI_VERSION,
     MANIFEST_NAME,
     RUNTIME_BINARIES,
     BundleError,
@@ -820,13 +822,24 @@ class BundleBuildPolicyTests(unittest.TestCase):
         codex_directory = root / "v2" / "runtime" / "agents" / "codex"
         package = json.loads((codex_directory / "package.json").read_text())
         lock = json.loads((codex_directory / "package-lock.json").read_text())
+        codex_adapter_url = (
+            "https://github.com/fontanierh/codex-acp/releases/download/"
+            "crab-v1.7.0-2/agentclientprotocol-codex-acp-1.7.0-crab.2.tgz"
+        )
         self.assertEqual(
             package["dependencies"]["@agentclientprotocol/codex-acp"],
-            "1.6.2",
+            codex_adapter_url,
+        )
+        self.assertEqual(
+            package["dependencies"]["@openai/codex"], CODEX_CLI_VERSION
         )
         resolved = lock["packages"]["node_modules/@agentclientprotocol/codex-acp"]
-        self.assertEqual(resolved["version"], "1.6.2")
+        self.assertEqual(resolved["version"], CODEX_ADAPTER_VERSION)
+        self.assertEqual(resolved["resolved"], codex_adapter_url)
         self.assertTrue(resolved["integrity"].startswith("sha512-"))
+        codex = lock["packages"]["node_modules/@openai/codex"]
+        self.assertEqual(codex["version"], CODEX_CLI_VERSION)
+        self.assertTrue(codex["integrity"].startswith("sha512-"))
 
 
 if __name__ == "__main__":

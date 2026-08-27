@@ -91,6 +91,9 @@ Discover native channels and inspect their complete ACP event cursors without op
 `interrupt <binding-id> <expected-session-id> <reason>` is an explicit cooperative cancel action.
 It never discards already accepted Queue or Steer input.
 
+The Claude and Codex presets both negotiate active steering. If the turn finishes before injection,
+the adapter returns the content untouched and Crab starts a normal lifecycle-owned prompt.
+
 The runtime requires macOS, Python 3, Node.js 22 or newer, and Crab's documented unrestricted-host
 preflight. Authenticate each ACP agent and bridge with its native flow. Credentials, runtime state,
 and logs are never part of a release bundle.

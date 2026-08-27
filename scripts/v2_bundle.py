@@ -26,7 +26,8 @@ from typing import Any, Callable, Iterator, Mapping, Protocol, Sequence
 SCHEMA_VERSION = 1
 MINIMUM_NODE_MAJOR = 22
 CLAUDE_ADAPTER_VERSION = "0.70.0"
-CODEX_ADAPTER_VERSION = "1.6.2"
+CODEX_ADAPTER_VERSION = "1.7.0-crab.2"
+CODEX_CLI_VERSION = "0.150.1"
 PUBLIC_HELP_BINARIES = (
     "crab-v2",
     "crab-v2-acp-channel",
@@ -504,6 +505,17 @@ def smoke_test(root: Path) -> None:
         version = run((str(adapter), "--version"), cwd=root, capture=True).stdout.strip()
         if version != expected_version:
             raise BundleError(f"{name} ACP adapter version is not {expected_version}")
+    codex_version = run(
+        (
+            str(root / "agents" / "codex" / "node_modules" / ".bin" / "codex"),
+            "--version",
+        ),
+        cwd=root,
+        capture=True,
+    ).stdout.strip()
+    expected_codex_version = f"codex-cli {CODEX_CLI_VERSION}"
+    if codex_version != expected_codex_version:
+        raise BundleError(f"Codex CLI version is not {expected_codex_version}")
     run(
         (
             "node",

@@ -840,11 +840,17 @@ mod tests {
         let agent = &config.agents[0];
         assert_eq!(
             agent.arguments,
-            ["--yes", "@agentclientprotocol/codex-acp@1.6.2"]
+            [
+                "--yes",
+                "https://github.com/fontanierh/codex-acp/releases/download/crab-v1.7.0-2/agentclientprotocol-codex-acp-1.7.0-crab.2.tgz"
+            ]
         );
         assert_eq!(agent.environment_from, ["PATH"]);
         assert_eq!(agent.protocol, super::ProtocolConfig::V1);
-        assert_eq!(agent.steering_extension, None);
+        assert_eq!(
+            agent.steering_extension,
+            Some(super::SteeringExtensionConfig::SessionSteeringV1)
+        );
         assert_eq!(
             agent.session_options.get("mode").map(String::as_str),
             Some("agent-full-access")
@@ -942,7 +948,10 @@ mod tests {
         assert_eq!(agent.arguments, Vec::<String>::new());
         assert_eq!(agent.environment_from, ["PATH"]);
         assert_eq!(agent.protocol, super::ProtocolConfig::V1);
-        assert_eq!(agent.steering_extension, None);
+        assert_eq!(
+            agent.steering_extension,
+            Some(super::SteeringExtensionConfig::SessionSteeringV1)
+        );
         assert_eq!(
             agent.session_options.get("mode").map(String::as_str),
             Some("agent-full-access")

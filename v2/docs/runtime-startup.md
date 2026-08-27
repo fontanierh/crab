@@ -86,10 +86,12 @@ cargo run -p crab-v2-runtime --bin crab-v2 -- \
 
 ### Codex preset
 
-[`runtime.codex.example.json`](../runtime/runtime.codex.example.json) pins the official Codex ACP
-adapter to `1.6.2` and verifies `mode=agent-full-access`, `model=gpt-5.6-sol`, and
-`reasoning_effort=high` before readiness. It attaches the same bridge and sub-agent tools as the
-Claude preset.
+[`runtime.codex.example.json`](../runtime/runtime.codex.example.json) pins Crab's
+`1.7.0-crab.2` compatibility build of Codex ACP plus Codex CLI `0.150.1`. It verifies
+`mode=agent-full-access`, `model=gpt-5.6-sol`, and `reasoning_effort=high` before readiness, and
+attaches the same bridge and sub-agent tools as the Claude preset. The adapter is an exact HTTPS
+package built from fork commit `91ce897`; it contains only the runtime closure and needs neither
+Git/SSH credentials nor a target-machine build.
 
 The shell-free `crab-v2-codex-authority-probe` verifies the exact adapter, macOS sandbox state,
 home and temporary-directory writes, and OpenAI network reachability. The host still verifies the
@@ -97,9 +99,11 @@ workspace and passwordless root independently. Codex owns authentication: the ad
 its existing ChatGPT login; API-key deployments add `CODEX_API_KEY` or `OPENAI_API_KEY` to
 `environmentFrom` and the owner-private environment file.
 
-Codex `1.6.2` advertises `_session/steering`, but an idle race starts a new turn outside the
-request lifecycle. Crab therefore leaves that extension disabled for this preset: Queue remains
-portable and active Steer fails truthfully instead of creating unowned work.
+The compatibility patch keeps Codex's active steering behavior but honors Crab's opt-in
+`promptRequired` idle result. Crab can therefore enable negotiated steering without detached work:
+an active turn consumes the input immediately, while an idle race leaves it untouched and starts a
+normal host-owned `session/prompt`. The source fix is proposed upstream in
+[codex-acp #441](https://github.com/agentclientprotocol/codex-acp/pull/441).
 
 ![Codex full-authority preflight](codex-authority-flow.png)
 

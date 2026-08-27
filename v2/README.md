@@ -42,7 +42,7 @@ interrupt as a separate explicit action.
   `compact` operation because ACP does not define one.
 - ACP v2 draft makes `session/prompt` non-blocking and allows new input during active work. ACP v1
   queues by default; configured adapters may negotiate `_session/steering`. Crab's Claude preset
-  enables it and retains ownership when a racing turn is already idle.
+  and Codex compatibility preset enable it and retain ownership when a racing turn is already idle.
 - Crab owns sub-agents as separately supervised ACP subprocesses. Fresh sessions are portable;
   inherited sessions prefer advertised ACP native forks at an exact idle cursor and may explicitly
   fall back to a visible-history snapshot. Parent and child exchange durable non-blocking queue,

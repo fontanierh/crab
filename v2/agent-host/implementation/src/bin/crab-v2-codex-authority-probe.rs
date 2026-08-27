@@ -9,9 +9,9 @@ use authority_probe_support::ProbeDefinition;
 const DEFINITION: ProbeDefinition = ProbeDefinition {
     probe_name: "crab-v2-codex-authority-probe",
     adapter_name: "Codex",
-    adapter_package: "@agentclientprotocol/codex-acp@1.6.2",
-    adapter_version: "1.6.2",
-    adapter_version_output: "@agentclientprotocol/codex-acp 1.6.2",
+    adapter_package: "https://github.com/fontanierh/codex-acp/releases/download/crab-v1.7.0-2/agentclientprotocol-codex-acp-1.7.0-crab.2.tgz",
+    adapter_version: "1.7.0-crab.2",
+    adapter_version_output: "@agentclientprotocol/codex-acp 1.7.0-crab.2",
     network_endpoint: "chatgpt.com:443",
     require_non_root: false,
 };
@@ -37,7 +37,11 @@ mod tests {
         assert_eq!(invocation.executable, std::path::Path::new("npx"));
         assert_eq!(
             invocation.arguments,
-            ["--yes", "@agentclientprotocol/codex-acp@1.6.2", "--version"]
+            [
+                "--yes",
+                "https://github.com/fontanierh/codex-acp/releases/download/crab-v1.7.0-2/agentclientprotocol-codex-acp-1.7.0-crab.2.tgz",
+                "--version"
+            ]
         );
         assert_eq!(invocation.source, "pinned-npx");
     }
