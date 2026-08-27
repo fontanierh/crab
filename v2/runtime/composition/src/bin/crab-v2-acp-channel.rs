@@ -2,7 +2,7 @@
 
 use std::{ffi::OsString, path::PathBuf, process::ExitCode};
 
-use crab_v2_runtime::{AcpChannelOptions, run_acp_channel_stdio};
+use crab_v2_runtime::{AcpChannelOptions, read_bootstrap_prompt_file, run_acp_channel_stdio};
 
 const USAGE: &str = "usage: crab-v2-acp-channel --state-dir <directory> --agent <id> [--adapter <id>] [--bootstrap-file <path>]";
 
@@ -20,7 +20,7 @@ async fn main() -> ExitCode {
         }
     };
     let bootstrap_prompt = match arguments.bootstrap_file {
-        Some(path) => match std::fs::read_to_string(path) {
+        Some(path) => match read_bootstrap_prompt_file(path) {
             Ok(prompt) => Some(prompt),
             Err(_) => {
                 eprintln!("crab-v2-acp-channel: bootstrap file is unavailable");

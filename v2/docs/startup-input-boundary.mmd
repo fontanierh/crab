@@ -1,0 +1,39 @@
+%%{init: {"theme": "base", "themeVariables": {"fontFamily": "ui-sans-serif, system-ui, sans-serif", "primaryTextColor": "#172033", "lineColor": "#64748b", "edgeLabelBackground": "#ffffff"}, "flowchart": {"curve": "basis", "nodeSpacing": 52, "rankSpacing": 64}}}%%
+flowchart LR
+    CONFIG["Runtime config file"]
+    BOOTSTRAP["Bootstrap prompt file"]
+
+    CONFIG_LIMIT{"Bounded read<br/>≤ 8 MiB?"}
+    BOOTSTRAP_LIMIT{"Shared bounded read<br/>≤ 2 MiB?"}
+
+    DECODE["Strict JSON decode<br/>+ topology validation"]
+    UTF8["UTF-8 decode<br/>+ ACP prompt validation"]
+
+    subgraph CONSUMERS["Bootstrap consumers"]
+        direction TB
+        RUNTIME["Configured runtime"]
+        FACADE["Native ACP channel facade"]
+    end
+
+    REJECT["InvalidData<br/>startup fails closed"]
+    SAFE["No unbounded<br/>whole-file allocation"]
+
+    CONFIG --> CONFIG_LIMIT
+    BOOTSTRAP --> BOOTSTRAP_LIMIT
+    CONFIG_LIMIT -->|"accepted"| DECODE
+    BOOTSTRAP_LIMIT -->|"accepted"| UTF8
+    UTF8 --> RUNTIME
+    UTF8 --> FACADE
+    CONFIG_LIMIT -->|"oversized"| REJECT
+    BOOTSTRAP_LIMIT -->|"oversized"| REJECT
+    REJECT --> SAFE
+
+    classDef source fill:#f8fafc,stroke:#64748b,stroke-width:1.5px,color:#172033;
+    classDef boundary fill:#fef3c7,stroke:#d97706,stroke-width:2px,color:#78350f;
+    classDef accepted fill:#dbeafe,stroke:#2563eb,stroke-width:2px,color:#172554;
+    classDef failure fill:#fee2e2,stroke:#dc2626,stroke-width:2px,color:#7f1d1d;
+
+    class CONFIG,BOOTSTRAP source;
+    class CONFIG_LIMIT,BOOTSTRAP_LIMIT boundary;
+    class DECODE,UTF8,RUNTIME,FACADE accepted;
+    class REJECT,SAFE failure;

@@ -1,6 +1,7 @@
 use std::{
     collections::{BTreeMap, HashSet},
     env, fmt, fs,
+    io::{self, Read as _},
     path::{Path, PathBuf},
 };
 
@@ -16,6 +17,8 @@ use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 
 const CONFIG_SCHEMA: u64 = 1;
+const MAX_RUNTIME_CONFIG_BYTES: usize = 8 * 1024 * 1024;
+const MAX_BOOTSTRAP_PROMPT_BYTES: usize = 2 * 1024 * 1024;
 
 /// Secret-free runtime topology loaded from JSON.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -294,7 +297,8 @@ impl RuntimeConfig {
     /// Load, resolve relative filesystem paths and validate one strict JSON file.
     pub fn load(path: impl AsRef<Path>) -> Result<Self, RuntimeConfigError> {
         let path = absolute_config_path(path.as_ref())?;
-        let bytes = fs::read(&path).map_err(RuntimeConfigError::Read)?;
+        let bytes =
+            read_bounded_file(&path, MAX_RUNTIME_CONFIG_BYTES).map_err(RuntimeConfigError::Read)?;
         let mut config: Self =
             serde_json::from_slice(&bytes).map_err(RuntimeConfigError::Decode)?;
         let base = path.parent().unwrap_or_else(|| Path::new("."));
@@ -371,7 +375,7 @@ impl RuntimeConfig {
         channel
             .bootstrap_prompt_file
             .as_ref()
-            .map(|path| fs::read_to_string(path).map_err(RuntimeConfigError::Bootstrap))
+            .map(|path| read_bootstrap_prompt_file(path).map_err(RuntimeConfigError::Bootstrap))
             .transpose()
     }
 
@@ -511,6 +515,32 @@ impl RuntimeConfig {
     }
 }
 
+/// Read one bootstrap prompt without allowing a local file to grow startup memory without bound.
+pub fn read_bootstrap_prompt_file(path: impl AsRef<Path>) -> io::Result<String> {
+    let bytes = read_bounded_file(path.as_ref(), MAX_BOOTSTRAP_PROMPT_BYTES)?;
+    String::from_utf8(bytes).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "bootstrap prompt is not valid UTF-8",
+        )
+    })
+}
+
+fn read_bounded_file(path: &Path, limit: usize) -> io::Result<Vec<u8>> {
+    let read_limit = u64::try_from(limit).unwrap_or(u64::MAX).saturating_add(1);
+    let mut bytes = Vec::with_capacity(limit.min(8 * 1024));
+    fs::File::open(path)?
+        .take(read_limit)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() > limit {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("file exceeds configured {limit}-byte limit"),
+        ));
+    }
+    Ok(bytes)
+}
+
 fn absolute_config_path(path: &Path) -> Result<PathBuf, RuntimeConfigError> {
     if path.is_absolute() {
         return Ok(path.to_owned());
@@ -609,7 +639,12 @@ fn environment_values(names: &[String]) -> Result<BTreeMap<String, String>, Runt
 
 #[cfg(test)]
 mod tests {
-    use super::{RuntimeConfig, RuntimeConfigError, absolute_config_path};
+    use std::io::ErrorKind;
+
+    use super::{
+        MAX_BOOTSTRAP_PROMPT_BYTES, MAX_RUNTIME_CONFIG_BYTES, RuntimeConfig, RuntimeConfigError,
+        absolute_config_path, read_bootstrap_prompt_file, read_bounded_file,
+    };
 
     #[test]
     fn relative_config_paths_gain_an_absolute_resolution_base() {
@@ -617,6 +652,64 @@ mod tests {
             .expect("current directory is available");
         assert!(resolved.is_absolute());
         assert!(resolved.ends_with("runtime/example.json"));
+    }
+
+    #[test]
+    fn bounded_file_reader_accepts_the_limit_and_rejects_one_more_byte() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let path = directory.path().join("bounded");
+        std::fs::write(&path, [b'x'; 32]).expect("bounded file writes");
+        assert_eq!(
+            read_bounded_file(&path, 32).expect("exact limit reads"),
+            [b'x'; 32]
+        );
+
+        std::fs::write(&path, [b'x'; 33]).expect("oversized file writes");
+        assert_eq!(
+            read_bounded_file(&path, 32)
+                .expect_err("oversized file fails")
+                .kind(),
+            ErrorKind::InvalidData
+        );
+    }
+
+    #[test]
+    fn startup_files_fail_closed_above_their_memory_limits() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let config = directory.path().join("runtime.json");
+        std::fs::File::create(&config)
+            .expect("config creates")
+            .set_len((MAX_RUNTIME_CONFIG_BYTES + 1) as u64)
+            .expect("config grows");
+        assert!(matches!(
+            RuntimeConfig::load(&config),
+            Err(RuntimeConfigError::Read(error)) if error.kind() == ErrorKind::InvalidData
+        ));
+
+        let bootstrap = directory.path().join("bootstrap.md");
+        std::fs::File::create(&bootstrap)
+            .expect("bootstrap creates")
+            .set_len((MAX_BOOTSTRAP_PROMPT_BYTES + 1) as u64)
+            .expect("bootstrap grows");
+        assert_eq!(
+            read_bootstrap_prompt_file(&bootstrap)
+                .expect_err("oversized bootstrap fails")
+                .kind(),
+            ErrorKind::InvalidData
+        );
+    }
+
+    #[test]
+    fn bootstrap_prompt_requires_utf8() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let path = directory.path().join("bootstrap.md");
+        std::fs::write(&path, [0xff]).expect("bootstrap writes");
+        assert_eq!(
+            read_bootstrap_prompt_file(path)
+                .expect_err("invalid UTF-8 fails")
+                .kind(),
+            ErrorKind::InvalidData
+        );
     }
 
     #[test]
