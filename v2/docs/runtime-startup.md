@@ -1,7 +1,7 @@
 # Runtime startup
 
-`crab-v2` turns the seven-box composition into one supervised process. `channel-gateway` is
-stateless, so the state layout still contains six SQLite stores.
+`crab-v2` turns the eight-box composition into one supervised process. `channel-gateway` and
+`runtime-control` are stateless, so the state layout still contains six SQLite stores.
 
 ![Configured runtime flow](runtime-startup-flow.png)
 
@@ -125,10 +125,11 @@ unrestricted-host authority. First deployment defaults to Claude; pass `--agent 
 the vendored Codex adapter. It does not need Rust, npm, network package access, or a runtime
 installation step.
 
-`crab-v2-health` reconciles the durable config with live bindings, ACP sessions and configured
-bridges over owner-authenticated IPC. Deployment requires its `ready` signal; service status
-requires `healthy` and preserves explicit bridge authentication/degradation actions. See the
-[runtime health contract](runtime-health.md).
+Before IPC starts, `runtime-control` captures the process ID, startup time and SHA-256 of resolved
+semantic config plus referenced bootstrap-prompt contents. `crab-v2-health` requires that immutable
+attestation to match the durable config, then reconciles live bindings, ACP sessions and configured
+bridges. Deployment requires `ready`; service status requires `healthy` and preserves explicit
+bridge authentication/degradation actions. See the [runtime health contract](runtime-health.md).
 
 ## Trigger ingress
 

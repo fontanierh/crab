@@ -1,8 +1,10 @@
 flowchart LR
-    CONFIG["runtime.json<br/>configured expectations"] --> HEALTH["crab-v2-health<br/>owner-only aggregation"]
+    CONFIG["runtime.json + bootstrap<br/>expected fingerprint"] --> HEALTH["crab-v2-health<br/>owner-only aggregation"]
 
-    IPC["Authenticated local<br/>Boxology IPC"] --> CHANNELS["Channel bindings<br/>+ ACP session status"]
+    IPC["Authenticated local<br/>Boxology IPC"] --> RUNTIME["runtime-control<br/>loaded fingerprint + PID"]
+    IPC --> CHANNELS["Channel bindings<br/>+ ACP session status"]
     IPC --> BRIDGES["Bridge catalog<br/>+ live health"]
+    RUNTIME --> HEALTH
     CHANNELS --> HEALTH
     BRIDGES --> HEALTH
 
@@ -19,6 +21,6 @@ flowchart LR
     classDef success fill:#ecfdf5,stroke:#059669,color:#111827;
     classDef failure fill:#fff7ed,stroke:#ea580c,color:#111827;
     class CONFIG,IPC source;
-    class CHANNELS,BRIDGES,HEALTH action;
+    class RUNTIME,CHANNELS,BRIDGES,HEALTH action;
     class DEPLOY,STATUS success;
     class ROLLBACK,ACTION failure;

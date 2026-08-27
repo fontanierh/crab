@@ -35,12 +35,21 @@ def runtime_health_report(
     healthy: bool = True,
     errors: list[str] | None = None,
     needs_action: list[str] | None = None,
+    process_id: int = 7001,
 ) -> dict[str, object]:
     return {
-        "schemaVersion": 1,
+        "schemaVersion": 2,
         "observedAtMs": 42,
         "ready": ready,
         "healthy": healthy,
+        "runtime": {
+            "expectedConfigurationFingerprint": "a" * 64,
+            "loadedConfigurationFingerprint": "a" * 64 if ready else "b" * 64,
+            "startedAtMs": 40,
+            "processId": process_id,
+            "ready": ready,
+            "error": None if ready else "configuration does not match",
+        },
         "channels": [],
         "bridges": [],
         "errors": errors or [],
@@ -196,6 +205,20 @@ class BundleVerifierTests(unittest.TestCase):
             {**waiting_for_auth, "channels": ["not an object"]},
             {**waiting_for_auth, "bridges": [42]},
             {key: value for key, value in waiting_for_auth.items() if key != "channels"},
+            {
+                **waiting_for_auth,
+                "runtime": {
+                    **waiting_for_auth["runtime"],
+                    "processId": True,
+                },
+            },
+            {
+                **waiting_for_auth,
+                "runtime": {
+                    **waiting_for_auth["runtime"],
+                    "loadedConfigurationFingerprint": "b" * 64,
+                },
+            },
         ]
         for invalid in invalid_reports:
             with self.subTest(invalid=invalid), self.assertRaises(BundleError):
@@ -316,9 +339,20 @@ class ServiceDeploymentTests(unittest.TestCase):
                 health=lambda _paths: runtime_health_report(
                     healthy=False,
                     needs_action=["authenticate bridge whatsapp"],
+                    process_id=7000,
                 ),
             )
             self.assertEqual(pid, 7000)
+
+            with self.assertRaisesRegex(
+                BundleError, "attestation does not match launchd process"
+            ):
+                bundle_tool.production_readiness(
+                    paths,
+                    launchd,
+                    timeout_seconds=0,
+                    health=lambda _paths: runtime_health_report(process_id=9999),
+                )
 
             with self.assertRaisesRegex(
                 BundleError, "configured channel primary is missing"
@@ -331,6 +365,7 @@ class ServiceDeploymentTests(unittest.TestCase):
                         ready=False,
                         healthy=False,
                         errors=["configured channel primary is missing"],
+                        process_id=7000,
                     ),
                 )
 
@@ -460,6 +495,22 @@ class ServiceDeploymentTests(unittest.TestCase):
             self.assertFalse(degraded["healthy"])
             self.assertEqual(
                 degraded["needsAction"], ["authenticate bridge whatsapp"]
+            )
+
+            wrong_process = service_status(
+                root,
+                launchd=launchd,
+                launch_agents=launch_agents,
+                processes=lambda: [launchd.pid],
+                health=lambda _paths: runtime_health_report(process_id=9999),
+            )
+            self.assertTrue(wrong_process["ipcReady"])
+            self.assertFalse(wrong_process["topologyReady"])
+            self.assertFalse(wrong_process["topologyHealthy"])
+            self.assertFalse(wrong_process["healthy"])
+            self.assertIn(
+                "runtime health attestation does not match launchd process",
+                wrong_process["errors"],
             )
 
     @mock.patch("scripts.v2_bundle.require_runtime_node")

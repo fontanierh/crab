@@ -11,9 +11,9 @@ use bridge_host_contract::{
 use native_channel_contract::{ChannelLifecycle, ListChannelBindingsRequest};
 use serde::Serialize;
 
-use crate::{ChannelIpcClient, ChannelIpcClientError, RuntimeConfig};
+use crate::{ChannelIpcClient, ChannelIpcClientError, RuntimeConfig, RuntimeConfigError};
 
-const HEALTH_SCHEMA: u64 = 1;
+const HEALTH_SCHEMA: u64 = 2;
 const MAX_BINDING_CATALOG: u64 = 256;
 
 /// A failure to read the authenticated runtime health surface.
@@ -23,6 +23,8 @@ pub enum RuntimeHealthError {
     Ipc(ChannelIpcClientError),
     /// The system clock cannot produce a portable Unix timestamp.
     ClockUnavailable,
+    /// The expected semantic configuration could not be fingerprinted.
+    Configuration(RuntimeConfigError),
 }
 
 impl fmt::Display for RuntimeHealthError {
@@ -30,6 +32,7 @@ impl fmt::Display for RuntimeHealthError {
         match self {
             Self::Ipc(error) => error.fmt(formatter),
             Self::ClockUnavailable => formatter.write_str("system clock is unavailable"),
+            Self::Configuration(error) => error.fmt(formatter),
         }
     }
 }
@@ -38,6 +41,7 @@ impl std::error::Error for RuntimeHealthError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Ipc(error) => Some(error),
+            Self::Configuration(error) => Some(error),
             Self::ClockUnavailable => None,
         }
     }
@@ -57,10 +61,22 @@ pub struct RuntimeHealthReport {
     observed_at_ms: u64,
     ready: bool,
     healthy: bool,
+    runtime: RuntimeAttestationHealth,
     channels: Vec<ChannelHealth>,
     bridges: Vec<BridgeHealth>,
     errors: Vec<String>,
     needs_action: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RuntimeAttestationHealth {
+    expected_configuration_fingerprint: String,
+    loaded_configuration_fingerprint: Option<String>,
+    started_at_ms: u64,
+    process_id: u64,
+    ready: bool,
+    error: Option<String>,
 }
 
 impl RuntimeHealthReport {
@@ -118,6 +134,10 @@ pub async fn inspect_runtime_health(
     config: &RuntimeConfig,
 ) -> Result<RuntimeHealthReport, RuntimeHealthError> {
     let observed_at_ms = system_time_ms()?;
+    let expected_configuration_fingerprint = config
+        .configuration_fingerprint()
+        .map_err(RuntimeHealthError::Configuration)?;
+    let attestation = client.runtime_status().await?;
     let binding_catalog = client
         .list_channel_bindings(ListChannelBindingsRequest {
             limit: MAX_BINDING_CATALOG,
@@ -126,6 +146,22 @@ pub async fn inspect_runtime_health(
     let bridge_catalog = client.list_bridges().await?;
     let mut errors = Vec::new();
     let mut needs_action = Vec::new();
+    let runtime_error = match attestation.configuration_fingerprint.as_deref() {
+        Some(loaded) if loaded == expected_configuration_fingerprint => None,
+        Some(_) => Some("running runtime configuration does not match runtime.json".to_owned()),
+        None => Some("running runtime has no configured topology attestation".to_owned()),
+    };
+    if let Some(error) = &runtime_error {
+        errors.push(error.clone());
+    }
+    let runtime = RuntimeAttestationHealth {
+        expected_configuration_fingerprint,
+        loaded_configuration_fingerprint: attestation.configuration_fingerprint,
+        started_at_ms: attestation.started_at_ms,
+        process_id: attestation.process_id,
+        ready: runtime_error.is_none(),
+        error: runtime_error,
+    };
 
     if binding_catalog.total_bindings
         > u64::try_from(binding_catalog.bindings.len()).unwrap_or(u64::MAX)
@@ -327,7 +363,8 @@ pub async fn inspect_runtime_health(
         bridges.push(component);
     }
 
-    let ready = errors.is_empty()
+    let ready = runtime.ready
+        && errors.is_empty()
         && channels.iter().all(|channel| channel.ready)
         && bridges.iter().all(|bridge| bridge.ready);
     let healthy = ready
@@ -339,6 +376,7 @@ pub async fn inspect_runtime_health(
         observed_at_ms,
         ready,
         healthy,
+        runtime,
         channels,
         bridges,
         errors,

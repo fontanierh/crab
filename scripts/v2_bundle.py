@@ -51,7 +51,7 @@ BUNDLE_AGENT_PRESETS = {
 DEFAULT_BUNDLE_AGENT_PRESET = "claude-opus"
 MANIFEST_NAME = "bundle-manifest.json"
 SERVICE_SCHEMA_VERSION = 1
-HEALTH_SCHEMA_VERSION = 1
+HEALTH_SCHEMA_VERSION = 2
 SERVICE_LABEL = "com.crab.v2.runtime"
 SERVICE_LINKS = ("bin", "agents", "bridges", "libexec")
 DEFAULT_READINESS_TIMEOUT_SECONDS = 30.0
@@ -1155,12 +1155,34 @@ def parse_runtime_health(raw: str) -> dict[str, Any]:
             "observedAtMs",
             "ready",
             "healthy",
+            "runtime",
             "channels",
             "bridges",
             "errors",
             "needsAction",
         },
         "runtime health output",
+    )
+    runtime = require_exact_keys(
+        report["runtime"],
+        {
+            "expectedConfigurationFingerprint",
+            "loadedConfigurationFingerprint",
+            "startedAtMs",
+            "processId",
+            "ready",
+            "error",
+        },
+        "runtime health attestation",
+    )
+    expected_fingerprint = runtime["expectedConfigurationFingerprint"]
+    loaded_fingerprint = runtime["loadedConfigurationFingerprint"]
+    valid_expected_fingerprint = isinstance(expected_fingerprint, str) and bool(
+        re.fullmatch(r"[0-9a-f]{64}", expected_fingerprint)
+    )
+    valid_loaded_fingerprint = loaded_fingerprint is None or (
+        isinstance(loaded_fingerprint, str)
+        and bool(re.fullmatch(r"[0-9a-f]{64}", loaded_fingerprint))
     )
     if (
         report["schemaVersion"] != HEALTH_SCHEMA_VERSION
@@ -1169,6 +1191,18 @@ def parse_runtime_health(raw: str) -> dict[str, Any]:
         or report["observedAtMs"] < 0
         or not isinstance(report["ready"], bool)
         or not isinstance(report["healthy"], bool)
+        or not valid_expected_fingerprint
+        or not valid_loaded_fingerprint
+        or isinstance(runtime["startedAtMs"], bool)
+        or not isinstance(runtime["startedAtMs"], int)
+        or runtime["startedAtMs"] < 0
+        or isinstance(runtime["processId"], bool)
+        or not isinstance(runtime["processId"], int)
+        or runtime["processId"] <= 0
+        or not isinstance(runtime["ready"], bool)
+        or (runtime["error"] is not None and not isinstance(runtime["error"], str))
+        or runtime["ready"] != (runtime["error"] is None)
+        or runtime["ready"] != (loaded_fingerprint == expected_fingerprint)
         or not isinstance(report["channels"], list)
         or not all(isinstance(channel, dict) for channel in report["channels"])
         or not isinstance(report["bridges"], list)
@@ -1178,6 +1212,7 @@ def parse_runtime_health(raw: str) -> dict[str, Any]:
         or not isinstance(report["needsAction"], list)
         or not all(isinstance(action, str) for action in report["needsAction"])
         or (report["healthy"] and not report["ready"])
+        or (report["ready"] and not runtime["ready"])
     ):
         raise BundleError("runtime health output has invalid values")
     return report
@@ -1222,6 +1257,10 @@ def production_readiness(
                     )
                 verify_bundle(paths.current)
                 topology = health(paths)
+                if topology["runtime"]["processId"] != state.pid:
+                    raise BundleError(
+                        "runtime health attestation does not match launchd process"
+                    )
                 if not topology["ready"]:
                     detail = (
                         "; ".join(topology["errors"][:3])
@@ -1389,10 +1428,14 @@ def service_status(
         errors.append(str(error))
     ipc_ready = False
     topology: dict[str, Any] | None = None
+    runtime_pid_matches = False
     if state.running and state.pid is not None and bundle_verified:
         try:
             topology = health(paths)
             ipc_ready = True
+            runtime_pid_matches = topology["runtime"]["processId"] == state.pid
+            if not runtime_pid_matches:
+                errors.append("runtime health attestation does not match launchd process")
             if not topology["ready"]:
                 errors.append("configured runtime topology is not ready")
         except BundleError as error:
@@ -1411,8 +1454,12 @@ def service_status(
         "pid": state.pid,
         "processCount": len(process_ids),
         "ipcReady": ipc_ready,
-        "topologyReady": topology is not None and topology["ready"],
-        "topologyHealthy": topology is not None and topology["healthy"],
+        "topologyReady": topology is not None
+        and topology["ready"]
+        and runtime_pid_matches,
+        "topologyHealthy": topology is not None
+        and topology["healthy"]
+        and runtime_pid_matches,
         "needsAction": topology["needsAction"] if topology is not None else [],
         "topology": topology,
         "healthy": not errors and ipc_ready and topology is not None and topology["healthy"],

@@ -19,7 +19,8 @@ use turn_router_contract::{DrainLaneRequest, PutRouteRequest, RouteReference};
 
 use crate::{
     ChannelConfig, ChannelIpcPaths, DraftRuntime, LaneConfig, RuntimeConfig, RuntimeStartError,
-    channel_ipc::ChannelIpcServer, start_runtime_with_state_directory,
+    channel_ipc::{ChannelIpcCapabilities, ChannelIpcServer},
+    start_runtime_with_state_directory,
 };
 
 /// A configured, restored graph with one continuously draining worker per trigger lane.
@@ -80,8 +81,13 @@ impl ConfiguredRuntime {
     ) -> Result<Self, RuntimeStartError> {
         let state_directory = state_directory.as_ref();
         config.validate()?;
+        let configuration_fingerprint = config.configuration_fingerprint()?;
         let agents = config.configured_agents()?;
-        let runtime = start_runtime_with_state_directory(state_directory, agents)?;
+        let runtime = start_runtime_with_state_directory(
+            state_directory,
+            agents,
+            Some(configuration_fingerprint),
+        )?;
         let paths = ChannelIpcPaths::for_state_directory(state_directory)
             .map_err(|error| RuntimeStartError::ChannelIpc(error.into()))?;
         let bridges = initialize_bridges(runtime.bridge_host(), &config).await?;
@@ -102,12 +108,15 @@ impl ConfiguredRuntime {
         }
         let channel_ipc = match ChannelIpcServer::start(
             paths,
-            runtime.agent_host().clone(),
-            runtime.channel_gateway().clone(),
-            runtime.native_channel().clone(),
-            runtime.bridge_host().clone(),
-            runtime.trigger_inbox().clone(),
-            runtime.sub_agent_host().clone(),
+            ChannelIpcCapabilities::new(
+                runtime.agent_host().clone(),
+                runtime.channel_gateway().clone(),
+                runtime.native_channel().clone(),
+                runtime.bridge_host().clone(),
+                runtime.trigger_inbox().clone(),
+                runtime.sub_agent_host().clone(),
+                runtime.runtime_control().clone(),
+            ),
         )
         .await
         {
@@ -588,6 +597,7 @@ impl fmt::Display for RuntimeStartError {
             Self::BridgeHost(_) => "bridge-host startup failed",
             Self::CredentialStore(_) => "credential-store startup failed",
             Self::NativeChannel(_) => "native-channel startup failed",
+            Self::RuntimeControl(_) => "runtime-control startup failed",
             Self::SubAgentHost(_) => "sub-agent-host startup failed",
             Self::TurnRouter(_) => "turn-router startup failed",
             Self::TriggerInbox(_) => "trigger-inbox startup failed",
@@ -669,6 +679,7 @@ mod tests {
     use channel_gateway_implementation::{ChannelGateway, generated as channel_gateway};
     use native_channel_contract::{BindingReference, ChannelLifecycle, ListChannelBindingsRequest};
     use native_channel_implementation::{NativeChannelState, generated as native_channel};
+    use runtime_control_implementation::{RuntimeControl, generated as runtime_control};
     use serde_json::json;
     use sub_agent_host_contract::{
         ContextRealization, InputDisposition, ReadSubAgentEventsRequest, SendToChildRequest,
@@ -693,7 +704,9 @@ mod tests {
         AcpChannelOptions, AgentConfig, BridgeAuthenticationConfig, BridgeConfig,
         BridgeIngressConfig, ChannelConfig, ChannelIpcClient, ChannelIpcClientError,
         ChannelIpcPaths, ChannelIpcStartupError, CommandConfig, LaneConfig, ProtocolConfig,
-        RuntimeConfig, acp_channel::AcpChannelFacade, channel_ipc::ChannelIpcServer,
+        RuntimeConfig,
+        acp_channel::AcpChannelFacade,
+        channel_ipc::{ChannelIpcCapabilities, ChannelIpcServer},
         inspect_runtime_health,
     };
 
@@ -1248,6 +1261,7 @@ mod tests {
         bridge_processes: Arc<FakeBridgeProcesses>,
         channel_gateway: channel_gateway_contract::ChannelGatewayHandle,
         native_channel: native_channel_contract::NativeChannelHandle,
+        runtime_control: runtime_control_contract::RuntimeControlHandle,
         sub_agent_host: sub_agent_host_contract::SubAgentHostHandle,
         turn_router: turn_router_contract::TurnRouterHandle,
         trigger_inbox: trigger_inbox_contract::TriggerInboxHandle,
@@ -1261,6 +1275,18 @@ mod tests {
                 native_channel: &self.native_channel,
                 turn_router: &self.turn_router,
             }
+        }
+
+        fn ipc_capabilities(&self) -> ChannelIpcCapabilities {
+            ChannelIpcCapabilities::new(
+                self.agent_host.clone(),
+                self.channel_gateway.clone(),
+                self.native_channel.clone(),
+                self.bridge_host.clone(),
+                self.trigger_inbox.clone(),
+                self.sub_agent_host.clone(),
+                self.runtime_control.clone(),
+            )
         }
     }
 
@@ -1322,6 +1348,21 @@ mod tests {
         builder.connect(&router, &inbox);
         builder.connect(&router, &channel);
         let turn_router = builder.handle::<turn_router_contract::TurnRouterHandle>(&router);
+        let runtime_control_box = runtime_control::register(
+            &mut builder,
+            RuntimeControl::new(
+                Some(
+                    config(path.to_path_buf())
+                        .configuration_fingerprint()
+                        .expect("test config fingerprints"),
+                ),
+                1,
+                u64::from(std::process::id()),
+            )
+            .expect("runtime attestation is valid"),
+        );
+        let runtime_control =
+            builder.handle::<runtime_control_contract::RuntimeControlHandle>(&runtime_control_box);
         let composition = builder.start().expect("test graph starts");
         TestGraph {
             _composition: composition,
@@ -1330,6 +1371,7 @@ mod tests {
             bridge_processes,
             channel_gateway,
             native_channel,
+            runtime_control,
             sub_agent_host,
             turn_router,
             trigger_inbox,
@@ -1751,28 +1793,11 @@ mod tests {
             .await
             .expect("topology starts");
         let paths = ChannelIpcPaths::for_state_directory(directory.path()).expect("paths resolve");
-        let mut server = ChannelIpcServer::start(
-            paths.clone(),
-            graph.agent_host.clone(),
-            graph.channel_gateway.clone(),
-            graph.native_channel.clone(),
-            graph.bridge_host.clone(),
-            graph.trigger_inbox.clone(),
-            graph.sub_agent_host.clone(),
-        )
-        .await
-        .expect("IPC starts");
+        let mut server = ChannelIpcServer::start(paths.clone(), graph.ipc_capabilities())
+            .await
+            .expect("IPC starts");
         assert!(matches!(
-            ChannelIpcServer::start(
-                paths.clone(),
-                graph.agent_host.clone(),
-                graph.channel_gateway.clone(),
-                graph.native_channel.clone(),
-                graph.bridge_host.clone(),
-                graph.trigger_inbox.clone(),
-                graph.sub_agent_host.clone(),
-            )
-            .await,
+            ChannelIpcServer::start(paths.clone(), graph.ipc_capabilities(),).await,
             Err(ChannelIpcStartupError::AlreadyRunning)
         ));
         let request = AttachChannelRequest {
@@ -1830,6 +1855,19 @@ mod tests {
             .expect("configured health aggregates through authenticated IPC");
         assert!(health.is_ready());
         assert!(health.is_healthy());
+        let mut drifted = config.clone();
+        drifted.lanes[0].poll_interval_ms += 1;
+        let drifted_health = inspect_runtime_health(&channel_client, &drifted)
+            .await
+            .expect("config drift remains inspectable");
+        assert!(!drifted_health.is_ready());
+        assert!(!drifted_health.is_healthy());
+        let drifted_json = serde_json::to_value(&drifted_health).expect("health encodes");
+        assert_eq!(drifted_json["runtime"]["ready"], false);
+        assert_eq!(
+            drifted_json["runtime"]["error"],
+            "running runtime configuration does not match runtime.json"
+        );
 
         let diagnostic_client = ChannelIpcClient::from_state_directory(directory.path())
             .expect("diagnostic client opens");
@@ -1889,17 +1927,9 @@ mod tests {
         server.shutdown().await.expect("IPC shuts down");
         assert!(!paths.socket().exists());
         assert!(paths.token().exists());
-        let mut restarted = ChannelIpcServer::start(
-            paths.clone(),
-            graph.agent_host.clone(),
-            graph.channel_gateway.clone(),
-            graph.native_channel.clone(),
-            graph.bridge_host.clone(),
-            graph.trigger_inbox.clone(),
-            graph.sub_agent_host.clone(),
-        )
-        .await
-        .expect("IPC restarts");
+        let mut restarted = ChannelIpcServer::start(paths.clone(), graph.ipc_capabilities())
+            .await
+            .expect("IPC restarts");
         let after_restart = ChannelIpcClient::from_state_directory(directory.path())
             .expect("restart client opens")
             .attach_channel(request)
@@ -1930,17 +1960,9 @@ mod tests {
             .await
             .expect("configured bridge starts");
         let paths = ChannelIpcPaths::for_state_directory(directory.path()).expect("paths resolve");
-        let mut server = ChannelIpcServer::start(
-            paths,
-            graph.agent_host.clone(),
-            graph.channel_gateway.clone(),
-            graph.native_channel.clone(),
-            graph.bridge_host.clone(),
-            graph.trigger_inbox.clone(),
-            graph.sub_agent_host.clone(),
-        )
-        .await
-        .expect("IPC starts");
+        let mut server = ChannelIpcServer::start(paths, graph.ipc_capabilities())
+            .await
+            .expect("IPC starts");
         let client =
             ChannelIpcClient::from_state_directory(directory.path()).expect("client opens");
 
@@ -2140,17 +2162,9 @@ mod tests {
             .expect("parent context is durable");
 
         let paths = ChannelIpcPaths::for_state_directory(directory.path()).expect("paths resolve");
-        let mut server = ChannelIpcServer::start(
-            paths,
-            graph.agent_host.clone(),
-            graph.channel_gateway.clone(),
-            graph.native_channel.clone(),
-            graph.bridge_host.clone(),
-            graph.trigger_inbox.clone(),
-            graph.sub_agent_host.clone(),
-        )
-        .await
-        .expect("IPC starts");
+        let mut server = ChannelIpcServer::start(paths, graph.ipc_capabilities())
+            .await
+            .expect("IPC starts");
         let client =
             ChannelIpcClient::from_state_directory(directory.path()).expect("client opens");
 
@@ -2316,17 +2330,9 @@ mod tests {
         let state = Arc::new(Mutex::new(FakeState::default()));
         let graph = graph(directory.path(), state.clone());
         let paths = ChannelIpcPaths::for_state_directory(directory.path()).expect("paths resolve");
-        let mut server = ChannelIpcServer::start(
-            paths,
-            graph.agent_host.clone(),
-            graph.channel_gateway.clone(),
-            graph.native_channel.clone(),
-            graph.bridge_host.clone(),
-            graph.trigger_inbox.clone(),
-            graph.sub_agent_host.clone(),
-        )
-        .await
-        .expect("IPC starts");
+        let mut server = ChannelIpcServer::start(paths, graph.ipc_capabilities())
+            .await
+            .expect("IPC starts");
         let options = AcpChannelOptions::new(directory.path(), "fake");
         let first_updates = Arc::new(Mutex::new(Vec::new()));
         let received_updates = first_updates.clone();
@@ -2612,17 +2618,9 @@ mod tests {
             .await
             .expect("topology starts");
         let paths = ChannelIpcPaths::for_state_directory(directory.path()).expect("paths resolve");
-        let mut server = ChannelIpcServer::start(
-            paths,
-            graph.agent_host.clone(),
-            graph.channel_gateway.clone(),
-            graph.native_channel.clone(),
-            graph.bridge_host.clone(),
-            graph.trigger_inbox.clone(),
-            graph.sub_agent_host.clone(),
-        )
-        .await
-        .expect("IPC starts");
+        let mut server = ChannelIpcServer::start(paths, graph.ipc_capabilities())
+            .await
+            .expect("IPC starts");
         let client =
             ChannelIpcClient::from_state_directory(directory.path()).expect("client opens");
         let trigger = EnqueueTrigger {

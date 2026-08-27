@@ -1,6 +1,6 @@
 //! Executable assembly for the Crab v2 contract graph.
 //!
-//! Domain policy remains inside the seven boxes. This composition loads deployment topology,
+//! Domain policy remains inside the eight boxes. This composition loads deployment topology,
 //! restores durable channel routes and supervises the bounded trigger-lane workers.
 
 #![deny(missing_docs)]
@@ -44,6 +44,9 @@ use channel_gateway_implementation::{ChannelGateway, generated as channel_gatewa
 use native_channel_implementation::{
     NativeChannelError, NativeChannelState, generated as native_channel,
 };
+use runtime_control_implementation::{
+    RuntimeControl, RuntimeControlError, generated as runtime_control,
+};
 use sub_agent_host_implementation::{
     SubAgentHostError, SubAgentHostState, generated as sub_agent_host,
 };
@@ -60,6 +63,7 @@ pub struct DraftRuntime {
     bridge_host: bridge_host_contract::BridgeHostHandle,
     channel_gateway: channel_gateway_contract::ChannelGatewayHandle,
     native_channel: native_channel_contract::NativeChannelHandle,
+    runtime_control: runtime_control_contract::RuntimeControlHandle,
     sub_agent_host: sub_agent_host_contract::SubAgentHostHandle,
     turn_router: turn_router_contract::TurnRouterHandle,
     trigger_inbox: trigger_inbox_contract::TriggerInboxHandle,
@@ -84,6 +88,11 @@ impl DraftRuntime {
     /// Returns the ordinary typed handle for the implemented native-channel router.
     pub fn native_channel(&self) -> &native_channel_contract::NativeChannelHandle {
         &self.native_channel
+    }
+
+    /// Returns immutable identity for the currently assembled runtime process.
+    pub fn runtime_control(&self) -> &runtime_control_contract::RuntimeControlHandle {
+        &self.runtime_control
     }
 
     /// Returns the ordinary typed handle for Crab-owned ACP sub-agent orchestration.
@@ -115,6 +124,8 @@ pub enum RuntimeStartError {
     CredentialStore(CredentialStoreError),
     /// The concrete native-channel state could not start.
     NativeChannel(NativeChannelError),
+    /// Immutable runtime identity could not be captured.
+    RuntimeControl(RuntimeControlError),
     /// The concrete sub-agent-host state could not start.
     SubAgentHost(SubAgentHostError),
     /// The concrete turn-router state could not start.
@@ -173,15 +184,18 @@ pub fn start_draft() -> Result<DraftRuntime, RuntimeStartError> {
         SubAgentHostState::open_in_memory().map_err(RuntimeStartError::SubAgentHost)?;
     let turn_router = TurnRouterState::open_in_memory().map_err(RuntimeStartError::TurnRouter)?;
     let trigger_store = TriggerInbox::open_in_memory().map_err(RuntimeStartError::TriggerInbox)?;
-    assemble_draft(
-        agent_host,
-        bridge_host,
-        Arc::new(InMemoryCredentialStore::default()),
-        native_channel,
-        sub_agent_host,
-        turn_router,
+    let runtime_control =
+        RuntimeControl::for_current_process(None).map_err(RuntimeStartError::RuntimeControl)?;
+    assemble_draft(DraftComponents {
+        agent_host_box: agent_host,
+        bridge_host_state: bridge_host,
+        credential_store: Arc::new(InMemoryCredentialStore::default()),
+        native_channel_state: native_channel,
+        sub_agent_host_state: sub_agent_host,
+        turn_router_state: turn_router,
         trigger_store,
-    )
+        runtime_control_box: runtime_control,
+    })
 }
 
 /// Assemble the draft graph with a durable trigger inbox at `path`.
@@ -196,27 +210,31 @@ pub fn start_draft_with_trigger_store(
         SubAgentHostState::open_in_memory().map_err(RuntimeStartError::SubAgentHost)?;
     let turn_router = TurnRouterState::open_in_memory().map_err(RuntimeStartError::TurnRouter)?;
     let trigger_store = TriggerInbox::open(path).map_err(RuntimeStartError::TriggerInbox)?;
-    assemble_draft(
-        agent_host,
-        bridge_host,
-        Arc::new(InMemoryCredentialStore::default()),
-        native_channel,
-        sub_agent_host,
-        turn_router,
+    let runtime_control =
+        RuntimeControl::for_current_process(None).map_err(RuntimeStartError::RuntimeControl)?;
+    assemble_draft(DraftComponents {
+        agent_host_box: agent_host,
+        bridge_host_state: bridge_host,
+        credential_store: Arc::new(InMemoryCredentialStore::default()),
+        native_channel_state: native_channel,
+        sub_agent_host_state: sub_agent_host,
+        turn_router_state: turn_router,
         trigger_store,
-    )
+        runtime_control_box: runtime_control,
+    })
 }
 
 /// Assemble every implemented box with durable state beneath one private runtime directory.
 pub fn start_draft_with_state_directory(
     path: impl AsRef<Path>,
 ) -> Result<DraftRuntime, RuntimeStartError> {
-    start_runtime_with_state_directory(path.as_ref(), Vec::new())
+    start_runtime_with_state_directory(path.as_ref(), Vec::new(), None)
 }
 
 fn start_runtime_with_state_directory(
     path: &Path,
     agents: Vec<ConfiguredAgent>,
+    configuration_fingerprint: Option<String>,
 ) -> Result<DraftRuntime, RuntimeStartError> {
     std::fs::create_dir_all(path).map_err(RuntimeStartError::StateDirectory)?;
     #[cfg(unix)]
@@ -240,18 +258,21 @@ fn start_runtime_with_state_directory(
         .map_err(RuntimeStartError::TurnRouter)?;
     let trigger_store = TriggerInbox::open(path.join("trigger-inbox.sqlite"))
         .map_err(RuntimeStartError::TriggerInbox)?;
-    assemble_draft(
-        agent_host,
-        bridge_host,
-        Arc::new(credentials),
-        native_channel,
-        sub_agent_host,
-        turn_router,
+    let runtime_control = RuntimeControl::for_current_process(configuration_fingerprint)
+        .map_err(RuntimeStartError::RuntimeControl)?;
+    assemble_draft(DraftComponents {
+        agent_host_box: agent_host,
+        bridge_host_state: bridge_host,
+        credential_store: Arc::new(credentials),
+        native_channel_state: native_channel,
+        sub_agent_host_state: sub_agent_host,
+        turn_router_state: turn_router,
         trigger_store,
-    )
+        runtime_control_box: runtime_control,
+    })
 }
 
-fn assemble_draft(
+struct DraftComponents {
     agent_host_box: AgentHost,
     bridge_host_state: BridgeHostState,
     credential_store: Arc<dyn CredentialStore>,
@@ -259,7 +280,20 @@ fn assemble_draft(
     sub_agent_host_state: SubAgentHostState,
     turn_router_state: TurnRouterState,
     trigger_store: TriggerInbox,
-) -> Result<DraftRuntime, RuntimeStartError> {
+    runtime_control_box: RuntimeControl,
+}
+
+fn assemble_draft(components: DraftComponents) -> Result<DraftRuntime, RuntimeStartError> {
+    let DraftComponents {
+        agent_host_box,
+        bridge_host_state,
+        credential_store,
+        native_channel_state,
+        sub_agent_host_state,
+        turn_router_state,
+        trigger_store,
+        runtime_control_box,
+    } = components;
     let in_process = Arc::new(StubTransport::new());
     let mut builder = CompositionBuilder::new();
 
@@ -324,6 +358,15 @@ fn assemble_draft(
     let bridge_host_handle = builder.handle::<bridge_host_contract::BridgeHostHandle>(&bridge_host);
     builder.expose_all(&bridge_host, in_process.clone(), ExposureLevel::CodeOnly);
 
+    let runtime_control = runtime_control::register(&mut builder, runtime_control_box);
+    let runtime_control_handle =
+        builder.handle::<runtime_control_contract::RuntimeControlHandle>(&runtime_control);
+    builder.expose_all(
+        &runtime_control,
+        in_process.clone(),
+        ExposureLevel::CodeOnly,
+    );
+
     let composition = builder.start()?;
     Ok(DraftRuntime {
         composition,
@@ -332,6 +375,7 @@ fn assemble_draft(
         bridge_host: bridge_host_handle,
         channel_gateway: channel_gateway_handle,
         native_channel: native_channel_handle,
+        runtime_control: runtime_control_handle,
         sub_agent_host: sub_agent_host_handle,
         turn_router: turn_router_handle,
         trigger_inbox,
@@ -363,7 +407,7 @@ mod tests {
     }
 
     #[test]
-    fn manifest_and_runtime_expose_the_same_seven_box_graph() {
+    fn manifest_and_runtime_expose_the_same_eight_box_graph() {
         let manifest = Manifest::parse(
             RelativePath::new("boxology.toml").expect("manifest path is valid"),
             MANIFEST.as_bytes(),
@@ -393,6 +437,7 @@ mod tests {
                 "bridge-host",
                 "channel-gateway",
                 "native-channel",
+                "runtime-control",
                 "sub-agent-host",
                 "trigger-inbox",
                 "turn-router"
@@ -405,7 +450,7 @@ mod tests {
                 .expect("composition exists")
                 .boxes()
                 .len(),
-            7
+            8
         );
     }
 

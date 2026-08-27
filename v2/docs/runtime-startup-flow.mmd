@@ -3,6 +3,7 @@ flowchart LR
     CONFIG["strict JSON topology<br/>secret names, never values"]
     STATE[("six SQLite stores<br/>private state directory")]
     IPC["owner-only local IPC<br/>persistent token · ephemeral socket"]
+    ATTEST["runtime-control<br/>config fingerprint · PID · start time"]
     UI["native UI adapter"]
     TRIGGER["cron · self-work · operator<br/>crab-v2-trigger"]
     ATTACH["channel-gateway<br/>idempotent attach"]
@@ -15,6 +16,7 @@ flowchart LR
     WORKER["one bounded worker / lane<br/>claim · route · settle · repeat"]
     SIGNAL["SIGINT / SIGTERM<br/>stop ingress · workers · bridges<br/>detach every ACP session"]
 
+    CONFIG --> ATTEST --> IPC
     CONFIG --> ATTACH
     UI --> IPC --> ATTACH
     TRIGGER --> IPC --> INBOX --> WORKER
@@ -37,5 +39,6 @@ flowchart LR
     classDef runtime fill:#ffedd5,stroke:#ea580c,stroke-width:2px,color:#7c2d12;
     class CONFIG,UI,TRIGGER,SIGNAL config;
     class STATE,IPC durable;
+    class ATTEST runtime;
     class ATTACH agent;
     class RECOVER,REUSE,REBIND,BIND,ROUTE,INBOX,WORKER runtime;

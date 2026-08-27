@@ -11,6 +11,7 @@ v2/
 ├── native-channel/   one channel ↔ one ACP session, with the full native view
 ├── channel-gateway/  idempotent UI attachment and physical-session recovery
 ├── bridge-host/      supervised external integrations, auth and selected delivery
+├── runtime-control/  immutable process and semantic-config attestation
 ├── sub-agent-host/   supervised ACP subprocesses with bidirectional live interaction
 ├── trigger-inbox/    transactional SQLite ingress used by bridges, cron and self-work
 ├── turn-router/      durable target resolution, lane ordering and trigger settlement
@@ -122,9 +123,10 @@ interrupt as a separate explicit action.
 - `crab-v2` loads secret-free schema-v1 topology, opens fresh ACP sessions, recovers persisted
   bindings/routes, exposes an owner-only authenticated local Boxology endpoint, and continuously
   drains every configured trigger lane. `crab-v2-health` reconciles that configured topology with
-  live channel, ACP-session, bridge and credential evidence, distinguishing deploy-safe readiness
-  from full health. See the [startup contract](docs/runtime-startup.md), [runtime health
-  contract](docs/runtime-health.md) and [local transport contract](docs/channel-ipc.md).
+  the running process's immutable config/PID attestation plus live channel, ACP-session, bridge and
+  credential evidence, distinguishing deploy-safe readiness from full health. See the [startup
+  contract](docs/runtime-startup.md), [runtime health contract](docs/runtime-health.md) and [local
+  transport contract](docs/channel-ipc.md).
 - `make v2-bundle` builds the complete locked release closure, vendors the Claude and Codex ACP
   adapters plus WhatsApp production dependencies, verifies every entry, and publishes atomically.
   The resulting directory needs no Rust, npm, `npx`, install, or package fetch at runtime. Its

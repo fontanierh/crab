@@ -31,6 +31,7 @@ use native_channel_contract::{
     ChannelTurn, InterruptReceipt, InterruptRequest, ListChannelBindingsRequest,
     NativeChannelHandle, PublishedEventPage, ReplayRequest,
 };
+use runtime_control_contract::{RuntimeAttestation, RuntimeControlHandle, RuntimeStatusRequest};
 use serde::{Deserialize, Serialize};
 use serde_json::value::RawValue;
 use sub_agent_host_contract::{
@@ -77,6 +78,7 @@ const BRIDGE_DELIVERY_STATUS: &str = "bridge-host.delivery_status";
 const BRIDGE_STATUS: &str = "bridge-host.bridge_status";
 const STOP_BRIDGE: &str = "bridge-host.stop_bridge";
 const SUSPEND_BRIDGE: &str = "bridge-host.suspend_bridge";
+const RUNTIME_STATUS: &str = "runtime-control.runtime_status";
 const AGENT_SESSION_STATUS: &str = "agent-host.session_status";
 const LIST_AGENT_SESSIONS: &str = "agent-host.list_sessions";
 const READ_AGENT_DIAGNOSTICS: &str = "agent-host.read_diagnostics";
@@ -533,6 +535,16 @@ impl ChannelIpcClient {
         .await
     }
 
+    /// Read immutable identity captured by the running process before IPC startup.
+    pub async fn runtime_status(&self) -> Result<RuntimeAttestation, ChannelIpcClientError> {
+        self.invoke(
+            RUNTIME_STATUS,
+            runtime_control_contract::contract_descriptor(),
+            RuntimeStatusRequest {},
+        )
+        .await
+    }
+
     /// Inspect the current parent cursor before creating an inherited child snapshot.
     pub async fn agent_session_status(
         &self,
@@ -715,24 +727,42 @@ pub(crate) struct ChannelIpcServer {
 }
 
 #[derive(Clone)]
-struct IpcCapabilities {
+pub(crate) struct ChannelIpcCapabilities {
     agent_host: AgentHostHandle,
     channel_gateway: ChannelGatewayHandle,
     native_channel: NativeChannelHandle,
     bridge_host: BridgeHostHandle,
     trigger_inbox: TriggerInboxHandle,
     sub_agent_host: SubAgentHostHandle,
+    runtime_control: RuntimeControlHandle,
 }
 
-impl ChannelIpcServer {
-    pub(crate) async fn start(
-        paths: ChannelIpcPaths,
+impl ChannelIpcCapabilities {
+    pub(crate) fn new(
         agent_host: AgentHostHandle,
         channel_gateway: ChannelGatewayHandle,
         native_channel: NativeChannelHandle,
         bridge_host: BridgeHostHandle,
         trigger_inbox: TriggerInboxHandle,
         sub_agent_host: SubAgentHostHandle,
+        runtime_control: RuntimeControlHandle,
+    ) -> Self {
+        Self {
+            agent_host,
+            channel_gateway,
+            native_channel,
+            bridge_host,
+            trigger_inbox,
+            sub_agent_host,
+            runtime_control,
+        }
+    }
+}
+
+impl ChannelIpcServer {
+    pub(crate) async fn start(
+        paths: ChannelIpcPaths,
+        capabilities: ChannelIpcCapabilities,
     ) -> Result<Self, ChannelIpcStartupError> {
         let authentication = load_or_create_token(&paths.token)?;
         prepare_socket(&paths.socket).await?;
@@ -742,14 +772,6 @@ impl ChannelIpcServer {
         let (failed_sender, failed) = watch::channel(false);
         let socket_path = paths.socket.clone();
         let server_socket = socket_path.clone();
-        let capabilities = IpcCapabilities {
-            agent_host,
-            channel_gateway,
-            native_channel,
-            bridge_host,
-            trigger_inbox,
-            sub_agent_host,
-        };
         let task = tokio::spawn(async move {
             let result = serve(listener, receiver, authentication, capabilities).await;
             if result.is_err() {
@@ -858,7 +880,7 @@ async fn serve(
     listener: UnixListener,
     mut shutdown: watch::Receiver<bool>,
     authentication: String,
-    capabilities: IpcCapabilities,
+    capabilities: ChannelIpcCapabilities,
 ) -> io::Result<()> {
     let mut connections = JoinSet::new();
     loop {
@@ -887,7 +909,7 @@ async fn serve(
 async fn handle_connection(
     stream: UnixStream,
     authentication: String,
-    capabilities: IpcCapabilities,
+    capabilities: ChannelIpcCapabilities,
 ) {
     let (reader, mut writer) = stream.into_split();
     let Ok(frame) = read_frame(&mut BufReader::new(reader), MAX_REQUEST_BYTES).await else {
@@ -926,16 +948,25 @@ async fn handle_connection(
     let _ = writer.flush().await;
 }
 
-async fn dispatch(request: WireRequest, capabilities: IpcCapabilities) -> WireOutcome {
-    let IpcCapabilities {
+async fn dispatch(request: WireRequest, capabilities: ChannelIpcCapabilities) -> WireOutcome {
+    let ChannelIpcCapabilities {
         agent_host,
         channel_gateway,
         native_channel,
         bridge_host,
         trigger_inbox,
         sub_agent_host,
+        runtime_control,
     } = capabilities;
     match request.capability.as_str() {
+        RUNTIME_STATUS => {
+            invoke_runtime_control::<RuntimeStatusRequest, RuntimeAttestation, _, _>(
+                &request.input,
+                RUNTIME_STATUS,
+                |input| runtime_control.runtime_status(call_context(), input),
+            )
+            .await
+        }
         AGENT_SESSION_STATUS => {
             invoke_agent::<SessionReference, SessionStatus, _, _>(
                 &request.input,
@@ -1277,6 +1308,30 @@ where
     Fut: Future<Output = Result<O, CallError<agent_host_contract::AgentHostError>>>,
 {
     let Some(capability) = capability(agent_host_contract::contract_descriptor(), name) else {
+        return wire_failure("internal", "MissingDescriptor");
+    };
+    let input = match decode_input::<I>(input, capability) {
+        Ok(input) => input,
+        Err(error) => return error,
+    };
+    match invoke(input).await {
+        Ok(output) => encode_output(output, capability),
+        Err(error) => wire_call_error(error),
+    }
+}
+
+async fn invoke_runtime_control<I, O, F, Fut>(
+    input: &RawValue,
+    name: &str,
+    invoke: F,
+) -> WireOutcome
+where
+    I: ContractType,
+    O: ContractType,
+    F: FnOnce(I) -> Fut,
+    Fut: Future<Output = Result<O, CallError<runtime_control_contract::RuntimeControlError>>>,
+{
+    let Some(capability) = capability(runtime_control_contract::contract_descriptor(), name) else {
         return wire_failure("internal", "MissingDescriptor");
     };
     let input = match decode_input::<I>(input, capability) {
