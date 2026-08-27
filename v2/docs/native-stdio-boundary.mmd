@@ -1,0 +1,33 @@
+%%{init: {"theme": "base", "themeVariables": {"fontFamily": "ui-sans-serif, system-ui, sans-serif", "primaryTextColor": "#172033", "lineColor": "#64748b", "edgeLabelBackground": "#ffffff"}, "flowchart": {"curve": "basis", "nodeSpacing": 48, "rankSpacing": 62}}}%%
+flowchart LR
+    PEER["ACP / MCP peer<br/>native UI or agent harness"]
+    PIPE["Per-process OS stdin pipe<br/>newline-delimited JSON"]
+    LIMIT{"Shared SDK reader policy<br/>frame ≤ 16 MiB?"}
+    PARSE["Per-process UTF-8<br/>+ JSON-RPC parse"]
+
+    subgraph CRAB["Crab-owned stdio processes"]
+        direction TB
+        CHANNEL["Native channel facade"]
+        BRIDGE["15 bridge tools"]
+        SUBAGENT["6 sub-agent tools"]
+    end
+
+    ERROR["InvalidData<br/>transport stops"]
+    EXIT["Process exits<br/>no unbounded buffer"]
+
+    PEER --> PIPE --> LIMIT
+    LIMIT -->|"accepted"| PARSE
+    PARSE --> CHANNEL
+    PARSE --> BRIDGE
+    PARSE --> SUBAGENT
+    LIMIT -->|"oversized or unterminated"| ERROR --> EXIT
+
+    classDef peer fill:#f8fafc,stroke:#64748b,stroke-width:1.5px,color:#172033;
+    classDef boundary fill:#fef3c7,stroke:#d97706,stroke-width:2px,color:#78350f;
+    classDef runtime fill:#dbeafe,stroke:#2563eb,stroke-width:2px,color:#172554;
+    classDef failure fill:#fee2e2,stroke:#dc2626,stroke-width:2px,color:#7f1d1d;
+
+    class PEER,PIPE peer;
+    class LIMIT boundary;
+    class PARSE,CHANNEL,BRIDGE,SUBAGENT runtime;
+    class ERROR,EXIT failure;

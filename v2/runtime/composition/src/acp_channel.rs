@@ -12,7 +12,7 @@ use std::{
 };
 
 use agent_client_protocol::{
-    Agent, Client, ConnectTo, ConnectionTo, Responder, Stdio, UntypedMessage,
+    Agent, Client, ConnectTo, ConnectionTo, Responder, UntypedMessage,
     schema::{
         ProtocolVersion,
         v1::{
@@ -33,7 +33,7 @@ use serde_json::{Map, Value, json};
 use tokio::sync::{Mutex, oneshot};
 use uuid::Uuid;
 
-use crate::{ChannelIpcClient, ChannelIpcClientError};
+use crate::{ChannelIpcClient, ChannelIpcClientError, native_stdio};
 
 const AUTH_METHOD: &str = "crab-local";
 const DEFAULT_ADAPTER: &str = "t3code";
@@ -117,7 +117,7 @@ pub async fn run_acp_channel_stdio(options: AcpChannelOptions) -> Result<(), Acp
         .map_err(AcpChannelError::LocalIpc)?;
     AcpChannelFacade::new(client, options)
         .agent()
-        .connect_to(Stdio::new())
+        .connect_to(native_stdio())
         .await
         .map_err(AcpChannelError::Acp)
 }

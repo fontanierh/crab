@@ -22,6 +22,7 @@ use tokio::{
 };
 
 const TOKEN: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+const OVERSIZED_NATIVE_STDIO_FRAME_BYTES: usize = 16 * 1024 * 1024 + 1;
 
 struct McpProcess {
     child: Child,
@@ -181,6 +182,36 @@ fn encoded_catalog(management: BridgeManagement) -> Value {
     let slot = catalog.encode().expect("catalog encodes");
     let encoded = contract_json::encode(&slot, capability.output()).expect("catalog JSON encodes");
     serde_json::from_slice(&encoded).expect("catalog JSON parses")
+}
+
+#[tokio::test]
+async fn real_stdio_server_rejects_an_oversized_unterminated_frame() {
+    let (_temporary, state) = state_directory();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_crab-v2-bridge-mcp"))
+        .env(CRAB_STATE_DIRECTORY_ENV, state)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .kill_on_drop(true)
+        .spawn()
+        .expect("MCP subprocess starts");
+    let mut stdin = child.stdin.take().expect("MCP stdin");
+    let writer = tokio::spawn(async move {
+        let frame = vec![b'x'; OVERSIZED_NATIVE_STDIO_FRAME_BYTES];
+        let _ = stdin.write_all(&frame).await;
+    });
+
+    let status = match tokio::time::timeout(Duration::from_secs(10), child.wait()).await {
+        Ok(Ok(status)) => status,
+        Ok(Err(error)) => panic!("MCP subprocess wait failed: {error}"),
+        Err(_) => {
+            child.kill().await.expect("kill unbounded MCP subprocess");
+            panic!("MCP subprocess kept buffering an oversized stdin frame");
+        }
+    };
+    let _ = writer.await;
+
+    assert!(!status.success(), "oversized stdin must fail the transport");
 }
 
 #[tokio::test]
