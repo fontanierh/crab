@@ -27,8 +27,30 @@ use tokio::{
 use uuid::Uuid;
 
 const EVENT_PAGE_LIMIT: u64 = 1_000;
+const MAX_SUB_AGENT_IDENTIFIER_BYTES: usize = 256;
+const MAX_CLIENT_MESSAGE_IDENTIFIER_BYTES: usize = 128;
+const MAX_WORKING_DIRECTORY_BYTES: usize = 4 * 1024;
+const MAX_SUB_AGENT_METADATA_BYTES: usize = 60 * 1024;
+const MAX_AGENT_METADATA_BYTES: usize = 64 * 1024;
+const MAX_CHILD_MESSAGE_BYTES: usize = 1024 * 1024;
+const MAX_STOP_REASON_BYTES: usize = 16 * 1024;
 const MAX_NATIVE_PROMPT_BYTES: usize = 2 * 1024 * 1024;
 const MAX_SNAPSHOT_BYTES: usize = 4 * 1024 * 1024;
+const MAX_GENERATED_SUB_AGENT_IDENTIFIER_BYTES: usize = "subagent_".len() + 36;
+const _: () = assert!(
+    "subagent:".len()
+        + MAX_GENERATED_SUB_AGENT_IDENTIFIER_BYTES
+        + ":parent:".len()
+        + MAX_CLIENT_MESSAGE_IDENTIFIER_BYTES
+        <= MAX_SUB_AGENT_IDENTIFIER_BYTES
+);
+const _: () = assert!(
+    "subagent:".len()
+        + MAX_GENERATED_SUB_AGENT_IDENTIFIER_BYTES
+        + ":child:".len()
+        + MAX_CLIENT_MESSAGE_IDENTIFIER_BYTES
+        <= MAX_SUB_AGENT_IDENTIFIER_BYTES
+);
 const PUMP_INTERVAL: Duration = Duration::from_millis(25);
 const PUMP_FAILURE_LIMIT: u8 = 3;
 const INITIAL_TASK_MESSAGE_ID: &str = "__initial_task__";
@@ -878,8 +900,7 @@ impl SubAgentHost {
         context: CallContext,
         request: SendToChildRequest,
     ) -> Result<InteractionReceipt, SubAgentHostError> {
-        validate_identifier(&request.client_message_id)?;
-        validate_prompt(&request.native_prompt_json)?;
+        validate_send_to_child(&request)?;
         let record = self.store.record(&request.sub_agent_id)?;
         let now_ms = (self.clock)()?;
         let start = self.store.begin_interaction(
@@ -922,8 +943,7 @@ impl SubAgentHost {
         context: CallContext,
         request: SendToParentRequest,
     ) -> Result<InteractionReceipt, SubAgentHostError> {
-        validate_identifier(&request.client_message_id)?;
-        let message = parse_json(&request.message_json)?;
+        let message = validate_send_to_parent(&request)?;
         let native_prompt_json = serde_json::to_string(&vec![json!({
             "type": "text",
             "text": format!(
@@ -978,6 +998,7 @@ impl SubAgentHost {
         request: ReadSubAgentEventsRequest,
     ) -> Result<SubAgentEventPage, SubAgentHostError> {
         let _ = context;
+        validate_identifier(&request.sub_agent_id)?;
         self.store.read_events(&request)
     }
 
@@ -987,6 +1008,7 @@ impl SubAgentHost {
         request: SubAgentReference,
     ) -> Result<SubAgentStatus, SubAgentHostError> {
         let _ = context;
+        validate_identifier(&request.sub_agent_id)?;
         self.store.status(&request.sub_agent_id)
     }
 
@@ -1038,9 +1060,7 @@ impl SubAgentHost {
         context: CallContext,
         request: StopSubAgentRequest,
     ) -> Result<SubAgentReceipt, SubAgentHostError> {
-        if request.reason.trim().is_empty() {
-            return Err(SubAgentHostError::InvalidNativePayload);
-        }
+        validate_stop(&request)?;
         let record = self.store.record(&request.sub_agent_id)?;
         let now_ms = (self.clock)()?;
         if matches!(
@@ -1081,11 +1101,14 @@ fn validate_spawn(request: &SpawnSubAgentRequest) -> Result<(), SubAgentHostErro
     validate_identifier(&request.client_sub_agent_id)?;
     validate_identifier(&request.parent_session_id)?;
     validate_identifier(&request.agent_id)?;
-    if request.working_directory.trim().is_empty() {
+    if request.working_directory.trim().is_empty()
+        || request.working_directory.len() > MAX_WORKING_DIRECTORY_BYTES
+        || !Path::new(&request.working_directory).is_absolute()
+    {
         return Err(SubAgentHostError::InvalidNativePayload);
     }
     validate_prompt(&request.native_task_prompt_json)?;
-    let metadata = parse_json(&request.metadata_json)?;
+    let metadata = parse_bounded_json(&request.metadata_json, MAX_SUB_AGENT_METADATA_BYTES)?;
     if !metadata.is_object() {
         return Err(SubAgentHostError::InvalidNativePayload);
     }
@@ -1102,7 +1125,9 @@ fn sub_agent_metadata(
     request: &SpawnSubAgentRequest,
     sub_agent_id: &str,
 ) -> Result<String, SubAgentHostError> {
-    let Value::Object(mut metadata) = parse_json(&request.metadata_json)? else {
+    let Value::Object(mut metadata) =
+        parse_bounded_json(&request.metadata_json, MAX_SUB_AGENT_METADATA_BYTES)?
+    else {
         return Err(SubAgentHostError::InvalidNativePayload);
     };
     metadata.insert(
@@ -1119,16 +1144,48 @@ fn sub_agent_metadata(
             },
         }),
     );
-    serde_json::to_string(&Value::Object(metadata))
-        .map_err(|_| SubAgentHostError::InvalidNativePayload)
+    let metadata = serde_json::to_string(&Value::Object(metadata))
+        .map_err(|_| SubAgentHostError::InvalidNativePayload)?;
+    if metadata.len() > MAX_AGENT_METADATA_BYTES {
+        return Err(SubAgentHostError::InvalidNativePayload);
+    }
+    Ok(metadata)
 }
 
 fn validate_identifier(value: &str) -> Result<(), SubAgentHostError> {
-    if value.trim().is_empty() {
+    validate_identifier_with_limit(value, MAX_SUB_AGENT_IDENTIFIER_BYTES)
+}
+
+fn validate_client_message_identifier(value: &str) -> Result<(), SubAgentHostError> {
+    validate_identifier_with_limit(value, MAX_CLIENT_MESSAGE_IDENTIFIER_BYTES)
+}
+
+fn validate_identifier_with_limit(value: &str, limit: usize) -> Result<(), SubAgentHostError> {
+    if value.trim().is_empty() || value.len() > limit {
         Err(SubAgentHostError::InvalidNativePayload)
     } else {
         Ok(())
     }
+}
+
+fn validate_send_to_child(request: &SendToChildRequest) -> Result<(), SubAgentHostError> {
+    validate_identifier(&request.sub_agent_id)?;
+    validate_client_message_identifier(&request.client_message_id)?;
+    validate_prompt(&request.native_prompt_json)
+}
+
+fn validate_send_to_parent(request: &SendToParentRequest) -> Result<Value, SubAgentHostError> {
+    validate_identifier(&request.sub_agent_id)?;
+    validate_client_message_identifier(&request.client_message_id)?;
+    parse_bounded_json(&request.message_json, MAX_CHILD_MESSAGE_BYTES)
+}
+
+fn validate_stop(request: &StopSubAgentRequest) -> Result<(), SubAgentHostError> {
+    validate_identifier(&request.sub_agent_id)?;
+    if request.reason.trim().is_empty() || request.reason.len() > MAX_STOP_REASON_BYTES {
+        return Err(SubAgentHostError::InvalidNativePayload);
+    }
+    Ok(())
 }
 
 fn validate_prompt(value: &str) -> Result<(), SubAgentHostError> {
@@ -1144,6 +1201,13 @@ fn validate_prompt(value: &str) -> Result<(), SubAgentHostError> {
 
 fn parse_json(value: &str) -> Result<Value, SubAgentHostError> {
     serde_json::from_str(value).map_err(|_| SubAgentHostError::InvalidNativePayload)
+}
+
+fn parse_bounded_json(value: &str, limit: usize) -> Result<Value, SubAgentHostError> {
+    if value.len() > limit {
+        return Err(SubAgentHostError::InvalidNativePayload);
+    }
+    parse_json(value)
 }
 
 fn map_disposition(disposition: PromptDisposition) -> Result<InputDisposition, SubAgentHostError> {
@@ -1293,8 +1357,13 @@ mod tests {
     use tokio::sync::oneshot;
 
     use super::{
-        MAX_NATIVE_PROMPT_BYTES, PumpRegistry, SubAgentContextMode, SubAgentHostError,
-        SubAgentInputMode, SubAgentOperations, generated, validate_prompt,
+        MAX_AGENT_METADATA_BYTES, MAX_CHILD_MESSAGE_BYTES, MAX_CLIENT_MESSAGE_IDENTIFIER_BYTES,
+        MAX_NATIVE_PROMPT_BYTES, MAX_STOP_REASON_BYTES, MAX_SUB_AGENT_IDENTIFIER_BYTES,
+        MAX_SUB_AGENT_METADATA_BYTES, MAX_WORKING_DIRECTORY_BYTES, PumpRegistry,
+        SendToChildRequest, SendToParentRequest, SpawnSubAgentRequest, StopSubAgentRequest,
+        SubAgentContextMode, SubAgentHostError, SubAgentInputMode, SubAgentOperations, generated,
+        sub_agent_metadata, validate_prompt, validate_send_to_child, validate_send_to_parent,
+        validate_spawn, validate_stop,
     };
 
     #[tokio::test]
@@ -1435,5 +1504,167 @@ mod tests {
             validate_prompt(&"x".repeat(MAX_NATIVE_PROMPT_BYTES + 1)),
             Err(SubAgentHostError::InvalidNativePayload)
         );
+    }
+
+    #[test]
+    fn spawn_admission_accepts_exact_field_limits() {
+        let request = SpawnSubAgentRequest {
+            client_sub_agent_id: "c".repeat(MAX_SUB_AGENT_IDENTIFIER_BYTES),
+            parent_session_id: "p".repeat(MAX_SUB_AGENT_IDENTIFIER_BYTES),
+            agent_id: "a".repeat(MAX_SUB_AGENT_IDENTIFIER_BYTES),
+            working_directory: format!("/{}", "w".repeat(MAX_WORKING_DIRECTORY_BYTES - 1)),
+            context_mode: SubAgentContextMode::Fresh,
+            parent_context_through_sequence: None,
+            allow_portable_snapshot: false,
+            native_task_prompt_json: array_json_with_len(MAX_NATIVE_PROMPT_BYTES),
+            metadata_json: object_json_with_len(MAX_SUB_AGENT_METADATA_BYTES),
+            crash_restart_limit: 0,
+        };
+
+        validate_spawn(&request).expect("exact spawn limits are admitted");
+        let metadata = sub_agent_metadata(&request, &"s".repeat(MAX_SUB_AGENT_IDENTIFIER_BYTES))
+            .expect("bounded metadata envelope encodes");
+        assert!(metadata.len() <= MAX_AGENT_METADATA_BYTES);
+    }
+
+    #[test]
+    fn spawn_admission_rejects_each_oversized_field() {
+        let request = valid_spawn_request();
+        let cases = [
+            SpawnSubAgentRequest {
+                client_sub_agent_id: "c".repeat(MAX_SUB_AGENT_IDENTIFIER_BYTES + 1),
+                ..request.clone()
+            },
+            SpawnSubAgentRequest {
+                parent_session_id: "p".repeat(MAX_SUB_AGENT_IDENTIFIER_BYTES + 1),
+                ..request.clone()
+            },
+            SpawnSubAgentRequest {
+                agent_id: "a".repeat(MAX_SUB_AGENT_IDENTIFIER_BYTES + 1),
+                ..request.clone()
+            },
+            SpawnSubAgentRequest {
+                working_directory: format!("/{}", "w".repeat(MAX_WORKING_DIRECTORY_BYTES)),
+                ..request.clone()
+            },
+            SpawnSubAgentRequest {
+                native_task_prompt_json: array_json_with_len(MAX_NATIVE_PROMPT_BYTES + 1),
+                ..request.clone()
+            },
+            SpawnSubAgentRequest {
+                metadata_json: object_json_with_len(MAX_SUB_AGENT_METADATA_BYTES + 1),
+                ..request.clone()
+            },
+            SpawnSubAgentRequest {
+                working_directory: "relative/workspace".into(),
+                ..request
+            },
+        ];
+
+        for oversized in cases {
+            assert_eq!(
+                validate_spawn(&oversized),
+                Err(SubAgentHostError::InvalidNativePayload)
+            );
+        }
+    }
+
+    #[test]
+    fn message_and_stop_admission_enforce_exact_limits() {
+        let child = SendToChildRequest {
+            sub_agent_id: "s".repeat(MAX_SUB_AGENT_IDENTIFIER_BYTES),
+            client_message_id: "m".repeat(MAX_CLIENT_MESSAGE_IDENTIFIER_BYTES),
+            mode: SubAgentInputMode::Queue,
+            native_prompt_json: array_json_with_len(MAX_NATIVE_PROMPT_BYTES),
+        };
+        validate_send_to_child(&child).expect("exact child message limits are admitted");
+
+        let parent = SendToParentRequest {
+            sub_agent_id: "s".repeat(MAX_SUB_AGENT_IDENTIFIER_BYTES),
+            client_message_id: "m".repeat(MAX_CLIENT_MESSAGE_IDENTIFIER_BYTES),
+            mode: SubAgentInputMode::Queue,
+            message_json: object_json_with_len(MAX_CHILD_MESSAGE_BYTES),
+        };
+        validate_send_to_parent(&parent).expect("exact parent message limits are admitted");
+
+        let stop = StopSubAgentRequest {
+            sub_agent_id: "s".repeat(MAX_SUB_AGENT_IDENTIFIER_BYTES),
+            reason: "r".repeat(MAX_STOP_REASON_BYTES),
+        };
+        validate_stop(&stop).expect("exact stop limits are admitted");
+    }
+
+    #[test]
+    fn message_and_stop_admission_reject_one_byte_over() {
+        let child = SendToChildRequest {
+            sub_agent_id: "s".repeat(MAX_SUB_AGENT_IDENTIFIER_BYTES + 1),
+            client_message_id: "message".into(),
+            mode: SubAgentInputMode::Queue,
+            native_prompt_json: "[]".into(),
+        };
+        assert_eq!(
+            validate_send_to_child(&child),
+            Err(SubAgentHostError::InvalidNativePayload)
+        );
+        let child = SendToChildRequest {
+            sub_agent_id: "sub-agent".into(),
+            client_message_id: "m".repeat(MAX_CLIENT_MESSAGE_IDENTIFIER_BYTES + 1),
+            ..child
+        };
+        assert_eq!(
+            validate_send_to_child(&child),
+            Err(SubAgentHostError::InvalidNativePayload)
+        );
+
+        let parent = SendToParentRequest {
+            sub_agent_id: "sub-agent".into(),
+            client_message_id: "message".into(),
+            mode: SubAgentInputMode::Queue,
+            message_json: object_json_with_len(MAX_CHILD_MESSAGE_BYTES + 1),
+        };
+        assert_eq!(
+            validate_send_to_parent(&parent),
+            Err(SubAgentHostError::InvalidNativePayload)
+        );
+
+        let stop = StopSubAgentRequest {
+            sub_agent_id: "sub-agent".into(),
+            reason: "r".repeat(MAX_STOP_REASON_BYTES + 1),
+        };
+        assert_eq!(
+            validate_stop(&stop),
+            Err(SubAgentHostError::InvalidNativePayload)
+        );
+    }
+
+    fn valid_spawn_request() -> SpawnSubAgentRequest {
+        SpawnSubAgentRequest {
+            client_sub_agent_id: "child".into(),
+            parent_session_id: "parent".into(),
+            agent_id: "agent".into(),
+            working_directory: "/workspace".into(),
+            context_mode: SubAgentContextMode::Fresh,
+            parent_context_through_sequence: None,
+            allow_portable_snapshot: false,
+            native_task_prompt_json: "[]".into(),
+            metadata_json: "{}".into(),
+            crash_restart_limit: 0,
+        }
+    }
+
+    fn array_json_with_len(len: usize) -> String {
+        let mut value = String::from(r#"[""#);
+        value.extend(std::iter::repeat_n('x', len - value.len() - 2));
+        value.push_str(r#""]"#);
+        assert_eq!(value.len(), len);
+        value
+    }
+
+    fn object_json_with_len(len: usize) -> String {
+        let mut value = String::from(r#"{"value":""#);
+        value.extend(std::iter::repeat_n('x', len - value.len() - 2));
+        value.push_str(r#""}"#);
+        assert_eq!(value.len(), len);
+        value
     }
 }

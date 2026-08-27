@@ -3,12 +3,16 @@ flowchart TB
     subgraph LIVE[" "]
         direction LR
         PARENT["Parent ACP session<br/>continues running"]
+        ADMIT{"bounded admission?<br/>IDs · cwd · prompt · metadata · messages"}
+        REJECT["reject before parse / lane"]
         HOST["Sub-agent host<br/>fresh · native fork · snapshot fallback<br/>queue · steer · interrupt"]
         IMPORT["Generated<br/>agent-host import"]
         CHILD["Child ACP session<br/>separate harness process<br/>agent-owned compaction"]
 
-        PARENT -->|"exact cursor + agent identity"| HOST
-        PARENT <-->|"duplex input"| HOST
+        PARENT -->|"spawn + duplex input"| ADMIT
+        ADMIT -->|"yes"| HOST
+        ADMIT -->|"no"| REJECT
+        HOST -->|"events + receipts"| PARENT
         HOST <-->|"open / fork · input · cancel<br/>events · status · close"| IMPORT
         IMPORT <-->|"ACP session"| CHILD
     end
@@ -19,9 +23,11 @@ flowchart TB
     classDef runtime fill:#dbeafe,stroke:#2563eb,stroke-width:2px,color:#172554;
     classDef durable fill:#dcfce7,stroke:#16a34a,stroke-width:2px,color:#14532d;
     classDef boundary fill:#f8fafc,stroke:#64748b,stroke-width:1.5px,color:#172033;
+    classDef reject fill:#fee2e2,stroke:#dc2626,stroke-width:2px,color:#7f1d1d;
 
     class PARENT,CHILD session;
-    class HOST runtime;
+    class ADMIT,HOST runtime;
+    class REJECT reject;
     class DB durable;
     class IMPORT boundary;
     style LIVE fill:none,stroke:none;

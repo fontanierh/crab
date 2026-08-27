@@ -891,7 +891,7 @@ static __BOXOLOGY_CONTRACT_DESCRIPTOR: ::std::sync::LazyLock<
                 capability_6,
             ],
             ::boxology_contract::ContractRevision::new(
-                    "sha256:204613e9b77d1e59accbf394f520ffec273471e6cf10ff968c5d87eb1c3c29ea",
+                    "sha256:b1f8ca48edc869d8177c6260865d989da02d0a0c78a07c6a52ca57c6f8109d5d",
                 )
                 .expect("generated contract revision is non-empty"),
         )
@@ -2465,10 +2465,13 @@ impl ::boxology_contract::ContractType for InputDisposition {
 /// Starts exactly one separately supervised ACP harness subprocess.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct SpawnSubAgentRequest {
-    /// Stable idempotency key chosen by the parent.
+    /// Stable idempotency key chosen by the parent, capped at 256 bytes.
     pub client_sub_agent_id: ::std::string::String,
+    /// Existing parent session identifier, capped at 256 bytes.
     pub parent_session_id: ::std::string::String,
+    /// Configured agent identifier, capped at 256 bytes.
     pub agent_id: ::std::string::String,
+    /// Absolute child working directory, capped at 4 KiB.
     pub working_directory: ::std::string::String,
     pub context_mode: SubAgentContextMode,
     /// Immutable inclusive parent event boundary for inherited context.
@@ -2478,6 +2481,7 @@ pub struct SpawnSubAgentRequest {
     /// Exact ACP-compatible initial task content, capped at 2 MiB. Larger content travels by
     /// reference.
     pub native_task_prompt_json: ::std::string::String,
+    /// Non-secret child metadata JSON object, capped at 60 KiB before Crab adds its envelope.
     pub metadata_json: ::std::string::String,
     /// Zero disables crash restart. Resume is allowed only when the ACP session can be restored.
     pub crash_restart_limit: u64,
@@ -3088,7 +3092,9 @@ impl ::boxology_contract::ContractType for SubAgentRecord {
 #[rustfmt::skip]
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct SendToChildRequest {
+    /// Opaque Crab sub-agent identifier, capped at 256 bytes.
     pub sub_agent_id: ::std::string::String,
+    /// Idempotency key capped at 128 bytes so the derived ACP turn ID remains bounded.
     pub client_message_id: ::std::string::String,
     pub mode: SubAgentInputMode,
     /// Exact ACP-compatible prompt content, capped at 2 MiB.
@@ -3224,10 +3230,13 @@ impl ::boxology_contract::ContractType for SendToChildRequest {
 #[rustfmt::skip]
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct SendToParentRequest {
+    /// Opaque Crab sub-agent identifier, capped at 256 bytes.
     pub sub_agent_id: ::std::string::String,
+    /// Idempotency key capped at 128 bytes so the derived ACP turn ID remains bounded.
     pub client_message_id: ::std::string::String,
     pub mode: SubAgentInputMode,
-    /// Structured child result/progress, converted to an ACP-compatible parent input.
+    /// Structured child result/progress, capped at 1 MiB before conversion to an
+    /// ACP-compatible parent input.
     pub message_json: ::std::string::String,
 }
 #[rustfmt::skip]
@@ -4093,7 +4102,9 @@ impl ::boxology_contract::ContractType for SubAgentReference {
 #[rustfmt::skip]
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Default)]
 pub struct StopSubAgentRequest {
+    /// Opaque Crab sub-agent identifier, capped at 256 bytes.
     pub sub_agent_id: ::std::string::String,
+    /// Human-readable stop reason, capped at 16 KiB.
     pub reason: ::std::string::String,
 }
 #[rustfmt::skip]
@@ -5803,8 +5814,8 @@ pub mod test_support {
 #[rustfmt::skip]
 #[doc(hidden)]
 pub const __BOXOLOGY_SEMANTIC_DIGEST: [u8; 32] = [
-    8, 103, 128, 99, 170, 26, 119, 78, 42, 168, 141, 117, 21, 29, 140, 93, 102, 166, 23,
-    152, 205, 191, 172, 224, 64, 138, 28, 149, 37, 200, 137, 240,
+    247, 121, 213, 5, 177, 49, 107, 111, 100, 84, 179, 28, 43, 212, 64, 95, 71, 248, 40,
+    99, 59, 159, 11, 47, 35, 113, 220, 23, 152, 172, 126, 79,
 ];
 #[rustfmt::skip]
 #[doc(hidden)]

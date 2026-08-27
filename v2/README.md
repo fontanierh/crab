@@ -123,6 +123,8 @@ interrupt as a separate explicit action.
   cursors stay continuous, while every non-resumable child fails explicitly without replacement.
   Unrelated client IDs spawn concurrently; retries for one ID serialize, and startup recovery is an
   exclusive barrier that neither races nor permanently retains identity locks.
+  Spawn and duplex control inputs are byte-bounded before JSON parsing, fingerprinting, identity
+  lane admission, storage or agent-host calls; generated ACP turn IDs retain their downstream cap.
   Completed event pumps remove their own token-matched task entries; replacement, stop and host
   drop abort only the task they own.
   `crab-v2-sub-agent` exposes spawn, bidirectional messaging, cursor events, status and idempotent

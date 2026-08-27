@@ -136,9 +136,9 @@
   "provenance": {
     "generator": "boxology-generator",
     "generator_version": "0.1.1",
-    "semantic_digest": "sha256:08678063aa1a774e2aa88d75151d8c5d66a61798cdbface0408a1c9525c889f0"
+    "semantic_digest": "sha256:f779d505b1316b6f6454b31c2bd4405f47f828633b9f0b2f2371dc1798ac7e4f"
   },
-  "revision": "sha256:204613e9b77d1e59accbf394f520ffec273471e6cf10ff968c5d87eb1c3c29ea",
+  "revision": "sha256:b1f8ca48edc869d8177c6260865d989da02d0a0c78a07c6a52ca57c6f8109d5d",
   "schema_format": 1,
   "types": [
     {
@@ -294,26 +294,32 @@
         {
           "deprecation": null,
           "docs": [
-            " Stable idempotency key chosen by the parent."
+            " Stable idempotency key chosen by the parent, capped at 256 bytes."
           ],
           "name": "client_sub_agent_id",
           "type": "String"
         },
         {
           "deprecation": null,
-          "docs": [],
+          "docs": [
+            " Existing parent session identifier, capped at 256 bytes."
+          ],
           "name": "parent_session_id",
           "type": "String"
         },
         {
           "deprecation": null,
-          "docs": [],
+          "docs": [
+            " Configured agent identifier, capped at 256 bytes."
+          ],
           "name": "agent_id",
           "type": "String"
         },
         {
           "deprecation": null,
-          "docs": [],
+          "docs": [
+            " Absolute child working directory, capped at 4 KiB."
+          ],
           "name": "working_directory",
           "type": "String"
         },
@@ -350,7 +356,9 @@
         },
         {
           "deprecation": null,
-          "docs": [],
+          "docs": [
+            " Non-secret child metadata JSON object, capped at 60 KiB before Crab adds its envelope."
+          ],
           "name": "metadata_json",
           "type": "String"
         },
@@ -448,13 +456,17 @@
       "fields": [
         {
           "deprecation": null,
-          "docs": [],
+          "docs": [
+            " Opaque Crab sub-agent identifier, capped at 256 bytes."
+          ],
           "name": "sub_agent_id",
           "type": "String"
         },
         {
           "deprecation": null,
-          "docs": [],
+          "docs": [
+            " Idempotency key capped at 128 bytes so the derived ACP turn ID remains bounded."
+          ],
           "name": "client_message_id",
           "type": "String"
         },
@@ -482,13 +494,17 @@
       "fields": [
         {
           "deprecation": null,
-          "docs": [],
+          "docs": [
+            " Opaque Crab sub-agent identifier, capped at 256 bytes."
+          ],
           "name": "sub_agent_id",
           "type": "String"
         },
         {
           "deprecation": null,
-          "docs": [],
+          "docs": [
+            " Idempotency key capped at 128 bytes so the derived ACP turn ID remains bounded."
+          ],
           "name": "client_message_id",
           "type": "String"
         },
@@ -501,7 +517,8 @@
         {
           "deprecation": null,
           "docs": [
-            " Structured child result/progress, converted to an ACP-compatible parent input."
+            " Structured child result/progress, capped at 1 MiB before conversion to an",
+            " ACP-compatible parent input."
           ],
           "name": "message_json",
           "type": "String"
@@ -693,13 +710,17 @@
       "fields": [
         {
           "deprecation": null,
-          "docs": [],
+          "docs": [
+            " Opaque Crab sub-agent identifier, capped at 256 bytes."
+          ],
           "name": "sub_agent_id",
           "type": "String"
         },
         {
           "deprecation": null,
-          "docs": [],
+          "docs": [
+            " Human-readable stop reason, capped at 16 KiB."
+          ],
           "name": "reason",
           "type": "String"
         }
