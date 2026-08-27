@@ -1,0 +1,22 @@
+%%{init: {"theme": "base", "themeVariables": {"fontFamily": "ui-sans-serif, system-ui, sans-serif", "primaryTextColor": "#172033", "lineColor": "#64748b", "edgeLabelBackground": "#ffffff"}, "flowchart": {"curve": "basis", "nodeSpacing": 44, "rankSpacing": 58}}}%%
+flowchart TB
+    CONFIG["Runtime JSON"] -->|"RuntimeConfigured"| HOST["Bridge host"]
+    AGENT["Agent bridge tools"] -->|"AgentManaged"| HOST
+    HOST <-->|"spec · management · desired state"| DB[("Bridge SQLite v3")]
+    DB -->|"restore desired bridges"| SUPERVISORS["Package supervisors"]
+
+    CONFIG --> START{"Startup reconciliation"}
+    DB --> START
+    START -->|"configured ID"| RECONCILE["Register or CAS replace"]
+    START -->|"removed RuntimeConfigured"| STOP["Durably stop"]
+    START -->|"AgentManaged"| KEEP["Preserve + keep running"]
+
+    classDef source fill:#f3e8ff,stroke:#9333ea,stroke-width:2px,color:#581c87;
+    classDef runtime fill:#dbeafe,stroke:#2563eb,stroke-width:2px,color:#172554;
+    classDef durable fill:#dcfce7,stroke:#16a34a,stroke-width:2px,color:#14532d;
+    classDef decision fill:#fef3c7,stroke:#d97706,stroke-width:2px,color:#78350f;
+
+    class CONFIG,AGENT source;
+    class HOST,SUPERVISORS,RECONCILE,KEEP runtime;
+    class DB durable;
+    class START,STOP decision;

@@ -179,6 +179,23 @@ static __BOXOLOGY_CONTRACT_DESCRIPTOR: ::std::sync::LazyLock<
                     None,
                 ),
                 ::boxology_contract::FieldDescriptor::new(
+                    "management",
+                    ::boxology_contract::TypeDescriptor::enumeration([
+                            ::boxology_contract::VariantDescriptor::new(
+                                "RuntimeConfigured",
+                                ::boxology_contract::VariantPayload::Unit,
+                                None,
+                            ),
+                            ::boxology_contract::VariantDescriptor::new(
+                                "AgentManaged",
+                                ::boxology_contract::VariantPayload::Unit,
+                                None,
+                            ),
+                        ])
+                        .expect("generated enum descriptor is valid"),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
                     "alert_target",
                     ::boxology_contract::TypeDescriptor::optional(
                             ::boxology_contract::TypeDescriptor::structure([
@@ -303,6 +320,23 @@ static __BOXOLOGY_CONTRACT_DESCRIPTOR: ::std::sync::LazyLock<
                             ),
                             ::boxology_contract::VariantDescriptor::new(
                                 "InterruptAndSteer",
+                                ::boxology_contract::VariantPayload::Unit,
+                                None,
+                            ),
+                        ])
+                        .expect("generated enum descriptor is valid"),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
+                    "management",
+                    ::boxology_contract::TypeDescriptor::enumeration([
+                            ::boxology_contract::VariantDescriptor::new(
+                                "RuntimeConfigured",
+                                ::boxology_contract::VariantPayload::Unit,
+                                None,
+                            ),
+                            ::boxology_contract::VariantDescriptor::new(
+                                "AgentManaged",
                                 ::boxology_contract::VariantPayload::Unit,
                                 None,
                             ),
@@ -443,6 +477,23 @@ static __BOXOLOGY_CONTRACT_DESCRIPTOR: ::std::sync::LazyLock<
                                                 ),
                                                 ::boxology_contract::VariantDescriptor::new(
                                                     "InterruptAndSteer",
+                                                    ::boxology_contract::VariantPayload::Unit,
+                                                    None,
+                                                ),
+                                            ])
+                                            .expect("generated enum descriptor is valid"),
+                                        None,
+                                    ),
+                                    ::boxology_contract::FieldDescriptor::new(
+                                        "management",
+                                        ::boxology_contract::TypeDescriptor::enumeration([
+                                                ::boxology_contract::VariantDescriptor::new(
+                                                    "RuntimeConfigured",
+                                                    ::boxology_contract::VariantPayload::Unit,
+                                                    None,
+                                                ),
+                                                ::boxology_contract::VariantDescriptor::new(
+                                                    "AgentManaged",
                                                     ::boxology_contract::VariantPayload::Unit,
                                                     None,
                                                 ),
@@ -602,6 +653,23 @@ static __BOXOLOGY_CONTRACT_DESCRIPTOR: ::std::sync::LazyLock<
                                 None,
                             ),
                             ::boxology_contract::FieldDescriptor::new(
+                                "management",
+                                ::boxology_contract::TypeDescriptor::enumeration([
+                                        ::boxology_contract::VariantDescriptor::new(
+                                            "RuntimeConfigured",
+                                            ::boxology_contract::VariantPayload::Unit,
+                                            None,
+                                        ),
+                                        ::boxology_contract::VariantDescriptor::new(
+                                            "AgentManaged",
+                                            ::boxology_contract::VariantPayload::Unit,
+                                            None,
+                                        ),
+                                    ])
+                                    .expect("generated enum descriptor is valid"),
+                                None,
+                            ),
+                            ::boxology_contract::FieldDescriptor::new(
                                 "alert_target",
                                 ::boxology_contract::TypeDescriptor::optional(
                                         ::boxology_contract::TypeDescriptor::structure([
@@ -730,6 +798,23 @@ static __BOXOLOGY_CONTRACT_DESCRIPTOR: ::std::sync::LazyLock<
                             ),
                             ::boxology_contract::VariantDescriptor::new(
                                 "InterruptAndSteer",
+                                ::boxology_contract::VariantPayload::Unit,
+                                None,
+                            ),
+                        ])
+                        .expect("generated enum descriptor is valid"),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
+                    "management",
+                    ::boxology_contract::TypeDescriptor::enumeration([
+                            ::boxology_contract::VariantDescriptor::new(
+                                "RuntimeConfigured",
+                                ::boxology_contract::VariantPayload::Unit,
+                                None,
+                            ),
+                            ::boxology_contract::VariantDescriptor::new(
+                                "AgentManaged",
                                 ::boxology_contract::VariantPayload::Unit,
                                 None,
                             ),
@@ -2534,7 +2619,7 @@ static __BOXOLOGY_CONTRACT_DESCRIPTOR: ::std::sync::LazyLock<
                 capability_15,
             ],
             ::boxology_contract::ContractRevision::new(
-                    "sha256:a1708ebe3dd71369b16a5018187bcf669d7c393539bc0b6a4f0794ad86c113f8",
+                    "sha256:c65fa0ac55db94ce97d4892f7b1e187c6d0cfd8c23ac0fe7410dbf4539d90485",
                 )
                 .expect("generated contract revision is non-empty"),
         )
@@ -2792,6 +2877,23 @@ impl BridgeHostHandle {
                     None,
                 ),
                 ::boxology_contract::FieldDescriptor::new(
+                    "management",
+                    TypeDescriptor::enumeration([
+                            ::boxology_contract::VariantDescriptor::new(
+                                "RuntimeConfigured",
+                                ::boxology_contract::VariantPayload::Unit,
+                                None,
+                            ),
+                            ::boxology_contract::VariantDescriptor::new(
+                                "AgentManaged",
+                                ::boxology_contract::VariantPayload::Unit,
+                                None,
+                            ),
+                        ])
+                        .expect("generated enum descriptor is valid"),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
                     "alert_target",
                     TypeDescriptor::optional(
                             TypeDescriptor::structure([
@@ -2933,6 +3035,23 @@ impl BridgeHostHandle {
                                                 ),
                                                 ::boxology_contract::VariantDescriptor::new(
                                                     "InterruptAndSteer",
+                                                    ::boxology_contract::VariantPayload::Unit,
+                                                    None,
+                                                ),
+                                            ])
+                                            .expect("generated enum descriptor is valid"),
+                                        None,
+                                    ),
+                                    ::boxology_contract::FieldDescriptor::new(
+                                        "management",
+                                        TypeDescriptor::enumeration([
+                                                ::boxology_contract::VariantDescriptor::new(
+                                                    "RuntimeConfigured",
+                                                    ::boxology_contract::VariantPayload::Unit,
+                                                    None,
+                                                ),
+                                                ::boxology_contract::VariantDescriptor::new(
+                                                    "AgentManaged",
                                                     ::boxology_contract::VariantPayload::Unit,
                                                     None,
                                                 ),
@@ -3084,6 +3203,23 @@ impl BridgeHostHandle {
                             ),
                             ::boxology_contract::VariantDescriptor::new(
                                 "InterruptAndSteer",
+                                ::boxology_contract::VariantPayload::Unit,
+                                None,
+                            ),
+                        ])
+                        .expect("generated enum descriptor is valid"),
+                    None,
+                ),
+                ::boxology_contract::FieldDescriptor::new(
+                    "management",
+                    TypeDescriptor::enumeration([
+                            ::boxology_contract::VariantDescriptor::new(
+                                "RuntimeConfigured",
+                                ::boxology_contract::VariantPayload::Unit,
+                                None,
+                            ),
+                            ::boxology_contract::VariantDescriptor::new(
+                                "AgentManaged",
                                 ::boxology_contract::VariantPayload::Unit,
                                 None,
                             ),
@@ -5614,6 +5750,116 @@ impl ::boxology_contract::ContractType for BridgeIngressMode {
     }
 }
 #[rustfmt::skip]
+/// Durable authority for a bridge registration. Runtime configuration owns only configured
+/// registrations; agent-managed registrations remain independent of static topology changes.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub enum BridgeManagement {
+    #[default]
+    RuntimeConfigured,
+    AgentManaged,
+    Unknown { tag: ::std::string::String, payload: ::boxology_contract::OpaquePayload },
+}
+#[rustfmt::skip]
+impl ::boxology_contract::ContractType for BridgeManagement {
+    fn encode_value(
+        &self,
+    ) -> ::core::result::Result<
+        ::boxology_contract::ContractValue,
+        ::boxology_contract::EncodeError,
+    > {
+        let (tag, payload) = match self {
+            Self::RuntimeConfigured => {
+                ("RuntimeConfigured".into(), ::boxology_contract::SlotValue::Null)
+            }
+            Self::AgentManaged => {
+                ("AgentManaged".into(), ::boxology_contract::SlotValue::Null)
+            }
+            Self::Unknown { tag, payload } => {
+                (
+                    tag.clone(),
+                    ::boxology_contract::SlotValue::Value(
+                        ::boxology_contract::ContractValue::opaque(payload.forward()),
+                    ),
+                )
+            }
+        };
+        Ok(::boxology_contract::ContractValue::enum_value(tag, payload))
+    }
+    fn decode_value(
+        value: &::boxology_contract::ContractValue,
+    ) -> ::core::result::Result<Self, ::boxology_contract::DecodeError> {
+        let ::boxology_contract::ValueRef::Enum { tag, payload } = value.view() else {
+            return Err(
+                ::boxology_contract::DecodeError::new(
+                    ::boxology_contract::DecodeErrorKind::KindMismatch,
+                ),
+            );
+        };
+        match tag {
+            "RuntimeConfigured" if matches!(
+                payload, ::boxology_contract::SlotValue::Null
+            ) => Ok(Self::RuntimeConfigured),
+            "RuntimeConfigured" => {
+                Err(
+                    ::boxology_contract::DecodeError::new(
+                            ::boxology_contract::DecodeErrorKind::UnexpectedPayload,
+                        )
+                        .under(::boxology_contract::PathSegment::Variant(tag.into())),
+                )
+            }
+            "AgentManaged" if matches!(payload, ::boxology_contract::SlotValue::Null) => {
+                Ok(Self::AgentManaged)
+            }
+            "AgentManaged" => {
+                Err(
+                    ::boxology_contract::DecodeError::new(
+                            ::boxology_contract::DecodeErrorKind::UnexpectedPayload,
+                        )
+                        .under(::boxology_contract::PathSegment::Variant(tag.into())),
+                )
+            }
+            _ => {
+                match payload {
+                    ::boxology_contract::SlotValue::Value(value) => {
+                        match value.view() {
+                            ::boxology_contract::ValueRef::Opaque(payload) => {
+                                Ok(Self::Unknown {
+                                    tag: tag.into(),
+                                    payload: payload.forward(),
+                                })
+                            }
+                            _ => {
+                                Err(
+                                    ::boxology_contract::DecodeError::new(
+                                            ::boxology_contract::DecodeErrorKind::UnknownVariant(
+                                                tag.into(),
+                                            ),
+                                        )
+                                        .under(
+                                            ::boxology_contract::PathSegment::Variant(tag.into()),
+                                        ),
+                                )
+                            }
+                        }
+                    }
+                    _ => {
+                        Err(
+                            ::boxology_contract::DecodeError::new(
+                                    ::boxology_contract::DecodeErrorKind::UnknownVariant(
+                                        tag.into(),
+                                    ),
+                                )
+                                .under(
+                                    ::boxology_contract::PathSegment::Variant(tag.into()),
+                                ),
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+#[rustfmt::skip]
 /// Agent channel that receives actionable supervisor incidents in queue mode.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Default)]
 pub struct BridgeAlertTarget {
@@ -5706,6 +5952,7 @@ pub struct BridgeSpec {
     pub configuration_json: ::std::string::String,
     pub authentication_methods: ::std::vec::Vec<AuthenticationMethod>,
     pub ingress_mode: BridgeIngressMode,
+    pub management: BridgeManagement,
     /// Optional and generation-fixed. When absent, supervision remains silent.
     pub alert_target: ::core::option::Option<BridgeAlertTarget>,
     pub desired_running: bool,
@@ -5805,6 +6052,15 @@ impl ::boxology_contract::ContractType for BridgeSpec {
             fields.push(("ingress_mode".into(), value));
         }
         if let Some(value) = ::boxology_contract::ContractType::encode_field(
+                &self.management,
+            )
+            .map_err(|error| {
+                error.under(::boxology_contract::PathSegment::Field("management".into()))
+            })?
+        {
+            fields.push(("management".into(), value));
+        }
+        if let Some(value) = ::boxology_contract::ContractType::encode_field(
                 &self.alert_target,
             )
             .map_err(|error| {
@@ -5899,9 +6155,9 @@ impl ::boxology_contract::ContractType for BridgeSpec {
             match field {
                 "bridge_id" | "package_id" | "display_name" | "launch_json"
                 | "configuration_json" | "authentication_methods" | "ingress_mode"
-                | "alert_target" | "desired_running" | "health_interval_ms"
-                | "credential_validation_interval_ms" | "restart_limit"
-                | "restart_window_ms" => {}
+                | "management" | "alert_target" | "desired_running"
+                | "health_interval_ms" | "credential_validation_interval_ms"
+                | "restart_limit" | "restart_window_ms" => {}
                 _ => {
                     return Err(
                         ::boxology_contract::DecodeError::new(
@@ -5988,6 +6244,15 @@ impl ::boxology_contract::ContractType for BridgeSpec {
                             ),
                         )
                 })?,
+            management: <BridgeManagement as ::boxology_contract::ContractType>::decode_field(
+                    fields.get("management"),
+                )
+                .map_err(|error| {
+                    error
+                        .under(
+                            ::boxology_contract::PathSegment::Field("management".into()),
+                        )
+                })?,
             alert_target: <::core::option::Option<
                 BridgeAlertTarget,
             > as ::boxology_contract::ContractType>::decode_field(
@@ -6067,6 +6332,7 @@ pub struct BridgeRecord {
     pub display_name: ::std::string::String,
     pub lifecycle: BridgeLifecycle,
     pub ingress_mode: BridgeIngressMode,
+    pub management: BridgeManagement,
     pub alert_target: ::core::option::Option<BridgeAlertTarget>,
     pub desired_running: bool,
     pub generation: u64,
@@ -6133,6 +6399,15 @@ impl ::boxology_contract::ContractType for BridgeRecord {
             fields.push(("ingress_mode".into(), value));
         }
         if let Some(value) = ::boxology_contract::ContractType::encode_field(
+                &self.management,
+            )
+            .map_err(|error| {
+                error.under(::boxology_contract::PathSegment::Field("management".into()))
+            })?
+        {
+            fields.push(("management".into(), value));
+        }
+        if let Some(value) = ::boxology_contract::ContractType::encode_field(
                 &self.alert_target,
             )
             .map_err(|error| {
@@ -6195,8 +6470,8 @@ impl ::boxology_contract::ContractType for BridgeRecord {
         for (field, _) in fields.entries() {
             match field {
                 "bridge_id" | "package_id" | "display_name" | "lifecycle"
-                | "ingress_mode" | "alert_target" | "desired_running" | "generation"
-                | "registered_at_ms" => {}
+                | "ingress_mode" | "management" | "alert_target" | "desired_running"
+                | "generation" | "registered_at_ms" => {}
                 _ => {
                     return Err(
                         ::boxology_contract::DecodeError::new(
@@ -6257,6 +6532,15 @@ impl ::boxology_contract::ContractType for BridgeRecord {
                             ::boxology_contract::PathSegment::Field(
                                 "ingress_mode".into(),
                             ),
+                        )
+                })?,
+            management: <BridgeManagement as ::boxology_contract::ContractType>::decode_field(
+                    fields.get("management"),
+                )
+                .map_err(|error| {
+                    error
+                        .under(
+                            ::boxology_contract::PathSegment::Field("management".into()),
                         )
                 })?,
             alert_target: <::core::option::Option<
@@ -9946,6 +10230,23 @@ pub mod test_support {
                                 None,
                             ),
                             ::boxology_contract::FieldDescriptor::new(
+                                "management",
+                                TypeDescriptor::enumeration([
+                                        ::boxology_contract::VariantDescriptor::new(
+                                            "RuntimeConfigured",
+                                            ::boxology_contract::VariantPayload::Unit,
+                                            None,
+                                        ),
+                                        ::boxology_contract::VariantDescriptor::new(
+                                            "AgentManaged",
+                                            ::boxology_contract::VariantPayload::Unit,
+                                            None,
+                                        ),
+                                    ])
+                                    .expect("generated enum descriptor is valid"),
+                                None,
+                            ),
+                            ::boxology_contract::FieldDescriptor::new(
                                 "alert_target",
                                 TypeDescriptor::optional(
                                         TypeDescriptor::structure([
@@ -10147,6 +10448,23 @@ pub mod test_support {
                                                     ),
                                                     ::boxology_contract::VariantDescriptor::new(
                                                         "InterruptAndSteer",
+                                                        ::boxology_contract::VariantPayload::Unit,
+                                                        None,
+                                                    ),
+                                                ])
+                                                .expect("generated enum descriptor is valid"),
+                                            None,
+                                        ),
+                                        ::boxology_contract::FieldDescriptor::new(
+                                            "management",
+                                            TypeDescriptor::enumeration([
+                                                    ::boxology_contract::VariantDescriptor::new(
+                                                        "RuntimeConfigured",
+                                                        ::boxology_contract::VariantPayload::Unit,
+                                                        None,
+                                                    ),
+                                                    ::boxology_contract::VariantDescriptor::new(
+                                                        "AgentManaged",
                                                         ::boxology_contract::VariantPayload::Unit,
                                                         None,
                                                     ),
@@ -11032,8 +11350,8 @@ pub mod test_support {
 #[rustfmt::skip]
 #[doc(hidden)]
 pub const __BOXOLOGY_SEMANTIC_DIGEST: [u8; 32] = [
-    19, 2, 54, 163, 67, 235, 56, 60, 73, 128, 221, 63, 78, 45, 51, 153, 118, 26, 232,
-    172, 5, 254, 44, 94, 137, 242, 175, 234, 202, 17, 102, 74,
+    125, 145, 3, 57, 18, 176, 232, 48, 201, 43, 191, 155, 100, 197, 0, 210, 103, 114,
+    208, 222, 6, 149, 3, 100, 168, 87, 162, 76, 39, 80, 3, 50,
 ];
 #[rustfmt::skip]
 #[doc(hidden)]

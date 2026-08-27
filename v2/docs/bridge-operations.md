@@ -23,6 +23,9 @@ crab-v2-bridge --state-dir "$CRAB_V2_STATE" list
 crab-v2-bridge --state-dir "$CRAB_V2_STATE" status whatsapp
 ```
 
+Catalog entries expose `management` as `runtime-configured` or `agent-managed`, making restart and
+static-removal behavior inspectable without opening the state database.
+
 ## Authenticate
 
 Begin QR authentication, scan the returned `presentation.value`, then tell the package the external

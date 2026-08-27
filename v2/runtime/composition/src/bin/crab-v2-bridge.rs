@@ -325,6 +325,7 @@ fn catalog_json(catalog: BridgeCatalog) -> Value {
             "displayName": bridge.display_name,
             "lifecycle": lifecycle_name(&bridge.lifecycle),
             "ingressMode": ingress_name(&bridge.ingress_mode),
+            "management": management_name(&bridge.management),
             "alertTarget": bridge.alert_target.map(|target| json!({
                 "channelId": target.channel_id,
                 "lane": target.lane,
@@ -432,6 +433,14 @@ fn ingress_name(value: &bridge_host_contract::BridgeIngressMode) -> &'static str
         bridge_host_contract::BridgeIngressMode::Steer => "steer",
         bridge_host_contract::BridgeIngressMode::InterruptAndSteer => "interrupt-and-steer",
         bridge_host_contract::BridgeIngressMode::Unknown { .. } => "unknown",
+    }
+}
+
+fn management_name(value: &bridge_host_contract::BridgeManagement) -> &'static str {
+    match value {
+        bridge_host_contract::BridgeManagement::RuntimeConfigured => "runtime-configured",
+        bridge_host_contract::BridgeManagement::AgentManaged => "agent-managed",
+        bridge_host_contract::BridgeManagement::Unknown { .. } => "unknown",
     }
 }
 

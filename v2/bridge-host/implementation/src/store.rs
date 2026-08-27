@@ -6,12 +6,12 @@ use uuid::Uuid;
 
 use crate::{
     AuthenticationChallenge, AuthenticationMethod, BridgeAlertTarget, BridgeHostError,
-    BridgeInbound, BridgeIngressMode, BridgeLifecycle, BridgeOutbound, BridgeReceipt, BridgeRecord,
-    BridgeSpec, BridgeStatus, CredentialLifecycle, CredentialStatus, DeliveryLifecycle,
-    DeliveryReceipt, HealthObservation, TriggerIntent,
+    BridgeInbound, BridgeIngressMode, BridgeLifecycle, BridgeManagement, BridgeOutbound,
+    BridgeReceipt, BridgeRecord, BridgeSpec, BridgeStatus, CredentialLifecycle, CredentialStatus,
+    DeliveryLifecycle, DeliveryReceipt, HealthObservation, TriggerIntent,
 };
 
-const SCHEMA_VERSION: i64 = 2;
+const SCHEMA_VERSION: i64 = 3;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct BridgeIncidentEpisode {
@@ -56,8 +56,13 @@ impl BridgeStore {
             0 => {
                 migrate_v0_to_v1(&mut connection)?;
                 migrate_v1_to_v2(&mut connection)?;
+                migrate_v2_to_v3(&mut connection)?;
             }
-            1 => migrate_v1_to_v2(&mut connection)?,
+            1 => {
+                migrate_v1_to_v2(&mut connection)?;
+                migrate_v2_to_v3(&mut connection)?;
+            }
+            2 => migrate_v2_to_v3(&mut connection)?,
             SCHEMA_VERSION => {}
             _ => return Err(BridgeHostError::StorageUnavailable),
         }
@@ -135,13 +140,13 @@ impl BridgeStore {
             .execute(
                 "INSERT INTO bridges (
                     bridge_id, package_id, display_name, launch_json, configuration_json,
-                    authentication_methods_json, ingress_mode, desired_running,
+                    authentication_methods_json, ingress_mode, management, desired_running,
                     health_interval_ms, credential_validation_interval_ms, restart_limit,
                     restart_window_ms, lifecycle, generation, registered_at_ms,
                     consecutive_failures, next_restart_at_ms, last_error,
                     alert_target_channel_id, alert_lane, spec_fingerprint
-                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12,
-                           'Registered', 1, ?13, 0, NULL, NULL, ?14, ?15, ?16)",
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13,
+                           'Registered', 1, ?14, 0, NULL, NULL, ?15, ?16, ?17)",
                 params![
                     spec.bridge_id,
                     spec.package_id,
@@ -150,6 +155,7 @@ impl BridgeStore {
                     spec.configuration_json,
                     methods,
                     ingress_mode_tag(&spec.ingress_mode)?,
+                    management_tag(&spec.management)?,
                     spec.desired_running,
                     db_i64(spec.health_interval_ms)?,
                     db_i64(spec.credential_validation_interval_ms)?,
@@ -205,11 +211,12 @@ impl BridgeStore {
                 "UPDATE bridges SET
                     package_id = ?3, display_name = ?4, launch_json = ?5,
                     configuration_json = ?6, authentication_methods_json = ?7,
-                    ingress_mode = ?8, desired_running = ?9, health_interval_ms = ?10,
-                    credential_validation_interval_ms = ?11, restart_limit = ?12,
-                    restart_window_ms = ?13, lifecycle = 'Registered', generation = generation + 1,
+                    ingress_mode = ?8, management = ?9, desired_running = ?10,
+                    health_interval_ms = ?11, credential_validation_interval_ms = ?12,
+                    restart_limit = ?13, restart_window_ms = ?14,
+                    lifecycle = 'Registered', generation = generation + 1,
                     consecutive_failures = 0, next_restart_at_ms = NULL, last_error = NULL,
-                    alert_target_channel_id = ?14, alert_lane = ?15, spec_fingerprint = ?16
+                    alert_target_channel_id = ?15, alert_lane = ?16, spec_fingerprint = ?17
                  WHERE bridge_id = ?1 AND generation = ?2",
                 params![
                     spec.bridge_id,
@@ -220,6 +227,7 @@ impl BridgeStore {
                     spec.configuration_json,
                     methods,
                     ingress_mode_tag(&spec.ingress_mode)?,
+                    management_tag(&spec.management)?,
                     spec.desired_running,
                     db_i64(spec.health_interval_ms)?,
                     db_i64(spec.credential_validation_interval_ms)?,
@@ -268,7 +276,7 @@ impl BridgeStore {
         connection
             .query_row(
                 "SELECT package_id, display_name, launch_json, configuration_json,
-                        authentication_methods_json, ingress_mode, desired_running,
+                        authentication_methods_json, ingress_mode, management, desired_running,
                         health_interval_ms, credential_validation_interval_ms,
                         restart_limit, restart_window_ms,
                         alert_target_channel_id, alert_lane
@@ -282,13 +290,14 @@ impl BridgeStore {
                         row.get::<_, String>(3)?,
                         row.get::<_, String>(4)?,
                         row.get::<_, String>(5)?,
-                        row.get::<_, bool>(6)?,
-                        row.get::<_, i64>(7)?,
+                        row.get::<_, String>(6)?,
+                        row.get::<_, bool>(7)?,
                         row.get::<_, i64>(8)?,
                         row.get::<_, i64>(9)?,
                         row.get::<_, i64>(10)?,
-                        row.get::<_, Option<String>>(11)?,
+                        row.get::<_, i64>(11)?,
                         row.get::<_, Option<String>>(12)?,
+                        row.get::<_, Option<String>>(13)?,
                     ))
                 },
             )
@@ -303,6 +312,7 @@ impl BridgeStore {
                     configuration_json,
                     methods,
                     ingress_mode,
+                    management,
                     desired_running,
                     health_interval,
                     validation_interval,
@@ -326,6 +336,7 @@ impl BridgeStore {
                         configuration_json,
                         authentication_methods: decode_authentication_methods(&methods)?,
                         ingress_mode: parse_ingress_mode(&ingress_mode)?,
+                        management: parse_management(&management)?,
                         alert_target,
                         desired_running,
                         health_interval_ms: db_u64(health_interval)?,
@@ -373,7 +384,8 @@ impl BridgeStore {
         let connection = self.lock()?;
         connection
             .query_row(
-                "SELECT package_id, display_name, lifecycle, ingress_mode, desired_running,
+                "SELECT package_id, display_name, lifecycle, ingress_mode, management,
+                        desired_running,
                         generation, registered_at_ms, alert_target_channel_id, alert_lane
                  FROM bridges WHERE bridge_id = ?1",
                 params![bridge_id],
@@ -383,11 +395,12 @@ impl BridgeStore {
                         row.get::<_, String>(1)?,
                         row.get::<_, String>(2)?,
                         row.get::<_, String>(3)?,
-                        row.get::<_, bool>(4)?,
-                        row.get::<_, i64>(5)?,
+                        row.get::<_, String>(4)?,
+                        row.get::<_, bool>(5)?,
                         row.get::<_, i64>(6)?,
-                        row.get::<_, Option<String>>(7)?,
+                        row.get::<_, i64>(7)?,
                         row.get::<_, Option<String>>(8)?,
+                        row.get::<_, Option<String>>(9)?,
                     ))
                 },
             )
@@ -400,6 +413,7 @@ impl BridgeStore {
                     display_name,
                     lifecycle,
                     mode,
+                    management,
                     desired,
                     generation,
                     registered,
@@ -419,6 +433,7 @@ impl BridgeStore {
                         display_name,
                         lifecycle: parse_lifecycle(&lifecycle)?,
                         ingress_mode: parse_ingress_mode(&mode)?,
+                        management: parse_management(&management)?,
                         alert_target,
                         desired_running: desired,
                         generation: db_u64(generation)?,
@@ -1452,6 +1467,19 @@ fn migrate_v1_to_v2(connection: &mut Connection) -> Result<(), BridgeHostError> 
     transaction.commit().map_err(storage_error)
 }
 
+fn migrate_v2_to_v3(connection: &mut Connection) -> Result<(), BridgeHostError> {
+    let transaction = connection.transaction().map_err(storage_error)?;
+    transaction
+        .execute_batch(
+            "ALTER TABLE bridges ADD COLUMN management TEXT NOT NULL
+                 DEFAULT 'RuntimeConfigured';
+             PRAGMA user_version = 3;",
+        )
+        .map_err(storage_error)?;
+    rewrite_management_fingerprints(&transaction)?;
+    transaction.commit().map_err(storage_error)
+}
+
 fn rewrite_legacy_fingerprints(connection: &Connection) -> Result<(), BridgeHostError> {
     let bridges = {
         let mut statement = connection
@@ -1508,6 +1536,72 @@ fn add_empty_alert_target(fingerprint: &str) -> Result<String, BridgeHostError> 
         .as_object_mut()
         .ok_or(BridgeHostError::StorageUnavailable)?;
     object.insert("alertTarget".into(), Value::Null);
+    serde_json::to_string(&value).map_err(|_| BridgeHostError::StorageUnavailable)
+}
+
+fn rewrite_management_fingerprints(connection: &Connection) -> Result<(), BridgeHostError> {
+    let bridges = {
+        let mut statement = connection
+            .prepare("SELECT bridge_id, spec_fingerprint FROM bridges")
+            .map_err(storage_error)?;
+        statement
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .map_err(storage_error)?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(storage_error)?
+    };
+    for (bridge_id, fingerprint) in bridges {
+        connection
+            .execute(
+                "UPDATE bridges SET spec_fingerprint = ?2 WHERE bridge_id = ?1",
+                params![
+                    bridge_id,
+                    add_management(&fingerprint, "RuntimeConfigured")?
+                ],
+            )
+            .map_err(storage_error)?;
+    }
+    let audits = {
+        let mut statement = connection
+            .prepare("SELECT bridge_id, generation, spec_fingerprint FROM generation_audit")
+            .map_err(storage_error)?;
+        statement
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            })
+            .map_err(storage_error)?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(storage_error)?
+    };
+    for (bridge_id, generation, fingerprint) in audits {
+        connection
+            .execute(
+                "UPDATE generation_audit SET spec_fingerprint = ?3
+                 WHERE bridge_id = ?1 AND generation = ?2",
+                params![
+                    bridge_id,
+                    generation,
+                    add_management(&fingerprint, "RuntimeConfigured")?
+                ],
+            )
+            .map_err(storage_error)?;
+    }
+    Ok(())
+}
+
+fn add_management(fingerprint: &str, management: &str) -> Result<String, BridgeHostError> {
+    let mut value = serde_json::from_str::<Value>(fingerprint)
+        .map_err(|_| BridgeHostError::StorageUnavailable)?;
+    let object = value
+        .as_object_mut()
+        .ok_or(BridgeHostError::StorageUnavailable)?;
+    object.insert("management".into(), Value::String(management.into()));
     serde_json::to_string(&value).map_err(|_| BridgeHostError::StorageUnavailable)
 }
 
@@ -1773,6 +1867,7 @@ fn spec_fingerprint(spec: &BridgeSpec) -> Result<String, BridgeHostError> {
             .map(authentication_method_tag)
             .collect::<Result<Vec<_>, _>>()?,
         "ingressMode": ingress_mode_tag(&spec.ingress_mode)?,
+        "management": management_tag(&spec.management)?,
         "alertTarget": spec.alert_target.as_ref().map(|target| json!({
             "channelId": target.channel_id,
             "lane": target.lane,
@@ -1897,6 +1992,22 @@ fn parse_ingress_mode(value: &str) -> Result<BridgeIngressMode, BridgeHostError>
     }
 }
 
+fn management_tag(management: &BridgeManagement) -> Result<&'static str, BridgeHostError> {
+    match management {
+        BridgeManagement::RuntimeConfigured => Ok("RuntimeConfigured"),
+        BridgeManagement::AgentManaged => Ok("AgentManaged"),
+        BridgeManagement::Unknown { .. } => Err(BridgeHostError::InvalidSpec),
+    }
+}
+
+fn parse_management(value: &str) -> Result<BridgeManagement, BridgeHostError> {
+    match value {
+        "RuntimeConfigured" => Ok(BridgeManagement::RuntimeConfigured),
+        "AgentManaged" => Ok(BridgeManagement::AgentManaged),
+        _ => Err(BridgeHostError::StorageUnavailable),
+    }
+}
+
 fn lifecycle_tag(lifecycle: &BridgeLifecycle) -> Result<&'static str, BridgeHostError> {
     match lifecycle {
         BridgeLifecycle::Registered => Ok("Registered"),
@@ -1984,7 +2095,8 @@ mod tests {
     use super::BridgeStore;
     use crate::{
         AuthenticationMethod, BridgeAlertTarget, BridgeHostError, BridgeIngressMode,
-        BridgeLifecycle, BridgeSpec, CredentialLifecycle, HealthObservation, PackageChallenge,
+        BridgeLifecycle, BridgeManagement, BridgeSpec, CredentialLifecycle, HealthObservation,
+        PackageChallenge,
     };
 
     fn spec(desired_running: bool) -> BridgeSpec {
@@ -1996,6 +2108,7 @@ mod tests {
             configuration_json: "{}".into(),
             authentication_methods: Vec::new(),
             ingress_mode: BridgeIngressMode::Queue,
+            management: BridgeManagement::RuntimeConfigured,
             alert_target: None,
             desired_running,
             health_interval_ms: 10,
@@ -2028,6 +2141,12 @@ mod tests {
                 .generation,
             2
         );
+        let mut agent_owned = spec(false);
+        agent_owned.management = BridgeManagement::AgentManaged;
+        assert!(matches!(
+            store.register(&agent_owned, 50),
+            Err(BridgeHostError::DuplicateBridgeConflict)
+        ));
         store.stop("bridge-1", 50).expect("repeated stop is safe");
         assert_eq!(
             store.record("bridge-1").expect("record exists").generation,
@@ -2062,6 +2181,7 @@ mod tests {
             assert!(store.records().expect("empty catalog lists").is_empty());
             let mut beta = spec(false);
             beta.bridge_id = "beta".into();
+            beta.management = BridgeManagement::AgentManaged;
             let mut alpha = spec(false);
             alpha.bridge_id = "alpha".into();
             store.register(&beta, 1).expect("beta registers");
@@ -2081,6 +2201,8 @@ mod tests {
         );
         assert_eq!(records[0].display_name, "Alpha replacement");
         assert_eq!(records[0].generation, 2);
+        assert_eq!(records[0].management, BridgeManagement::RuntimeConfigured);
+        assert_eq!(records[1].management, BridgeManagement::AgentManaged);
     }
 
     #[test]
@@ -2089,7 +2211,9 @@ mod tests {
         let path = directory.path().join("suspend.sqlite");
         {
             let store = BridgeStore::open(&path).expect("store opens");
-            store.register(&spec(true), 1).expect("bridge registers");
+            let mut agent_managed = spec(true);
+            agent_managed.management = BridgeManagement::AgentManaged;
+            store.register(&agent_managed, 1).expect("bridge registers");
             let suspended = store.suspend("bridge-1", 2).expect("bridge suspends");
             assert_eq!(suspended.lifecycle, BridgeLifecycle::Stopped);
             assert_eq!(suspended.generation, 1);
@@ -2111,6 +2235,13 @@ mod tests {
                 .desired_bridge_ids()
                 .expect("desired catalog loads"),
             ["bridge-1"]
+        );
+        assert_eq!(
+            restarted
+                .record("bridge-1")
+                .expect("agent management loads")
+                .management,
+            BridgeManagement::AgentManaged
         );
     }
 
@@ -2153,7 +2284,7 @@ mod tests {
         let path = directory.path().join("future.sqlite");
         let connection = Connection::open(&path).expect("sqlite opens");
         connection
-            .pragma_update(None, "user_version", 3)
+            .pragma_update(None, "user_version", 4)
             .expect("future version is written");
         drop(connection);
         assert!(matches!(
@@ -2178,6 +2309,10 @@ mod tests {
                 .as_object_mut()
                 .expect("fingerprint is an object")
                 .remove("alertTarget");
+            fingerprint
+                .as_object_mut()
+                .expect("fingerprint is an object")
+                .remove("management");
             let fingerprint = fingerprint.to_string();
             connection
                 .execute(
@@ -2230,7 +2365,14 @@ mod tests {
                 .expect("store lock")
                 .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
                 .expect("schema reads"),
-            2
+            3
+        );
+        assert_eq!(
+            store
+                .record("bridge-1")
+                .expect("migrated record reads")
+                .management,
+            BridgeManagement::RuntimeConfigured
         );
         let migrated_fingerprint = store
             .lock()

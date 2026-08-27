@@ -8,9 +8,9 @@ use boxology_contract::{CallContext, Caller, CancelToken, TraceContext};
 use boxology_runtime::CompositionBuilder;
 use bridge_host_contract::{
     AuthenticationMethod, BeginAuthenticationRequest, BridgeAlertTarget, BridgeInbound,
-    BridgeIngressMode, BridgeLifecycle, BridgeOutbound, BridgeReference, BridgeSpec,
-    DeliveryLifecycle, ImportBridgeContentRequest, ReconcileBridgeRequest, ReplaceBridgeRequest,
-    SubmitAuthenticationRequest,
+    BridgeIngressMode, BridgeLifecycle, BridgeManagement, BridgeOutbound, BridgeReference,
+    BridgeSpec, DeliveryLifecycle, ImportBridgeContentRequest, ReconcileBridgeRequest,
+    ReplaceBridgeRequest, SubmitAuthenticationRequest,
 };
 use bridge_host_implementation::{
     BridgeCredentialReceipt, BridgeCredentialSink, BridgeCredentialUpdate, BridgeHostState,
@@ -180,6 +180,7 @@ fn spec(mode: BridgeIngressMode) -> BridgeSpec {
         configuration_json: "{}".into(),
         authentication_methods: vec![AuthenticationMethod::PhoneCode],
         ingress_mode: mode,
+        management: BridgeManagement::AgentManaged,
         alert_target: None,
         desired_running: true,
         health_interval_ms: 10,

@@ -295,9 +295,9 @@
   "provenance": {
     "generator": "boxology-generator",
     "generator_version": "0.1.1",
-    "semantic_digest": "sha256:130236a343eb383c4980dd3f4e2d3399761ae8ac05fe2c5e89f2afeaca11664a"
+    "semantic_digest": "sha256:7d91033912b0e830c92bbf9b64c500d26772d0de06950364a857a24c27500332"
   },
-  "revision": "sha256:a1708ebe3dd71369b16a5018187bcf669d7c393539bc0b6a4f0794ad86c113f8",
+  "revision": "sha256:c65fa0ac55db94ce97d4892f7b1e187c6d0cfd8c23ac0fe7410dbf4539d90485",
   "schema_format": 1,
   "types": [
     {
@@ -504,6 +504,27 @@
     {
       "deprecation": null,
       "docs": [
+        " Durable authority for a bridge registration. Runtime configuration owns only configured",
+        " registrations; agent-managed registrations remain independent of static topology changes."
+      ],
+      "kind": "enum",
+      "name": "BridgeManagement",
+      "variants": [
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "RuntimeConfigured"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "AgentManaged"
+        }
+      ]
+    },
+    {
+      "deprecation": null,
+      "docs": [
         " Agent channel that receives actionable supervisor incidents in queue mode."
       ],
       "fields": [
@@ -576,6 +597,12 @@
           "docs": [],
           "name": "ingress_mode",
           "type": "BridgeIngressMode"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "management",
+          "type": "BridgeManagement"
         },
         {
           "deprecation": null,
@@ -654,6 +681,12 @@
           "docs": [],
           "name": "ingress_mode",
           "type": "BridgeIngressMode"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "management",
+          "type": "BridgeManagement"
         },
         {
           "deprecation": null,
