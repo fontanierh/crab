@@ -18,8 +18,8 @@ use nix::{
 use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio::{
-    io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
-    process::{Child, ChildStdin, ChildStdout, Command},
+    io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWriteExt, BufReader},
+    process::{Child, ChildStdin, Command},
     sync::{Mutex, mpsc, oneshot},
     task::JoinHandle,
 };
@@ -33,6 +33,8 @@ use crate::{
 const RPC_TIMEOUT: Duration = Duration::from_secs(30);
 const STOP_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_PROTOCOL_LINE_BYTES: usize = 16 * 1024 * 1024;
+// A queued call can approach the protocol line limit, so keep this deliberately small.
+const PACKAGE_CALL_QUEUE_CAPACITY: usize = 16;
 const PACKAGE_PROTOCOL_VERSION: u64 = 2;
 
 type PendingCalls = Arc<Mutex<HashMap<String, oneshot::Sender<Result<Value, BridgePackageError>>>>>;
@@ -238,7 +240,7 @@ impl BridgePackageFactory for ProcessBridgePackageFactory {
         let writer = Arc::new(Mutex::new(stdin));
         let pending = Arc::new(Mutex::new(HashMap::new()));
         let protocol_alive = Arc::new(AtomicBool::new(true));
-        let (package_sender, package_receiver) = mpsc::unbounded_channel();
+        let (package_sender, package_receiver) = package_call_channel();
         let reader = tokio::spawn(read_messages(
             BufReader::new(stdout),
             pending.clone(),
@@ -513,12 +515,18 @@ enum PackageCall {
     CredentialUpdate { id: String, params: Value },
 }
 
-async fn read_messages(
-    mut stdout: BufReader<ChildStdout>,
+fn package_call_channel() -> (mpsc::Sender<PackageCall>, mpsc::Receiver<PackageCall>) {
+    mpsc::channel(PACKAGE_CALL_QUEUE_CAPACITY)
+}
+
+async fn read_messages<R>(
+    mut stdout: BufReader<R>,
     pending: PendingCalls,
-    package_calls: mpsc::UnboundedSender<PackageCall>,
+    package_calls: mpsc::Sender<PackageCall>,
     protocol_alive: Arc<AtomicBool>,
-) {
+) where
+    R: AsyncRead + Unpin,
+{
     loop {
         let mut line = Vec::new();
         let read = (&mut stdout)
@@ -552,7 +560,7 @@ async fn read_messages(
             _ => None,
         };
         if let Some(call) = call {
-            if package_calls.send(call).is_err() {
+            if package_calls.send(call).await.is_err() {
                 break;
             }
             continue;
@@ -575,7 +583,7 @@ async fn read_messages(
 }
 
 async fn process_package_calls(
-    mut calls: mpsc::UnboundedReceiver<PackageCall>,
+    mut calls: mpsc::Receiver<PackageCall>,
     writer: Arc<Mutex<ChildStdin>>,
     inbound: Arc<dyn BridgeInboundSink>,
     credentials: Arc<dyn BridgeCredentialSink>,
@@ -902,5 +910,73 @@ impl<'de> Deserialize<'de> for PackageHealth {
             credential_valid: wire.credential_valid,
             detail_json: serde_json::to_string(&wire.detail).map_err(serde::de::Error::custom)?,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use tokio::io::AsyncWriteExt;
+
+    use super::*;
+
+    #[tokio::test]
+    async fn package_call_queue_applies_backpressure_at_capacity() {
+        let mut input = Vec::new();
+        for index in 0..=PACKAGE_CALL_QUEUE_CAPACITY {
+            let mut message = serde_json::to_vec(&json!({
+                "jsonrpc": "2.0",
+                "id": format!("package-{index}"),
+                "method": "bridge/inbound",
+                "params": null,
+            }))
+            .expect("serialize package call");
+            message.push(b'\n');
+            input.extend(message);
+        }
+
+        let (mut package_stdout, host_stdout) = tokio::io::duplex(input.len() + 1);
+        package_stdout
+            .write_all(&input)
+            .await
+            .expect("write package calls");
+        package_stdout
+            .shutdown()
+            .await
+            .expect("close package stdout");
+
+        let pending: PendingCalls = Arc::new(Mutex::new(HashMap::new()));
+        let protocol_alive = Arc::new(AtomicBool::new(true));
+        let (sender, mut receiver) = package_call_channel();
+        assert_eq!(receiver.max_capacity(), PACKAGE_CALL_QUEUE_CAPACITY);
+
+        let reader = tokio::spawn(read_messages(
+            BufReader::new(host_stdout),
+            pending,
+            sender,
+            protocol_alive.clone(),
+        ));
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while receiver.len() != PACKAGE_CALL_QUEUE_CAPACITY {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("queue reaches capacity");
+
+        assert!(protocol_alive.load(Ordering::Acquire));
+        assert!(!reader.is_finished());
+        let Some(PackageCall::Inbound { id, .. }) = receiver.recv().await else {
+            panic!("expected first inbound package call");
+        };
+        assert_eq!(id, "package-0");
+
+        tokio::time::timeout(Duration::from_secs(1), reader)
+            .await
+            .expect("reader resumes after queue space opens")
+            .expect("reader task completes");
+        assert!(!protocol_alive.load(Ordering::Acquire));
+        assert_eq!(receiver.len(), PACKAGE_CALL_QUEUE_CAPACITY);
     }
 }

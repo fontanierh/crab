@@ -1,7 +1,8 @@
 %%{init: {"theme": "base", "themeVariables": {"fontFamily": "ui-sans-serif, system-ui, sans-serif", "primaryTextColor": "#172033", "lineColor": "#64748b", "edgeLabelBackground": "#ffffff"}, "flowchart": {"curve": "basis", "nodeSpacing": 42, "rankSpacing": 58}}}%%
 flowchart LR
     SERVICE["External service<br/>WhatsApp · email · custom"]
-    PACKAGE["Bridge package process<br/>bounded multiplexed JSON lines"]
+    PACKAGE["Bridge package process<br/>16 MiB JSON-line cap"]
+    QUEUE["Bounded package-call queue<br/>16 calls · pipe backpressure"]
     HOST["Bridge host<br/>supervision · policy · auth"]
     DB[("Bridge SQLite<br/>generations · health · delivery")]
     CREDS[("Credential provider<br/>opaque handles only")]
@@ -10,7 +11,8 @@ flowchart LR
     AGENT["Crab agent session"]
 
     SERVICE <-->|"service protocol"| PACKAGE
-    PACKAGE -->|"bridge/inbound"| HOST
+    PACKAGE -->|"inbound · content · credential"| QUEUE
+    QUEUE -->|"FIFO"| HOST
     HOST -->|"ack after commit"| PACKAGE
     HOST -->|"selected delivery"| PACKAGE
     HOST <-->|"spec · audit · receipts"| DB
@@ -28,6 +30,6 @@ flowchart LR
     classDef boundary fill:#fef3c7,stroke:#d97706,stroke-width:2px,color:#78350f;
 
     class SERVICE external;
-    class PACKAGE,HOST,AGENT runtime;
+    class PACKAGE,QUEUE,HOST,AGENT runtime;
     class DB,CREDS,INBOX durable;
     class IMPORT boundary;
