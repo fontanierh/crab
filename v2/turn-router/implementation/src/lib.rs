@@ -6,7 +6,7 @@ pub use contract::*;
 use std::{
     collections::HashMap,
     path::Path,
-    sync::{Arc, Mutex as StdMutex},
+    sync::{Arc, Mutex as StdMutex, Weak},
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -19,11 +19,44 @@ use boxology_import_trigger_inbox::{
 use generated::{NativeChannelImport, TriggerInboxImport};
 use serde_json::{Map, Value, json};
 use store::RouteStore;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, OwnedMutexGuard};
 
 const MAX_DRAIN_LIMIT: u64 = 1_000;
 
 type Clock = Arc<dyn Fn() -> Result<u64, TurnRouterError> + Send + Sync>;
+
+#[derive(Default)]
+struct LaneLocks {
+    locks: StdMutex<HashMap<String, Weak<Mutex<()>>>>,
+}
+
+impl LaneLocks {
+    async fn lock(&self, lane: &str) -> Result<OwnedMutexGuard<()>, TurnRouterError> {
+        let lock = {
+            let mut locks = self
+                .locks
+                .lock()
+                .map_err(|_| TurnRouterError::StorageUnavailable)?;
+            locks.retain(|_, lock| lock.strong_count() > 0);
+            if let Some(lock) = locks.get(lane).and_then(Weak::upgrade) {
+                lock
+            } else {
+                let lock = Arc::new(Mutex::new(()));
+                locks.insert(lane.to_owned(), Arc::downgrade(&lock));
+                lock
+            }
+        };
+        Ok(lock.lock_owned().await)
+    }
+
+    #[cfg(test)]
+    fn registry_len(&self) -> Result<usize, TurnRouterError> {
+        self.locks
+            .lock()
+            .map(|locks| locks.len())
+            .map_err(|_| TurnRouterError::StorageUnavailable)
+    }
+}
 
 /// Opened durable route state waiting for composition-owned imports.
 pub struct TurnRouterState {
@@ -56,7 +89,7 @@ impl TurnRouterState {
             trigger_inbox: Arc::new(trigger_inbox),
             native_channel: Arc::new(native_channel),
             store: Arc::new(self.store),
-            lane_locks: Arc::new(StdMutex::new(HashMap::new())),
+            lane_locks: Arc::new(LaneLocks::default()),
             clock: Arc::new(system_time_ms),
         }
     }
@@ -67,7 +100,7 @@ pub struct TurnRouter {
     trigger_inbox: Arc<TriggerInboxImport>,
     native_channel: Arc<NativeChannelImport>,
     store: Arc<RouteStore>,
-    lane_locks: Arc<StdMutex<HashMap<String, Arc<Mutex<()>>>>>,
+    lane_locks: Arc<LaneLocks>,
     clock: Clock,
 }
 
@@ -87,17 +120,6 @@ impl TurnRouter {
         native_channel: NativeChannelImport,
     ) -> Result<Self, TurnRouterError> {
         Ok(TurnRouterState::open_in_memory()?.connect(trigger_inbox, native_channel))
-    }
-
-    fn lane_lock(&self, lane: &str) -> Result<Arc<Mutex<()>>, TurnRouterError> {
-        let mut locks = self
-            .lane_locks
-            .lock()
-            .map_err(|_| TurnRouterError::StorageUnavailable)?;
-        Ok(locks
-            .entry(lane.to_owned())
-            .or_insert_with(|| Arc::new(Mutex::new(())))
-            .clone())
     }
 
     async fn route_lease(
@@ -299,8 +321,7 @@ impl TurnRouter {
         request: DrainLaneRequest,
     ) -> Result<DrainLaneReport, TurnRouterError> {
         validate_drain(&request)?;
-        let lane_lock = self.lane_lock(&request.lane)?;
-        let _lane = lane_lock.lock().await;
+        let _lane = self.lane_locks.lock(&request.lane).await?;
         let batch = self
             .trigger_inbox
             .claim(
@@ -524,7 +545,43 @@ pub mod generated {
 
 #[cfg(test)]
 mod tests {
-    use super::generated;
+    use std::{sync::Arc, time::Duration};
+
+    use super::{LaneLocks, generated};
+
+    #[tokio::test]
+    async fn lane_locks_serialize_one_lane_without_retaining_idle_lanes() {
+        let lanes = Arc::new(LaneLocks::default());
+        let lane_a = lanes.lock("lane-a").await.expect("lane A locks");
+
+        let lane_b = tokio::time::timeout(Duration::from_millis(100), lanes.lock("lane-b"))
+            .await
+            .expect("lane B is not blocked by lane A")
+            .expect("lane B locks");
+        drop(lane_b);
+
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), lanes.lock("lane-a"))
+                .await
+                .is_err(),
+            "drains for one lane must remain serialized"
+        );
+        drop(lane_a);
+
+        let lane_a = tokio::time::timeout(Duration::from_millis(100), lanes.lock("lane-a"))
+            .await
+            .expect("lane A resumes after its drain completes")
+            .expect("lane A relocks");
+        drop(lane_a);
+
+        let lane_c = lanes.lock("lane-c").await.expect("lane C locks");
+        assert_eq!(
+            lanes.registry_len().expect("registry reads"),
+            1,
+            "idle weak lane entries are pruned"
+        );
+        drop(lane_c);
+    }
 
     #[test]
     fn contract_imports_both_durable_boundaries() {

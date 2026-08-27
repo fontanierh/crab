@@ -134,8 +134,10 @@ interrupt as a separate explicit action.
   [storage contract](docs/trigger-inbox-storage.md) is schema-versioned from day one.
 - `turn-router` resolves bridge/scheduler/self-work ingress without pretending those sources are
   native channels. It serializes each lane, maps queue/steer/interrupt explicitly, and settles only
-  after durable channel acceptance. See its [state contract](docs/turn-router-storage.md) and
-  [rendered flow](docs/turn-router-flow.png).
+  after durable channel acceptance. Lane locks are weak and pruned, so retired lane identities do
+  not accumulate in the long-running router. See its
+  [state contract](docs/turn-router-storage.md), [rendered flow](docs/turn-router-flow.png) and
+  [lock lifecycle](docs/turn-router-lock-lifecycle.png).
 - `crab-v2` loads secret-free schema-v1 topology, opens fresh ACP sessions, recovers persisted
   bindings/routes, exposes an owner-only authenticated local Boxology endpoint, and continuously
   drains every configured trigger lane. `crab-v2-health` reconciles that configured topology with

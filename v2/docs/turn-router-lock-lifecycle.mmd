@@ -1,0 +1,21 @@
+flowchart TD
+    drain[Drain request] --> registry[Weak lane-lock registry]
+    registry --> lane{Lane identity}
+
+    lane -- lane A --> lockA[Lock A]
+    lane -- lane B --> lockB[Lock B]
+
+    lockA --> fifoA[Claim + deliver A in FIFO order]
+    lockB --> fifoB[Claim + deliver B independently]
+
+    fifoA --> releaseA[Release A]
+    fifoB --> releaseB[Release B]
+    releaseA --> weak[Only weak entry remains]
+    releaseB --> weak
+    weak --> next[Next acquisition]
+    next --> prune[Prune idle lane identities]
+
+    classDef registry fill:#fff4dc,stroke:#b26a00,color:#3a2600
+    classDef isolated fill:#e9f7ef,stroke:#237a4b,color:#102a1c
+    class registry,lane,weak,next,prune registry
+    class lockA,lockB,fifoA,fifoB,releaseA,releaseB isolated

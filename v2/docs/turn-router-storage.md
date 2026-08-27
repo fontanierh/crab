@@ -16,7 +16,9 @@ runtime-state/
 
 - Route creation is idempotent. Replacement uses compare-and-swap generation control so stale
   configuration cannot redirect a trigger silently.
-- One in-process lock serializes each lane. Different lanes may drain concurrently.
+- One in-process lock serializes each lane. Different lanes may drain concurrently. The registry
+  stores weak references and prunes idle lanes on acquisition, so historical lane names are not
+  retained for the process lifetime.
 - The trigger ID becomes the native channel turn ID. If ACP accepted a turn but settlement was
   interrupted, the retry resolves through downstream deduplication instead of running twice.
 - Queue and steer map directly to native channel input. Interrupting ingress maps to one
