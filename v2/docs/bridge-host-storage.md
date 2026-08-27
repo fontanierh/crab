@@ -78,3 +78,6 @@ diagnostics.
 
 Crab terminates the package process group on stop/drop, probes immediately and on every health
 interval, applies exponential backoff, and refuses starts beyond the configured restart window.
+Lifecycle, authentication, ingress and delivery operations are serialized by bridge identity. A
+slow bounded package RPC therefore cannot stall unrelated bridges; the weak lock registry prunes
+idle identities instead of retaining every bridge name forever.

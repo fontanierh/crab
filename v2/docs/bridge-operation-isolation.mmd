@@ -1,0 +1,22 @@
+flowchart TD
+    request[Bridge operation] --> registry[Weak lock registry]
+    registry --> identity{Bridge identity}
+
+    identity -- bridge A --> lockA[Lock A]
+    identity -- bridge B --> lockB[Lock B]
+
+    lockA --> fifoA[Ordered A lifecycle]
+    fifoA --> slowA[Slow bounded package RPC]
+
+    lockB --> fifoB[Ordered B lifecycle]
+    fifoB --> progressB[Health · ingress · delivery continue]
+
+    slowA --> releaseA[Release A]
+    progressB --> releaseB[Release B]
+    releaseA --> prune[Prune idle weak entries]
+    releaseB --> prune
+
+    classDef registry fill:#fff4dc,stroke:#b26a00,color:#3a2600
+    classDef isolated fill:#e9f7ef,stroke:#237a4b,color:#102a1c
+    class registry,identity,prune registry
+    class lockA,lockB,fifoA,fifoB,slowA,progressB,releaseA,releaseB isolated
