@@ -1,0 +1,25 @@
+flowchart LR
+    CLI["crab-v2-channel<br/>owner process"]
+    IPC["authenticated local IPC<br/>0600 socket + token"]
+
+    subgraph RUNTIME["single Crab v2 runtime"]
+        CATALOG["list_bindings<br/>binding_summary"]
+        STORE[("native-channel.sqlite<br/>identity · cursors · pending")]
+        EVENTS["replay_native_events<br/>bounded cursor page"]
+        JOURNAL[("agent-host ACP journal<br/>thoughts · tools · terminal · diffs")]
+        INTERRUPT["interrupt_and_drain<br/>session CAS"]
+        RUN["active ACP run<br/>accepted queue preserved"]
+    end
+
+    CLI --> IPC
+    IPC --> CATALOG --> STORE
+    IPC --> EVENTS --> JOURNAL
+    IPC --> INTERRUPT --> RUN
+    STORE -. "adapter destination metadata omitted" .-> CATALOG
+
+    classDef owner fill:#e0f2fe,stroke:#0369a1,stroke-width:2px,color:#0c4a6e;
+    classDef boundary fill:#fef3c7,stroke:#d97706,stroke-width:2px,color:#78350f;
+    classDef durable fill:#dcfce7,stroke:#16a34a,stroke-width:2px,color:#14532d;
+    class CLI owner;
+    class IPC,CATALOG,EVENTS,INTERRUPT boundary;
+    class STORE,JOURNAL,RUN durable;

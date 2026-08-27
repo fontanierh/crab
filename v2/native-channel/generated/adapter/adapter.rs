@@ -2616,6 +2616,98 @@ where
             return Box::pin(async move {
                 let input = ::boxology_contract::TypeDescriptor::structure([
                         ::boxology_contract::FieldDescriptor::new(
+                            "limit",
+                            ::boxology_contract::TypeDescriptor::u64(),
+                            None,
+                        ),
+                    ])
+                    .expect("generated struct descriptor is valid")
+                    .conform(::boxology_contract::DecodeRole::ProviderInput, input)
+                    .map_err(|error| {
+                        ::boxology_contract::ErasedCallError::ContractViolation(
+                            conversion_detail("input_decode", error),
+                        )
+                    })?;
+                let input = <::boxology_generated_contract::ListChannelBindingsRequest as ::boxology_contract::ContractType>::decode(
+                        &input,
+                    )
+                    .map_err(|error| {
+                        ::boxology_contract::ErasedCallError::ContractViolation(
+                            conversion_detail("input_decode", error),
+                        )
+                    })?;
+                match ::boxology_generated_contract::NativeChannelDispatch::list_bindings(
+                        &self.service,
+                        context,
+                        input,
+                    )
+                    .await
+                {
+                    Ok(output) => {
+                        output
+                            .encode()
+                            .map_err(|error| {
+                                ::boxology_contract::ErasedCallError::InvalidResponse(
+                                    conversion_detail("output_encode", error),
+                                )
+                            })
+                    }
+                    Err(error) => {
+                        Err(::boxology_contract::ErasedCallError::from_domain(&error))
+                    }
+                }
+            });
+        }
+        if capability == capabilities[10].id() {
+            return Box::pin(async move {
+                let input = ::boxology_contract::TypeDescriptor::structure([
+                        ::boxology_contract::FieldDescriptor::new(
+                            "binding_id",
+                            ::boxology_contract::TypeDescriptor::string(),
+                            None,
+                        ),
+                    ])
+                    .expect("generated struct descriptor is valid")
+                    .conform(::boxology_contract::DecodeRole::ProviderInput, input)
+                    .map_err(|error| {
+                        ::boxology_contract::ErasedCallError::ContractViolation(
+                            conversion_detail("input_decode", error),
+                        )
+                    })?;
+                let input = <::boxology_generated_contract::BindingReference as ::boxology_contract::ContractType>::decode(
+                        &input,
+                    )
+                    .map_err(|error| {
+                        ::boxology_contract::ErasedCallError::ContractViolation(
+                            conversion_detail("input_decode", error),
+                        )
+                    })?;
+                match ::boxology_generated_contract::NativeChannelDispatch::binding_summary(
+                        &self.service,
+                        context,
+                        input,
+                    )
+                    .await
+                {
+                    Ok(output) => {
+                        output
+                            .encode()
+                            .map_err(|error| {
+                                ::boxology_contract::ErasedCallError::InvalidResponse(
+                                    conversion_detail("output_encode", error),
+                                )
+                            })
+                    }
+                    Err(error) => {
+                        Err(::boxology_contract::ErasedCallError::from_domain(&error))
+                    }
+                }
+            });
+        }
+        if capability == capabilities[11].id() {
+            return Box::pin(async move {
+                let input = ::boxology_contract::TypeDescriptor::structure([
+                        ::boxology_contract::FieldDescriptor::new(
                             "binding_id",
                             ::boxology_contract::TypeDescriptor::string(),
                             None,
@@ -2658,7 +2750,7 @@ where
                 }
             });
         }
-        if capability == capabilities[10].id() {
+        if capability == capabilities[12].id() {
             return Box::pin(async move {
                 let input = ::boxology_contract::TypeDescriptor::structure([
                         ::boxology_contract::FieldDescriptor::new(
@@ -2709,7 +2801,7 @@ where
                 }
             });
         }
-        if capability == capabilities[11].id() {
+        if capability == capabilities[13].id() {
             return Box::pin(async move {
                 let input = ::boxology_contract::TypeDescriptor::structure([
                         ::boxology_contract::FieldDescriptor::new(

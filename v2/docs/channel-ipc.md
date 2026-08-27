@@ -12,6 +12,8 @@ operators never open Crab's databases or credential store.
 | `native-channel.accept_turn` | `native-channel` |
 | `native-channel.interrupt_and_drain` | `native-channel` |
 | `native-channel.channel_status` | `native-channel` |
+| `native-channel.list_bindings` | `native-channel` |
+| `native-channel.binding_summary` | `native-channel` |
 | `native-channel.replay_native_events` | `native-channel` |
 | `trigger-inbox.enqueue` | `trigger-inbox` |
 | `bridge-host.register_bridge` | `bridge-host` |
@@ -55,5 +57,6 @@ operators never open Crab's databases or credential store.
 - The token is loaded from the state directory by the local client. It never appears in CLI
   arguments, output or trigger records.
 
-See [private agent diagnostics](agent-diagnostics.md), [bridge operations](bridge-operations.md) and
+See [native channel operations](channel-operations.md),
+[private agent diagnostics](agent-diagnostics.md), [bridge operations](bridge-operations.md) and
 [realtime sub-agent control](sub-agent-control.md) for the typed operator workflows.

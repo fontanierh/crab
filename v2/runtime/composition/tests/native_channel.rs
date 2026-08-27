@@ -686,6 +686,18 @@ async fn failed_binding_recovery_preserves_session_and_publication_cursors() {
         failed.lifecycle,
         native_channel_contract::ChannelLifecycle::Failed
     );
+    let historical = handle
+        .replay_native_events(
+            context(),
+            ReplayRequest {
+                binding_id: binding_id.clone(),
+                after_sequence: 0,
+                limit: 100,
+            },
+        )
+        .await
+        .expect("durable event history remains readable while the binding is failed");
+    assert!(!historical.events.is_empty());
     let recovered = handle
         .recover_session(
             context(),

@@ -374,7 +374,6 @@ impl NativeChannel {
     ) -> Result<PublishedEventPage, NativeChannelError> {
         let _operation = self.operations.lock().await;
         let binding = self.store.binding(&request.binding_id)?;
-        require_attached(&binding)?;
         self.authoritative_page(context, &binding, request.after_sequence, request.limit)
             .await
     }
@@ -441,6 +440,24 @@ impl NativeChannel {
             available_sequence: status.last_sequence,
             updated_at_ms: (self.clock)()?,
         })
+    }
+
+    pub async fn list_bindings(
+        &self,
+        context: CallContext,
+        request: ListChannelBindingsRequest,
+    ) -> Result<ChannelBindingCatalog, NativeChannelError> {
+        let _ = context;
+        self.store.list_bindings(request.limit)
+    }
+
+    pub async fn binding_summary(
+        &self,
+        context: CallContext,
+        request: BindingReference,
+    ) -> Result<ChannelBindingSummary, NativeChannelError> {
+        let _ = context;
+        self.store.binding_summary(&request.binding_id)
     }
 
     pub async fn inspect_binding(
@@ -650,6 +667,8 @@ mod tests {
                 "replace_session",
                 "recover_session",
                 "channel_status",
+                "list_bindings",
+                "binding_summary",
                 "inspect_binding",
                 "find_binding",
                 "unbind_channel",

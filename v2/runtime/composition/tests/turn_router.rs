@@ -5,11 +5,12 @@ extern crate native_channel_contract as boxology_generated_contract;
 use boxology_contract::{CallContext, Caller, CancelToken, ImplementationDescriptor, TraceContext};
 use boxology_runtime::CompositionBuilder;
 use native_channel_implementation::{
-    AcceptedTurn, BindChannelRequest, BindingReference, ChannelBinding, ChannelInputMode,
-    ChannelLifecycle, ChannelReceipt, ChannelStatus, ChannelTurn, ChannelTurnDisposition,
-    InterruptReceipt, InterruptRequest, InterruptingTurnRequest, LocateBindingRequest,
-    NativeChannelError, NativeChannelEvent, PublishReceipt, PublishedEventPage,
-    RecoverSessionRequest, ReplaceSessionRequest, ReplayRequest, generated as native_channel,
+    AcceptedTurn, BindChannelRequest, BindingReference, ChannelBinding, ChannelBindingCatalog,
+    ChannelBindingSummary, ChannelInputMode, ChannelLifecycle, ChannelReceipt, ChannelStatus,
+    ChannelTurn, ChannelTurnDisposition, InterruptReceipt, InterruptRequest,
+    InterruptingTurnRequest, ListChannelBindingsRequest, LocateBindingRequest, NativeChannelError,
+    NativeChannelEvent, PublishReceipt, PublishedEventPage, RecoverSessionRequest,
+    ReplaceSessionRequest, ReplayRequest, generated as native_channel,
 };
 use trigger_inbox_contract::{
     EnqueueTrigger, TriggerAttachment, TriggerMode, TriggerReference, TriggerSource, TriggerState,
@@ -185,6 +186,30 @@ impl FakeNativeChannel {
         })
     }
 
+    async fn list_bindings(
+        &self,
+        context: CallContext,
+        request: ListChannelBindingsRequest,
+    ) -> Result<ChannelBindingCatalog, NativeChannelError> {
+        let _ = (context, request);
+        Ok(ChannelBindingCatalog {
+            bindings: vec![binding_summary("binding-good")],
+            total_bindings: 1,
+        })
+    }
+
+    async fn binding_summary(
+        &self,
+        context: CallContext,
+        request: BindingReference,
+    ) -> Result<ChannelBindingSummary, NativeChannelError> {
+        let _ = context;
+        if request.binding_id != "binding-good" {
+            return Err(NativeChannelError::UnknownBinding);
+        }
+        Ok(binding_summary(&request.binding_id))
+    }
+
     async fn inspect_binding(
         &self,
         context: CallContext,
@@ -235,6 +260,20 @@ impl FakeNativeChannel {
             accepted: true,
             recorded_at_ms: 1,
         })
+    }
+}
+
+fn binding_summary(binding_id: &str) -> ChannelBindingSummary {
+    ChannelBindingSummary {
+        binding_id: binding_id.into(),
+        channel_id: "target-good".into(),
+        adapter_id: "test".into(),
+        session_id: "session-1".into(),
+        lifecycle: ChannelLifecycle::Attached,
+        published_sequence: 0,
+        pending_input_count: 0,
+        last_error: None,
+        updated_at_ms: 1,
     }
 }
 

@@ -27,7 +27,8 @@ use bridge_host_contract::{
 };
 use channel_gateway_contract::{AttachChannelRequest, ChannelAttachment, ChannelGatewayHandle};
 use native_channel_contract::{
-    AcceptedTurn, BindingReference, ChannelStatus, ChannelTurn, InterruptReceipt, InterruptRequest,
+    AcceptedTurn, BindingReference, ChannelBindingCatalog, ChannelBindingSummary, ChannelStatus,
+    ChannelTurn, InterruptReceipt, InterruptRequest, ListChannelBindingsRequest,
     NativeChannelHandle, PublishedEventPage, ReplayRequest,
 };
 use serde::{Deserialize, Serialize};
@@ -57,6 +58,8 @@ const ATTACH: &str = "channel-gateway.attach_channel";
 const ACCEPT_TURN: &str = "native-channel.accept_turn";
 const INTERRUPT: &str = "native-channel.interrupt_and_drain";
 const CHANNEL_STATUS: &str = "native-channel.channel_status";
+const LIST_CHANNEL_BINDINGS: &str = "native-channel.list_bindings";
+const CHANNEL_BINDING_SUMMARY: &str = "native-channel.binding_summary";
 const REPLAY: &str = "native-channel.replay_native_events";
 const ENQUEUE_TRIGGER: &str = "trigger-inbox.enqueue";
 const REGISTER_BRIDGE: &str = "bridge-host.register_bridge";
@@ -267,6 +270,32 @@ impl ChannelIpcClient {
     ) -> Result<ChannelStatus, ChannelIpcClientError> {
         self.invoke(
             CHANNEL_STATUS,
+            native_channel_contract::contract_descriptor(),
+            request,
+        )
+        .await
+    }
+
+    /// Discover durable native-channel bindings without opening runtime state directly.
+    pub async fn list_channel_bindings(
+        &self,
+        request: ListChannelBindingsRequest,
+    ) -> Result<ChannelBindingCatalog, ChannelIpcClientError> {
+        self.invoke(
+            LIST_CHANNEL_BINDINGS,
+            native_channel_contract::contract_descriptor(),
+            request,
+        )
+        .await
+    }
+
+    /// Inspect one durable binding even when its ACP session is unavailable.
+    pub async fn channel_binding_summary(
+        &self,
+        request: BindingReference,
+    ) -> Result<ChannelBindingSummary, ChannelIpcClientError> {
+        self.invoke(
+            CHANNEL_BINDING_SUMMARY,
             native_channel_contract::contract_descriptor(),
             request,
         )
@@ -965,6 +994,22 @@ async fn dispatch(request: WireRequest, capabilities: IpcCapabilities) -> WireOu
                 &request.input,
                 CHANNEL_STATUS,
                 |input| native_channel.channel_status(call_context(), input),
+            )
+            .await
+        }
+        LIST_CHANNEL_BINDINGS => {
+            invoke_native::<ListChannelBindingsRequest, ChannelBindingCatalog, _, _>(
+                &request.input,
+                LIST_CHANNEL_BINDINGS,
+                |input| native_channel.list_bindings(call_context(), input),
+            )
+            .await
+        }
+        CHANNEL_BINDING_SUMMARY => {
+            invoke_native::<BindingReference, ChannelBindingSummary, _, _>(
+                &request.input,
+                CHANNEL_BINDING_SUMMARY,
+                |input| native_channel.binding_summary(call_context(), input),
             )
             .await
         }

@@ -5,12 +5,55 @@ use serde_json::Value;
 use uuid::Uuid;
 
 use crate::{
-    AcceptedTurn, BindChannelRequest, ChannelBinding, ChannelInputMode, ChannelLifecycle,
-    ChannelReceipt, ChannelTurn, ChannelTurnDisposition, LocateBindingRequest, NativeChannelError,
-    NativeChannelEvent, PublishReceipt,
+    AcceptedTurn, BindChannelRequest, ChannelBinding, ChannelBindingCatalog, ChannelBindingSummary,
+    ChannelInputMode, ChannelLifecycle, ChannelReceipt, ChannelTurn, ChannelTurnDisposition,
+    LocateBindingRequest, NativeChannelError, NativeChannelEvent, PublishReceipt,
 };
 
 const SCHEMA_VERSION: i64 = 2;
+const MAX_BINDING_CATALOG: u64 = 256;
+
+struct StoredBindingSummary {
+    binding_id: String,
+    channel_id: String,
+    adapter_id: String,
+    session_id: String,
+    lifecycle: String,
+    published_sequence: i64,
+    pending_input_count: i64,
+    last_error: Option<String>,
+    updated_at_ms: i64,
+}
+
+impl StoredBindingSummary {
+    fn from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Self> {
+        Ok(Self {
+            binding_id: row.get(0)?,
+            channel_id: row.get(1)?,
+            adapter_id: row.get(2)?,
+            session_id: row.get(3)?,
+            lifecycle: row.get(4)?,
+            published_sequence: row.get(5)?,
+            pending_input_count: row.get(6)?,
+            last_error: row.get(7)?,
+            updated_at_ms: row.get(8)?,
+        })
+    }
+
+    fn into_contract(self) -> Result<ChannelBindingSummary, NativeChannelError> {
+        Ok(ChannelBindingSummary {
+            binding_id: self.binding_id,
+            channel_id: self.channel_id,
+            adapter_id: self.adapter_id,
+            session_id: self.session_id,
+            lifecycle: parse_lifecycle(&self.lifecycle)?,
+            published_sequence: db_u64(self.published_sequence)?,
+            pending_input_count: db_u64(self.pending_input_count)?,
+            last_error: self.last_error,
+            updated_at_ms: db_u64(self.updated_at_ms)?,
+        })
+    }
+}
 
 pub(crate) struct ChannelStore {
     connection: Mutex<Connection>,
@@ -109,6 +152,71 @@ impl ChannelStore {
     pub(crate) fn binding(&self, binding_id: &str) -> Result<ChannelBinding, NativeChannelError> {
         let connection = self.lock()?;
         query_binding(&connection, binding_id)?.ok_or(NativeChannelError::UnknownBinding)
+    }
+
+    pub(crate) fn list_bindings(
+        &self,
+        limit: u64,
+    ) -> Result<ChannelBindingCatalog, NativeChannelError> {
+        if limit == 0 || limit > MAX_BINDING_CATALOG {
+            return Err(NativeChannelError::InvalidNativePayload);
+        }
+        let connection = self.lock()?;
+        let total_bindings = connection
+            .query_row("SELECT COUNT(*) FROM bindings", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .map_err(storage_error)?;
+        let mut statement = connection
+            .prepare(
+                "SELECT b.binding_id, b.channel_id, b.adapter_id, b.session_id, b.lifecycle,
+                        b.published_sequence,
+                        (SELECT COUNT(*) FROM turns t
+                         WHERE t.binding_id = b.binding_id AND t.session_id = b.session_id
+                           AND t.state = 'Pending'),
+                        b.last_error, b.updated_at_ms
+                 FROM bindings b
+                 ORDER BY b.updated_at_ms DESC, b.binding_id ASC
+                 LIMIT ?1",
+            )
+            .map_err(storage_error)?;
+        let rows = statement
+            .query_map(params![db_i64(limit)?], StoredBindingSummary::from_row)
+            .map_err(storage_error)?;
+        let mut bindings = Vec::new();
+        for row in rows {
+            bindings.push(row.map_err(storage_error)?.into_contract()?);
+        }
+        Ok(ChannelBindingCatalog {
+            bindings,
+            total_bindings: db_u64(total_bindings)?,
+        })
+    }
+
+    pub(crate) fn binding_summary(
+        &self,
+        binding_id: &str,
+    ) -> Result<ChannelBindingSummary, NativeChannelError> {
+        if binding_id.trim().is_empty() {
+            return Err(NativeChannelError::InvalidNativePayload);
+        }
+        let connection = self.lock()?;
+        connection
+            .query_row(
+                "SELECT b.binding_id, b.channel_id, b.adapter_id, b.session_id, b.lifecycle,
+                        b.published_sequence,
+                        (SELECT COUNT(*) FROM turns t
+                         WHERE t.binding_id = b.binding_id AND t.session_id = b.session_id
+                           AND t.state = 'Pending'),
+                        b.last_error, b.updated_at_ms
+                 FROM bindings b WHERE b.binding_id = ?1",
+                params![binding_id],
+                StoredBindingSummary::from_row,
+            )
+            .optional()
+            .map_err(storage_error)?
+            .ok_or(NativeChannelError::UnknownBinding)?
+            .into_contract()
     }
 
     pub(crate) fn find_binding(
@@ -851,7 +959,10 @@ mod tests {
     use rusqlite::Connection;
 
     use super::{ChannelStore, SCHEMA_VERSION, migrate_v0_to_v1};
-    use crate::{BindChannelRequest, ChannelLifecycle, LocateBindingRequest, NativeChannelError};
+    use crate::{
+        AcceptedTurn, BindChannelRequest, ChannelInputMode, ChannelLifecycle, ChannelTurn,
+        ChannelTurnDisposition, LocateBindingRequest, NativeChannelError,
+    };
 
     fn request() -> BindChannelRequest {
         BindChannelRequest {
@@ -860,6 +971,68 @@ mod tests {
             session_id: "session-1".into(),
             native_channel_json: r#"{"title":"Jim"}"#.into(),
         }
+    }
+
+    #[test]
+    fn binding_catalog_is_bounded_ordered_and_reports_pending_work() {
+        let store = ChannelStore::open_in_memory().expect("store opens");
+        let first = store.bind(&request(), 10).expect("first binding persists");
+        let second = store
+            .bind(
+                &BindChannelRequest {
+                    channel_id: "channel-2".into(),
+                    adapter_id: "native-ui".into(),
+                    session_id: "session-2".into(),
+                    native_channel_json: r#"{"privateDestination":"not-catalogued"}"#.into(),
+                },
+                20,
+            )
+            .expect("second binding persists");
+        store
+            .record_turn(
+                &ChannelTurn {
+                    binding_id: first.binding_id.clone(),
+                    client_turn_id: "turn-1".into(),
+                    received_at_ms: 21,
+                    mode: ChannelInputMode::Queue,
+                    native_prompt_json: "[]".into(),
+                },
+                &AcceptedTurn {
+                    binding_id: first.binding_id.clone(),
+                    session_id: first.session_id.clone(),
+                    client_turn_id: "turn-1".into(),
+                    accepted_at_ms: 22,
+                    mode: ChannelInputMode::Queue,
+                    run_id: "run-1".into(),
+                    disposition: ChannelTurnDisposition::QueuedForTurnBoundary,
+                    interrupted_run_id: None,
+                    cancel_requested_at_ms: None,
+                },
+            )
+            .expect("pending turn persists");
+
+        let first_status = store
+            .binding_summary(&first.binding_id)
+            .expect("binding is discoverable by id");
+        assert_eq!(first_status.pending_input_count, 1);
+        assert_eq!(first_status.channel_id, "channel-1");
+
+        store
+            .detach(&second.binding_id, 30)
+            .expect("second binding detaches");
+        let catalog = store.list_bindings(1).expect("catalog is readable");
+        assert_eq!(catalog.total_bindings, 2);
+        assert_eq!(catalog.bindings.len(), 1);
+        assert_eq!(catalog.bindings[0].binding_id, second.binding_id);
+        assert_eq!(catalog.bindings[0].lifecycle, ChannelLifecycle::Detached);
+        assert!(matches!(
+            store.list_bindings(0),
+            Err(NativeChannelError::InvalidNativePayload)
+        ));
+        assert!(matches!(
+            store.list_bindings(257),
+            Err(NativeChannelError::InvalidNativePayload)
+        ));
     }
 
     #[test]
