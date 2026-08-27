@@ -1,0 +1,20 @@
+flowchart TD
+    start[Start child event pump] --> token[Create unique token + closed gate]
+    token --> register[Register token + task handle]
+    register --> replacement{Existing pump?}
+    replacement -- yes --> abortOld[Abort previous handle]
+    replacement -- no --> open
+    abortOld --> open[Open registration gate]
+    open --> pump[Copy ACP events from durable cursor]
+
+    pump --> terminal{Pump exits naturally}
+    terminal --> current{Token still current?}
+    current -- yes --> remove[Remove completed task entry]
+    current -- no --> preserve[Preserve replacement entry]
+
+    stop[Explicit stop · host drop] --> removeAbort[Remove current entry, then abort]
+
+    classDef registry fill:#fff4dc,stroke:#b26a00,color:#3a2600
+    classDef lifecycle fill:#e9f7ef,stroke:#237a4b,color:#102a1c
+    class token,register,replacement,current registry
+    class start,abortOld,open,pump,terminal,remove,preserve,stop,removeAbort lifecycle
