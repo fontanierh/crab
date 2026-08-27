@@ -97,6 +97,10 @@ surface reports the configured topology as ready with the same semantic-config f
 launchd PID. A failure at any point after cutover restores the prior symlink, plist, provenance and
 process, then verifies that rollback.
 
+The deploy deadline also bounds each health subprocess using only its remaining budget. `status`
+uses an independent ten-second health deadline. A socket peer that accepts but stops responding can
+therefore degrade health, but cannot suspend deployment rollback or operator status indefinitely.
+
 ```sh
 python3 ~/.crab-v2/libexec/v2_bundle.py status
 ```

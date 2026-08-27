@@ -50,6 +50,8 @@ operators never open Crab's databases or credential store.
 - Each request is one bounded JSON line with protocol version, request ID, authentication,
   qualified capability and canonical Boxology JSON input. Unknown fields and capabilities fail
   closed.
+- One ten-second deadline covers connect, write and response read as a single operation. A peer
+  that accepts without replying returns the stable `local IPC request timed out` error.
 - Responses preserve Boxology domain-error tags and canonical contract output. The bridge CLI
   exposes auth presentations but never credential handles or material. Private agent diagnostics
   cross only on an explicit operator request and are never available to agent MCP tools.

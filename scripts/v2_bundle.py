@@ -55,6 +55,7 @@ HEALTH_SCHEMA_VERSION = 2
 SERVICE_LABEL = "com.crab.v2.runtime"
 SERVICE_LINKS = ("bin", "agents", "bridges", "libexec")
 DEFAULT_READINESS_TIMEOUT_SECONDS = 30.0
+STATUS_HEALTH_TIMEOUT_SECONDS = 10.0
 MAX_ENVIRONMENT_FILE_BYTES = 1024 * 1024
 
 
@@ -101,6 +102,7 @@ def run(
     *,
     cwd: Path,
     capture: bool = False,
+    timeout_seconds: float | None = None,
 ) -> subprocess.CompletedProcess[str]:
     try:
         result = subprocess.run(
@@ -110,7 +112,12 @@ def run(
             text=True,
             stdout=subprocess.PIPE if capture else None,
             stderr=subprocess.PIPE if capture else None,
+            timeout=timeout_seconds,
         )
+    except subprocess.TimeoutExpired as error:
+        raise BundleError(
+            f"{Path(command[0]).name} timed out after {timeout_seconds:g} seconds"
+        ) from error
     except OSError as error:
         raise BundleError(f"could not execute {command[0]}: {error}") from error
     if result.returncode != 0:
@@ -1218,7 +1225,9 @@ def parse_runtime_health(raw: str) -> dict[str, Any]:
     return report
 
 
-def production_runtime_health(paths: ServicePaths) -> dict[str, Any]:
+def production_runtime_health(
+    paths: ServicePaths, timeout_seconds: float
+) -> dict[str, Any]:
     result = run(
         (
             str(paths.root / "bin" / "crab-v2-health"),
@@ -1229,11 +1238,12 @@ def production_runtime_health(paths: ServicePaths) -> dict[str, Any]:
         ),
         cwd=paths.root,
         capture=True,
+        timeout_seconds=timeout_seconds,
     )
     return parse_runtime_health(result.stdout)
 
 
-RuntimeHealthProbe = Callable[[ServicePaths], dict[str, Any]]
+RuntimeHealthProbe = Callable[[ServicePaths, float], dict[str, Any]]
 
 
 def production_readiness(
@@ -1256,7 +1266,8 @@ def production_readiness(
                         + ", ".join(str(pid) for pid in processes)
                     )
                 verify_bundle(paths.current)
-                topology = health(paths)
+                remaining = max(0.0, deadline - time.monotonic())
+                topology = health(paths, remaining)
                 if topology["runtime"]["processId"] != state.pid:
                     raise BundleError(
                         "runtime health attestation does not match launchd process"
@@ -1272,9 +1283,10 @@ def production_readiness(
                 last_error = str(error)
         elif state.loaded:
             last_error = "launchd job is loaded but not running"
-        if time.monotonic() >= deadline:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
             raise BundleError(f"runtime readiness failed: {last_error}")
-        time.sleep(0.2)
+        time.sleep(min(0.2, remaining))
 
 
 ReadinessProbe = Callable[[ServicePaths, LaunchdController, float], int]
@@ -1431,7 +1443,7 @@ def service_status(
     runtime_pid_matches = False
     if state.running and state.pid is not None and bundle_verified:
         try:
-            topology = health(paths)
+            topology = health(paths, STATUS_HEALTH_TIMEOUT_SECONDS)
             ipc_ready = True
             runtime_pid_matches = topology["runtime"]["processId"] == state.pid
             if not runtime_pid_matches:

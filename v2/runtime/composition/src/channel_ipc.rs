@@ -7,6 +7,7 @@ use std::{
     io::{self, Read as _, Write as _},
     os::unix::fs::{FileTypeExt as _, OpenOptionsExt as _, PermissionsExt as _},
     path::{Path, PathBuf},
+    time::Duration,
 };
 
 use agent_host_contract::{
@@ -52,6 +53,7 @@ const PROTOCOL_VERSION: u16 = 1;
 const MAX_REQUEST_BYTES: usize = 2 * 1024 * 1024;
 const MAX_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
 const MAX_JSON_DEPTH: usize = 128;
+const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 const SOCKET_FILE: &str = "channel-ipc.sock";
 const TOKEN_FILE: &str = "channel-ipc.token";
 
@@ -165,6 +167,8 @@ impl From<io::Error> for ChannelIpcStartupError {
 pub enum ChannelIpcClientError {
     /// A filesystem or socket operation failed.
     Io(io::Error),
+    /// The complete connect/write/read exchange exceeded its deadline.
+    Timeout,
     /// The peer did not speak the exact supported protocol.
     Protocol(&'static str),
     /// Crab rejected the authenticated capability call.
@@ -180,6 +184,7 @@ impl fmt::Display for ChannelIpcClientError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Io(error) => write!(formatter, "local IPC failed: {error}"),
+            Self::Timeout => formatter.write_str("local IPC request timed out"),
             Self::Protocol(stage) => {
                 write!(formatter, "local IPC protocol violation: {stage}")
             }
@@ -208,6 +213,7 @@ impl From<io::Error> for ChannelIpcClientError {
 pub struct ChannelIpcClient {
     paths: ChannelIpcPaths,
     authentication: String,
+    request_timeout: Duration,
 }
 
 impl ChannelIpcClient {
@@ -223,7 +229,15 @@ impl ChannelIpcClient {
         Ok(Self {
             paths,
             authentication,
+            request_timeout: DEFAULT_REQUEST_TIMEOUT,
         })
+    }
+
+    /// Select a different complete exchange deadline for a bounded host or test.
+    #[must_use]
+    pub fn with_request_timeout(mut self, request_timeout: Duration) -> Self {
+        self.request_timeout = request_timeout;
+        self
     }
 
     /// Idempotently create, reuse or recover one native-channel attachment.
@@ -686,11 +700,9 @@ impl ChannelIpcClient {
         if request.len() > MAX_REQUEST_BYTES {
             return Err(ChannelIpcClientError::Protocol("request too large"));
         }
-        let mut stream = UnixStream::connect(&self.paths.socket).await?;
-        stream.write_all(&request).await?;
-        stream.write_all(b"\n").await?;
-        stream.flush().await?;
-        let response = read_frame(&mut BufReader::new(stream), MAX_RESPONSE_BYTES).await?;
+        let response = tokio::time::timeout(self.request_timeout, self.exchange(&request))
+            .await
+            .map_err(|_| ChannelIpcClientError::Timeout)??;
         let response: WireResponse = serde_json::from_slice(&response)
             .map_err(|_| ChannelIpcClientError::Protocol("response decode"))?;
         if response.protocol_version != PROTOCOL_VERSION || response.request_id != request_id {
@@ -716,6 +728,14 @@ impl ChannelIpcClient {
                 code: error.code,
             }),
         }
+    }
+
+    async fn exchange(&self, request: &[u8]) -> io::Result<Vec<u8>> {
+        let mut stream = UnixStream::connect(&self.paths.socket).await?;
+        stream.write_all(request).await?;
+        stream.write_all(b"\n").await?;
+        stream.flush().await?;
+        read_frame(&mut BufReader::new(stream), MAX_RESPONSE_BYTES).await
     }
 }
 
@@ -1537,7 +1557,13 @@ fn constant_time_equal(left: &[u8], right: &[u8]) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{WireRequest, constant_time_equal};
+    use std::{os::unix::fs::PermissionsExt as _, time::Duration};
+
+    use tokio::net::UnixListener;
+
+    use super::{
+        ChannelIpcClient, ChannelIpcClientError, ChannelIpcPaths, WireRequest, constant_time_equal,
+    };
 
     #[test]
     fn envelope_is_strict_and_authentication_comparison_is_exact() {
@@ -1554,5 +1580,28 @@ mod tests {
         assert!(constant_time_equal(b"same", b"same"));
         assert!(!constant_time_equal(b"same", b"diff"));
         assert!(!constant_time_equal(b"same", b"short"));
+    }
+
+    #[tokio::test]
+    async fn client_times_out_when_a_peer_accepts_without_replying() {
+        let directory = tempfile::tempdir().expect("temporary state directory");
+        let paths = ChannelIpcPaths::for_state_directory(directory.path()).expect("paths resolve");
+        std::fs::write(paths.token(), "a".repeat(64)).expect("token writes");
+        std::fs::set_permissions(paths.token(), std::fs::Permissions::from_mode(0o600))
+            .expect("token is owner-only");
+        let listener = UnixListener::bind(paths.socket()).expect("test listener binds");
+        let peer = tokio::spawn(async move {
+            let (_stream, _) = listener.accept().await.expect("client connects");
+            std::future::pending::<()>().await;
+        });
+        let client = ChannelIpcClient::from_state_directory(directory.path())
+            .expect("client opens")
+            .with_request_timeout(Duration::from_millis(20));
+
+        assert!(matches!(
+            client.runtime_status().await,
+            Err(ChannelIpcClientError::Timeout)
+        ));
+        peer.abort();
     }
 }

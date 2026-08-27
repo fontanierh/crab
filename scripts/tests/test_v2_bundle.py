@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -143,6 +144,21 @@ class FakeLaunchd:
 
 
 class BundleVerifierTests(unittest.TestCase):
+    @mock.patch(
+        "scripts.v2_bundle.subprocess.run",
+        side_effect=subprocess.TimeoutExpired(cmd=["health-probe"], timeout=0.25),
+    )
+    def test_process_timeout_becomes_a_safe_bundle_error(self, _run: mock.Mock) -> None:
+        with self.assertRaisesRegex(
+            BundleError, "health-probe timed out after 0.25 seconds"
+        ):
+            bundle_tool.run(
+                ("health-probe",),
+                cwd=Path("/"),
+                capture=True,
+                timeout_seconds=0.25,
+            )
+
     def test_manifest_round_trip(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             bundle = fixture_bundle(Path(raw))
@@ -336,7 +352,7 @@ class ServiceDeploymentTests(unittest.TestCase):
                 paths,
                 launchd,
                 timeout_seconds=0,
-                health=lambda _paths: runtime_health_report(
+                health=lambda _paths, _timeout: runtime_health_report(
                     healthy=False,
                     needs_action=["authenticate bridge whatsapp"],
                     process_id=7000,
@@ -351,7 +367,7 @@ class ServiceDeploymentTests(unittest.TestCase):
                     paths,
                     launchd,
                     timeout_seconds=0,
-                    health=lambda _paths: runtime_health_report(process_id=9999),
+                    health=lambda _paths, _timeout: runtime_health_report(process_id=9999),
                 )
 
             with self.assertRaisesRegex(
@@ -361,13 +377,45 @@ class ServiceDeploymentTests(unittest.TestCase):
                     paths,
                     launchd,
                     timeout_seconds=0,
-                    health=lambda _paths: runtime_health_report(
+                    health=lambda _paths, _timeout: runtime_health_report(
                         ready=False,
                         healthy=False,
                         errors=["configured channel primary is missing"],
                         process_id=7000,
                     ),
                 )
+
+    @mock.patch("scripts.v2_bundle.runtime_processes", return_value=[7000])
+    def test_readiness_passes_only_its_remaining_budget_to_health(
+        self, _processes: mock.Mock
+    ) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            parent = Path(raw)
+            bundle = fixture_bundle(parent)
+            root = parent / "service"
+            root.mkdir()
+            paths = service_paths(root, launch_agents=parent / "LaunchAgents")
+            paths.current.symlink_to(bundle)
+            launchd = FakeLaunchd()
+            launchd.loaded = True
+            budgets: list[float] = []
+
+            def unavailable(_paths: object, timeout_seconds: float) -> dict[str, object]:
+                budgets.append(timeout_seconds)
+                raise BundleError("health unavailable")
+
+            with self.assertRaisesRegex(
+                BundleError, "runtime readiness failed: health unavailable"
+            ):
+                bundle_tool.production_readiness(
+                    paths,
+                    launchd,
+                    timeout_seconds=0.01,
+                    health=unavailable,
+                )
+            self.assertTrue(budgets)
+            self.assertTrue(all(0.0 <= budget <= 0.01 for budget in budgets))
+            self.assertEqual(budgets, sorted(budgets, reverse=True))
 
     @mock.patch("scripts.v2_bundle.require_runtime_node")
     def test_first_install_selects_the_codex_bundle_preset(
@@ -466,25 +514,30 @@ class ServiceDeploymentTests(unittest.TestCase):
             )
             self.assertEqual(json.loads(paths.deployment.read_text()), result)
 
+            status_timeouts: list[float] = []
             status = service_status(
                 root,
                 launchd=launchd,
                 launch_agents=launch_agents,
                 processes=lambda: [launchd.pid],
-                health=lambda _paths: runtime_health_report(),
+                health=lambda _paths, timeout: status_timeouts.append(timeout)
+                or runtime_health_report(),
             )
             self.assertTrue(status["healthy"])
             self.assertTrue(status["ipcReady"])
             self.assertTrue(status["topologyReady"])
             self.assertTrue(status["topologyHealthy"])
             self.assertNotIn("EnvironmentVariables", json.dumps(status))
+            self.assertEqual(
+                status_timeouts, [bundle_tool.STATUS_HEALTH_TIMEOUT_SECONDS]
+            )
 
             degraded = service_status(
                 root,
                 launchd=launchd,
                 launch_agents=launch_agents,
                 processes=lambda: [launchd.pid],
-                health=lambda _paths: runtime_health_report(
+                health=lambda _paths, _timeout: runtime_health_report(
                     healthy=False,
                     needs_action=["authenticate bridge whatsapp"],
                 ),
@@ -502,7 +555,7 @@ class ServiceDeploymentTests(unittest.TestCase):
                 launchd=launchd,
                 launch_agents=launch_agents,
                 processes=lambda: [launchd.pid],
-                health=lambda _paths: runtime_health_report(process_id=9999),
+                health=lambda _paths, _timeout: runtime_health_report(process_id=9999),
             )
             self.assertTrue(wrong_process["ipcReady"])
             self.assertFalse(wrong_process["topologyReady"])
