@@ -8,8 +8,8 @@ use crate::{
     AgentDiagnosticKind, AgentDiagnosticPage, AgentHostError, AgentInputMode, AgentLifecycle,
     AgentSession, AgentSessionCatalog, AgentSessionSummary, AuthorityAttestation,
     CompactionReporting, EventPage, FilesystemAuthority, NetworkAuthority, PermissionAuthority,
-    PermissionDecision, PermissionResolution, PromptAccepted, PromptDisposition, RootAuthority,
-    SandboxAuthority, SessionStatus, SteeringSupport,
+    PermissionDecision, PermissionResolution, PromptAccepted, PromptDisposition, PromptRequest,
+    RootAuthority, SandboxAuthority, SessionStatus, SteeringSupport,
 };
 
 const SCHEMA_VERSION: i64 = 3;
@@ -29,6 +29,11 @@ pub(crate) struct RecoverableSession {
     pub(crate) working_directory: String,
     pub(crate) metadata_json: String,
     pub(crate) protocol_profile: AcpProtocolProfile,
+}
+
+pub(crate) struct QueuedPrompt {
+    pub(crate) request: PromptRequest,
+    pub(crate) run_id: String,
 }
 
 impl AgentStore {
@@ -521,6 +526,44 @@ impl AgentStore {
         let accepted = existing.accepted(&request.session_id)?;
         transaction.commit().map_err(storage_error)?;
         Ok(Some(accepted))
+    }
+
+    pub(crate) fn next_queued_prompt(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<QueuedPrompt>, AgentHostError> {
+        let connection = self.lock()?;
+        let row = connection
+            .query_row(
+                "SELECT client_turn_id, run_id, mode, native_prompt_json
+                 FROM prompts
+                 WHERE session_id = ?1 AND state = 'Queued'
+                 ORDER BY rowid ASC
+                 LIMIT 1",
+                params![session_id],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(storage_error)?;
+        row.map(|(client_turn_id, run_id, mode, native_prompt_json)| {
+            Ok(QueuedPrompt {
+                request: PromptRequest {
+                    session_id: session_id.to_owned(),
+                    client_turn_id,
+                    mode: parse_input_mode(&mode)?,
+                    native_prompt_json,
+                },
+                run_id,
+            })
+        })
+        .transpose()
     }
 
     pub(crate) fn activate_queued_run(
@@ -1407,6 +1450,15 @@ fn input_mode_tag(value: &AgentInputMode) -> Result<&'static str, AgentHostError
     }
 }
 
+fn parse_input_mode(value: &str) -> Result<AgentInputMode, AgentHostError> {
+    match value {
+        "Queue" => Ok(AgentInputMode::Queue),
+        "Steer" => Ok(AgentInputMode::Steer),
+        "InterruptAndQueue" => Ok(AgentInputMode::InterruptAndQueue),
+        _ => Err(AgentHostError::StorageUnavailable),
+    }
+}
+
 fn disposition_tag(value: &PromptDisposition) -> Result<&'static str, AgentHostError> {
     match value {
         PromptDisposition::StartedForegroundWork => Ok("StartedForegroundWork"),
@@ -1526,7 +1578,10 @@ fn storage_error(_: rusqlite::Error) -> AgentHostError {
 mod tests {
     use rusqlite::Connection;
 
-    use crate::{AcpProtocolProfile, AgentDiagnosticKind, AgentLifecycle};
+    use crate::{
+        AcpProtocolProfile, AgentDiagnosticKind, AgentInputMode, AgentLifecycle, PromptDisposition,
+        PromptRequest,
+    };
 
     use super::{
         AgentStore, MAX_DIAGNOSTIC_MESSAGE_BYTES, SCHEMA_VERSION, authority, migrate_v0_to_v1,
@@ -1665,5 +1720,63 @@ mod tests {
             page.diagnostics[0].message,
             "runtime reopened before the ACP adapter detached"
         );
+    }
+
+    #[test]
+    fn queued_prompts_are_loaded_fifo_from_durable_state() {
+        let store = AgentStore::open_in_memory().expect("store opens");
+        store
+            .create_starting_session(
+                "session-1",
+                "agent-1",
+                "/workspace",
+                "{}",
+                &AcpProtocolProfile::V2Draft,
+                &authority(1, "{}".into()),
+                1,
+            )
+            .expect("session starts");
+        store
+            .set_lifecycle("session-1", &AgentLifecycle::Ready, 2)
+            .expect("session becomes ready");
+
+        for (client_turn_id, run_id, text) in
+            [("turn-1", "run-1", "one"), ("turn-2", "run-2", "two")]
+        {
+            store
+                .accept_prompt(
+                    &PromptRequest {
+                        session_id: "session-1".into(),
+                        client_turn_id: client_turn_id.into(),
+                        mode: AgentInputMode::Queue,
+                        native_prompt_json: format!(r#"[{{"type":"text","text":"{text}"}}]"#),
+                    },
+                    run_id,
+                    &PromptDisposition::QueuedForTurnBoundary,
+                    false,
+                    None,
+                    3,
+                )
+                .expect("queued prompt commits");
+        }
+
+        let first = store
+            .next_queued_prompt("session-1")
+            .expect("queue reads")
+            .expect("first prompt exists");
+        assert_eq!(first.run_id, "run-1");
+        assert_eq!(first.request.client_turn_id, "turn-1");
+        assert!(
+            store
+                .cancel_queued_run("session-1", "run-1")
+                .expect("first cancels")
+        );
+
+        let second = store
+            .next_queued_prompt("session-1")
+            .expect("queue reads")
+            .expect("second prompt exists");
+        assert_eq!(second.run_id, "run-2");
+        assert_eq!(second.request.client_turn_id, "turn-2");
     }
 }

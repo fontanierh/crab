@@ -1,9 +1,4 @@
-use std::{
-    collections::{BTreeMap, VecDeque},
-    path::PathBuf,
-    sync::Arc,
-    time::Duration,
-};
+use std::{collections::BTreeMap, path::PathBuf, sync::Arc, time::Duration};
 
 use agent_client_protocol::{
     AcpAgent, Agent, ConnectionTo, JsonRpcRequest, JsonRpcResponse, LineDirection, Responder,
@@ -144,14 +139,8 @@ impl ActorSignalReceiver {
     }
 }
 
-struct QueuedPrompt {
-    request: PromptRequest,
-    run_id: String,
-}
-
 struct ActorState {
     active_run_id: Option<String>,
-    queued: VecDeque<QueuedPrompt>,
 }
 
 const DETACH_CANCEL_TIMEOUT: Duration = Duration::from_secs(5);
@@ -884,7 +873,6 @@ async fn run_v1_loop(
 ) -> Result<(), AgentHostError> {
     let mut state = ActorState {
         active_run_id: None,
-        queued: VecDeque::new(),
     };
     if let Some(bootstrap) = bootstrap_prompt.filter(|prompt| !prompt.is_empty()) {
         let (reply, _) = oneshot::channel();
@@ -990,7 +978,6 @@ async fn run_v2_loop(
 ) -> Result<(), AgentHostError> {
     let mut state = ActorState {
         active_run_id: None,
-        queued: VecDeque::new(),
     };
     if let Some(bootstrap) = bootstrap_prompt.filter(|prompt| !prompt.is_empty()) {
         let (reply, _) = oneshot::channel();
@@ -1154,7 +1141,7 @@ async fn accept_v1_prompt_inner(
         )?;
         let run_id = new_run_id();
         let disposition = PromptDisposition::CancelRequestedThenQueued;
-        let (accepted, inserted) = store.accept_prompt(
+        let (accepted, _) = store.accept_prompt(
             &request,
             &run_id,
             &disposition,
@@ -1162,9 +1149,6 @@ async fn accept_v1_prompt_inner(
             Some((&interrupted_run_id, cancellation.recorded_at_ms)),
             clock()?,
         )?;
-        if inserted {
-            state.queued.push_back(QueuedPrompt { request, run_id });
-        }
         return Ok(accepted);
     }
     if matches!(request.mode, AgentInputMode::Steer) && state.active_run_id.is_some() {
@@ -1228,9 +1212,7 @@ async fn accept_v1_prompt_inner(
     if !inserted {
         return Ok(accepted);
     }
-    if busy {
-        state.queued.push_back(QueuedPrompt { request, run_id });
-    } else {
+    if !busy {
         state.active_run_id = Some(run_id.clone());
         dispatch_v1_prompt(
             connection,
@@ -1300,7 +1282,7 @@ fn accept_v2_prompt_inner(
         )?;
         let run_id = new_run_id();
         let disposition = PromptDisposition::CancelRequestedThenQueued;
-        let (accepted, inserted) = store.accept_prompt(
+        let (accepted, _) = store.accept_prompt(
             &request,
             &run_id,
             &disposition,
@@ -1308,9 +1290,6 @@ fn accept_v2_prompt_inner(
             Some((&interrupted_run_id, cancellation.recorded_at_ms)),
             clock()?,
         )?;
-        if inserted {
-            state.queued.push_back(QueuedPrompt { request, run_id });
-        }
         return Ok(accepted);
     }
     let (run_id, disposition, activate, dispatch) = match (&request.mode, busy) {
@@ -1347,9 +1326,7 @@ fn accept_v2_prompt_inner(
     if !inserted {
         return Ok(accepted);
     }
-    if !dispatch {
-        state.queued.push_back(QueuedPrompt { request, run_id });
-    } else {
+    if dispatch {
         if activate {
             state.active_run_id = Some(run_id.clone());
         }
@@ -1375,7 +1352,7 @@ fn start_next_v1(
     state: &mut ActorState,
     signals: &ActorSignalSender,
 ) -> Result<(), AgentHostError> {
-    let Some(next) = state.queued.pop_front() else {
+    let Some(next) = store.next_queued_prompt(session_id)? else {
         return Ok(());
     };
     let content = parse_v1_prompt(&next.request.native_prompt_json)?;
@@ -1400,7 +1377,7 @@ fn start_next_v2(
     state: &mut ActorState,
     signals: &ActorSignalSender,
 ) -> Result<(), AgentHostError> {
-    let Some(next) = state.queued.pop_front() else {
+    let Some(next) = store.next_queued_prompt(session_id)? else {
         return Ok(());
     };
     let content = parse_v2_prompt(&next.request.native_prompt_json)?;
@@ -1477,14 +1454,7 @@ fn cancel_v1(
         connection
             .send_notification(v1::CancelNotification::new(native_session_id.to_owned()))
             .map_err(|_| AgentHostError::TransportFailed)?;
-    } else if let Some(index) = state
-        .queued
-        .iter()
-        .position(|queued| queued.run_id == run_id)
-    {
-        state.queued.remove(index);
-        store.cancel_queued_run(session_id, run_id)?;
-    } else {
+    } else if !store.cancel_queued_run(session_id, run_id)? {
         return Err(AgentHostError::UnknownRun);
     }
     Ok(OperationReceipt {
@@ -1509,14 +1479,7 @@ fn cancel_v2(
                 native_session_id.to_owned(),
             ))
             .map_err(|_| AgentHostError::TransportFailed)?;
-    } else if let Some(index) = state
-        .queued
-        .iter()
-        .position(|queued| queued.run_id == run_id)
-    {
-        state.queued.remove(index);
-        store.cancel_queued_run(session_id, run_id)?;
-    } else {
+    } else if !store.cancel_queued_run(session_id, run_id)? {
         return Err(AgentHostError::UnknownRun);
     }
     Ok(OperationReceipt {
