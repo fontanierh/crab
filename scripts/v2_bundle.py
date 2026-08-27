@@ -26,7 +26,8 @@ from typing import Any, Callable, Iterator, Mapping, Protocol, Sequence
 SCHEMA_VERSION = 1
 MINIMUM_NODE_MAJOR = 22
 CLAUDE_ADAPTER_VERSION = "0.70.0"
-RUNTIME_BINARIES = (
+CODEX_ADAPTER_VERSION = "1.6.2"
+PUBLIC_HELP_BINARIES = (
     "crab-v2",
     "crab-v2-acp-channel",
     "crab-v2-bridge",
@@ -34,9 +35,17 @@ RUNTIME_BINARIES = (
     "crab-v2-sub-agent",
     "crab-v2-sub-agent-mcp",
     "crab-v2-trigger",
-    "crab-v2-claude-authority-probe",
 )
-PUBLIC_HELP_BINARIES = RUNTIME_BINARIES[:-1]
+AUTHORITY_PROBE_BINARIES = (
+    "crab-v2-claude-authority-probe",
+    "crab-v2-codex-authority-probe",
+)
+RUNTIME_BINARIES = PUBLIC_HELP_BINARIES + AUTHORITY_PROBE_BINARIES
+BUNDLE_AGENT_PRESETS = {
+    "claude-opus": "runtime.bundle.example.json",
+    "codex": "runtime.bundle.codex.example.json",
+}
+DEFAULT_BUNDLE_AGENT_PRESET = "claude-opus"
 MANIFEST_NAME = "bundle-manifest.json"
 SERVICE_SCHEMA_VERSION = 1
 SERVICE_LABEL = "com.crab.v2.runtime"
@@ -214,6 +223,8 @@ def build_artifacts(root: Path) -> Path:
             "agent-host-implementation",
             "--bin",
             "crab-v2-claude-authority-probe",
+            "--bin",
+            "crab-v2-codex-authority-probe",
         ),
         cwd=v2,
     )
@@ -229,6 +240,8 @@ def stage_bundle(root: Path, staging: Path, artifacts: Path) -> None:
 
     claude_source = root / "v2" / "runtime" / "agents" / "claude"
     install_production_package(claude_source, staging / "agents" / "claude")
+    codex_source = root / "v2" / "runtime" / "agents" / "codex"
+    install_production_package(codex_source, staging / "agents" / "codex")
 
     whatsapp_source = root / "v2" / "bridges" / "whatsapp"
     whatsapp = staging / "bridges" / "whatsapp"
@@ -239,6 +252,10 @@ def stage_bundle(root: Path, staging: Path, artifacts: Path) -> None:
     copy_file(
         runtime / "runtime.bundle.example.json",
         staging / "config" / "runtime.bundle.example.json",
+    )
+    copy_file(
+        runtime / "runtime.bundle.codex.example.json",
+        staging / "config" / "runtime.bundle.codex.example.json",
     )
     copy_file(
         runtime / "runtime.example.json",
@@ -455,10 +472,27 @@ def verify_bundle(root: Path) -> dict[str, Any]:
 def smoke_test(root: Path) -> None:
     for binary in PUBLIC_HELP_BINARIES:
         run((str(root / "bin" / binary), "--help"), cwd=root, capture=True)
-    adapter = root / "agents" / "claude" / "node_modules" / ".bin" / "claude-agent-acp"
-    version = run((str(adapter), "--version"), cwd=root, capture=True).stdout.strip()
-    if version != CLAUDE_ADAPTER_VERSION:
-        raise BundleError(f"Claude ACP adapter version is not {CLAUDE_ADAPTER_VERSION}")
+    adapters = (
+        (
+            "Claude",
+            root
+            / "agents"
+            / "claude"
+            / "node_modules"
+            / ".bin"
+            / "claude-agent-acp",
+            CLAUDE_ADAPTER_VERSION,
+        ),
+        (
+            "Codex",
+            root / "agents" / "codex" / "node_modules" / ".bin" / "codex-acp",
+            f"@agentclientprotocol/codex-acp {CODEX_ADAPTER_VERSION}",
+        ),
+    )
+    for name, adapter, expected_version in adapters:
+        version = run((str(adapter), "--version"), cwd=root, capture=True).stdout.strip()
+        if version != expected_version:
+            raise BundleError(f"{name} ACP adapter version is not {expected_version}")
     run(
         (
             "node",
@@ -469,18 +503,28 @@ def smoke_test(root: Path) -> None:
         cwd=root / "bridges" / "whatsapp",
         capture=True,
     )
-    config_path = root / "config" / "runtime.bundle.example.json"
+    for filename in BUNDLE_AGENT_PRESETS.values():
+        smoke_test_config(root, root / "config" / filename)
+
+
+def smoke_test_config(root: Path, config_path: Path) -> None:
     try:
         config = json.loads(config_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as error:
-        raise BundleError("bundle runtime config is invalid") from error
-    paths = (
-        config["agents"][0]["executable"],
-        config["agents"][0]["authorityProbe"]["executable"],
-        *(server["executable"] for server in config["agents"][0]["sessionMcpServers"]),
-        config["bridges"][0]["executable"],
-        config["bridges"][0]["workingDirectory"],
-    )
+        agents = config["agents"]
+        bridges = config["bridges"]
+        paths = [
+            *(agent["executable"] for agent in agents),
+            *(agent["authorityProbe"]["executable"] for agent in agents),
+            *(
+                server["executable"]
+                for agent in agents
+                for server in agent["sessionMcpServers"]
+            ),
+            *(bridge["executable"] for bridge in bridges),
+            *(bridge["workingDirectory"] for bridge in bridges),
+        ]
+    except (KeyError, OSError, TypeError, json.JSONDecodeError) as error:
+        raise BundleError(f"bundle runtime config is invalid: {config_path.name}") from error
     for relative in paths:
         resolved = (config_path.parent / relative).resolve()
         try:
@@ -768,8 +812,11 @@ def materialize_config(
     release: Path,
     paths: ServicePaths,
     workspace: Path | None,
+    agent_preset: str | None,
 ) -> bool:
     if paths.config.exists() or paths.config.is_symlink():
+        if agent_preset is not None:
+            raise BundleError("--agent is only valid for the first deployment")
         config = load_json_object(paths.config, "runtime config")
         if workspace is not None:
             wanted = workspace.expanduser().resolve()
@@ -787,8 +834,14 @@ def materialize_config(
     workspace = workspace.expanduser().resolve()
     if not workspace.is_dir():
         raise BundleError(f"workspace is not an existing directory: {workspace}")
+    selected_preset = agent_preset or DEFAULT_BUNDLE_AGENT_PRESET
+    try:
+        preset_filename = BUNDLE_AGENT_PRESETS[selected_preset]
+    except KeyError as error:
+        raise BundleError(f"unknown bundled agent preset: {selected_preset}") from error
     example = load_json_object(
-        release / "config" / "runtime.bundle.example.json", "bundle runtime config"
+        release / "config" / preset_filename,
+        f"bundle {selected_preset} runtime config",
     )
     channels = example.get("channels")
     if not isinstance(channels, list) or not channels:
@@ -1134,6 +1187,7 @@ def deploy_service(
     *,
     workspace: Path | None,
     launchd: LaunchdController,
+    agent_preset: str | None = None,
     launch_agents: Path | None = None,
     environ: Mapping[str, str] = os.environ,
     timeout_seconds: float = DEFAULT_READINESS_TIMEOUT_SECONDS,
@@ -1160,7 +1214,9 @@ def deploy_service(
         created_config = False
         created_links: list[Path] = []
         try:
-            created_config = materialize_config(release, paths, workspace)
+            created_config = materialize_config(
+                release, paths, workspace, agent_preset
+            )
             config = load_json_object(paths.config, "runtime config")
             environment = deployment_environment(
                 environment_names(config),
@@ -1330,6 +1386,14 @@ def parser() -> argparse.ArgumentParser:
         help="agent workspace; required only for the first deployment",
     )
     deploy.add_argument(
+        "--agent",
+        choices=tuple(BUNDLE_AGENT_PRESETS),
+        help=(
+            "bundled agent preset for the first deployment; "
+            f"defaults to {DEFAULT_BUNDLE_AGENT_PRESET}"
+        ),
+    )
+    deploy.add_argument(
         "--environment-file",
         type=Path,
         help="owner-only dotenv file; only config-declared names are captured",
@@ -1372,6 +1436,7 @@ def main(arguments: Sequence[str] | None = None) -> int:
                 options.root,
                 workspace=options.workspace,
                 launchd=SystemLaunchd(),
+                agent_preset=options.agent,
                 environ=merged_deployment_environment(
                     os.environ, options.environment_file
                 ),

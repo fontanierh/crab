@@ -108,16 +108,18 @@ cp runtime/runtime.codex.example.json runtime/runtime.json
 ### Clean-machine bundle
 
 For deployment, use the [verified runtime bundle](runtime-bundle.md) instead of rebuilding and
-installing packages on the target. Its bundle-relative preset keeps the same exact Claude policy,
-verifies the vendored adapter without `npx`, and registers the bundled WhatsApp bridge:
+installing packages on the target. Its bundle-relative presets keep the same exact Claude and Codex
+policies, verify either vendored adapter without `npx`, and register the bundled WhatsApp bridge:
 
 ```sh
 make v2-bundle
 python3 v2/dist/crab-v2-*/libexec/v2_bundle.py verify v2/dist/crab-v2-*
 ```
 
-The target needs macOS, Node 22+, Claude authentication, and the documented unrestricted-host
-authority. It does not need Rust, npm, network package access, or a runtime installation step.
+The target needs macOS, Node 22+, authentication for the selected agent, and the documented
+unrestricted-host authority. First deployment defaults to Claude; pass `--agent codex` to select
+the vendored Codex adapter. It does not need Rust, npm, network package access, or a runtime
+installation step.
 
 ## Trigger ingress
 

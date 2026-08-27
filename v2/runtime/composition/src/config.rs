@@ -799,4 +799,60 @@ mod tests {
         assert_eq!(bridge.ingress_mode, super::BridgeIngressConfig::Queue);
         assert!(bridge.desired_running);
     }
+
+    #[test]
+    fn codex_bundle_preset_uses_only_bundle_relative_runtime_commands() {
+        let runtime = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+        let config = RuntimeConfig::load(runtime.join("runtime.bundle.codex.example.json"))
+            .expect("committed Codex bundle preset loads");
+        let agent = &config.agents[0];
+        assert_eq!(
+            agent.executable,
+            runtime.join("../agents/codex/node_modules/.bin/codex-acp")
+        );
+        assert_eq!(agent.arguments, Vec::<String>::new());
+        assert_eq!(agent.environment_from, ["PATH"]);
+        assert_eq!(agent.protocol, super::ProtocolConfig::V1);
+        assert_eq!(agent.steering_extension, None);
+        assert_eq!(
+            agent.session_options.get("mode").map(String::as_str),
+            Some("agent-full-access")
+        );
+        assert_eq!(
+            agent.session_options.get("model").map(String::as_str),
+            Some("gpt-5.6-sol")
+        );
+        assert_eq!(
+            agent
+                .session_options
+                .get("reasoning_effort")
+                .map(String::as_str),
+            Some("high")
+        );
+        assert_eq!(
+            agent.authority_probe.executable,
+            runtime.join("../bin/crab-v2-codex-authority-probe")
+        );
+        assert_eq!(
+            agent.authority_probe.arguments,
+            [
+                "--adapter-relative-to-probe",
+                "../agents/codex/node_modules/.bin/codex-acp"
+            ]
+        );
+        assert_eq!(agent.session_mcp_servers.len(), 2);
+        assert_eq!(
+            agent.session_mcp_servers[0].executable,
+            runtime.join("../bin/crab-v2-sub-agent-mcp")
+        );
+        assert_eq!(
+            agent.session_mcp_servers[1].executable,
+            runtime.join("../bin/crab-v2-bridge-mcp")
+        );
+        assert_eq!(
+            config.bridges[0].ingress_mode,
+            super::BridgeIngressConfig::Queue
+        );
+        assert!(config.bridges[0].desired_running);
+    }
 }

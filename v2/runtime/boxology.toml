@@ -8,7 +8,9 @@ owned = [
   "BUNDLE_README.md",
   "runtime.example.json",
   "runtime.claude-opus.example.json",
+  "runtime.codex.example.json",
   "runtime.bundle.example.json",
+  "runtime.bundle.codex.example.json",
 ]
 
 [quality]

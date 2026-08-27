@@ -73,6 +73,11 @@ def deployable_bundle(parent: Path, commit: str, *, token: bool = False) -> Path
     (bundle / "config" / "runtime.bundle.example.json").write_text(
         json.dumps(config), encoding="utf-8"
     )
+    codex_config = json.loads(json.dumps(config))
+    codex_config["agents"][0]["agentId"] = "codex"
+    (bundle / "config" / "runtime.bundle.codex.example.json").write_text(
+        json.dumps(codex_config), encoding="utf-8"
+    )
     write_manifest(
         bundle,
         source={**SOURCE, "commit": commit},
@@ -249,6 +254,51 @@ class ServiceDeploymentTests(unittest.TestCase):
         return state.pid
 
     @mock.patch("scripts.v2_bundle.require_runtime_node")
+    def test_first_install_selects_the_codex_bundle_preset(
+        self, _node: mock.Mock
+    ) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            parent = Path(raw)
+            bundle = deployable_bundle(parent, "a" * 40)
+            root = parent / "service"
+            workspace = parent / "workspace"
+            workspace.mkdir()
+            launch_agents = parent / "LaunchAgents"
+            launchd = FakeLaunchd()
+
+            deploy_service(
+                bundle,
+                root,
+                workspace=workspace,
+                launchd=launchd,
+                agent_preset="codex",
+                launch_agents=launch_agents,
+                environ={"PATH": "/runtime/bin"},
+                readiness=self.ready,
+            )
+
+            config = json.loads(
+                service_paths(root, launch_agents=launch_agents).config.read_text()
+            )
+            self.assertEqual(config["agents"][0]["agentId"], "codex")
+            stops_before_rejected_update = launchd.stops
+
+            with self.assertRaisesRegex(
+                BundleError, "only valid for the first deployment"
+            ):
+                deploy_service(
+                    bundle,
+                    root,
+                    workspace=None,
+                    launchd=launchd,
+                    agent_preset="claude-opus",
+                    launch_agents=launch_agents,
+                    environ={"PATH": "/runtime/bin"},
+                    readiness=self.ready,
+                )
+            self.assertEqual(launchd.stops, stops_before_rejected_update)
+
+    @mock.patch("scripts.v2_bundle.require_runtime_node")
     def test_first_install_creates_one_verified_supervised_layout(
         self, _node: mock.Mock
     ) -> None:
@@ -279,6 +329,7 @@ class ServiceDeploymentTests(unittest.TestCase):
             for name in ("bin", "agents", "bridges", "libexec"):
                 self.assertEqual(os.readlink(root / name), f"current/{name}")
             config = json.loads(paths.config.read_text())
+            self.assertEqual(config["agents"][0]["agentId"], "test")
             self.assertEqual(
                 config["channels"][0]["workingDirectory"], str(workspace.resolve())
             )
@@ -536,16 +587,17 @@ class BundleBuildPolicyTests(unittest.TestCase):
                 "crab-v2-sub-agent-mcp",
                 "crab-v2-trigger",
                 "crab-v2-claude-authority-probe",
+                "crab-v2-codex-authority-probe",
             ),
         )
         self.assertNotIn("acp_fixture", RUNTIME_BINARIES)
         self.assertNotIn("bridge_fixture", RUNTIME_BINARIES)
 
-    def test_agent_package_and_lock_use_the_exact_adapter(self) -> None:
+    def test_agent_packages_and_locks_use_the_exact_adapters(self) -> None:
         root = Path(__file__).resolve().parents[2]
-        package_directory = root / "v2" / "runtime" / "agents" / "claude"
-        package = json.loads((package_directory / "package.json").read_text())
-        lock = json.loads((package_directory / "package-lock.json").read_text())
+        claude_directory = root / "v2" / "runtime" / "agents" / "claude"
+        package = json.loads((claude_directory / "package.json").read_text())
+        lock = json.loads((claude_directory / "package-lock.json").read_text())
         self.assertEqual(
             package["dependencies"]["@agentclientprotocol/claude-agent-acp"],
             "0.70.0",
@@ -554,6 +606,17 @@ class BundleBuildPolicyTests(unittest.TestCase):
             "node_modules/@agentclientprotocol/claude-agent-acp"
         ]
         self.assertEqual(resolved["version"], "0.70.0")
+        self.assertTrue(resolved["integrity"].startswith("sha512-"))
+
+        codex_directory = root / "v2" / "runtime" / "agents" / "codex"
+        package = json.loads((codex_directory / "package.json").read_text())
+        lock = json.loads((codex_directory / "package-lock.json").read_text())
+        self.assertEqual(
+            package["dependencies"]["@agentclientprotocol/codex-acp"],
+            "1.6.2",
+        )
+        resolved = lock["packages"]["node_modules/@agentclientprotocol/codex-acp"]
+        self.assertEqual(resolved["version"], "1.6.2")
         self.assertTrue(resolved["integrity"].startswith("sha512-"))
 
 

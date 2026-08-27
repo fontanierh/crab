@@ -1,0 +1,12 @@
+{
+  "name": "@crab/codex-acp-runtime",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Locked Codex ACP adapter used by the Crab v2 runtime bundle",
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "@agentclientprotocol/codex-acp": "1.6.2"
+  }
+}

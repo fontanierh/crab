@@ -112,11 +112,12 @@ interrupt as a separate explicit action.
   bindings/routes, exposes an owner-only authenticated local Boxology endpoint, and continuously
   drains every configured trigger lane. See the [startup contract](docs/runtime-startup.md) and
   [local transport contract](docs/channel-ipc.md).
-- `make v2-bundle` builds the complete locked release closure, vendors the Claude ACP adapter and
-  WhatsApp production dependencies, verifies every entry, and publishes atomically. The resulting
-  directory needs no Rust, npm, `npx`, install, or package fetch at runtime. Its bundled tool is the
-  one atomic install/update recipe: immutable releases, a single launchd-owned runtime,
-  authenticated readiness and verified rollback. See the [rendered bundle
+- `make v2-bundle` builds the complete locked release closure, vendors the Claude and Codex ACP
+  adapters plus WhatsApp production dependencies, verifies every entry, and publishes atomically.
+  The resulting directory needs no Rust, npm, `npx`, install, or package fetch at runtime. Its
+  bundled tool selects Claude or Codex on first install and remains the one atomic update recipe:
+  immutable releases, a single launchd-owned runtime, authenticated readiness and verified
+  rollback. See the [rendered bundle
   flow](docs/runtime-bundle-flow.png), [deployment flow](docs/runtime-deploy-flow.png), and [release
   recipe](docs/runtime-bundle.md).
 - The first native UI ships in the Crab fork of T3 Code. Its built-in provider runs across web,
