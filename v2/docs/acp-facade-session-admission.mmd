@@ -1,0 +1,27 @@
+flowchart TB
+    load["ACP session/new or session/load"] --> validate{"Valid ID and workspace?"}
+    validate -- no --> invalid["Reject invalid params"]
+    validate -- yes --> key["Acquire weak per-session lock"]
+    key --> existing{"Already attached?"}
+    existing -- "yes, same cwd" --> reuse["Reuse binding and event pump"]
+    existing -- "yes, changed cwd" --> invalid
+    existing -- no --> slot{"Session slot available?"}
+    slot -- no --> busy["Reject fail-fast"]
+    slot -- yes --> attach["Attach binding and replay"]
+    attach --> retain["Store session + owned permit"]
+    retain --> pump["Start exactly one event pump"]
+    pump --> close["ACP connection closes"]
+    close --> release["Drop sessions, pumps and permits"]
+    key -. "idle weak entries" .-> prune["Pruned on next attachment"]
+
+    classDef request fill:#e7f5ff,stroke:#1971c2,color:#102a43
+    classDef decision fill:#fff3bf,stroke:#f08c00,color:#5f3b00
+    classDef success fill:#d3f9d8,stroke:#2b8a3e,color:#173b1f
+    classDef reject fill:#ffe3e3,stroke:#c92a2a,color:#5c1b1b
+    classDef cleanup fill:#f3f0ff,stroke:#7048e8,color:#2f1b69
+
+    class load request
+    class validate,existing,slot decision
+    class reuse,attach,retain,pump success
+    class invalid,busy reject
+    class close,release,prune cleanup

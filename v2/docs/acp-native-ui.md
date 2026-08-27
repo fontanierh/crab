@@ -57,6 +57,13 @@ owner-only IPC token loaded inside the process. Prompts default to queue mode. T
 set `_meta.crab.inputMode` to `queue` or `steer`, and `_meta.crab.turnId` to a durable idempotency
 key. Interrupt remains the standard `session/cancel` action.
 
+Each facade process admits at most 128 live sessions and rejects loaded session IDs above 256 bytes.
+Attachment is serialized by session ID, so concurrent retries reuse one binding and one event pump;
+unrelated sessions still attach concurrently. Admission is fail-fast, and the session owns its slot
+until the ACP connection drops. Weak per-ID locks are pruned after use.
+
+![ACP facade session admission](acp-facade-session-admission.png)
+
 Queue and steer must be separate UI actions or an explicit composer mode. Interrupt remains a
 separate action. The proxy may rewrite transport-local request and session IDs, but it must retain
 every native agent update needed to render thoughts, plans, tools, terminals, diffs, usage and
