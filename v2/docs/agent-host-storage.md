@@ -43,6 +43,10 @@ database, which is also the durable operator/UI view.
 - One 30-second control deadline covers per-session serialization, admission to the bounded actor
   queue and the actor receipt. A stalled actor therefore cannot hold prompt, cancel, close or
   runtime detach forever.
+- One host-wide budget admits at most 128 pending or live ACP session actors across open, resume and
+  fork. Exhaustion fails immediately with `SessionCapacityUnavailable`. The actor lease owns its
+  slot until actual task exit; exit then reaps only the matching handle generation, so delayed
+  cleanup cannot remove a resumed replacement.
 - ACP v1 has one foreground run; queued prompts drain FIFO after its prompt response. A configured
   `_session/steering` extension may contribute to that run only after `initialize` advertises it.
   Crab requests `promptRequired` on an idle race and starts the continuation itself through normal
@@ -60,3 +64,5 @@ database, which is also the durable operator/UI view.
   active work, waits for acknowledgement, fails unfinished prompts and tears down ACP process
   groups without sending `session/close`.
 - Explicit close sends native `session/close`, commits `Stopped` and is never resumable.
+
+![Agent session actor admission](agent-session-admission.png)

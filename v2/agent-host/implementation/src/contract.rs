@@ -367,6 +367,8 @@ boxology::contract! {
         UnknownPermission,
         InvalidCursor,
         InvalidNativePayload,
+        /// The host-wide pending and live ACP actor budget is exhausted.
+        SessionCapacityUnavailable,
         SessionResumeUnavailable,
         SessionForkUnavailable,
         SessionForkConflict,

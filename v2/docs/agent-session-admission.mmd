@@ -1,0 +1,26 @@
+%%{init: {"theme": "base", "themeVariables": {"fontFamily": "ui-sans-serif, system-ui, sans-serif", "primaryTextColor": "#172033", "lineColor": "#64748b", "edgeLabelBackground": "#ffffff"}, "flowchart": {"curve": "basis", "nodeSpacing": 42, "rankSpacing": 58}}}%%
+flowchart TB
+    REQUEST["open · resume · fork"] --> ADMIT{"Actor slot available?<br/>128 pending + live"}
+    ADMIT -->|"no"| FULL["SessionCapacityUnavailable<br/>fail immediately"]
+    ADMIT -->|"yes"| PREFLIGHT["Authority preflight + durable Starting state"]
+    PREFLIGHT --> SPAWN["Spawn ACP actor<br/>lease owns slot + exit signal"]
+    SPAWN --> OPENED{"Negotiation opened?"}
+    OPENED -->|"no"| EXIT["Actor exits<br/>lease releases slot"]
+    OPENED -->|"yes"| REGISTER["Register handle<br/>session ID + generation"]
+    REGISTER --> LIVE["Live ACP process + actor"]
+    LIVE --> EXIT
+    EXIT --> REAP{"Map still has<br/>same generation?"}
+    REAP -->|"yes"| REMOVE["Remove stale handle"]
+    REAP -->|"no"| KEEP["Keep resumed replacement"]
+
+    classDef request fill:#e7f5ff,stroke:#1971c2,color:#102a43
+    classDef decision fill:#fff3bf,stroke:#f08c00,color:#5f3b00
+    classDef runtime fill:#d3f9d8,stroke:#2b8a3e,color:#173b1f
+    classDef reject fill:#ffe3e3,stroke:#c92a2a,color:#5c1b1b
+    classDef cleanup fill:#f3f0ff,stroke:#7048e8,color:#2f1b69
+
+    class REQUEST request
+    class ADMIT,OPENED,REAP decision
+    class PREFLIGHT,SPAWN,REGISTER,LIVE runtime
+    class FULL reject
+    class EXIT,REMOVE,KEEP cleanup

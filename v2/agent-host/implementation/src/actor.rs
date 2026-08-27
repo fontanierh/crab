@@ -8,7 +8,7 @@ use agent_client_protocol::{
 use boxology_contract::ContractError as _;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
-use tokio::sync::{Mutex, mpsc, oneshot, watch};
+use tokio::sync::{Mutex, OwnedSemaphorePermit, mpsc, oneshot, watch};
 use uuid::Uuid;
 
 use crate::Clock;
@@ -76,6 +76,8 @@ impl SessionLaunch {
 
 #[derive(Clone)]
 pub(crate) struct SessionHandle {
+    /// Distinguishes a resumed replacement from cleanup of an older actor with the same ID.
+    pub(crate) generation: Uuid,
     pub(crate) commands: mpsc::Sender<SessionCommand>,
     /// Serializes lifecycle-changing host calls with prompt acceptance for this session.
     pub(crate) control: Arc<Mutex<()>>,
@@ -150,6 +152,32 @@ struct ActorState {
 
 const DETACH_CANCEL_TIMEOUT: Duration = Duration::from_secs(5);
 
+struct SessionActorLease {
+    _session_slot: OwnedSemaphorePermit,
+    exited: Option<oneshot::Sender<()>>,
+}
+
+impl SessionActorLease {
+    fn new(session_slot: OwnedSemaphorePermit) -> (Self, oneshot::Receiver<()>) {
+        let (exited, receiver) = oneshot::channel();
+        (
+            Self {
+                _session_slot: session_slot,
+                exited: Some(exited),
+            },
+            receiver,
+        )
+    }
+}
+
+impl Drop for SessionActorLease {
+    fn drop(&mut self) {
+        if let Some(exited) = self.exited.take() {
+            let _ = exited.send(());
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn spawn_session(
     agent: Arc<ConfiguredAgent>,
@@ -160,17 +188,22 @@ pub(crate) fn spawn_session(
     launch: SessionLaunch,
     metadata: Map<String, Value>,
     state_directory: Option<PathBuf>,
+    session_slot: OwnedSemaphorePermit,
 ) -> (
     SessionHandle,
     oneshot::Receiver<Result<AgentSession, AgentHostError>>,
+    oneshot::Receiver<()>,
 ) {
     let (command_tx, command_rx) = mpsc::channel(128);
     let (opened_tx, opened_rx) = oneshot::channel();
+    let (actor_lease, exited_rx) = SessionActorLease::new(session_slot);
     let handle = SessionHandle {
+        generation: Uuid::new_v4(),
         commands: command_tx,
         control: Arc::new(Mutex::new(())),
     };
     tokio::spawn(async move {
+        let _actor_lease = actor_lease;
         let result = match agent.protocol {
             crate::AgentProtocol::V1 => {
                 run_v1_session(
@@ -222,7 +255,7 @@ pub(crate) fn spawn_session(
             let _ = store.set_lifecycle(&session_id, &AgentLifecycle::Failed, now_ms);
         }
     });
-    (handle, opened_rx)
+    (handle, opened_rx, exited_rx)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1806,14 +1839,16 @@ fn acp_error(error: AgentHostError) -> agent_client_protocol::Error {
 mod signal_tests {
     use std::{
         future::{Future as _, poll_fn},
+        sync::Arc,
         task::Poll,
     };
 
     use super::{
-        ACTOR_SIGNAL_QUEUE_CAPACITY, ActorSignal, MAX_NATIVE_PROMPT_BYTES, actor_signal_channel,
-        validate_prompt,
+        ACTOR_SIGNAL_QUEUE_CAPACITY, ActorSignal, MAX_NATIVE_PROMPT_BYTES, SessionActorLease,
+        actor_signal_channel, validate_prompt,
     };
     use crate::{AgentHostError, AgentInputMode, PromptRequest};
+    use tokio::sync::Semaphore;
 
     fn fill_event_queue(sender: &super::ActorSignalSender) {
         for _ in 0..ACTOR_SIGNAL_QUEUE_CAPACITY {
@@ -1846,6 +1881,22 @@ mod signal_tests {
         sender.fatal();
         assert!(matches!(receiver.recv().await, Some(ActorSignal::Fatal)));
         assert_eq!(receiver.events.len(), ACTOR_SIGNAL_QUEUE_CAPACITY);
+    }
+
+    #[tokio::test]
+    async fn actor_lease_owns_admission_until_exit_and_notifies_the_reaper() {
+        let session_slots = Arc::new(Semaphore::new(1));
+        let session_slot = session_slots
+            .clone()
+            .try_acquire_owned()
+            .expect("session slot");
+        let (lease, exited) = SessionActorLease::new(session_slot);
+        assert_eq!(session_slots.available_permits(), 0);
+
+        drop(lease);
+
+        exited.await.expect("actor exit notification");
+        assert_eq!(session_slots.available_permits(), 1);
     }
 
     #[test]

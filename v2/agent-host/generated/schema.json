@@ -278,9 +278,9 @@
   "provenance": {
     "generator": "boxology-generator",
     "generator_version": "0.1.1",
-    "semantic_digest": "sha256:35fd05a9c7d6da0f65a9f2fbd94a4e942ea61bbd7d002fb97fe9ca7b6fc2e76f"
+    "semantic_digest": "sha256:8898706001b7b1d2be07dc71d67947da0a26d56f8332d5921d6d427d4bcbdaf8"
   },
-  "revision": "sha256:a17d5d88d02656890d2274acd81cbb6852eecf65fa61255159a4fe1ccc052146",
+  "revision": "sha256:63cb45f413ae2a41f38e2ba35229bcb274d58ec5ad41bfa4221f61d9670fe7ff",
   "schema_format": 1,
   "types": [
     {
@@ -1712,6 +1712,14 @@
           "deprecation": null,
           "docs": [],
           "name": "InvalidNativePayload",
+          "payload": "unit"
+        },
+        {
+          "deprecation": null,
+          "docs": [
+            " The host-wide pending and live ACP actor budget is exhausted."
+          ],
+          "name": "SessionCapacityUnavailable",
           "payload": "unit"
         },
         {

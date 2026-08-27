@@ -58,13 +58,16 @@ interrupt as a separate explicit action.
 - Tests target useful contract and composition behavior. There is no percentage coverage gate.
 - `agent-host` runs real ACP v1/v2 subprocesses with mandatory authority preflight, durable
   prompts/events/permissions, queue/steer/cancel, explicit native resume, and process-group
-  shutdown. Recovery preserves both session IDs and the event cursor while revalidating authority,
+  shutdown. A host-wide 128-actor budget covers pending and live open/resume/fork work; actor-owned
+  leases release on actual exit and generation-safe reapers discard stale handles. Recovery
+  preserves both session IDs and the event cursor while revalidating authority,
   MCP tools and required policy; it never replays bootstrap or owns compaction. Graceful runtime
   shutdown detaches the host-owned live set without native close, while explicit close remains
   destructive. ACP stdout frames are rejected above 16 MiB before parsing or journaling; bounded
   adapter stderr and terminal causes remain available only through the
   owner-authenticated `crab-v2-agent` operator CLI. See the
-  [private diagnostics](docs/agent-diagnostics.md), [resume flow](docs/agent-session-resume.md) and
+  [private diagnostics](docs/agent-diagnostics.md), [session admission](docs/agent-session-admission.png),
+  [resume flow](docs/agent-session-resume.md) and
   [detach flow](docs/runtime-detach.md). Its
   [state contract](docs/agent-host-storage.md) is schema-versioned from day one; the
   [rendered flow](docs/agent-host-flow.png) shows the process boundary.
