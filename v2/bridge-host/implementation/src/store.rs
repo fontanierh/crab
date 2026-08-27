@@ -12,6 +12,7 @@ use crate::{
 };
 
 const SCHEMA_VERSION: i64 = 3;
+const MAX_TERMINAL_CHALLENGES_PER_BRIDGE: usize = 64;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct BridgeIncidentEpisode {
@@ -800,6 +801,13 @@ impl BridgeStore {
         let transaction = connection.transaction().map_err(storage_error)?;
         transaction
             .execute(
+                "UPDATE challenges SET state = 'Superseded'
+                 WHERE bridge_id = ?1 AND state = 'Pending'",
+                params![bridge_id],
+            )
+            .map_err(storage_error)?;
+        transaction
+            .execute(
                 "INSERT INTO challenges (
                     bridge_id, challenge_id, method, expires_at_ms, presentation_json,
                     state, created_at_ms
@@ -814,6 +822,7 @@ impl BridgeStore {
                 ],
             )
             .map_err(storage_error)?;
+        prune_challenge_history(&transaction, bridge_id)?;
         transaction
             .execute(
                 "UPDATE credentials SET lifecycle = 'Challenged' WHERE bridge_id = ?1",
@@ -836,8 +845,11 @@ impl BridgeStore {
         challenge_id: &str,
         now_ms: u64,
     ) -> Result<(), BridgeHostError> {
-        let connection = self.lock()?;
-        let expires = connection
+        let mut connection = self.lock()?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(storage_error)?;
+        let expires = transaction
             .query_row(
                 "SELECT expires_at_ms FROM challenges
                  WHERE bridge_id = ?1 AND challenge_id = ?2 AND state = 'Pending'",
@@ -848,8 +860,21 @@ impl BridgeStore {
             .map_err(storage_error)?
             .ok_or(BridgeHostError::AuthenticationUnavailable)?;
         if expires.is_some_and(|expires| db_u64(expires).is_ok_and(|expires| expires <= now_ms)) {
+            let changed = transaction
+                .execute(
+                    "UPDATE challenges SET state = 'Expired'
+                     WHERE bridge_id = ?1 AND challenge_id = ?2 AND state = 'Pending'",
+                    params![bridge_id, challenge_id],
+                )
+                .map_err(storage_error)?;
+            if changed != 1 {
+                return Err(BridgeHostError::AuthenticationUnavailable);
+            }
+            prune_challenge_history(&transaction, bridge_id)?;
+            transaction.commit().map_err(storage_error)?;
             return Err(BridgeHostError::ChallengeExpired);
         }
+        transaction.commit().map_err(storage_error)?;
         Ok(())
     }
 
@@ -878,6 +903,7 @@ impl BridgeStore {
         if changed != 1 {
             return Err(BridgeHostError::AuthenticationUnavailable);
         }
+        prune_challenge_history(&transaction, bridge_id)?;
         transaction
             .execute(
                 "UPDATE credentials SET lifecycle = 'Valid', credential_handle = ?2,
@@ -1517,6 +1543,28 @@ impl BridgeStore {
             .lock()
             .map_err(|_| BridgeHostError::StorageUnavailable)
     }
+}
+
+fn prune_challenge_history(
+    connection: &Connection,
+    bridge_id: &str,
+) -> Result<(), BridgeHostError> {
+    let history_limit = i64::try_from(MAX_TERMINAL_CHALLENGES_PER_BRIDGE)
+        .map_err(|_| BridgeHostError::StorageUnavailable)?;
+    connection
+        .execute(
+            "DELETE FROM challenges
+             WHERE bridge_id = ?1 AND state <> 'Pending'
+               AND challenge_id NOT IN (
+                   SELECT challenge_id FROM challenges
+                   WHERE bridge_id = ?1 AND state <> 'Pending'
+                   ORDER BY created_at_ms DESC, challenge_id DESC
+                   LIMIT ?2
+               )",
+            params![bridge_id, history_limit],
+        )
+        .map_err(storage_error)?;
+    Ok(())
 }
 
 fn migrate_v0_to_v1(connection: &mut Connection) -> Result<(), BridgeHostError> {
@@ -2275,7 +2323,7 @@ fn storage_error(_: rusqlite::Error) -> BridgeHostError {
 mod tests {
     use rusqlite::{Connection, params};
 
-    use super::BridgeStore;
+    use super::{BridgeStore, MAX_TERMINAL_CHALLENGES_PER_BRIDGE};
     use crate::{
         AuthenticationMethod, BridgeAlertTarget, BridgeHostError, BridgeIngressMode,
         BridgeLifecycle, BridgeManagement, BridgeSpec, CredentialLifecycle, HealthObservation,
@@ -2735,5 +2783,172 @@ mod tests {
             })
             .expect("presentation metadata exists");
         assert_eq!(persisted, "{}");
+    }
+
+    #[test]
+    fn authentication_keeps_one_pending_challenge_and_bounded_history() {
+        let store = BridgeStore::open_in_memory().expect("store opens");
+        store.register(&spec(true), 1).expect("bridge registers");
+        let first = store
+            .create_challenge(
+                "bridge-1",
+                &PackageChallenge {
+                    method: AuthenticationMethod::QrCode,
+                    expires_at_ms: None,
+                    presentation_json: "{}".into(),
+                },
+                2,
+            )
+            .expect("first challenge is created");
+        let second = store
+            .create_challenge(
+                "bridge-1",
+                &PackageChallenge {
+                    method: AuthenticationMethod::QrCode,
+                    expires_at_ms: None,
+                    presentation_json: "{}".into(),
+                },
+                3,
+            )
+            .expect("replacement challenge is created");
+
+        assert!(matches!(
+            store.verify_challenge("bridge-1", &first.challenge_id, 3),
+            Err(BridgeHostError::AuthenticationUnavailable)
+        ));
+        store
+            .verify_challenge("bridge-1", &second.challenge_id, 3)
+            .expect("latest challenge remains pending");
+
+        for offset in 0..(MAX_TERMINAL_CHALLENGES_PER_BRIDGE * 2) {
+            store
+                .create_challenge(
+                    "bridge-1",
+                    &PackageChallenge {
+                        method: AuthenticationMethod::QrCode,
+                        expires_at_ms: None,
+                        presentation_json: "{}".into(),
+                    },
+                    u64::try_from(offset).expect("offset fits") + 4,
+                )
+                .expect("challenge is created");
+        }
+
+        let connection = store.lock().expect("store lock");
+        let (pending, terminal, total) = connection
+            .query_row(
+                "SELECT
+                    SUM(CASE WHEN state = 'Pending' THEN 1 ELSE 0 END),
+                    SUM(CASE WHEN state <> 'Pending' THEN 1 ELSE 0 END),
+                    COUNT(*)
+                 FROM challenges WHERE bridge_id = 'bridge-1'",
+                [],
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, i64>(2)?,
+                    ))
+                },
+            )
+            .expect("challenge counts exist");
+        assert_eq!(pending, 1);
+        assert_eq!(
+            terminal,
+            i64::try_from(MAX_TERMINAL_CHALLENGES_PER_BRIDGE).expect("limit fits")
+        );
+        assert_eq!(total, terminal + 1);
+    }
+
+    #[test]
+    fn expired_authentication_challenge_is_durable() {
+        let store = BridgeStore::open_in_memory().expect("store opens");
+        store.register(&spec(true), 1).expect("bridge registers");
+        let challenge = store
+            .create_challenge(
+                "bridge-1",
+                &PackageChallenge {
+                    method: AuthenticationMethod::QrCode,
+                    expires_at_ms: Some(10),
+                    presentation_json: "{}".into(),
+                },
+                2,
+            )
+            .expect("challenge is created");
+
+        assert!(matches!(
+            store.verify_challenge("bridge-1", &challenge.challenge_id, 10),
+            Err(BridgeHostError::ChallengeExpired)
+        ));
+        assert_eq!(
+            store
+                .lock()
+                .expect("store lock")
+                .query_row(
+                    "SELECT state FROM challenges WHERE challenge_id = ?1",
+                    params![challenge.challenge_id],
+                    |row| row.get::<_, String>(0),
+                )
+                .expect("challenge state exists"),
+            "Expired"
+        );
+        assert!(matches!(
+            store.verify_challenge("bridge-1", &challenge.challenge_id, 11),
+            Err(BridgeHostError::AuthenticationUnavailable)
+        ));
+    }
+
+    #[test]
+    fn completed_authentication_history_is_bounded() {
+        let store = BridgeStore::open_in_memory().expect("store opens");
+        store.register(&spec(true), 1).expect("bridge registers");
+        for offset in 0..(MAX_TERMINAL_CHALLENGES_PER_BRIDGE + 5) {
+            let now_ms = u64::try_from(offset).expect("offset fits") + 2;
+            let challenge = store
+                .create_challenge(
+                    "bridge-1",
+                    &PackageChallenge {
+                        method: AuthenticationMethod::QrCode,
+                        expires_at_ms: None,
+                        presentation_json: "{}".into(),
+                    },
+                    now_ms,
+                )
+                .expect("challenge is created");
+            store
+                .set_credential(
+                    "bridge-1",
+                    &challenge.challenge_id,
+                    "opaque-handle",
+                    now_ms,
+                    None,
+                    None,
+                    "{}",
+                )
+                .expect("challenge completes");
+        }
+
+        let connection = store.lock().expect("store lock");
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT COUNT(*) FROM challenges WHERE bridge_id = 'bridge-1'",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .expect("challenge count exists"),
+            i64::try_from(MAX_TERMINAL_CHALLENGES_PER_BRIDGE).expect("limit fits")
+        );
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT COUNT(*) FROM challenges
+                     WHERE bridge_id = 'bridge-1' AND state = 'Pending'",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .expect("pending count exists"),
+            0
+        );
     }
 }

@@ -38,7 +38,9 @@ runtime-state/
   recovery trigger; absent targets remain deliberately silent.
 - Credential bytes never enter SQLite, errors or debug output. The host actively revalidates the
   opaque handle at the registered interval. Renderable authentication challenges are returned to
-  the caller, while SQLite retains only challenge metadata—not QR or response payloads.
+  the caller, while SQLite retains only challenge metadata—not QR or response payloads. Starting a
+  challenge atomically supersedes the prior pending challenge; expiry and completion are durable,
+  and only the newest 64 terminal challenges per bridge remain in history.
 - Inbound deduplication is `(bridge_id, external_event_id)`; acknowledgement follows durable
   `trigger-inbox.enqueue`. The registered generation—not the event—selects queue, steer or
   interrupt-and-steer. The router delivers interrupt-and-steer through atomic downstream

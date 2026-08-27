@@ -1,0 +1,22 @@
+flowchart LR
+    begin[Begin authentication] --> tx[Immediate store transaction]
+    tx --> supersede[Pending challenge → Superseded]
+    supersede --> insert[Insert new Pending challenge]
+    insert --> active[Exactly one usable challenge]
+
+    active --> submit[Submit credential]
+    submit --> expired{Expired?}
+    expired -- yes --> expire[Pending → Expired]
+    expired -- no --> complete[Pending → Completed]
+    complete --> credential[Commit opaque credential handle]
+
+    supersede --> history[Terminal history]
+    expire --> history
+    complete --> history
+    history --> retain[Keep newest 64 per bridge]
+    retain --> delete[Delete older terminal rows]
+
+    classDef durable fill:#e9f7ef,stroke:#237a4b,color:#102a1c
+    classDef boundary fill:#fff4dc,stroke:#b26a00,color:#3a2600
+    class tx,supersede,insert,expire,complete,history,retain,delete durable
+    class active,credential boundary
