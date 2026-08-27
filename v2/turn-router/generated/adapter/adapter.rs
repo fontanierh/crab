@@ -50,7 +50,7 @@ pub fn implementation_descriptor() -> ::boxology_contract::ImplementationDescrip
                         ::boxology_contract::BoxId::new("native-channel")
                             .expect("generated import package id is valid"),
                         ::boxology_contract::ContractRevision::new(
-                                "sha256:1f8e3d56d8e0630310ffe01bd780bbabeac6eea524da631beaa983d13e917268",
+                                "sha256:0d711ed187fab88500737d701ceac310aa7c7ba4e027195e38a5536996bf6534",
                             )
                             .expect("generated import revision is valid"),
                         [

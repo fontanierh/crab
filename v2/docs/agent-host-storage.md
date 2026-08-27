@@ -25,7 +25,9 @@ database, which is also the durable operator/UI view.
 ## Durable invariants
 
 - `(session_id, client_turn_id)` deduplicates one immutable prompt; a changed retry is rejected.
-- `native_prompt_json` is the exact JSON array carried in ACP's `prompt` field.
+- `native_prompt_json` is the exact JSON array carried in ACP's `prompt` field. Every native
+  ingress rejects payloads over 2 MiB before JSON parsing or durable storage; larger media uses
+  resource links or content handles.
 - Native stdin/stdout JSON-RPC lines are stored byte-for-byte with direction and per-session order.
 - Adapter stderr never becomes a native event. The newest 512 private diagnostics per session are
   retained separately with 16 KiB message caps and monotonic cursors; explicit operator reads are

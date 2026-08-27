@@ -22,6 +22,7 @@ use store::{InteractionDirection, RecoveryCandidate, SubAgentStore, spawn_finger
 use tokio::{sync::Mutex, task::JoinHandle};
 
 const EVENT_PAGE_LIMIT: u64 = 1_000;
+const MAX_NATIVE_PROMPT_BYTES: usize = 2 * 1024 * 1024;
 const MAX_SNAPSHOT_BYTES: usize = 4 * 1024 * 1024;
 const PUMP_INTERVAL: Duration = Duration::from_millis(25);
 const PUMP_FAILURE_LIMIT: u8 = 3;
@@ -795,6 +796,17 @@ impl SubAgentHost {
     ) -> Result<InteractionReceipt, SubAgentHostError> {
         validate_identifier(&request.client_message_id)?;
         let message = parse_json(&request.message_json)?;
+        let native_prompt_json = serde_json::to_string(&vec![json!({
+            "type": "text",
+            "text": format!(
+                "[Crab sub-agent {}]\n{}",
+                request.sub_agent_id,
+                serde_json::to_string(&message)
+                    .map_err(|_| SubAgentHostError::InvalidNativePayload)?
+            ),
+        })])
+        .map_err(|_| SubAgentHostError::InvalidNativePayload)?;
+        validate_prompt(&native_prompt_json)?;
         let record = self.store.record(&request.sub_agent_id)?;
         let now_ms = (self.clock)()?;
         let start = self.store.begin_interaction(
@@ -809,16 +821,6 @@ impl SubAgentHost {
             return Ok(receipt);
         }
         debug_assert!(start.should_dispatch);
-        let native_prompt_json = serde_json::to_string(&vec![json!({
-            "type": "text",
-            "text": format!(
-                "[Crab sub-agent {}]\n{}",
-                request.sub_agent_id,
-                serde_json::to_string(&message)
-                    .map_err(|_| SubAgentHostError::InvalidNativePayload)?
-            ),
-        })])
-        .map_err(|_| SubAgentHostError::InvalidNativePayload)?;
         let client_turn_id = format!(
             "subagent:{}:child:{}",
             request.sub_agent_id, request.client_message_id
@@ -1013,6 +1015,9 @@ fn validate_identifier(value: &str) -> Result<(), SubAgentHostError> {
 }
 
 fn validate_prompt(value: &str) -> Result<(), SubAgentHostError> {
+    if value.len() > MAX_NATIVE_PROMPT_BYTES {
+        return Err(SubAgentHostError::InvalidNativePayload);
+    }
     if parse_json(value)?.is_array() {
         Ok(())
     } else {
@@ -1166,7 +1171,10 @@ pub mod generated {
 
 #[cfg(test)]
 mod tests {
-    use super::{SubAgentContextMode, SubAgentInputMode, generated};
+    use super::{
+        MAX_NATIVE_PROMPT_BYTES, SubAgentContextMode, SubAgentHostError, SubAgentInputMode,
+        generated, validate_prompt,
+    };
 
     #[test]
     fn contract_is_non_blocking_bidirectional_and_supervised() {
@@ -1199,5 +1207,13 @@ mod tests {
             SubAgentInputMode::InterruptAndSteer
         );
         assert_eq!(generated::implementation_descriptor().imports().len(), 1);
+    }
+
+    #[test]
+    fn native_prompt_is_rejected_before_parsing_when_over_limit() {
+        assert_eq!(
+            validate_prompt(&"x".repeat(MAX_NATIVE_PROMPT_BYTES + 1)),
+            Err(SubAgentHostError::InvalidNativePayload)
+        );
     }
 }

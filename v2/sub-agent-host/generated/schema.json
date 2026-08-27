@@ -136,9 +136,9 @@
   "provenance": {
     "generator": "boxology-generator",
     "generator_version": "0.1.1",
-    "semantic_digest": "sha256:e21702fe8c66f9bc6bc0de88352c55fb1d7f4a9ec2e231de7f02986513331687"
+    "semantic_digest": "sha256:08678063aa1a774e2aa88d75151d8c5d66a61798cdbface0408a1c9525c889f0"
   },
-  "revision": "sha256:6fc49b785cf181cdf648767ac0c1a8220b7676e14812178356dac871cba96ffd",
+  "revision": "sha256:204613e9b77d1e59accbf394f520ffec273471e6cf10ff968c5d87eb1c3c29ea",
   "schema_format": 1,
   "types": [
     {
@@ -342,7 +342,8 @@
         {
           "deprecation": null,
           "docs": [
-            " Exact ACP-compatible initial task content."
+            " Exact ACP-compatible initial task content, capped at 2 MiB. Larger content travels by",
+            " reference."
           ],
           "name": "native_task_prompt_json",
           "type": "String"
@@ -465,7 +466,9 @@
         },
         {
           "deprecation": null,
-          "docs": [],
+          "docs": [
+            " Exact ACP-compatible prompt content, capped at 2 MiB."
+          ],
           "name": "native_prompt_json",
           "type": "String"
         }

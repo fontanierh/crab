@@ -33,6 +33,8 @@ runtime-state/
 - SQLite schema v1 uses WAL, foreign keys, full synchronous writes and fail-closed version checks.
 - Spawn and message retries use caller IDs plus canonical request fingerprints; changed retries are
   rejected instead of silently reusing prior work.
+- Initial tasks and parent-to-child native prompts are capped at 2 MiB before parsing or durable
+  interaction storage. Generated child-to-parent prompts obey the same boundary.
 - Parent-to-child and child-to-parent sends support queue, steer and actor-serialized
   cancel-then-queue. The interrupting input is accepted before completion can drain older work;
   delivery never waits for model completion.

@@ -19,6 +19,8 @@ use crate::{
     PromptAccepted, PromptDisposition, PromptRequest, store::AgentStore,
 };
 
+const MAX_NATIVE_PROMPT_BYTES: usize = 2 * 1024 * 1024;
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonRpcRequest)]
 #[request(method = "_session/steering", response = SessionSteeringResponse)]
 #[serde(rename_all = "camelCase")]
@@ -1741,6 +1743,7 @@ fn validate_prompt(session_id: &str, request: &PromptRequest) -> Result<(), Agen
     if request.session_id != session_id
         || request.client_turn_id.trim().is_empty()
         || request.native_prompt_json.trim().is_empty()
+        || request.native_prompt_json.len() > MAX_NATIVE_PROMPT_BYTES
     {
         return Err(AgentHostError::InvalidNativePayload);
     }
@@ -1801,7 +1804,11 @@ mod signal_tests {
         task::Poll,
     };
 
-    use super::{ACTOR_SIGNAL_QUEUE_CAPACITY, ActorSignal, actor_signal_channel};
+    use super::{
+        ACTOR_SIGNAL_QUEUE_CAPACITY, ActorSignal, MAX_NATIVE_PROMPT_BYTES, actor_signal_channel,
+        validate_prompt,
+    };
+    use crate::{AgentHostError, AgentInputMode, PromptRequest};
 
     fn fill_event_queue(sender: &super::ActorSignalSender) {
         for _ in 0..ACTOR_SIGNAL_QUEUE_CAPACITY {
@@ -1834,5 +1841,20 @@ mod signal_tests {
         sender.fatal();
         assert!(matches!(receiver.recv().await, Some(ActorSignal::Fatal)));
         assert_eq!(receiver.events.len(), ACTOR_SIGNAL_QUEUE_CAPACITY);
+    }
+
+    #[test]
+    fn native_prompt_is_rejected_before_parsing_when_over_limit() {
+        let request = PromptRequest {
+            session_id: "session-1".into(),
+            client_turn_id: "turn-1".into(),
+            mode: AgentInputMode::Queue,
+            native_prompt_json: "x".repeat(MAX_NATIVE_PROMPT_BYTES + 1),
+        };
+
+        assert_eq!(
+            validate_prompt("session-1", &request),
+            Err(AgentHostError::InvalidNativePayload)
+        );
     }
 }

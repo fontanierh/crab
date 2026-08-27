@@ -19,6 +19,7 @@ use store::ChannelStore;
 use tokio::sync::Mutex;
 
 const EVENT_PAGE_LIMIT: u64 = 1_000;
+const MAX_NATIVE_PROMPT_BYTES: usize = 2 * 1024 * 1024;
 
 type Clock = Arc<dyn Fn() -> Result<u64, NativeChannelError> + Send + Sync>;
 
@@ -493,7 +494,10 @@ impl NativeChannel {
 }
 
 fn validate_turn(request: &ChannelTurn) -> Result<(), NativeChannelError> {
-    if request.binding_id.trim().is_empty() || request.client_turn_id.trim().is_empty() {
+    if request.binding_id.trim().is_empty()
+        || request.client_turn_id.trim().is_empty()
+        || request.native_prompt_json.len() > MAX_NATIVE_PROMPT_BYTES
+    {
         return Err(NativeChannelError::InvalidNativePayload);
     }
     let prompt: serde_json::Value = serde_json::from_str(&request.native_prompt_json)
@@ -641,7 +645,10 @@ pub mod generated {
 mod tests {
     use boxology_contract::CapabilityId;
 
-    use super::{ChannelInputMode, generated};
+    use super::{
+        ChannelInputMode, ChannelTurn, MAX_NATIVE_PROMPT_BYTES, NativeChannelError, generated,
+        validate_turn,
+    };
 
     #[test]
     fn contract_keeps_native_publication_separate_from_bridge_delivery() {
@@ -676,5 +683,21 @@ mod tests {
         );
         assert!(names.iter().all(|name| !name.contains("bridge")));
         assert_ne!(ChannelInputMode::Queue, ChannelInputMode::Steer);
+    }
+
+    #[test]
+    fn native_turn_is_rejected_before_parsing_when_over_limit() {
+        let turn = ChannelTurn {
+            binding_id: "binding-1".into(),
+            client_turn_id: "turn-1".into(),
+            received_at_ms: 1,
+            mode: ChannelInputMode::Queue,
+            native_prompt_json: "x".repeat(MAX_NATIVE_PROMPT_BYTES + 1),
+        };
+
+        assert_eq!(
+            validate_turn(&turn),
+            Err(NativeChannelError::InvalidNativePayload)
+        );
     }
 }

@@ -273,9 +273,9 @@
   "provenance": {
     "generator": "boxology-generator",
     "generator_version": "0.1.1",
-    "semantic_digest": "sha256:d7539dc77cca2dc0b8bb36d77af11c76455295fa8d0224eab5802698d6b3bb3c"
+    "semantic_digest": "sha256:6e03a7161f5dfd9b0f9fa48f9c48201687ca2d6349972c9ccc94494ba9e57e6e"
   },
-  "revision": "sha256:1f8e3d56d8e0630310ffe01bd780bbabeac6eea524da631beaa983d13e917268",
+  "revision": "sha256:0d711ed187fab88500737d701ceac310aa7c7ba4e027195e38a5536996bf6534",
   "schema_format": 1,
   "types": [
     {
@@ -455,7 +455,8 @@
         {
           "deprecation": null,
           "docs": [
-            " Exact ACP-compatible prompt JSON, including attachments and other rich content."
+            " Exact ACP-compatible prompt JSON, including attachments and other rich content, capped",
+            " at 2 MiB. Larger content travels by reference."
           ],
           "name": "native_prompt_json",
           "type": "String"

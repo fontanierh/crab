@@ -28,7 +28,7 @@ flowchart TB
     ACTOR --> ENDED
     ACTOR <-->|"transactional state · next queued"| DB
     ACP -->|"raw output stored first"| DB
-    UI -->|"non-blocking input"| ACTOR
+    UI -->|"non-blocking input<br/>2 MiB native prompt cap"| ACTOR
 
     classDef config fill:#f8fafc,stroke:#64748b,stroke-width:1.5px,color:#172033;
     classDef gate fill:#fef3c7,stroke:#d97706,stroke-width:2px,color:#78350f;

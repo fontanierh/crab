@@ -43,7 +43,8 @@ boxology::contract! {
         pub client_turn_id: String,
         pub received_at_ms: u64,
         pub mode: ChannelInputMode,
-        /// Exact ACP-compatible prompt JSON, including attachments and other rich content.
+        /// Exact ACP-compatible prompt JSON, including attachments and other rich content, capped
+        /// at 2 MiB. Larger content travels by reference.
         pub native_prompt_json: String,
     }
 
