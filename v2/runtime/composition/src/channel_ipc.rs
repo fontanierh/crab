@@ -29,9 +29,11 @@ use bridge_host_contract::{
 use bridge_host_implementation::{MAX_ACTIVE_BRIDGE_REGISTRATIONS, MAX_BRIDGE_CATALOG_PAGE};
 use channel_gateway_contract::{AttachChannelRequest, ChannelAttachment, ChannelGatewayHandle};
 use native_channel_contract::{
-    AcceptedTurn, BindingReference, ChannelBindingCatalog, ChannelBindingSummary, ChannelStatus,
-    ChannelTurn, InterruptReceipt, InterruptRequest, ListChannelBindingsRequest,
-    NativeChannelHandle, PublishedEventPage, ReplayRequest,
+    AcceptedTurn, BindingReference, ChannelBindingCatalog, ChannelBindingCatalogPage,
+    ChannelBindingSummary, ChannelStatus, ChannelTurn, InterruptReceipt, InterruptRequest,
+    ListChannelBindingPageRequest, ListChannelBindingsRequest,
+    LocateChannelBindingSummariesRequest, LocatedChannelBindingSummaries, NativeChannelHandle,
+    PublishedEventPage, ReplayRequest,
 };
 use runtime_control_contract::{RuntimeAttestation, RuntimeControlHandle, RuntimeStatusRequest};
 use serde::{Deserialize, Serialize};
@@ -65,6 +67,8 @@ const ACCEPT_TURN: &str = "native-channel.accept_turn";
 const INTERRUPT: &str = "native-channel.interrupt_and_drain";
 const CHANNEL_STATUS: &str = "native-channel.channel_status";
 const LIST_CHANNEL_BINDINGS: &str = "native-channel.list_bindings";
+const LIST_CHANNEL_BINDING_PAGE: &str = "native-channel.list_binding_page";
+const LOCATE_CHANNEL_BINDING_SUMMARIES: &str = "native-channel.locate_binding_summaries";
 const CHANNEL_BINDING_SUMMARY: &str = "native-channel.binding_summary";
 const REPLAY: &str = "native-channel.replay_native_events";
 const ENQUEUE_TRIGGER: &str = "trigger-inbox.enqueue";
@@ -315,6 +319,32 @@ impl ChannelIpcClient {
     ) -> Result<ChannelBindingCatalog, ChannelIpcClientError> {
         self.invoke(
             LIST_CHANNEL_BINDINGS,
+            native_channel_contract::contract_descriptor(),
+            request,
+        )
+        .await
+    }
+
+    /// Read one bounded, identity-keyset page of non-secret durable native-channel bindings.
+    pub async fn list_channel_binding_page(
+        &self,
+        request: ListChannelBindingPageRequest,
+    ) -> Result<ChannelBindingCatalogPage, ChannelIpcClientError> {
+        self.invoke(
+            LIST_CHANNEL_BINDING_PAGE,
+            native_channel_contract::contract_descriptor(),
+            request,
+        )
+        .await
+    }
+
+    /// Resolve configured channel identities without scanning unrelated durable history.
+    pub async fn locate_channel_binding_summaries(
+        &self,
+        request: LocateChannelBindingSummariesRequest,
+    ) -> Result<LocatedChannelBindingSummaries, ChannelIpcClientError> {
+        self.invoke(
+            LOCATE_CHANNEL_BINDING_SUMMARIES,
             native_channel_contract::contract_descriptor(),
             request,
         )
@@ -1118,6 +1148,25 @@ async fn dispatch(request: WireRequest, capabilities: ChannelIpcCapabilities) ->
                 LIST_CHANNEL_BINDINGS,
                 |input| native_channel.list_bindings(call_context(), input),
             )
+            .await
+        }
+        LIST_CHANNEL_BINDING_PAGE => {
+            invoke_native::<ListChannelBindingPageRequest, ChannelBindingCatalogPage, _, _>(
+                &request.input,
+                LIST_CHANNEL_BINDING_PAGE,
+                |input| native_channel.list_binding_page(call_context(), input),
+            )
+            .await
+        }
+        LOCATE_CHANNEL_BINDING_SUMMARIES => {
+            invoke_native::<
+                LocateChannelBindingSummariesRequest,
+                LocatedChannelBindingSummaries,
+                _,
+                _,
+            >(&request.input, LOCATE_CHANNEL_BINDING_SUMMARIES, |input| {
+                native_channel.locate_binding_summaries(call_context(), input)
+            })
             .await
         }
         CHANNEL_BINDING_SUMMARY => {

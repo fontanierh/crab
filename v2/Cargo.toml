@@ -25,10 +25,10 @@ edition = "2024"
 
 [workspace.dependencies]
 # Keep the complete Boxology runtime closure on one exact crates.io release.
-boxology = "=0.2.1"
-boxology-contract = "=0.2.1"
-boxology-manifest = "=0.2.1"
-boxology-runtime = "=0.2.1"
+boxology = "=0.2.2"
+boxology-contract = "=0.2.2"
+boxology-manifest = "=0.2.2"
+boxology-runtime = "=0.2.2"
 agent-client-protocol = { version = "=2.0.0", features = ["unstable_protocol_v2", "unstable_session_fork"] }
 agent-client-protocol-rmcp = "=3.0.0"
 async-trait = "0.1.89"

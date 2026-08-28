@@ -5,13 +5,14 @@ use serde_json::Value;
 use uuid::Uuid;
 
 use crate::{
-    AcceptedTurn, BindChannelRequest, ChannelBinding, ChannelBindingCatalog, ChannelBindingSummary,
-    ChannelInputMode, ChannelLifecycle, ChannelReceipt, ChannelTurn, ChannelTurnDisposition,
-    LocateBindingRequest, NativeChannelError, NativeChannelEvent, PublishReceipt,
+    AcceptedTurn, BindChannelRequest, ChannelBinding, ChannelBindingCatalog,
+    ChannelBindingCatalogPage, ChannelBindingSummary, ChannelInputMode, ChannelLifecycle,
+    ChannelReceipt, ChannelTurn, ChannelTurnDisposition, LocateBindingRequest,
+    LocatedChannelBindingSummaries, MAX_BINDING_CATALOG_PAGE, NativeChannelError,
+    NativeChannelEvent, PublishReceipt,
 };
 
 const SCHEMA_VERSION: i64 = 2;
-const MAX_BINDING_CATALOG: u64 = 256;
 
 struct StoredBindingSummary {
     binding_id: String,
@@ -158,7 +159,7 @@ impl ChannelStore {
         &self,
         limit: u64,
     ) -> Result<ChannelBindingCatalog, NativeChannelError> {
-        if limit == 0 || limit > MAX_BINDING_CATALOG {
+        if limit == 0 || limit > MAX_BINDING_CATALOG_PAGE {
             return Err(NativeChannelError::InvalidNativePayload);
         }
         let connection = self.lock()?;
@@ -191,6 +192,104 @@ impl ChannelStore {
             bindings,
             total_bindings: db_u64(total_bindings)?,
         })
+    }
+
+    pub(crate) fn list_binding_page(
+        &self,
+        after_binding_id: Option<&str>,
+        limit: u64,
+        include_detached: bool,
+    ) -> Result<ChannelBindingCatalogPage, NativeChannelError> {
+        if limit == 0 || limit > MAX_BINDING_CATALOG_PAGE {
+            return Err(NativeChannelError::InvalidNativePayload);
+        }
+        let fetch_limit = limit
+            .checked_add(1)
+            .ok_or(NativeChannelError::InvalidNativePayload)?;
+        let mut connection = self.lock()?;
+        let transaction = connection.transaction().map_err(storage_error)?;
+        let total_bindings = transaction
+            .query_row(
+                "SELECT COUNT(*) FROM bindings
+                 WHERE ?1 OR lifecycle != 'Detached'",
+                params![include_detached],
+                |row| row.get::<_, i64>(0),
+            )
+            .map_err(storage_error)
+            .and_then(db_u64)?;
+        let mut bindings = {
+            let mut statement = transaction
+                .prepare(
+                    "SELECT b.binding_id, b.channel_id, b.adapter_id, b.session_id, b.lifecycle,
+                            b.published_sequence,
+                            (SELECT COUNT(*) FROM turns t
+                             WHERE t.binding_id = b.binding_id AND t.session_id = b.session_id
+                               AND t.state = 'Pending'),
+                            b.last_error, b.updated_at_ms
+                     FROM bindings b
+                     WHERE (?1 IS NULL OR b.binding_id > ?1)
+                       AND (?2 OR b.lifecycle != 'Detached')
+                     ORDER BY b.binding_id
+                     LIMIT ?3",
+                )
+                .map_err(storage_error)?;
+            statement
+                .query_map(
+                    params![after_binding_id, include_detached, db_i64(fetch_limit)?],
+                    StoredBindingSummary::from_row,
+                )
+                .map_err(storage_error)?
+                .map(|row| row.map_err(storage_error)?.into_contract())
+                .collect::<Result<Vec<_>, _>>()?
+        };
+        transaction.commit().map_err(storage_error)?;
+        let page_limit =
+            usize::try_from(limit).map_err(|_| NativeChannelError::InvalidNativePayload)?;
+        let has_more = bindings.len() > page_limit;
+        bindings.truncate(page_limit);
+        let next_after_binding_id = has_more
+            .then(|| bindings.last().map(|binding| binding.binding_id.clone()))
+            .flatten();
+        Ok(ChannelBindingCatalogPage {
+            bindings,
+            total_bindings,
+            next_after_binding_id,
+        })
+    }
+
+    pub(crate) fn locate_binding_summaries(
+        &self,
+        identities: &[LocateBindingRequest],
+    ) -> Result<LocatedChannelBindingSummaries, NativeChannelError> {
+        let connection = self.lock()?;
+        let mut statement = connection
+            .prepare(
+                "SELECT b.binding_id, b.channel_id, b.adapter_id, b.session_id, b.lifecycle,
+                        b.published_sequence,
+                        (SELECT COUNT(*) FROM turns t
+                         WHERE t.binding_id = b.binding_id AND t.session_id = b.session_id
+                           AND t.state = 'Pending'),
+                        b.last_error, b.updated_at_ms
+                 FROM bindings b
+                 WHERE b.channel_id = ?1 AND b.adapter_id = ?2 AND b.lifecycle != 'Detached'",
+            )
+            .map_err(storage_error)?;
+        let mut bindings = Vec::with_capacity(identities.len());
+        for identity in identities {
+            let binding = statement
+                .query_row(
+                    params![identity.channel_id, identity.adapter_id],
+                    StoredBindingSummary::from_row,
+                )
+                .optional()
+                .map_err(storage_error)?
+                .map(StoredBindingSummary::into_contract)
+                .transpose()?;
+            if let Some(binding) = binding {
+                bindings.push(binding);
+            }
+        }
+        Ok(LocatedChannelBindingSummaries { bindings })
     }
 
     pub(crate) fn binding_summary(
@@ -961,7 +1060,7 @@ mod tests {
     use super::{ChannelStore, SCHEMA_VERSION, migrate_v0_to_v1};
     use crate::{
         AcceptedTurn, BindChannelRequest, ChannelInputMode, ChannelLifecycle, ChannelTurn,
-        ChannelTurnDisposition, LocateBindingRequest, NativeChannelError,
+        ChannelTurnDisposition, LocateBindingRequest, MAX_BINDING_CATALOG_PAGE, NativeChannelError,
     };
 
     fn request() -> BindChannelRequest {
@@ -1033,6 +1132,91 @@ mod tests {
             store.list_bindings(257),
             Err(NativeChannelError::InvalidNativePayload)
         ));
+    }
+
+    #[test]
+    fn binding_pages_and_identity_lookup_survive_large_history() {
+        let store = ChannelStore::open_in_memory().expect("store opens");
+        let configured = store
+            .bind(&request(), 1)
+            .expect("configured binding persists");
+        for index in 0..263 {
+            let historical = store
+                .bind(
+                    &BindChannelRequest {
+                        channel_id: format!("history-{index:03}"),
+                        adapter_id: "native-ui".into(),
+                        session_id: format!("history-session-{index:03}"),
+                        native_channel_json: "{}".into(),
+                    },
+                    10 + index,
+                )
+                .expect("historical binding persists");
+            store
+                .detach(&historical.binding_id, 1_000 + index)
+                .expect("historical binding detaches");
+        }
+
+        let compatibility = store
+            .list_bindings(MAX_BINDING_CATALOG_PAGE)
+            .expect("compatibility catalog reads");
+        assert_eq!(compatibility.total_bindings, 264);
+        assert!(
+            compatibility
+                .bindings
+                .iter()
+                .all(|binding| binding.binding_id != configured.binding_id),
+            "newer tombstones hide the configured binding from the compatibility page"
+        );
+
+        let first = store
+            .list_binding_page(None, MAX_BINDING_CATALOG_PAGE, true)
+            .expect("first audit page reads");
+        assert_eq!(first.bindings.len(), MAX_BINDING_CATALOG_PAGE as usize);
+        assert_eq!(first.total_bindings, 264);
+        let cursor = first
+            .next_after_binding_id
+            .as_deref()
+            .expect("first page has a continuation");
+        assert_eq!(
+            cursor,
+            first.bindings.last().expect("page is non-empty").binding_id
+        );
+        assert!(
+            first
+                .bindings
+                .windows(2)
+                .all(|pair| pair[0].binding_id < pair[1].binding_id)
+        );
+        let second = store
+            .list_binding_page(Some(cursor), MAX_BINDING_CATALOG_PAGE, true)
+            .expect("second audit page reads");
+        assert_eq!(second.bindings.len(), 8);
+        assert_eq!(second.total_bindings, 264);
+        assert!(second.next_after_binding_id.is_none());
+
+        let active = store
+            .list_binding_page(None, MAX_BINDING_CATALOG_PAGE, false)
+            .expect("active-only page reads");
+        assert_eq!(active.bindings.len(), 1);
+        assert_eq!(active.bindings[0].binding_id, configured.binding_id);
+        assert_eq!(active.total_bindings, 1);
+        assert!(active.next_after_binding_id.is_none());
+
+        let located = store
+            .locate_binding_summaries(&[
+                LocateBindingRequest {
+                    channel_id: "missing".into(),
+                    adapter_id: "native-ui".into(),
+                },
+                LocateBindingRequest {
+                    channel_id: "channel-1".into(),
+                    adapter_id: "native-ui".into(),
+                },
+            ])
+            .expect("bounded identities resolve");
+        assert_eq!(located.bindings.len(), 1);
+        assert_eq!(located.bindings[0].binding_id, configured.binding_id);
     }
 
     #[test]

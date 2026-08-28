@@ -22,6 +22,9 @@ use tokio::sync::{Mutex, OwnedMutexGuard};
 const EVENT_PAGE_LIMIT: u64 = 1_000;
 const MAX_CHANNEL_IDENTIFIER_BYTES: usize = 256;
 const MAX_NATIVE_PROMPT_BYTES: usize = 2 * 1024 * 1024;
+const MAX_LOCATED_BINDINGS: usize = 128;
+/// Maximum rows returned by one durable binding catalog page.
+pub const MAX_BINDING_CATALOG_PAGE: u64 = 256;
 
 type Clock = Arc<dyn Fn() -> Result<u64, NativeChannelError> + Send + Sync>;
 
@@ -460,6 +463,30 @@ impl NativeChannel {
         self.store.list_bindings(request.limit)
     }
 
+    pub async fn list_binding_page(
+        &self,
+        context: CallContext,
+        request: ListChannelBindingPageRequest,
+    ) -> Result<ChannelBindingCatalogPage, NativeChannelError> {
+        let _ = context;
+        validate_binding_page_request(&request)?;
+        self.store.list_binding_page(
+            request.after_binding_id.as_deref(),
+            request.limit,
+            request.include_detached,
+        )
+    }
+
+    pub async fn locate_binding_summaries(
+        &self,
+        context: CallContext,
+        request: LocateChannelBindingSummariesRequest,
+    ) -> Result<LocatedChannelBindingSummaries, NativeChannelError> {
+        let _ = context;
+        validate_located_bindings_request(&request)?;
+        self.store.locate_binding_summaries(&request.identities)
+    }
+
     pub async fn binding_summary(
         &self,
         context: CallContext,
@@ -499,6 +526,42 @@ impl NativeChannel {
         let _operation = self.operations.lock_binding(&request.binding_id).await?;
         self.store.detach(&request.binding_id, (self.clock)()?)
     }
+}
+
+fn validate_binding_page_request(
+    request: &ListChannelBindingPageRequest,
+) -> Result<(), NativeChannelError> {
+    if request.limit == 0
+        || request.limit > MAX_BINDING_CATALOG_PAGE
+        || request
+            .after_binding_id
+            .as_deref()
+            .is_some_and(|binding_id| !valid_identifier(binding_id))
+    {
+        return Err(NativeChannelError::InvalidNativePayload);
+    }
+    Ok(())
+}
+
+fn validate_located_bindings_request(
+    request: &LocateChannelBindingSummariesRequest,
+) -> Result<(), NativeChannelError> {
+    if request.identities.len() > MAX_LOCATED_BINDINGS
+        || request.identities.iter().any(|identity| {
+            !valid_identifier(&identity.channel_id) || !valid_identifier(&identity.adapter_id)
+        })
+    {
+        return Err(NativeChannelError::InvalidNativePayload);
+    }
+    let identities = request
+        .identities
+        .iter()
+        .map(|identity| (&identity.adapter_id, &identity.channel_id))
+        .collect::<std::collections::HashSet<_>>();
+    if identities.len() != request.identities.len() {
+        return Err(NativeChannelError::InvalidNativePayload);
+    }
+    Ok(())
 }
 
 #[derive(Eq, Hash, PartialEq)]
@@ -759,6 +822,8 @@ mod tests {
                 "recover_session",
                 "channel_status",
                 "list_bindings",
+                "list_binding_page",
+                "locate_binding_summaries",
                 "binding_summary",
                 "inspect_binding",
                 "find_binding",
@@ -767,6 +832,80 @@ mod tests {
         );
         assert!(names.iter().all(|name| !name.contains("bridge")));
         assert_ne!(ChannelInputMode::Queue, ChannelInputMode::Steer);
+    }
+
+    #[test]
+    fn binding_catalog_queries_are_bounded_before_storage() {
+        use super::{
+            ListChannelBindingPageRequest, LocateBindingRequest,
+            LocateChannelBindingSummariesRequest, MAX_LOCATED_BINDINGS,
+            validate_binding_page_request, validate_located_bindings_request,
+        };
+
+        validate_binding_page_request(&ListChannelBindingPageRequest {
+            after_binding_id: Some("b".repeat(MAX_CHANNEL_IDENTIFIER_BYTES)),
+            limit: 256,
+            include_detached: true,
+        })
+        .expect("exact page limits pass");
+        for request in [
+            ListChannelBindingPageRequest {
+                after_binding_id: None,
+                limit: 0,
+                include_detached: false,
+            },
+            ListChannelBindingPageRequest {
+                after_binding_id: None,
+                limit: 257,
+                include_detached: false,
+            },
+            ListChannelBindingPageRequest {
+                after_binding_id: Some(String::new()),
+                limit: 1,
+                include_detached: false,
+            },
+            ListChannelBindingPageRequest {
+                after_binding_id: Some("b".repeat(MAX_CHANNEL_IDENTIFIER_BYTES + 1)),
+                limit: 1,
+                include_detached: false,
+            },
+        ] {
+            assert_eq!(
+                validate_binding_page_request(&request),
+                Err(NativeChannelError::InvalidNativePayload)
+            );
+        }
+
+        let identities = (0..MAX_LOCATED_BINDINGS)
+            .map(|index| LocateBindingRequest {
+                channel_id: format!("channel-{index}"),
+                adapter_id: "native-ui".into(),
+            })
+            .collect::<Vec<_>>();
+        validate_located_bindings_request(&LocateChannelBindingSummariesRequest {
+            identities: identities.clone(),
+        })
+        .expect("exact identity limit passes");
+        let mut oversized = identities.clone();
+        oversized.push(LocateBindingRequest {
+            channel_id: "one-too-many".into(),
+            adapter_id: "native-ui".into(),
+        });
+        for invalid in [
+            oversized,
+            vec![identities[0].clone(), identities[0].clone()],
+            vec![LocateBindingRequest {
+                channel_id: "c".repeat(MAX_CHANNEL_IDENTIFIER_BYTES + 1),
+                adapter_id: "native-ui".into(),
+            }],
+        ] {
+            assert_eq!(
+                validate_located_bindings_request(&LocateChannelBindingSummariesRequest {
+                    identities: invalid,
+                }),
+                Err(NativeChannelError::InvalidNativePayload)
+            );
+        }
     }
 
     #[test]

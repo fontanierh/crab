@@ -1,9 +1,11 @@
 flowchart LR
     CLI["crab-v2-channel<br/>owner process"]
+    HEALTH["crab-v2-health<br/>configured topology only"]
     IPC["authenticated local IPC<br/>0600 socket + token"]
 
     subgraph RUNTIME["single Crab v2 runtime"]
-        CATALOG["list_bindings<br/>binding_summary"]
+        PAGE["list_binding_page<br/>active or all · identity cursor"]
+        LOCATE["locate_binding_summaries<br/>≤128 configured identities"]
         STORE[("native-channel.sqlite<br/>identity · cursors · pending")]
         EVENTS["replay_native_events<br/>bounded cursor page"]
         JOURNAL[("agent-host ACP journal<br/>thoughts · tools · terminal · diffs")]
@@ -12,14 +14,17 @@ flowchart LR
     end
 
     CLI --> IPC
-    IPC --> CATALOG --> STORE
+    HEALTH --> IPC
+    IPC --> PAGE --> STORE
+    IPC --> LOCATE --> STORE
     IPC --> EVENTS --> JOURNAL
     IPC --> INTERRUPT --> RUN
-    STORE -. "adapter destination metadata omitted" .-> CATALOG
+    STORE -. "adapter destination metadata omitted" .-> PAGE
+    STORE -. "history never scanned" .-> LOCATE
 
     classDef owner fill:#e0f2fe,stroke:#0369a1,stroke-width:2px,color:#0c4a6e;
     classDef boundary fill:#fef3c7,stroke:#d97706,stroke-width:2px,color:#78350f;
     classDef durable fill:#dcfce7,stroke:#16a34a,stroke-width:2px,color:#14532d;
-    class CLI owner;
-    class IPC,CATALOG,EVENTS,INTERRUPT boundary;
+    class CLI,HEALTH owner;
+    class IPC,PAGE,LOCATE,EVENTS,INTERRUPT boundary;
     class STORE,JOURNAL,RUN durable;

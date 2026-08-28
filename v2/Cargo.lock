@@ -257,9 +257,9 @@ dependencies = [
 
 [[package]]
 name = "boxology"
-version = "0.2.1"
+version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e13984f4338a4fb9c6f4388554b1eca6190fc315f6615b585a7ef97b0a5bf7b1"
+checksum = "da2c675c8e504c8b5cdffb37ea9e1c47aba857c2d36120aa9b7abef1e07ad668"
 dependencies = [
  "boxology-contract",
  "boxology-macros",
@@ -267,9 +267,9 @@ dependencies = [
 
 [[package]]
 name = "boxology-contract"
-version = "0.2.1"
+version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ebf3782fd5504e232b1c1aefd2d676c926347b073a15a89f1095607b01c72cfb"
+checksum = "39051a0f70acd0355a0eba28af54fb0bd4c7d74124424dcb7fcee68236eaacbd"
 dependencies = [
  "base64",
  "ryu",
@@ -281,9 +281,9 @@ dependencies = [
 
 [[package]]
 name = "boxology-contract-syntax"
-version = "0.2.1"
+version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9fc67a8d25c215320016c8c1aca8659b0efd63c681cbbe73c655bfd60a8fa74e"
+checksum = "bd58f5e66f63381e91835ef47f7df78aebec1c201cd7388391bc0988226c0de5"
 dependencies = [
  "boxology-contract",
  "proc-macro2",
@@ -293,9 +293,9 @@ dependencies = [
 
 [[package]]
 name = "boxology-macros"
-version = "0.2.1"
+version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "057749a5409a2eff1481ba9562268565e155e12a966ca3f612652998cd5188b0"
+checksum = "73b2565ba57dd178d55f094315e84b3278ed4e8d294c2522dd218fca2215abe1"
 dependencies = [
  "boxology-contract-syntax",
  "proc-macro2",
@@ -305,9 +305,9 @@ dependencies = [
 
 [[package]]
 name = "boxology-manifest"
-version = "0.2.1"
+version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "aa7c672aabd4c8de8baf56c476f0a95f0c4ba8e4b91b0377078ae2ec2c77a631"
+checksum = "2897ef3b1ecd7a0f525bff00cd2fdd91418a4e418a4e4897bc6bbd8318f10989"
 dependencies = [
  "boxology-contract",
  "toml_edit",
@@ -315,9 +315,9 @@ dependencies = [
 
 [[package]]
 name = "boxology-runtime"
-version = "0.2.1"
+version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "83880e581d22dc57e01db1b95916aeb8814612d8d05bea08fc218f4561e4e439"
+checksum = "3d929d5214838ae980f3e4de5eccc35e272b45fa054443c8fd59d5cfe7518d30"
 dependencies = [
  "boxology-contract",
  "tokio",

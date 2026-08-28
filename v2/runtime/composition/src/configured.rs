@@ -679,7 +679,10 @@ mod tests {
         AttachChannelRequest, ChannelAttachmentDisposition, ChannelGatewayError,
     };
     use channel_gateway_implementation::{ChannelGateway, generated as channel_gateway};
-    use native_channel_contract::{BindingReference, ChannelLifecycle, ListChannelBindingsRequest};
+    use native_channel_contract::{
+        BindChannelRequest, BindingReference, ChannelLifecycle, ListChannelBindingPageRequest,
+        ListChannelBindingsRequest, LocateBindingRequest, LocateChannelBindingSummariesRequest,
+    };
     use native_channel_implementation::{NativeChannelState, generated as native_channel};
     use runtime_control_implementation::{RuntimeControl, generated as runtime_control};
     use serde_json::json;
@@ -1857,6 +1860,62 @@ mod tests {
             .expect("binding summary crosses authenticated IPC");
         assert_eq!(binding_summary.pending_input_count, 0);
         assert_eq!(binding_summary.lifecycle, ChannelLifecycle::Attached);
+        for index in 0..257 {
+            let historical = graph
+                .native_channel
+                .bind_channel(
+                    call_context(),
+                    BindChannelRequest {
+                        channel_id: format!("historical-{index:03}"),
+                        adapter_id: "t3code".into(),
+                        session_id: sessions[0].clone(),
+                        native_channel_json: "{}".into(),
+                    },
+                )
+                .await
+                .expect("historical binding persists");
+            graph
+                .native_channel
+                .unbind_channel(
+                    call_context(),
+                    BindingReference {
+                        binding_id: historical.binding_id,
+                    },
+                )
+                .await
+                .expect("historical binding detaches");
+        }
+        let compatibility = channel_client
+            .list_channel_bindings(ListChannelBindingsRequest { limit: 256 })
+            .await
+            .expect("legacy catalog remains bounded");
+        assert_eq!(compatibility.total_bindings, 258);
+        assert!(
+            compatibility
+                .bindings
+                .iter()
+                .all(|binding| binding.binding_id != first.binding_id)
+        );
+        let active_page = channel_client
+            .list_channel_binding_page(ListChannelBindingPageRequest {
+                after_binding_id: None,
+                limit: 256,
+                include_detached: false,
+            })
+            .await
+            .expect("active audit page crosses authenticated IPC");
+        assert_eq!(active_page.total_bindings, 1);
+        assert_eq!(active_page.bindings[0].binding_id, first.binding_id);
+        let located = channel_client
+            .locate_channel_binding_summaries(LocateChannelBindingSummariesRequest {
+                identities: vec![LocateBindingRequest {
+                    channel_id: "primary".into(),
+                    adapter_id: "native-ui".into(),
+                }],
+            })
+            .await
+            .expect("configured identity lookup crosses authenticated IPC");
+        assert_eq!(located.bindings[0].binding_id, first.binding_id);
         let health = inspect_runtime_health(&channel_client, &config)
             .await
             .expect("configured health aggregates through authenticated IPC");

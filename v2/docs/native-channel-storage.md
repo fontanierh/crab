@@ -31,9 +31,11 @@ and sequence instead of copying it into a second event journal.
 - Replay reads every ordered ACP event, including client-to-agent messages and tool activity, even
   while the binding is failed or detached; the durable `agent-host` journal does not depend on a
   live adapter process.
-- Owner discovery reads a bounded newest-first binding catalog from the same transactionally
-  durable rows. The catalog includes pending-turn counts but deliberately omits opaque adapter
-  destination metadata; no schema migration is required.
+- Owner discovery reads bounded identity-keyset pages from the same transactionally durable rows.
+  Active-only pages exclude detached history; audit pages retain it. Both include pending-turn
+  counts but deliberately omit opaque adapter destination metadata. Configuration-aware health
+  resolves at most 128 exact `(adapter_id, channel_id)` identities without scanning the catalog;
+  no schema migration is required.
 - Adapter publication is acknowledged strictly in sequence. The submitted event must match the
   authoritative ACP record; retries return the same deterministic delivery receipt.
 - Native UI interrupt is a separate operation: it cancels the active run and leaves accepted queued
