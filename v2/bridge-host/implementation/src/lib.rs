@@ -46,6 +46,8 @@ type Clock = Arc<dyn Fn() -> Result<u64, BridgeHostError> + Send + Sync>;
 const MAX_BRIDGE_ID_BYTES: usize = 512;
 /// Maximum durable registrations that have not been explicitly retired.
 pub const MAX_ACTIVE_BRIDGE_REGISTRATIONS: usize = 128;
+/// Maximum number of durable bridge records returned by one catalog call.
+pub const MAX_BRIDGE_CATALOG_PAGE: u64 = 256;
 const MAX_PACKAGE_ID_BYTES: usize = 512;
 const MAX_DISPLAY_NAME_BYTES: usize = 1024;
 const MAX_LAUNCH_JSON_BYTES: usize = 256 * 1024;
@@ -1051,6 +1053,25 @@ impl BridgeHost {
         })
     }
 
+    pub async fn list_bridge_page(
+        &self,
+        context: CallContext,
+        request: ListBridgePageRequest,
+    ) -> Result<BridgeCatalogPage, BridgeHostError> {
+        let _ = context;
+        validate_catalog_page_request(&request)?;
+        let (bridges, total_bridges, next_after_bridge_id) = self.store.records_page(
+            request.after_bridge_id.as_deref(),
+            request.limit,
+            request.include_unregistered,
+        )?;
+        Ok(BridgeCatalogPage {
+            bridges,
+            total_bridges,
+            next_after_bridge_id,
+        })
+    }
+
     pub async fn replace_bridge(
         &self,
         context: CallContext,
@@ -1600,6 +1621,19 @@ fn validate_spec(spec: &BridgeSpec) -> Result<(), BridgeHostError> {
     Ok(())
 }
 
+fn validate_catalog_page_request(request: &ListBridgePageRequest) -> Result<(), BridgeHostError> {
+    if request.limit == 0
+        || request.limit > MAX_BRIDGE_CATALOG_PAGE
+        || request
+            .after_bridge_id
+            .as_deref()
+            .is_some_and(|bridge_id| !valid_required(bridge_id, MAX_BRIDGE_ID_BYTES))
+    {
+        return Err(BridgeHostError::InvalidSpec);
+    }
+    Ok(())
+}
+
 fn validate_bridge_id(bridge_id: &str) -> Result<(), BridgeHostError> {
     if !valid_required(bridge_id, MAX_BRIDGE_ID_BYTES) {
         return Err(BridgeHostError::InvalidSpec);
@@ -1946,9 +1980,10 @@ mod tests {
         BridgeCredentialSink, BridgeCredentialUpdate, BridgeHostError, BridgeInbound,
         BridgeIngressMode, BridgeManagement, BridgeOperationLocks, BridgeOutbound, BridgeSpec,
         BridgeStore, CredentialLifecycle, DeliveryReference, HealthObservation,
-        InMemoryCredentialStore, MAX_ACCOUNT_HINT_BYTES, MAX_AUTHENTICATION_CONTEXT_JSON_BYTES,
-        MAX_AUTHENTICATION_METHODS, MAX_AUTHENTICATION_PRESENTATION_JSON_BYTES,
-        MAX_AUTHENTICATION_RESPONSE_JSON_BYTES, MAX_BRIDGE_ATTACHMENTS, MAX_BRIDGE_ID_BYTES,
+        InMemoryCredentialStore, ListBridgePageRequest, MAX_ACCOUNT_HINT_BYTES,
+        MAX_AUTHENTICATION_CONTEXT_JSON_BYTES, MAX_AUTHENTICATION_METHODS,
+        MAX_AUTHENTICATION_PRESENTATION_JSON_BYTES, MAX_AUTHENTICATION_RESPONSE_JSON_BYTES,
+        MAX_BRIDGE_ATTACHMENTS, MAX_BRIDGE_CATALOG_PAGE, MAX_BRIDGE_ID_BYTES,
         MAX_CHALLENGE_ID_BYTES, MAX_CONFIGURATION_JSON_BYTES, MAX_CONTENT_HANDLE_BYTES,
         MAX_CREDENTIAL_SNAPSHOT_JSON_BYTES, MAX_DISPLAY_NAME_BYTES, MAX_ENDPOINT_JSON_BYTES,
         MAX_EXTERNAL_DELIVERY_ID_BYTES, MAX_LAUNCH_JSON_BYTES, MAX_MESSAGE_ID_BYTES,
@@ -1956,10 +1991,11 @@ mod tests {
         MAX_PACKAGE_ID_BYTES, MAX_RESTART_LIMIT, PackageChallenge, PackageCredential,
         PackageCredentialValidation, PackageDelivery, PackageHealth, SubmitAuthenticationRequest,
         generated, normalized_inbound_message, validate_begin_authentication, validate_bridge_id,
-        validate_credential_update, validate_delivery_reference, validate_health_observation,
-        validate_inbound, validate_outbound, validate_package_challenge,
-        validate_package_credential, validate_package_delivery, validate_package_health,
-        validate_package_validation, validate_spec, validate_submit_authentication,
+        validate_catalog_page_request, validate_credential_update, validate_delivery_reference,
+        validate_health_observation, validate_inbound, validate_outbound,
+        validate_package_challenge, validate_package_credential, validate_package_delivery,
+        validate_package_health, validate_package_validation, validate_spec,
+        validate_submit_authentication,
     };
 
     fn sized_text_json(size: usize) -> String {
@@ -2209,6 +2245,44 @@ mod tests {
             response_json: sized_text_json(MAX_AUTHENTICATION_RESPONSE_JSON_BYTES),
         })
         .expect("exact authentication response limits pass");
+    }
+
+    #[test]
+    fn bridge_catalog_page_admission_is_bounded_before_storage() {
+        validate_catalog_page_request(&ListBridgePageRequest {
+            after_bridge_id: Some("b".repeat(MAX_BRIDGE_ID_BYTES)),
+            limit: MAX_BRIDGE_CATALOG_PAGE,
+            include_unregistered: true,
+        })
+        .expect("exact catalog limits pass");
+
+        for request in [
+            ListBridgePageRequest {
+                after_bridge_id: None,
+                limit: 0,
+                include_unregistered: false,
+            },
+            ListBridgePageRequest {
+                after_bridge_id: None,
+                limit: MAX_BRIDGE_CATALOG_PAGE + 1,
+                include_unregistered: false,
+            },
+            ListBridgePageRequest {
+                after_bridge_id: Some(String::new()),
+                limit: 1,
+                include_unregistered: false,
+            },
+            ListBridgePageRequest {
+                after_bridge_id: Some("b".repeat(MAX_BRIDGE_ID_BYTES + 1)),
+                limit: 1,
+                include_unregistered: false,
+            },
+        ] {
+            assert!(matches!(
+                validate_catalog_page_request(&request),
+                Err(BridgeHostError::InvalidSpec)
+            ));
+        }
     }
 
     #[test]

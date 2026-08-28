@@ -9,7 +9,7 @@ use crate::{
     BridgeInbound, BridgeIngressMode, BridgeLifecycle, BridgeManagement, BridgeOutbound,
     BridgeReceipt, BridgeRecord, BridgeSpec, BridgeStatus, CredentialLifecycle, CredentialStatus,
     DeliveryLifecycle, DeliveryReceipt, HealthObservation, MAX_ACTIVE_BRIDGE_REGISTRATIONS,
-    TriggerIntent,
+    MAX_BRIDGE_CATALOG_PAGE, TriggerIntent,
 };
 
 const SCHEMA_VERSION: i64 = 3;
@@ -89,6 +89,18 @@ impl BridgeStore {
             )
             .map_err(storage_error)?;
         transaction.commit().map_err(storage_error)?;
+        let active = connection
+            .query_row(
+                "SELECT COUNT(*) FROM bridges WHERE lifecycle != 'Unregistered'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .map_err(storage_error)?;
+        let active_limit = i64::try_from(MAX_ACTIVE_BRIDGE_REGISTRATIONS)
+            .map_err(|_| BridgeHostError::StorageUnavailable)?;
+        if active > active_limit {
+            return Err(BridgeHostError::BridgeCapacityExceeded);
+        }
         Ok(Self {
             connection: Mutex::new(connection),
         })
@@ -446,10 +458,17 @@ impl BridgeStore {
         let bridge_ids = {
             let connection = self.lock()?;
             let mut statement = connection
-                .prepare("SELECT bridge_id FROM bridges ORDER BY bridge_id")
+                .prepare(
+                    "SELECT bridge_id FROM bridges
+                     ORDER BY CASE WHEN lifecycle = 'Unregistered' THEN 1 ELSE 0 END,
+                              bridge_id
+                     LIMIT ?1",
+                )
                 .map_err(storage_error)?;
             statement
-                .query_map([], |row| row.get::<_, String>(0))
+                .query_map(params![db_i64(MAX_BRIDGE_CATALOG_PAGE)?], |row| {
+                    row.get::<_, String>(0)
+                })
                 .map_err(storage_error)?
                 .collect::<rusqlite::Result<Vec<_>>>()
                 .map_err(storage_error)?
@@ -458,6 +477,64 @@ impl BridgeStore {
             .iter()
             .map(|bridge_id| self.record(bridge_id))
             .collect()
+    }
+
+    pub(crate) fn records_page(
+        &self,
+        after_bridge_id: Option<&str>,
+        limit: u64,
+        include_unregistered: bool,
+    ) -> Result<(Vec<BridgeRecord>, u64, Option<String>), BridgeHostError> {
+        if limit == 0 || limit > MAX_BRIDGE_CATALOG_PAGE {
+            return Err(BridgeHostError::InvalidSpec);
+        }
+        let fetch_limit = limit.checked_add(1).ok_or(BridgeHostError::InvalidSpec)?;
+        let (mut bridge_ids, total_bridges) = {
+            let mut connection = self.lock()?;
+            let transaction = connection.transaction().map_err(storage_error)?;
+            let total = transaction
+                .query_row(
+                    "SELECT COUNT(*) FROM bridges
+                     WHERE ?1 OR lifecycle != 'Unregistered'",
+                    params![include_unregistered],
+                    |row| row.get::<_, i64>(0),
+                )
+                .map_err(storage_error)?;
+            let bridge_ids = {
+                let mut statement = transaction
+                    .prepare(
+                        "SELECT bridge_id FROM bridges
+                         WHERE (?1 IS NULL OR bridge_id > ?1)
+                           AND (?2 OR lifecycle != 'Unregistered')
+                         ORDER BY bridge_id
+                         LIMIT ?3",
+                    )
+                    .map_err(storage_error)?;
+                statement
+                    .query_map(
+                        params![after_bridge_id, include_unregistered, db_i64(fetch_limit)?],
+                        |row| row.get::<_, String>(0),
+                    )
+                    .map_err(storage_error)?
+                    .collect::<rusqlite::Result<Vec<_>>>()
+                    .map_err(storage_error)?
+            };
+            transaction.commit().map_err(storage_error)?;
+            (bridge_ids, db_u64(total)?)
+        };
+        let page_limit = usize::try_from(limit).map_err(|_| BridgeHostError::InvalidSpec)?;
+        let has_more = bridge_ids.len() > page_limit;
+        bridge_ids.truncate(page_limit);
+        let next_after_bridge_id = if has_more {
+            bridge_ids.last().cloned()
+        } else {
+            None
+        };
+        let records = bridge_ids
+            .iter()
+            .map(|bridge_id| self.record(bridge_id))
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok((records, total_bridges, next_after_bridge_id))
     }
 
     pub(crate) fn record(&self, bridge_id: &str) -> Result<BridgeRecord, BridgeHostError> {
@@ -2346,7 +2423,7 @@ mod tests {
     use crate::{
         AuthenticationMethod, BridgeAlertTarget, BridgeHostError, BridgeIngressMode,
         BridgeLifecycle, BridgeManagement, BridgeSpec, CredentialLifecycle, HealthObservation,
-        MAX_ACTIVE_BRIDGE_REGISTRATIONS, PackageChallenge,
+        MAX_ACTIVE_BRIDGE_REGISTRATIONS, MAX_BRIDGE_CATALOG_PAGE, PackageChallenge,
     };
 
     fn spec(desired_running: bool) -> BridgeSpec {
@@ -2464,6 +2541,35 @@ mod tests {
     }
 
     #[test]
+    fn restart_rejects_a_preexisting_active_capacity_violation() {
+        let directory = tempfile::tempdir().expect("temporary state directory");
+        let path = directory.path().join("over-capacity.sqlite");
+        let store = BridgeStore::open(&path).expect("store opens");
+        for offset in 0..=MAX_ACTIVE_BRIDGE_REGISTRATIONS {
+            let mut bridge = spec(false);
+            bridge.bridge_id = format!("bridge-{offset:03}");
+            bridge.management = BridgeManagement::AgentManaged;
+            store
+                .register(&bridge, offset as u64)
+                .expect("bridge registers before retirement");
+            store
+                .unregister(&bridge.bridge_id, 1, offset as u64 + 1)
+                .expect("bridge retires");
+        }
+        store
+            .lock()
+            .expect("store lock")
+            .execute("UPDATE bridges SET lifecycle = 'Registered'", [])
+            .expect("fixture simulates a pre-cap database");
+        drop(store);
+
+        assert!(matches!(
+            BridgeStore::open(&path),
+            Err(BridgeHostError::BridgeCapacityExceeded)
+        ));
+    }
+
+    #[test]
     fn catalog_is_empty_then_ordered_replaced_and_restart_safe() {
         let directory = tempfile::tempdir().expect("temporary state directory");
         let path = directory.path().join("catalog.sqlite");
@@ -2494,6 +2600,82 @@ mod tests {
         assert_eq!(records[0].generation, 2);
         assert_eq!(records[0].management, BridgeManagement::RuntimeConfigured);
         assert_eq!(records[1].management, BridgeManagement::AgentManaged);
+    }
+
+    #[test]
+    fn catalog_pages_are_bounded_complete_and_filterable() {
+        let store = BridgeStore::open_in_memory().expect("store opens");
+        let tombstone_count =
+            usize::try_from(MAX_BRIDGE_CATALOG_PAGE).expect("catalog limit fits") + 5;
+        for offset in 0..tombstone_count {
+            let mut bridge = spec(false);
+            bridge.bridge_id = format!("retired-{offset:03}");
+            bridge.management = BridgeManagement::AgentManaged;
+            store
+                .register(&bridge, offset as u64)
+                .expect("bridge registers");
+            store
+                .unregister(&bridge.bridge_id, 1, offset as u64 + 1)
+                .expect("bridge retires");
+        }
+        for bridge_id in ["active-alpha", "active-omega"] {
+            let mut bridge = spec(false);
+            bridge.bridge_id = bridge_id.into();
+            bridge.management = BridgeManagement::AgentManaged;
+            store
+                .register(&bridge, 10_000)
+                .expect("active bridge registers");
+        }
+
+        let compatibility = store.records().expect("compatibility catalog reads");
+        assert_eq!(compatibility.len(), MAX_BRIDGE_CATALOG_PAGE as usize);
+        assert!(["active-alpha", "active-omega"].iter().all(|bridge_id| {
+            compatibility
+                .iter()
+                .any(|record| record.bridge_id == *bridge_id)
+        }));
+
+        let (first, total, next) = store
+            .records_page(None, MAX_BRIDGE_CATALOG_PAGE, true)
+            .expect("first page reads");
+        assert_eq!(first.len(), MAX_BRIDGE_CATALOG_PAGE as usize);
+        assert_eq!(total, tombstone_count as u64 + 2);
+        let next = next.expect("first page has a continuation");
+        assert_eq!(next, first.last().expect("page is non-empty").bridge_id);
+        assert!(
+            first
+                .windows(2)
+                .all(|pair| pair[0].bridge_id < pair[1].bridge_id)
+        );
+
+        let (second, second_total, second_next) = store
+            .records_page(Some(&next), MAX_BRIDGE_CATALOG_PAGE, true)
+            .expect("second page reads");
+        assert_eq!(second.len(), 7);
+        assert_eq!(second_total, total);
+        assert!(second_next.is_none());
+        assert!(first.last().expect("first page ends").bridge_id < second[0].bridge_id);
+
+        let (active, active_total, active_next) = store
+            .records_page(None, MAX_BRIDGE_CATALOG_PAGE, false)
+            .expect("active-only page reads");
+        assert_eq!(active.len(), 2);
+        assert_eq!(active_total, 2);
+        assert!(active_next.is_none());
+        assert!(
+            active
+                .iter()
+                .all(|record| record.lifecycle != BridgeLifecycle::Unregistered)
+        );
+
+        assert!(matches!(
+            store.records_page(None, 0, true),
+            Err(BridgeHostError::InvalidSpec)
+        ));
+        assert!(matches!(
+            store.records_page(None, MAX_BRIDGE_CATALOG_PAGE + 1, true),
+            Err(BridgeHostError::InvalidSpec)
+        ));
     }
 
     #[test]

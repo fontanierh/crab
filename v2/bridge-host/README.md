@@ -68,6 +68,16 @@ agent-managed bridge releases its slot before another identity can be admitted.
 Registration validates path shape without requiring a stopped package to be running. Actual launch
 also requires the configured working directory to exist.
 
+## Catalog boundary
+
+![Bridge catalog boundary](bridge-catalog-boundary.png)
+
+The compatibility catalog is capped at 256 records and places every non-retired registration
+before tombstones; the transactional 128-registration ceiling therefore keeps every active bridge
+visible. The paged catalog provides identity-keyset traversal over active records or the complete
+auditable tombstone history. Each page is limited to 256 records and reports both the filter-wide
+total and a continuation identity without loading the remaining rows.
+
 ## Package result boundary
 
 ![Bridge package result admission boundary](bridge-result-boundary.png)

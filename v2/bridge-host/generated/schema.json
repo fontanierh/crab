@@ -42,6 +42,25 @@
     {
       "deprecation": null,
       "docs": [
+        " Page durable registrations by bridge identity without loading the full catalog."
+      ],
+      "error": "BridgeHostError",
+      "id": "bridge-host.list_bridge_page",
+      "idempotency": "none",
+      "input": {
+        "name": "request",
+        "type": "ListBridgePageRequest"
+      },
+      "max_exposure": "code_only",
+      "name": "list_bridge_page",
+      "output": {
+        "type": "BridgeCatalogPage"
+      },
+      "shape": "unary"
+    },
+    {
+      "deprecation": null,
+      "docs": [
         " Install a new immutable generation; ingress mode changes only through this operation."
       ],
       "error": "BridgeHostError",
@@ -314,9 +333,9 @@
   "provenance": {
     "generator": "boxology-generator",
     "generator_version": "0.1.1",
-    "semantic_digest": "sha256:c6aacccc66a545b60b38f5557132fad4f352f525a5d0872a0e6c135c6bee0990"
+    "semantic_digest": "sha256:4fc2538635ca41a3f5d45f3c844d18b710debd693596a9b51819d0ce419df2fb"
   },
-  "revision": "sha256:6ee843afc640d2eb100167411504248414a82da77e3e0b96b8e90ded984d2dff",
+  "revision": "sha256:562d4a1fd5750ed686526738df59d52b2080c3a8abed659a5cffb98f24738563",
   "schema_format": 1,
   "types": [
     {
@@ -743,7 +762,8 @@
     {
       "deprecation": null,
       "docs": [
-        " Non-secret durable registrations ordered by bridge identity."
+        " Bounded compatibility catalog: active registrations first, then tombstones; each class is",
+        " ordered by bridge identity."
       ],
       "fields": [
         {
@@ -762,6 +782,60 @@
       "fields": [],
       "kind": "struct",
       "name": "ListBridgesRequest"
+    },
+    {
+      "deprecation": null,
+      "docs": [
+        " One bounded, identity-ordered view over the durable bridge catalog."
+      ],
+      "fields": [
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "bridges",
+          "type": "Vec<BridgeRecord>"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "total_bridges",
+          "type": "u64"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "next_after_bridge_id",
+          "type": "Option<String>"
+        }
+      ],
+      "kind": "struct",
+      "name": "BridgeCatalogPage"
+    },
+    {
+      "deprecation": null,
+      "docs": [],
+      "fields": [
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "after_bridge_id",
+          "type": "Option<String>"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "limit",
+          "type": "u64"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "include_unregistered",
+          "type": "bool"
+        }
+      ],
+      "kind": "struct",
+      "name": "ListBridgePageRequest"
     },
     {
       "deprecation": null,

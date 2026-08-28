@@ -1,0 +1,30 @@
+flowchart LR
+    STORE[("Durable bridge catalog<br/>active + tombstones")]
+
+    subgraph LEGACY["Compatibility view"]
+        PRIORITY["Active first<br/>identity ordered"]
+        CAP["At most 256 records"]
+    end
+
+    subgraph PAGE["Paged audit view"]
+        INPUT{"Request gate<br/>cursor ≤ 512 B<br/>1 ≤ limit ≤ 256"}
+        FILTER["Optional active-only filter"]
+        KEYSET["Identity keyset<br/>bridge_id > cursor"]
+        WINDOW["Read limit + 1"]
+        RESULT["≤ 256 records<br/>total + next cursor"]
+    end
+
+    REJECT["InvalidSpec<br/>before storage"]
+    STORE --> PRIORITY --> CAP
+    INPUT -->|"invalid"| REJECT
+    INPUT -->|"valid"| FILTER --> KEYSET
+    STORE --> KEYSET --> WINDOW --> RESULT
+
+    classDef durable fill:#dcfce7,stroke:#16a34a,stroke-width:2px,color:#14532d;
+    classDef gate fill:#fef3c7,stroke:#d97706,stroke-width:2px,color:#78350f;
+    classDef runtime fill:#dbeafe,stroke:#2563eb,stroke-width:2px,color:#172554;
+    classDef failure fill:#fee2e2,stroke:#dc2626,stroke-width:2px,color:#7f1d1d;
+    class STORE durable;
+    class INPUT gate;
+    class PRIORITY,CAP,FILTER,KEYSET,WINDOW,RESULT runtime;
+    class REJECT failure;
