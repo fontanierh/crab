@@ -71,6 +71,10 @@ Crab first stores that snapshot and calls `bridge/auth/committed`. Later Signal 
 previous SHA-256 → complete fresh snapshot → durable host ack → next mutation
 ```
 
+Every restored, paired, committed, validated, or freshly mutated snapshot is capped at 8 MiB of
+wire-equivalent JSON. Oversize snapshots are rejected before canonical fingerprinting or protocol
+serialization; oversize live growth fails the package instance for supervised recovery.
+
 An update rejection is fatal. The host then restarts the package from its last acknowledged
 snapshot instead of continuing with memory-only Signal state.
 

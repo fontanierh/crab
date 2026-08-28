@@ -1,4 +1,5 @@
 const SNAPSHOT_SCHEMA = 1;
+export const MAX_CREDENTIAL_SNAPSHOT_BYTES = 8 * 1024 * 1024;
 
 function jsonRoundTrip(value, replacer, reviver) {
   return JSON.parse(JSON.stringify(value, replacer), reviver);
@@ -19,9 +20,22 @@ function assertSnapshot(snapshot) {
   ) {
     throw new Error('invalid credential snapshot');
   }
+  let encoded;
+  try {
+    encoded = JSON.stringify(snapshot);
+  } catch {
+    throw new Error('invalid credential snapshot');
+  }
+  if (
+    typeof encoded !== 'string' ||
+    Buffer.byteLength(encoded) > MAX_CREDENTIAL_SNAPSHOT_BYTES
+  ) {
+    throw new Error('credential snapshot too large');
+  }
 }
 
 export function createAuthState({ snapshot, initAuthCreds, bufferJson, appStateSyncKeyFromObject }) {
+  if (snapshot !== null) assertSnapshot(snapshot);
   const decoded = snapshot === null
     ? { schemaVersion: SNAPSHOT_SCHEMA, creds: initAuthCreds(), keys: {} }
     : jsonRoundTrip(snapshot, undefined, bufferJson.reviver);
@@ -65,11 +79,13 @@ export function createAuthState({ snapshot, initAuthCreds, bufferJson, appStateS
   return {
     state,
     snapshot() {
-      return jsonRoundTrip(
+      const encoded = jsonRoundTrip(
         { schemaVersion: SNAPSHOT_SCHEMA, creds: state.creds, keys: keyData },
         bufferJson.replacer,
         undefined,
       );
+      assertSnapshot(encoded);
+      return encoded;
     },
     onMutation(handler) {
       mutationHandler = handler;

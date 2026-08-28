@@ -20,7 +20,9 @@ flowchart TB
     OUT -->|yes| PKG
     OUT -->|no| REJECT
     PKG -->|"credential mutation"| PUBLISH["single-flight publisher<br/>one dirty follow-up"]
-    PUBLISH -->|"newest snapshot<br/>previous hash"| CAS{"active instance<br/>and hash match?"}
+    PUBLISH -->|"newest snapshot"| CREDLIMIT{"serialized credential<br/>≤ 8 MiB?"}
+    CREDLIMIT -->|yes| CAS{"active instance<br/>and hash match?"}
+    CREDLIMIT -->|no| RESTART
     CAS -->|yes| CREDS[("opaque credential file")]
     CREDS -->|"durable ack"| PUBLISH
     CAS -->|no| REJECT
@@ -32,4 +34,4 @@ flowchart TB
     class WA,PKG,ACP service;
     class STREAM,HOST,META,PUBLISH action;
     class PRIVATE,INBOX,CREDS durable;
-    class POLICY,PUMP,LIMIT,VALIDATE,OUT,CAS,REJECT,DROP,RESTART guard;
+    class POLICY,PUMP,LIMIT,VALIDATE,OUT,CREDLIMIT,CAS,REJECT,DROP,RESTART guard;
