@@ -39,9 +39,17 @@ use tokio::{
 };
 use uuid::Uuid;
 
+use package::validate_launch_json;
+
 type Clock = Arc<dyn Fn() -> Result<u64, BridgeHostError> + Send + Sync>;
 
 const MAX_BRIDGE_ID_BYTES: usize = 512;
+const MAX_PACKAGE_ID_BYTES: usize = 512;
+const MAX_DISPLAY_NAME_BYTES: usize = 1024;
+const MAX_LAUNCH_JSON_BYTES: usize = 256 * 1024;
+const MAX_CONFIGURATION_JSON_BYTES: usize = 1024 * 1024;
+const MAX_AUTHENTICATION_METHODS: usize = 6;
+const MAX_RESTART_LIMIT: u64 = 64;
 const MAX_EXTERNAL_EVENT_ID_BYTES: usize = 1024;
 const MAX_CHANNEL_ID_BYTES: usize = 512;
 const MAX_MESSAGE_ID_BYTES: usize = 1024;
@@ -967,8 +975,8 @@ impl BridgeHost {
         request: BridgeSpec,
     ) -> Result<BridgeRecord, BridgeHostError> {
         let _ = context;
-        let _operation = self.operations.lock(&request.bridge_id).await?;
         validate_spec(&request)?;
+        let _operation = self.operations.lock(&request.bridge_id).await?;
         let (record, _) = self.store.register(&request, (self.clock)()?)?;
         if record.desired_running {
             self.ensure_supervisor(&record.bridge_id);
@@ -994,8 +1002,8 @@ impl BridgeHost {
         request: ReplaceBridgeRequest,
     ) -> Result<BridgeRecord, BridgeHostError> {
         let _ = context;
-        let _operation = self.operations.lock(&request.spec.bridge_id).await?;
         validate_spec(&request.spec)?;
+        let _operation = self.operations.lock(&request.spec.bridge_id).await?;
         let existing = self.store.record(&request.spec.bridge_id)?;
         if existing.generation != request.expected_generation {
             return Err(BridgeHostError::GenerationConflict);
@@ -1485,12 +1493,16 @@ async fn route_inbound(
 }
 
 fn validate_spec(spec: &BridgeSpec) -> Result<(), BridgeHostError> {
-    if spec.bridge_id.trim().is_empty()
-        || spec.package_id.trim().is_empty()
-        || spec.display_name.trim().is_empty()
+    if !valid_required(&spec.bridge_id, MAX_BRIDGE_ID_BYTES)
+        || !valid_required(&spec.package_id, MAX_PACKAGE_ID_BYTES)
+        || !valid_required(&spec.display_name, MAX_DISPLAY_NAME_BYTES)
+        || spec.launch_json.len() > MAX_LAUNCH_JSON_BYTES
+        || spec.configuration_json.len() > MAX_CONFIGURATION_JSON_BYTES
+        || spec.authentication_methods.len() > MAX_AUTHENTICATION_METHODS
         || spec.health_interval_ms == 0
         || spec.credential_validation_interval_ms == 0
         || spec.restart_limit == 0
+        || spec.restart_limit > MAX_RESTART_LIMIT
         || spec.restart_window_ms == 0
         || spec.alert_target.as_ref().is_some_and(|target| {
             target.channel_id.trim().is_empty()
@@ -1501,13 +1513,17 @@ fn validate_spec(spec: &BridgeSpec) -> Result<(), BridgeHostError> {
     {
         return Err(BridgeHostError::InvalidSpec);
     }
-    validate_json_object(&spec.launch_json)?;
+    validate_launch_json(&spec.launch_json).map_err(map_package_error)?;
     validate_json_object(&spec.configuration_json)?;
     let mut methods = spec.authentication_methods.clone();
     methods.sort_by_key(|method| format!("{method:?}"));
     methods.dedup();
     if methods.len() != spec.authentication_methods.len()
+        || methods
+            .iter()
+            .any(|method| matches!(method, AuthenticationMethod::Unknown { .. }))
         || matches!(spec.ingress_mode, BridgeIngressMode::Unknown { .. })
+        || matches!(spec.management, BridgeManagement::Unknown { .. })
     {
         return Err(BridgeHostError::InvalidSpec);
     }
@@ -1699,11 +1715,15 @@ mod tests {
 
     use boxology_contract::{BoxId, CapabilityId};
 
+    use super::package::{MAX_LAUNCH_ARGUMENT_BYTES, MAX_LAUNCH_ARGUMENTS};
     use super::{
-        BridgeAttachment, BridgeHostError, BridgeInbound, BridgeIngressMode, BridgeOperationLocks,
-        BridgeOutbound, MAX_BRIDGE_ATTACHMENTS, MAX_CONTENT_HANDLE_BYTES, MAX_ENDPOINT_JSON_BYTES,
-        MAX_MESSAGE_JSON_BYTES, MAX_NORMALIZED_TRIGGER_BYTES, generated,
-        normalized_inbound_message, validate_inbound, validate_outbound,
+        AuthenticationMethod, BridgeAttachment, BridgeHostError, BridgeInbound, BridgeIngressMode,
+        BridgeManagement, BridgeOperationLocks, BridgeOutbound, BridgeSpec,
+        MAX_AUTHENTICATION_METHODS, MAX_BRIDGE_ATTACHMENTS, MAX_BRIDGE_ID_BYTES,
+        MAX_CONFIGURATION_JSON_BYTES, MAX_CONTENT_HANDLE_BYTES, MAX_DISPLAY_NAME_BYTES,
+        MAX_ENDPOINT_JSON_BYTES, MAX_LAUNCH_JSON_BYTES, MAX_MESSAGE_JSON_BYTES,
+        MAX_NORMALIZED_TRIGGER_BYTES, MAX_PACKAGE_ID_BYTES, MAX_RESTART_LIMIT, generated,
+        normalized_inbound_message, validate_inbound, validate_outbound, validate_spec,
     };
 
     fn sized_text_json(size: usize) -> String {
@@ -1722,6 +1742,34 @@ mod tests {
             name: Some("n".repeat(1024)),
             content_handle: "h".repeat(MAX_CONTENT_HANDLE_BYTES),
         }
+    }
+
+    fn sized_launch_json(size: usize) -> String {
+        let mut arguments = vec!["a".repeat(MAX_LAUNCH_ARGUMENT_BYTES); MAX_LAUNCH_ARGUMENTS];
+        let encode = |arguments: &[String]| {
+            serde_json::json!({
+                "executable": "/fixture",
+                "arguments": arguments,
+                "workingDirectory": "/fixture",
+                "environmentNames": [],
+            })
+            .to_string()
+        };
+        let initial = encode(&arguments);
+        let excess = initial
+            .len()
+            .checked_sub(size)
+            .expect("requested launch size fits maximum launch shape");
+        let final_argument = arguments.last_mut().expect("launch has arguments");
+        final_argument.truncate(
+            final_argument
+                .len()
+                .checked_sub(excess)
+                .expect("requested launch size retains the final argument"),
+        );
+        let encoded = encode(&arguments);
+        assert_eq!(encoded.len(), size);
+        encoded
     }
 
     fn inbound() -> BridgeInbound {
@@ -1744,6 +1792,32 @@ mod tests {
             message_json: sized_text_json(MAX_MESSAGE_JSON_BYTES),
             attachments: vec![attachment(); MAX_BRIDGE_ATTACHMENTS],
             idempotency_key: "idempotency-1".into(),
+        }
+    }
+
+    fn spec() -> BridgeSpec {
+        BridgeSpec {
+            bridge_id: "b".repeat(MAX_BRIDGE_ID_BYTES),
+            package_id: "p".repeat(MAX_PACKAGE_ID_BYTES),
+            display_name: "d".repeat(MAX_DISPLAY_NAME_BYTES),
+            launch_json: sized_launch_json(MAX_LAUNCH_JSON_BYTES),
+            configuration_json: sized_text_json(MAX_CONFIGURATION_JSON_BYTES),
+            authentication_methods: vec![
+                AuthenticationMethod::QrCode,
+                AuthenticationMethod::PhoneCode,
+                AuthenticationMethod::OAuth,
+                AuthenticationMethod::Browser,
+                AuthenticationMethod::Terminal,
+                AuthenticationMethod::Manual,
+            ],
+            ingress_mode: BridgeIngressMode::Queue,
+            management: BridgeManagement::AgentManaged,
+            alert_target: None,
+            desired_running: false,
+            health_interval_ms: 1,
+            credential_validation_interval_ms: 1,
+            restart_limit: MAX_RESTART_LIMIT,
+            restart_window_ms: 1,
         }
     }
 
@@ -1821,6 +1895,61 @@ mod tests {
             validate_outbound(&oversized_handle),
             Err(BridgeHostError::InvalidSpec)
         ));
+    }
+
+    #[test]
+    fn bridge_registration_accepts_exact_field_and_policy_limits() {
+        let spec = spec();
+        assert_eq!(
+            spec.authentication_methods.len(),
+            MAX_AUTHENTICATION_METHODS
+        );
+        validate_spec(&spec).expect("exact bridge registration limits pass");
+    }
+
+    #[test]
+    fn bridge_registration_rejects_each_oversized_field_before_admission() {
+        let valid = spec();
+        let cases = [
+            BridgeSpec {
+                bridge_id: "b".repeat(MAX_BRIDGE_ID_BYTES + 1),
+                ..valid.clone()
+            },
+            BridgeSpec {
+                package_id: "p".repeat(MAX_PACKAGE_ID_BYTES + 1),
+                ..valid.clone()
+            },
+            BridgeSpec {
+                display_name: "d".repeat(MAX_DISPLAY_NAME_BYTES + 1),
+                ..valid.clone()
+            },
+            BridgeSpec {
+                launch_json: sized_launch_json(MAX_LAUNCH_JSON_BYTES + 1),
+                ..valid.clone()
+            },
+            BridgeSpec {
+                configuration_json: sized_text_json(MAX_CONFIGURATION_JSON_BYTES + 1),
+                ..valid.clone()
+            },
+            BridgeSpec {
+                authentication_methods: vec![
+                    AuthenticationMethod::QrCode;
+                    MAX_AUTHENTICATION_METHODS + 1
+                ],
+                ..valid.clone()
+            },
+            BridgeSpec {
+                restart_limit: MAX_RESTART_LIMIT + 1,
+                ..valid
+            },
+        ];
+
+        for candidate in cases {
+            assert!(matches!(
+                validate_spec(&candidate),
+                Err(BridgeHostError::InvalidSpec)
+            ));
+        }
     }
 
     #[test]

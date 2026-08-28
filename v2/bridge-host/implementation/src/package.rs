@@ -36,6 +36,11 @@ const MAX_PROTOCOL_LINE_BYTES: usize = 16 * 1024 * 1024;
 // A queued call can approach the protocol line limit, so keep this deliberately small.
 const PACKAGE_CALL_QUEUE_CAPACITY: usize = 16;
 const PACKAGE_PROTOCOL_VERSION: u64 = 2;
+pub(crate) const MAX_LAUNCH_ARGUMENTS: usize = 64;
+pub(crate) const MAX_LAUNCH_ARGUMENT_BYTES: usize = 4 * 1024;
+pub(crate) const MAX_LAUNCH_ENVIRONMENT_NAMES: usize = 128;
+pub(crate) const MAX_LAUNCH_ENVIRONMENT_NAME_BYTES: usize = 255;
+pub(crate) const MAX_LAUNCH_PATH_BYTES: usize = 4 * 1024;
 
 type PendingCalls = Arc<Mutex<HashMap<String, oneshot::Sender<Result<Value, BridgePackageError>>>>>;
 
@@ -684,17 +689,45 @@ fn terminate_group(process_group: Option<i32>, signal: Signal) {
 }
 
 fn validate_launch(launch: &ProcessLaunch) -> Result<(), BridgePackageError> {
+    validate_launch_shape(launch)?;
+    if !launch.working_directory.is_dir() {
+        return Err(BridgePackageError::InvalidLaunch);
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_launch_json(value: &str) -> Result<(), BridgePackageError> {
+    let launch: ProcessLaunch =
+        serde_json::from_str(value).map_err(|_| BridgePackageError::InvalidLaunch)?;
+    validate_launch_shape(&launch)
+}
+
+fn validate_launch_shape(launch: &ProcessLaunch) -> Result<(), BridgePackageError> {
     let mut environment_names = HashSet::new();
     if !launch.executable.is_absolute()
         || !launch.working_directory.is_absolute()
-        || !launch.working_directory.is_dir()
+        || encoded_path_bytes(&launch.executable) > MAX_LAUNCH_PATH_BYTES
+        || encoded_path_bytes(&launch.working_directory) > MAX_LAUNCH_PATH_BYTES
+        || launch.arguments.len() > MAX_LAUNCH_ARGUMENTS
+        || launch
+            .arguments
+            .iter()
+            .any(|argument| argument.len() > MAX_LAUNCH_ARGUMENT_BYTES || argument.contains('\0'))
+        || launch.environment_names.len() > MAX_LAUNCH_ENVIRONMENT_NAMES
         || launch.environment_names.iter().any(|name| {
-            name.trim().is_empty() || name.contains(['=', '\0']) || !environment_names.insert(name)
+            name.trim().is_empty()
+                || name.len() > MAX_LAUNCH_ENVIRONMENT_NAME_BYTES
+                || name.contains(['=', '\0'])
+                || !environment_names.insert(name)
         })
     {
         return Err(BridgePackageError::InvalidLaunch);
     }
     Ok(())
+}
+
+fn encoded_path_bytes(path: &std::path::Path) -> usize {
+    path.as_os_str().as_encoded_bytes().len()
 }
 
 fn parse_json(value: &str) -> Result<Value, BridgePackageError> {
@@ -920,6 +953,92 @@ mod tests {
     use tokio::io::AsyncWriteExt;
 
     use super::*;
+
+    fn launch_json(
+        executable: String,
+        arguments: Vec<String>,
+        working_directory: String,
+        environment_names: Vec<String>,
+    ) -> String {
+        json!({
+            "executable": executable,
+            "arguments": arguments,
+            "workingDirectory": working_directory,
+            "environmentNames": environment_names,
+        })
+        .to_string()
+    }
+
+    fn exact_environment_name(index: usize) -> String {
+        let prefix = format!("E{index:03}");
+        format!(
+            "{prefix}{}",
+            "x".repeat(MAX_LAUNCH_ENVIRONMENT_NAME_BYTES - prefix.len())
+        )
+    }
+
+    #[test]
+    fn launch_shape_accepts_exact_path_argument_and_environment_limits() {
+        let executable = format!("/{}", "e".repeat(MAX_LAUNCH_PATH_BYTES - 1));
+        let working_directory = format!("/{}", "w".repeat(MAX_LAUNCH_PATH_BYTES - 1));
+        let arguments = vec!["a".repeat(MAX_LAUNCH_ARGUMENT_BYTES); MAX_LAUNCH_ARGUMENTS];
+        let environment_names = (0..MAX_LAUNCH_ENVIRONMENT_NAMES)
+            .map(exact_environment_name)
+            .collect();
+
+        validate_launch_json(&launch_json(
+            executable,
+            arguments,
+            working_directory,
+            environment_names,
+        ))
+        .expect("exact launch shape limits pass");
+    }
+
+    #[test]
+    fn launch_shape_rejects_one_path_argument_or_environment_entry_over() {
+        let valid = || launch_json("/bin/bridge".into(), vec![], "/tmp".into(), vec![]);
+        let cases = [
+            launch_json(
+                format!("/{}", "e".repeat(MAX_LAUNCH_PATH_BYTES)),
+                vec![],
+                "/tmp".into(),
+                vec![],
+            ),
+            launch_json(
+                "/bin/bridge".into(),
+                vec!["a".repeat(MAX_LAUNCH_ARGUMENT_BYTES + 1)],
+                "/tmp".into(),
+                vec![],
+            ),
+            launch_json(
+                "/bin/bridge".into(),
+                vec![String::new(); MAX_LAUNCH_ARGUMENTS + 1],
+                "/tmp".into(),
+                vec![],
+            ),
+            launch_json(
+                "/bin/bridge".into(),
+                vec![],
+                "/tmp".into(),
+                vec!["E".repeat(MAX_LAUNCH_ENVIRONMENT_NAME_BYTES + 1)],
+            ),
+            launch_json(
+                "/bin/bridge".into(),
+                vec![],
+                "/tmp".into(),
+                vec![String::from("E"); MAX_LAUNCH_ENVIRONMENT_NAMES + 1],
+            ),
+        ];
+
+        validate_launch_json(&valid()).expect("valid launch fixture passes");
+        for candidate in cases {
+            assert_eq!(
+                validate_launch_json(&candidate),
+                Err(BridgePackageError::InvalidLaunch)
+            );
+        }
+    }
 
     #[tokio::test]
     async fn package_call_queue_applies_backpressure_at_capacity() {
