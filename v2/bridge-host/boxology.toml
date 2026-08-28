@@ -4,6 +4,8 @@ kind = "box"
 owned = [
     "boxology.toml",
     "README.md",
+    "bridge-registration-boundary.mmd",
+    "bridge-registration-boundary.png",
     "bridge-message-boundary.mmd",
     "bridge-message-boundary.png",
     "implementation/**",

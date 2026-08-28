@@ -1,0 +1,28 @@
+flowchart LR
+    SOURCE["Agent tool or<br/>runtime configuration"]
+    RAW{"Raw spec gate<br/>IDs · JSON bytes · counts"}
+    REJECT["Reject before lock,<br/>parse, persistence or spawn"]
+    PARSE["Parse strict launch +<br/>configuration objects"]
+    SHAPE{"Launch + policy gate<br/>paths · argv · env · restart ≤ 64"}
+    LOCK["Per-bridge<br/>operation lock"]
+    STORE[("Durable bridge<br/>registration")]
+    SPAWN["Optional supervised<br/>package process"]
+
+    SOURCE --> RAW
+    RAW -->|"over limit"| REJECT
+    RAW -->|"within limit"| PARSE --> SHAPE
+    SHAPE -->|"invalid"| REJECT
+    SHAPE -->|"valid"| LOCK --> STORE
+    STORE -->|"desired running"| SPAWN
+
+    classDef source fill:#f3e8ff,stroke:#9333ea,stroke-width:2px,color:#581c87;
+    classDef runtime fill:#dbeafe,stroke:#2563eb,stroke-width:2px,color:#172554;
+    classDef durable fill:#dcfce7,stroke:#16a34a,stroke-width:2px,color:#14532d;
+    classDef gate fill:#fef3c7,stroke:#d97706,stroke-width:2px,color:#78350f;
+    classDef failure fill:#fee2e2,stroke:#dc2626,stroke-width:2px,color:#7f1d1d;
+
+    class SOURCE source;
+    class PARSE,LOCK,SPAWN runtime;
+    class STORE durable;
+    class RAW,SHAPE gate;
+    class REJECT failure;
