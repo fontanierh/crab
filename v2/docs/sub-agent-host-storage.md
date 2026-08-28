@@ -44,6 +44,9 @@ runtime-state/
   compaction events, into the sub-agent journal without narrowing the native JSON. Natural
   completion removes the token-matched task entry; a stale pump cannot remove its replacement, and
   explicit stop or host drop removes then aborts the current task.
+- Every durable payload is capped before JSON parsing or storage. Event reads accept 1 through
+  1,000 events and stream SQLite rows into a 16 MiB plus 128 KiB retained-data budget. Pages never
+  split an event or advance past an omitted event, so the next cursor resumes without loss.
 - On reopen, active records become explicit recovery candidates and transport-ambiguous pending
   interactions become failed so they can be retried with the same caller ID. Delivered
   interactions, the ordered event journal and the exact child ACP cursor remain unchanged.
