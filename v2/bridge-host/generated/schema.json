@@ -332,7 +332,7 @@
   ],
   "provenance": {
     "generator": "boxology-generator",
-    "generator_version": "0.1.1",
+    "generator_version": "0.2.1",
     "semantic_digest": "sha256:4fc2538635ca41a3f5d45f3c844d18b710debd693596a9b51819d0ce419df2fb"
   },
   "revision": "sha256:562d4a1fd5750ed686526738df59d52b2080c3a8abed659a5cffb98f24738563",

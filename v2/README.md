@@ -188,32 +188,45 @@ interrupt as a separate explicit action.
 
 ## Validate
 
+Run package generation from the repository root so package selection resolves the managed `v2`
+workspace:
+
 ```sh
+boxology generate --package agent-host
+boxology generate --package native-channel
+boxology generate --package channel-gateway
+boxology generate --package runtime-control
+boxology generate --package trigger-inbox
+boxology generate --package bridge-host
+boxology generate --package sub-agent-host
+boxology generate --package turn-router
+```
+
+Run Cargo and the whole-workspace Boxology check from the managed workspace root:
+
+```sh
+cd v2
 cargo build --workspace
 cargo test --workspace
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 boxology check --base origin/main
 ```
 
-Build the clean-machine runtime artifact from a clean commit:
+Return to the repository root to build the clean-machine runtime artifact from a clean commit:
 
 ```sh
+cd ..
 make v2-bundle
 ```
 
-Crab v2 pins Boxology's complete runtime and CLI toolchain to current `main` revision `4dd0088`.
-This is the `0.1.1` release plus the optional-field wire-semantics and truthful generator-provenance
-fixes. Regenerate or check with the matching CLI:
+Crab v2 pins Boxology's complete runtime and CLI toolchain to exact crates.io release `0.2.1`.
+Install and verify the matching registry CLI before generating or checking:
 
 ```sh
-cargo install boxology-cli --git https://github.com/fontanierh/boxology \
-  --rev 4dd00888445c6506704a3e3f69932a3c4bc32efa --locked
+cargo install boxology-cli --version 0.2.1 --locked
+boxology --version # boxology 0.2.1
 ```
 
 The published ACP SDK 2.0.0 is patched at reviewed fork revision `3722fbf` until upstream
 [rust-sdk #341](https://github.com/agentclientprotocol/rust-sdk/pull/341) ships. The patch bounds
 newline-delimited input framing; Crab keeps the exact 2.0.0 API and schema dependency closure.
-
-A vertical slice that changes a box, its composition and the platform lockfile still triggers the
-known single-owner limitation tracked in
-[Boxology #712](https://github.com/fontanierh/boxology/issues/712); every executable check passes.
