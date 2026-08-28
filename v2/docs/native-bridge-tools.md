@@ -21,8 +21,13 @@ bounds are non-zero. Native registration is durably marked `AgentManaged`, so re
 runtime JSON cannot stop it and a restart restores its desired state. Alert targets receive
 deduplicated incident and recovery turns in queue mode. Start a new package with
 `desiredRunning: false`; install and inspect it, then reconcile its current generation to running.
-Replacement first reads the durable catalog, preserves that registration's management owner, and
-then delegates the expected generation to the host CAS; a concurrent change cannot be overwritten.
+`list_bridges` reads one identity-keyset page. Its optional `limit` defaults to 256 and must remain
+within 1…256; `afterBridgeId` resumes from the preceding `nextAfterBridgeId`, and
+`includeUnregistered` opts into durable tombstones. Results carry `totalBridges` and the next
+cursor. Replacement reads the complete active-only page, preserves that registration's management
+owner, and then delegates the expected generation to the host CAS; a concurrent change cannot be
+overwritten. The active set is complete because bridge-host admits at most 128 active registrations
+inside the 256-record page boundary.
 
 `unregister_bridge` is available only to `AgentManaged` registrations and uses the same generation
 CAS. It stops supervision, revokes the private credential, and advances the record to an auditable
