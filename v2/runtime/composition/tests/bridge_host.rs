@@ -10,14 +10,15 @@ use bridge_host_contract::{
     AuthenticationMethod, BeginAuthenticationRequest, BridgeAlertTarget, BridgeHostError,
     BridgeInbound, BridgeIngressMode, BridgeLifecycle, BridgeManagement, BridgeOutbound,
     BridgeReference, BridgeSpec, DeliveryLifecycle, DeliveryReference, ImportBridgeContentRequest,
-    ListBridgesRequest, ReconcileBridgeRequest, ReplaceBridgeRequest, SubmitAuthenticationRequest,
-    UnregisterBridgeRequest,
+    ListBridgePageRequest, ReconcileBridgeRequest, ReplaceBridgeRequest,
+    SubmitAuthenticationRequest, UnregisterBridgeRequest,
 };
 use bridge_host_implementation::{
     BridgeCredentialReceipt, BridgeCredentialSink, BridgeCredentialUpdate, BridgeHostState,
     BridgeInboundSink, BridgePackage, BridgePackageError, BridgePackageFactory, ContentUpload,
-    CredentialStore, InMemoryCredentialStore, PackageChallenge, PackageCredential,
-    PackageCredentialValidation, PackageDelivery, PackageHealth, generated as bridge_host,
+    CredentialStore, InMemoryCredentialStore, MAX_BRIDGE_CATALOG_PAGE, PackageChallenge,
+    PackageCredential, PackageCredentialValidation, PackageDelivery, PackageHealth,
+    generated as bridge_host,
 };
 use sha2::{Digest, Sha256};
 use trigger_inbox_contract::{ClaimTriggers, TriggerMode, TriggerReference};
@@ -530,7 +531,14 @@ async fn bridge_host_owns_auth_ingress_delivery_and_generations() {
     );
     assert!(credential_store.get(handle).await.is_err());
     let catalog = bridge_handle
-        .list_bridges(context(), ListBridgesRequest {})
+        .list_bridge_page(
+            context(),
+            ListBridgePageRequest {
+                after_bridge_id: None,
+                limit: MAX_BRIDGE_CATALOG_PAGE,
+                include_unregistered: true,
+            },
+        )
         .await
         .expect("catalog remains inspectable");
     let tombstone = catalog

@@ -12,7 +12,7 @@ use agent_host_implementation::{
 };
 use boxology_contract::{ContractType as _, json as contract_json};
 use bridge_host_contract::{
-    BridgeCatalog, BridgeIngressMode, BridgeLifecycle, BridgeManagement, BridgeRecord,
+    BridgeCatalogPage, BridgeIngressMode, BridgeLifecycle, BridgeManagement, BridgeRecord,
 };
 use serde_json::{Value, json};
 use tokio::{
@@ -158,8 +158,12 @@ fn register_arguments(state: &Path) -> Value {
     })
 }
 
-fn encoded_catalog(management: BridgeManagement) -> Value {
-    let catalog = BridgeCatalog {
+fn encoded_catalog_page(
+    management: BridgeManagement,
+    total_bridges: u64,
+    next_after_bridge_id: Option<String>,
+) -> Value {
+    let catalog = BridgeCatalogPage {
         bridges: vec![BridgeRecord {
             bridge_id: "signal".into(),
             package_id: "agent.signal".into(),
@@ -172,12 +176,14 @@ fn encoded_catalog(management: BridgeManagement) -> Value {
             generation: 7,
             registered_at_ms: 1,
         }],
+        total_bridges,
+        next_after_bridge_id,
     };
     let descriptor = bridge_host_contract::contract_descriptor();
     let capability = descriptor
         .capabilities()
         .iter()
-        .find(|capability| capability.name().as_str() == "list_bridges")
+        .find(|capability| capability.name().as_str() == "list_bridge_page")
         .expect("list capability exists");
     let slot = catalog.encode().expect("catalog encodes");
     let encoded = contract_json::encode(&slot, capability.output()).expect("catalog JSON encodes");
@@ -229,6 +235,14 @@ async fn real_stdio_server_lists_fifteen_strict_agent_bridge_tools() {
         json!(["bridgeId", "importId", "sourcePath", "mediaType"])
     );
     assert_eq!(import["inputSchema"]["additionalProperties"], false);
+    let list = tools
+        .iter()
+        .find(|tool| tool["name"] == "list_bridges")
+        .expect("bounded catalog tool");
+    assert_eq!(list["inputSchema"]["additionalProperties"], false);
+    assert_eq!(list["inputSchema"]["properties"]["limit"]["default"], 256);
+    assert!(list["inputSchema"]["properties"]["afterBridgeId"].is_object());
+    assert!(list["inputSchema"]["properties"]["includeUnregistered"].is_object());
     let mut names = tools
         .iter()
         .map(|tool| tool["name"].as_str().expect("tool name"))
@@ -265,6 +279,95 @@ async fn real_stdio_server_lists_fifteen_strict_agent_bridge_tools() {
         .await;
     assert!(strict.get("error").is_some());
     assert!(strict.to_string().contains("unexpected"));
+    process.finish().await;
+}
+
+#[tokio::test]
+async fn list_tool_preserves_limit_cursor_filter_and_invalid_request_evidence() {
+    let (_temporary, state) = state_directory();
+    let socket = state.join("channel-ipc.sock");
+    let listener = UnixListener::bind(&socket).expect("fixture IPC listener");
+    fs::set_permissions(&socket, fs::Permissions::from_mode(0o600)).expect("owner-only IPC socket");
+    let fixture = tokio::spawn(async move {
+        for valid in [true, false] {
+            let (stream, _) = listener.accept().await.expect("MCP IPC connection");
+            let (reader, mut writer) = stream.into_split();
+            let mut lines = BufReader::new(reader).lines();
+            let request: Value = serde_json::from_str(
+                &lines
+                    .next_line()
+                    .await
+                    .expect("read IPC")
+                    .expect("IPC request"),
+            )
+            .expect("IPC request JSON");
+            assert_eq!(request["capability"], "bridge-host.list_bridge_page");
+            let response = if valid {
+                assert_eq!(request["input"]["after_bridge_id"], "retired-001");
+                assert_eq!(request["input"]["limit"], "1");
+                assert_eq!(request["input"]["include_unregistered"], true);
+                json!({
+                    "protocolVersion": 1,
+                    "requestId": request["requestId"],
+                    "status": "ok",
+                    "output": encoded_catalog_page(
+                        BridgeManagement::AgentManaged,
+                        257,
+                        Some("retired-002".into()),
+                    )
+                })
+            } else {
+                assert_eq!(request["input"]["limit"], "0");
+                json!({
+                    "protocolVersion": 1,
+                    "requestId": request["requestId"],
+                    "status": "error",
+                    "error": { "kind": "domain", "code": "InvalidSpec" }
+                })
+            };
+            writer
+                .write_all(format!("{response}\n").as_bytes())
+                .await
+                .expect("write IPC response");
+        }
+    });
+    let mut process = McpProcess::start(&state, false).await;
+    let listed = process
+        .request(
+            2,
+            "tools/call",
+            json!({
+                "name": "list_bridges",
+                "arguments": {
+                    "afterBridgeId": "retired-001",
+                    "limit": 1,
+                    "includeUnregistered": true
+                }
+            }),
+        )
+        .await;
+    let output: Value = serde_json::from_str(
+        listed["result"]["content"][0]["text"]
+            .as_str()
+            .expect("tool result text"),
+    )
+    .expect("tool result JSON");
+    assert_eq!(output["totalBridges"], 257);
+    assert_eq!(output["nextAfterBridgeId"], "retired-002");
+    assert_eq!(output["bridges"].as_array().expect("bridge page").len(), 1);
+
+    let invalid = process
+        .request(
+            3,
+            "tools/call",
+            json!({
+                "name": "list_bridges",
+                "arguments": { "limit": 0 }
+            }),
+        )
+        .await;
+    assert!(invalid.to_string().contains("InvalidSpec"));
+    fixture.await.expect("IPC fixture completes");
     process.finish().await;
 }
 
@@ -366,7 +469,7 @@ async fn replacement_preserves_management_and_unregister_uses_generation_cas_on_
     fs::set_permissions(&socket, fs::Permissions::from_mode(0o600)).expect("owner-only IPC socket");
     let fixture = tokio::spawn(async move {
         for expected in [
-            "bridge-host.list_bridges",
+            "bridge-host.list_bridge_page",
             "bridge-host.replace_bridge",
             "bridge-host.unregister_bridge",
         ] {
@@ -382,12 +485,18 @@ async fn replacement_preserves_management_and_unregister_uses_generation_cas_on_
             )
             .expect("IPC request JSON");
             assert_eq!(request["capability"], expected);
-            let response = if expected == "bridge-host.list_bridges" {
+            let response = if expected == "bridge-host.list_bridge_page" {
+                assert_eq!(request["input"]["limit"], "256");
+                assert_eq!(request["input"]["include_unregistered"], false);
                 json!({
                     "protocolVersion": 1,
                     "requestId": request["requestId"],
                     "status": "ok",
-                    "output": encoded_catalog(BridgeManagement::RuntimeConfigured)
+                    "output": encoded_catalog_page(
+                        BridgeManagement::RuntimeConfigured,
+                        1,
+                        None,
+                    )
                 })
             } else if expected == "bridge-host.replace_bridge" {
                 assert_eq!(request["input"]["expected_generation"], "7");

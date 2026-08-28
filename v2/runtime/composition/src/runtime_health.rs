@@ -11,7 +11,10 @@ use bridge_host_contract::{
 use native_channel_contract::{ChannelLifecycle, ListChannelBindingsRequest};
 use serde::Serialize;
 
-use crate::{ChannelIpcClient, ChannelIpcClientError, RuntimeConfig, RuntimeConfigError};
+use crate::{
+    ChannelIpcClient, ChannelIpcClientError, RuntimeConfig, RuntimeConfigError,
+    channel_ipc::complete_active_bridge_catalog_request,
+};
 
 const HEALTH_SCHEMA: u64 = 2;
 const MAX_BINDING_CATALOG: u64 = 256;
@@ -143,7 +146,9 @@ pub async fn inspect_runtime_health(
             limit: MAX_BINDING_CATALOG,
         })
         .await?;
-    let bridge_catalog = client.list_bridges().await?;
+    let bridge_catalog = client
+        .list_bridge_page(complete_active_bridge_catalog_request())
+        .await?;
     let mut errors = Vec::new();
     let mut needs_action = Vec::new();
     let runtime_error = match attestation.configuration_fingerprint.as_deref() {

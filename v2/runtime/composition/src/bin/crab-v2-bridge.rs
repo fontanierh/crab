@@ -3,14 +3,16 @@
 use std::{ffi::OsString, io::Read as _, path::PathBuf, process::ExitCode};
 
 use bridge_host_contract::{
-    AuthenticationChallenge, AuthenticationMethod, BeginAuthenticationRequest, BridgeCatalog,
+    AuthenticationChallenge, AuthenticationMethod, BeginAuthenticationRequest, BridgeCatalogPage,
     BridgeLifecycle, BridgeReceipt, BridgeReference, BridgeStatus, CredentialLifecycle,
-    CredentialStatus, ReconcileBridgeRequest, SubmitAuthenticationRequest, UnregisterBridgeRequest,
+    CredentialStatus, ListBridgePageRequest, ReconcileBridgeRequest, SubmitAuthenticationRequest,
+    UnregisterBridgeRequest,
 };
+use bridge_host_implementation::MAX_BRIDGE_CATALOG_PAGE;
 use crab_v2_runtime::ChannelIpcClient;
 use serde_json::{Value, json};
 
-const USAGE: &str = "usage: crab-v2-bridge --state-dir <directory> <list | status <bridge> | reconcile <bridge> <generation> <true|false> | unregister <bridge> <generation> | auth-begin <bridge> <auto|qr-code|phone-code|oauth|browser|terminal|manual> <context-json> | auth-submit <bridge> <challenge> <empty|stdin> | credentials-validate <bridge> | credentials-invalidate <bridge> | suspend <bridge> | stop <bridge>>";
+const USAGE: &str = "usage: crab-v2-bridge --state-dir <directory> <list [limit [active|all [after-bridge-id]]] | status <bridge> | reconcile <bridge> <generation> <true|false> | unregister <bridge> <generation> | auth-begin <bridge> <auto|qr-code|phone-code|oauth|browser|terminal|manual> <context-json> | auth-submit <bridge> <challenge> <empty|stdin> | credentials-validate <bridge> | credentials-invalidate <bridge> | suspend <bridge> | stop <bridge>>";
 const MAX_AUTH_RESPONSE_BYTES: u64 = 64 * 1024;
 
 #[tokio::main]
@@ -56,7 +58,18 @@ async fn execute(
     command: BridgeCommand,
 ) -> Result<Value, BridgeCliError> {
     let result = match command {
-        BridgeCommand::List => client.list_bridges().await.map(catalog_json),
+        BridgeCommand::List {
+            after_bridge_id,
+            limit,
+            include_unregistered,
+        } => client
+            .list_bridge_page(ListBridgePageRequest {
+                after_bridge_id,
+                limit,
+                include_unregistered,
+            })
+            .await
+            .map(catalog_page_json),
         BridgeCommand::Status { bridge_id } => client
             .bridge_status(BridgeReference { bridge_id })
             .await
@@ -160,7 +173,11 @@ struct Arguments {
 
 #[derive(Debug, PartialEq)]
 enum BridgeCommand {
-    List,
+    List {
+        after_bridge_id: Option<String>,
+        limit: u64,
+        include_unregistered: bool,
+    },
     Status {
         bridge_id: String,
     },
@@ -221,7 +238,27 @@ fn parse_arguments(mut values: impl Iterator<Item = OsString>) -> Result<Option<
     }
     let command = next_text(&mut values).ok_or(())?;
     let command = match command.as_str() {
-        "list" => BridgeCommand::List,
+        "list" => {
+            let limit = match next_text(&mut values) {
+                Some(value) => parse_catalog_limit(&value).ok_or(())?,
+                None => MAX_BRIDGE_CATALOG_PAGE,
+            };
+            let include_unregistered = match next_text(&mut values).as_deref() {
+                Some("active") | None => false,
+                Some("all") => true,
+                Some(_) => return Err(()),
+            };
+            let after_bridge_id = match next_text(&mut values) {
+                Some(value) if !value.trim().is_empty() => Some(value),
+                Some(_) => return Err(()),
+                None => None,
+            };
+            BridgeCommand::List {
+                after_bridge_id,
+                limit,
+                include_unregistered,
+            }
+        }
         "status" => BridgeCommand::Status {
             bridge_id: required_text(&mut values)?,
         },
@@ -316,6 +353,13 @@ fn parse_bool(value: &str) -> Option<bool> {
     }
 }
 
+fn parse_catalog_limit(value: &str) -> Option<u64> {
+    value
+        .parse::<u64>()
+        .ok()
+        .filter(|limit| (1..=MAX_BRIDGE_CATALOG_PAGE).contains(limit))
+}
+
 fn parse_method(value: &str) -> Option<Option<AuthenticationMethod>> {
     let method = match value {
         "auto" => return Some(None),
@@ -335,7 +379,7 @@ fn canonical_object(value: String) -> Option<String> {
     value.is_object().then(|| value.to_string())
 }
 
-fn catalog_json(catalog: BridgeCatalog) -> Value {
+fn catalog_page_json(catalog: BridgeCatalogPage) -> Value {
     json!({
         "bridges": catalog.bridges.into_iter().map(|bridge| json!({
             "bridgeId": bridge.bridge_id,
@@ -351,7 +395,9 @@ fn catalog_json(catalog: BridgeCatalog) -> Value {
             "desiredRunning": bridge.desired_running,
             "generation": bridge.generation,
             "registeredAtMs": bridge.registered_at_ms,
-        })).collect::<Vec<_>>()
+        })).collect::<Vec<_>>(),
+        "totalBridges": catalog.total_bridges,
+        "nextAfterBridgeId": catalog.next_after_bridge_id,
     })
 }
 
@@ -470,8 +516,8 @@ mod tests {
     use bridge_host_contract::{AuthenticationMethod, CredentialLifecycle, CredentialStatus};
 
     use super::{
-        AuthenticationResponse, BridgeCommand, MAX_AUTH_RESPONSE_BYTES, credential_json,
-        parse_arguments, validate_authentication_response,
+        AuthenticationResponse, BridgeCommand, MAX_AUTH_RESPONSE_BYTES, MAX_BRIDGE_CATALOG_PAGE,
+        credential_json, parse_arguments, validate_authentication_response,
     };
 
     fn parse(values: &[&str]) -> BridgeCommand {
@@ -485,7 +531,26 @@ mod tests {
     fn parser_accepts_strict_bridge_operations_and_canonical_json() {
         assert_eq!(
             parse(&["--state-dir", "/tmp/crab", "list"]),
-            BridgeCommand::List
+            BridgeCommand::List {
+                after_bridge_id: None,
+                limit: MAX_BRIDGE_CATALOG_PAGE,
+                include_unregistered: false,
+            }
+        );
+        assert_eq!(
+            parse(&[
+                "--state-dir",
+                "/tmp/crab",
+                "list",
+                "256",
+                "all",
+                "retired-255",
+            ]),
+            BridgeCommand::List {
+                after_bridge_id: Some("retired-255".into()),
+                limit: MAX_BRIDGE_CATALOG_PAGE,
+                include_unregistered: true,
+            }
         );
         assert_eq!(
             parse(&[
@@ -554,7 +619,18 @@ mod tests {
                 "phone-code",
                 "[]",
             ],
-            vec!["--state-dir", "/tmp/crab", "list", "extra"],
+            vec!["--state-dir", "/tmp/crab", "list", "0"],
+            vec!["--state-dir", "/tmp/crab", "list", "257"],
+            vec!["--state-dir", "/tmp/crab", "list", "1", "retired"],
+            vec![
+                "--state-dir",
+                "/tmp/crab",
+                "list",
+                "1",
+                "all",
+                "retired-001",
+                "extra",
+            ],
             vec![
                 "--state-dir",
                 "/tmp/crab",
