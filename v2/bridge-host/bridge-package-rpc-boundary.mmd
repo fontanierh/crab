@@ -1,0 +1,29 @@
+flowchart LR
+    PACKAGE["Package stdout"]
+    FRAME{"Line frame<br/>≤ 16 MiB"}
+    PARSE{"JSON + ID gate<br/>string · 1–1,024 bytes"}
+    KIND{"Envelope kind"}
+    STOP["Protocol stop<br/>fail pending calls"]
+    IGNORE["Ignore<br/>no parameter clone"]
+    PARAMS["Own recognized<br/>call parameters"]
+    QUEUE["Bounded callback<br/>queue · 16 calls"]
+    RESPONSE["Pending host-call<br/>response"]
+
+    PACKAGE --> FRAME --> PARSE --> KIND
+    FRAME -->|"oversized / truncated"| STOP
+    PARSE -->|"malformed JSON"| STOP
+    PARSE -->|"invalid ID"| IGNORE
+    KIND -->|"known callback method"| PARAMS --> QUEUE
+    KIND -->|"unknown method"| IGNORE
+    KIND -->|"no method"| RESPONSE
+
+    classDef source fill:#f3e8ff,stroke:#9333ea,stroke-width:2px,color:#581c87;
+    classDef runtime fill:#dbeafe,stroke:#2563eb,stroke-width:2px,color:#172554;
+    classDef durable fill:#dcfce7,stroke:#16a34a,stroke-width:2px,color:#14532d;
+    classDef gate fill:#fef3c7,stroke:#d97706,stroke-width:2px,color:#78350f;
+    classDef failure fill:#fee2e2,stroke:#dc2626,stroke-width:2px,color:#7f1d1d;
+
+    class PACKAGE source;
+    class PARAMS,QUEUE,RESPONSE runtime;
+    class FRAME,PARSE,KIND gate;
+    class STOP,IGNORE failure;

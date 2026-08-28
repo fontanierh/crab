@@ -33,6 +33,7 @@ use crate::{
 const RPC_TIMEOUT: Duration = Duration::from_secs(30);
 const STOP_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_PROTOCOL_LINE_BYTES: usize = 16 * 1024 * 1024;
+const MAX_PROTOCOL_ID_BYTES: usize = 1024;
 // A queued call can approach the protocol line limit, so keep this deliberately small.
 const PACKAGE_CALL_QUEUE_CAPACITY: usize = 16;
 const PACKAGE_PROTOCOL_VERSION: u64 = 2;
@@ -520,6 +521,32 @@ enum PackageCall {
     CredentialUpdate { id: String, params: Value },
 }
 
+fn protocol_message_id(message: &Value) -> Option<&str> {
+    message
+        .get("id")
+        .and_then(Value::as_str)
+        .filter(|id| !id.is_empty() && id.len() <= MAX_PROTOCOL_ID_BYTES)
+}
+
+fn decode_package_call(message: &Value, id: &str) -> Option<PackageCall> {
+    let params = || message.get("params").cloned().unwrap_or(Value::Null);
+    match message.get("method").and_then(Value::as_str) {
+        Some("bridge/inbound") => Some(PackageCall::Inbound {
+            id: id.to_owned(),
+            params: params(),
+        }),
+        Some("bridge/content/put") => Some(PackageCall::ContentPut {
+            id: id.to_owned(),
+            params: params(),
+        }),
+        Some("bridge/credential/update") => Some(PackageCall::CredentialUpdate {
+            id: id.to_owned(),
+            params: params(),
+        }),
+        _ => None,
+    }
+}
+
 fn package_call_channel() -> (mpsc::Sender<PackageCall>, mpsc::Receiver<PackageCall>) {
     mpsc::channel(PACKAGE_CALL_QUEUE_CAPACITY)
 }
@@ -545,32 +572,19 @@ async fn read_messages<R>(
         let Ok(message) = serde_json::from_slice::<Value>(&line) else {
             break;
         };
-        let Some(id) = message.get("id").and_then(Value::as_str).map(str::to_owned) else {
+        let Some(id) = protocol_message_id(&message) else {
             continue;
         };
-        let params = message.get("params").cloned().unwrap_or(Value::Null);
-        let call = match message.get("method").and_then(Value::as_str) {
-            Some("bridge/inbound") => Some(PackageCall::Inbound {
-                id: id.clone(),
-                params,
-            }),
-            Some("bridge/content/put") => Some(PackageCall::ContentPut {
-                id: id.clone(),
-                params,
-            }),
-            Some("bridge/credential/update") => Some(PackageCall::CredentialUpdate {
-                id: id.clone(),
-                params,
-            }),
-            _ => None,
-        };
-        if let Some(call) = call {
+        if message.get("method").is_some() {
+            let Some(call) = decode_package_call(&message, id) else {
+                continue;
+            };
             if package_calls.send(call).await.is_err() {
                 break;
             }
             continue;
         }
-        let Some(sender) = pending.lock().await.remove(&id) else {
+        let Some(sender) = pending.lock().await.remove(id) else {
             continue;
         };
         let result = if message.get("error").is_some() {
@@ -1038,6 +1052,100 @@ mod tests {
                 Err(BridgePackageError::InvalidLaunch)
             );
         }
+    }
+
+    #[test]
+    fn package_rpc_admission_accepts_exact_ids_and_rejects_invalid_envelopes() {
+        let exact_id = "i".repeat(MAX_PROTOCOL_ID_BYTES);
+        let known = json!({
+            "id": exact_id,
+            "method": "bridge/inbound",
+            "params": { "message": "accepted" },
+        });
+        let id = protocol_message_id(&known).expect("exact protocol identifier passes");
+        let Some(PackageCall::Inbound {
+            id: owned_id,
+            params,
+        }) = decode_package_call(&known, id)
+        else {
+            panic!("known method is admitted");
+        };
+        assert_eq!(owned_id.len(), MAX_PROTOCOL_ID_BYTES);
+        assert_eq!(params["message"], "accepted");
+
+        for invalid in [
+            json!({ "id": "", "method": "bridge/inbound" }),
+            json!({ "id": "i".repeat(MAX_PROTOCOL_ID_BYTES + 1), "method": "bridge/inbound" }),
+            json!({ "id": 1, "method": "bridge/inbound" }),
+        ] {
+            assert!(protocol_message_id(&invalid).is_none());
+        }
+        assert!(
+            decode_package_call(
+                &json!({ "id": "package", "method": "bridge/unknown", "params": { "large": "ignored" } }),
+                "package",
+            )
+            .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn unknown_package_method_cannot_consume_a_pending_response() {
+        let input = [
+            json!({
+                "jsonrpc": "2.0",
+                "id": "host-call",
+                "method": "bridge/unknown",
+                "result": { "source": "forged-call" },
+            }),
+            json!({
+                "jsonrpc": "2.0",
+                "id": "host-call",
+                "result": { "source": "real-response" },
+            }),
+        ]
+        .into_iter()
+        .flat_map(|message| {
+            let mut encoded = serde_json::to_vec(&message).expect("serialize protocol message");
+            encoded.push(b'\n');
+            encoded
+        })
+        .collect::<Vec<_>>();
+
+        let (mut package_stdout, host_stdout) = tokio::io::duplex(input.len() + 1);
+        package_stdout
+            .write_all(&input)
+            .await
+            .expect("write package messages");
+        package_stdout
+            .shutdown()
+            .await
+            .expect("close package stdout");
+        let (response_sender, response_receiver) = oneshot::channel();
+        let pending: PendingCalls = Arc::new(Mutex::new(HashMap::from([(
+            "host-call".into(),
+            response_sender,
+        )])));
+        let protocol_alive = Arc::new(AtomicBool::new(true));
+        let (call_sender, call_receiver) = package_call_channel();
+
+        read_messages(
+            BufReader::new(host_stdout),
+            pending,
+            call_sender,
+            protocol_alive.clone(),
+        )
+        .await;
+
+        assert_eq!(call_receiver.len(), 0);
+        assert_eq!(
+            response_receiver
+                .await
+                .expect("pending response is delivered")
+                .expect("real response succeeds"),
+            json!({ "source": "real-response" })
+        );
+        assert!(!protocol_alive.load(Ordering::Acquire));
     }
 
     #[tokio::test]

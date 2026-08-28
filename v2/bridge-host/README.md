@@ -33,6 +33,15 @@ mutex, then replace the opaque credential only when the fingerprint still matche
 Durable bridge state stores the returned provider handle, account hint and validation metadata—not
 the secret snapshot. The credential provider retains its independent 16 MiB defense-in-depth limit.
 
+## Package RPC boundary
+
+![Bridge package RPC admission boundary](bridge-package-rpc-boundary.png)
+
+Package stdout is line-framed at 16 MiB. After parsing, the host accepts only non-empty string IDs
+up to 1,024 bytes. It checks the method before owning `params`; only the three host callbacks enter
+the bounded 16-call queue. Unknown method-bearing messages are ignored and cannot consume a pending
+host-call response with the same ID.
+
 ## Registration boundary
 
 ![Bridge registration admission boundary](bridge-registration-boundary.png)
