@@ -7,6 +7,7 @@ import {
   InboundPublisher,
   WhatsAppBridgeService,
 } from '../src/bridge-service.js';
+import { MAX_CREDENTIAL_SNAPSHOT_BYTES } from '../src/auth-state.js';
 import { credentialFingerprint } from '../src/canonical-json.js';
 import { credential, dependencies, flush } from './helpers.js';
 
@@ -90,6 +91,28 @@ test('credential persistence failure is terminal for the package instance', asyn
   await assert.rejects(publisher.changed(), failure);
   assert.equal(attempts, 1, 'a stale fingerprint is never retried in-process');
   assert.deepEqual(failures, [failure]);
+});
+
+test('oversized live credential growth fails before calling the host', async () => {
+  const failures = [];
+  let hostCalls = 0;
+  const { sockets, options } = dependencies({
+    callHost: async () => {
+      hostCalls += 1;
+      throw new Error('must not publish an oversized credential');
+    },
+    onFatal: (error) => failures.push(error),
+  });
+  const service = new WhatsAppBridgeService(options);
+  await initialize(service);
+  await service.health({ credential: credential() });
+
+  await assert.rejects(sockets[0].auth.keys.set({
+    session: { oversized: 'x'.repeat(MAX_CREDENTIAL_SNAPSHOT_BYTES) },
+  }), /snapshot too large/);
+  assert.equal(hostCalls, 0);
+  assert.equal(failures.length, 1);
+  assert.match(failures[0].message, /snapshot too large/);
 });
 
 test('inbound bursts share one bounded FIFO persistence drain', async () => {
