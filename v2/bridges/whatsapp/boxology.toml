@@ -11,6 +11,8 @@ owned = [
     "architecture.png",
     "credential-persistence-flow.mmd",
     "credential-persistence-flow.png",
+    "inbound-persistence-flow.mmd",
+    "inbound-persistence-flow.png",
     "src/**",
     "test/**",
 ]

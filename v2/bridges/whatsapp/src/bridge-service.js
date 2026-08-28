@@ -13,6 +13,7 @@ import { outboundContent } from './outbound-media.js';
 
 const PROTOCOL_VERSION = 2;
 const DEFAULT_AUTH_TIMEOUT_MS = 120_000;
+const MAX_PENDING_INBOUND_MESSAGES = 64;
 
 function object(value) {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -87,6 +88,68 @@ export class CredentialPublisher {
   }
 }
 
+export class InboundPublisher {
+  constructor({ persist, onFailure, capacity = MAX_PENDING_INBOUND_MESSAGES }) {
+    if (!Number.isSafeInteger(capacity) || capacity < 1) {
+      throw new Error('invalid inbound persistence capacity');
+    }
+    this.persist = persist;
+    this.onFailure = onFailure;
+    this.capacity = capacity;
+    this.queue = [];
+    this.running = null;
+    this.failure = null;
+  }
+
+  enqueue(items) {
+    if (this.failure) return this.running ?? Promise.reject(this.failure);
+    if (!Array.isArray(items) || items.length === 0) {
+      return this.running ?? Promise.resolve();
+    }
+    if (items.length > this.remainingCapacity()) {
+      this.#fail(new Error('inbound persistence backlog exceeded'));
+      return this.running ?? Promise.reject(this.failure);
+    }
+    this.queue.push(...items);
+    if (!this.running) {
+      this.running = this.#drain().finally(() => {
+        this.running = null;
+      });
+    }
+    return this.running;
+  }
+
+  remainingCapacity() {
+    if (this.failure) return 0;
+    const occupied = this.queue.length + (this.running ? 1 : 0);
+    return Math.max(0, this.capacity - occupied);
+  }
+
+  async #drain() {
+    try {
+      while (!this.failure && this.queue.length > 0) {
+        const item = this.queue.shift();
+        await this.persist(item.inbound, item.rawMessage);
+      }
+      if (this.failure) throw this.failure;
+    } catch (error) {
+      this.#fail(error);
+      throw this.failure;
+    }
+  }
+
+  #fail(error) {
+    if (this.failure) return;
+    this.failure = error instanceof Error ? error : new Error('inbound persistence failed');
+    this.queue.length = 0;
+    try {
+      this.onFailure(this.failure);
+    } catch {
+      // Persistence failure remains the canonical rejection even if shutdown throws.
+    }
+  }
+}
+
 export class WhatsAppBridgeService {
   constructor({
     socketFactory,
@@ -99,6 +162,7 @@ export class WhatsAppBridgeService {
     callHost,
     onFatal,
     authTimeoutMs = DEFAULT_AUTH_TIMEOUT_MS,
+    inboundCapacity = MAX_PENDING_INBOUND_MESSAGES,
     now = Date.now,
   }) {
     this.socketFactory = socketFactory;
@@ -127,7 +191,11 @@ export class WhatsAppBridgeService {
     this.reconnectAttempts = 0;
     this.credentialRejected = false;
     this.shuttingDown = false;
-    this.inboundTail = Promise.resolve();
+    this.inboundPublisher = new InboundPublisher({
+      capacity: inboundCapacity,
+      persist: (inbound, rawMessage) => this.#persistInbound(inbound, rawMessage),
+      onFailure: (error) => this.onFatal(error),
+    });
   }
 
   async initialize(params) {
@@ -371,6 +439,8 @@ export class WhatsAppBridgeService {
 
   #messagesUpsert(generation, event) {
     if (generation !== this.socketGeneration || event.type !== 'notify') return;
+    const accepted = [];
+    const remainingCapacity = this.inboundPublisher.remainingCapacity();
     for (const message of event.messages ?? []) {
       if (!inboundAllowed(message, this.inboundPolicy)) continue;
       const inbound = normalizeInbound(message, {
@@ -379,10 +449,10 @@ export class WhatsAppBridgeService {
         now: this.now,
       });
       if (!inbound) continue;
-      this.inboundTail = this.inboundTail
-        .then(() => this.#persistInbound(inbound, message))
-        .catch((error) => this.onFatal(error));
+      accepted.push({ inbound, rawMessage: message });
+      if (accepted.length > remainingCapacity) break;
     }
+    void this.inboundPublisher.enqueue(accepted).catch(() => {});
   }
 
   async #persistInbound(inbound, rawMessage) {

@@ -2,7 +2,11 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import test from 'node:test';
 
-import { CredentialPublisher, WhatsAppBridgeService } from '../src/bridge-service.js';
+import {
+  CredentialPublisher,
+  InboundPublisher,
+  WhatsAppBridgeService,
+} from '../src/bridge-service.js';
 import { credentialFingerprint } from '../src/canonical-json.js';
 import { credential, dependencies, flush } from './helpers.js';
 
@@ -86,6 +90,68 @@ test('credential persistence failure is terminal for the package instance', asyn
   await assert.rejects(publisher.changed(), failure);
   assert.equal(attempts, 1, 'a stale fingerprint is never retried in-process');
   assert.deepEqual(failures, [failure]);
+});
+
+test('inbound bursts share one bounded FIFO persistence drain', async () => {
+  let releaseFirst;
+  const firstCall = new Promise((resolve) => { releaseFirst = resolve; });
+  const persisted = [];
+  const publisher = new InboundPublisher({
+    capacity: 3,
+    persist: async (inbound, rawMessage) => {
+      persisted.push([inbound.externalEventId, rawMessage.key.id]);
+      if (persisted.length === 1) await firstCall;
+    },
+    onFailure: (error) => { throw error; },
+  });
+  const item = (id) => ({
+    inbound: { externalEventId: id },
+    rawMessage: { key: { id } },
+  });
+
+  const first = publisher.enqueue([item('one')]);
+  assert.equal(publisher.remainingCapacity(), 2);
+  const queued = publisher.enqueue([item('two'), item('three')]);
+  assert.equal(queued, first, 'all admitted messages share one drain promise');
+  assert.equal(publisher.remainingCapacity(), 0);
+  assert.deepEqual(persisted, [['one', 'one']], 'only one persistence call is active');
+
+  releaseFirst();
+  await first;
+  assert.deepEqual(persisted, [
+    ['one', 'one'],
+    ['two', 'two'],
+    ['three', 'three'],
+  ]);
+});
+
+test('inbound backlog overflow fails the package instance once and drops queued work', async () => {
+  let releaseFirst;
+  const firstCall = new Promise((resolve) => { releaseFirst = resolve; });
+  const persisted = [];
+  const failures = [];
+  const publisher = new InboundPublisher({
+    capacity: 2,
+    persist: async (inbound) => {
+      persisted.push(inbound.externalEventId);
+      if (persisted.length === 1) await firstCall;
+    },
+    onFailure: (error) => failures.push(error),
+  });
+  const item = (id) => ({ inbound: { externalEventId: id }, rawMessage: {} });
+
+  const running = publisher.enqueue([item('one')]);
+  assert.equal(publisher.enqueue([item('two')]), running);
+  assert.equal(publisher.enqueue([item('overflow')]), running);
+  assert.equal(failures.length, 1);
+  assert.match(failures[0].message, /backlog exceeded/);
+
+  const rejected = assert.rejects(running, failures[0]);
+  releaseFirst();
+  await rejected;
+  await assert.rejects(publisher.enqueue([item('later')]), failures[0]);
+  assert.deepEqual(persisted, ['one']);
+  assert.equal(failures.length, 1, 'supervision receives one terminal failure');
 });
 
 test('restores a committed snapshot and publishes ordered key rotations', async () => {

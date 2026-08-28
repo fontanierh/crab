@@ -1,8 +1,10 @@
 flowchart TB
     WA["WhatsApp"] <-->|"Baileys websocket<br/>no history sync"| PKG["WhatsApp provider"]
     PKG -->|"inbound message"| POLICY{"exact DM<br/>or group + sender?"}
-    POLICY -->|yes| LIMIT{"media<br/>≤ 8 MiB?"}
+    POLICY -->|yes| PUMP{"FIFO capacity available?<br/>64 including active"}
     POLICY -->|no| DROP["drop before download<br/>or host call"]
+    PUMP -->|yes| LIMIT{"media<br/>≤ 8 MiB?"}
+    PUMP -->|no| RESTART["terminal package failure<br/>supervised restart"]
     LIMIT -->|yes| STREAM["package reads a bounded<br/>in-memory stream"]
     STREAM -->|"bridge/content/put<br/>base64 over private stdio"| HOST["Crab bridge host"]
     HOST --> PRIVATE[("0600 content file")]
@@ -30,4 +32,4 @@ flowchart TB
     class WA,PKG,ACP service;
     class STREAM,HOST,META,PUBLISH action;
     class PRIVATE,INBOX,CREDS durable;
-    class POLICY,LIMIT,VALIDATE,OUT,CAS,REJECT,DROP guard;
+    class POLICY,PUMP,LIMIT,VALIDATE,OUT,CAS,REJECT,DROP,RESTART guard;

@@ -1,0 +1,20 @@
+flowchart LR
+    EVENT["authorized WhatsApp<br/>message batch"] --> ADMIT{"active + queued + batch<br/>≤ 64?"}
+    ADMIT -->|yes| FIFO["bounded FIFO<br/>one active item"]
+    FIFO --> MEDIA["bounded media attempt<br/>truthful fallback metadata"]
+    MEDIA --> HOST["durable content +<br/>trigger host calls"]
+    HOST -->|ack| NEXT{"queued item?"}
+    NEXT -->|yes| FIFO
+    NEXT -->|no| IDLE["idle<br/>queue released"]
+    ADMIT -->|no| FAIL["terminal package failure<br/>clear queued work"]
+    HOST -->|retries exhausted| FAIL
+    FAIL --> RESTART["Crab supervision<br/>restarts package"]
+
+    classDef source fill:#eef2ff,stroke:#4f46e5,color:#111827;
+    classDef action fill:#ecfeff,stroke:#0891b2,color:#111827;
+    classDef durable fill:#ecfdf5,stroke:#059669,color:#111827;
+    classDef guard fill:#fff7ed,stroke:#ea580c,color:#111827;
+    class EVENT,RESTART source;
+    class FIFO,MEDIA action;
+    class HOST,IDLE durable;
+    class ADMIT,NEXT,FAIL guard;
