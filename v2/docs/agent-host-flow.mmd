@@ -19,11 +19,12 @@ flowchart TB
         ENDED{"Run ended<br/>native terminal stored?"}
         FALLBACK["Crab lifecycle fallback<br/>crab/run_finished"]
         DB[("SQLite journal + prompt FIFO<br/>sessions · prompts<br/>events · permissions")]
+        PAGE["Cursor page<br/>≤ 1,000 whole events<br/>≤ 16 MiB + 64 KiB retained"]
         UI["Native channel / UI<br/>lossless event view"]
         ENDED -->|"yes"| DB
         ENDED -->|"no · error"| FALLBACK
         FALLBACK -->|"same transaction"| DB
-        DB -->|"ordered raw messages"| UI
+        DB -->|"stream rows"| PAGE -->|"stable cursor"| UI
     end
 
     ACTOR --> ENDED
@@ -43,5 +44,5 @@ flowchart TB
     class ACTOR,MAILBOX,ACP runtime;
     class FALLBACK fallback;
     class ENDED gate;
-    class DB durable;
+    class DB,PAGE durable;
     class UI ui;

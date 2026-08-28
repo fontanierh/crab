@@ -65,8 +65,9 @@ interrupt as a separate explicit action.
   event cursor while revalidating authority,
   MCP tools and required policy; it never replays bootstrap or owns compaction. Graceful runtime
   shutdown detaches the host-owned live set without native close, while explicit close remains
-  destructive. ACP stdout frames are rejected above 16 MiB before parsing or journaling; bounded
-  adapter stderr and terminal causes remain available only through the
+  destructive. Every journaled ACP frame is rejected above 16 MiB before parsing or persistence;
+  event reads stream whole rows into pages capped at 1,000 events and 16 MiB plus bounded envelope
+  overhead. Bounded adapter stderr and terminal causes remain available only through the
   owner-authenticated `crab-v2-agent` operator CLI. See the
   [private diagnostics](docs/agent-diagnostics.md), [session admission](docs/agent-session-admission.png),
   [resume flow](docs/agent-session-resume.md) and
