@@ -314,9 +314,9 @@
   "provenance": {
     "generator": "boxology-generator",
     "generator_version": "0.1.1",
-    "semantic_digest": "sha256:ad8d56cf46c8d105c34c0c4ba74214ac5203dc8ea5a320fcd6a65091e85d19e6"
+    "semantic_digest": "sha256:c6aacccc66a545b60b38f5557132fad4f352f525a5d0872a0e6c135c6bee0990"
   },
-  "revision": "sha256:ca07fafec76f61af23aa1478f6bc28aca8685173c8d83599d7f816d2e760dc55",
+  "revision": "sha256:6ee843afc640d2eb100167411504248414a82da77e3e0b96b8e90ded984d2dff",
   "schema_format": 1,
   "types": [
     {
@@ -1487,6 +1487,12 @@
           "deprecation": null,
           "docs": [],
           "name": "UnknownBridge",
+          "payload": "unit"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "BridgeCapacityExceeded",
           "payload": "unit"
         },
         {

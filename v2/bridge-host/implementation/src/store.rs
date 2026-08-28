@@ -8,7 +8,8 @@ use crate::{
     AuthenticationChallenge, AuthenticationMethod, BridgeAlertTarget, BridgeHostError,
     BridgeInbound, BridgeIngressMode, BridgeLifecycle, BridgeManagement, BridgeOutbound,
     BridgeReceipt, BridgeRecord, BridgeSpec, BridgeStatus, CredentialLifecycle, CredentialStatus,
-    DeliveryLifecycle, DeliveryReceipt, HealthObservation, TriggerIntent,
+    DeliveryLifecycle, DeliveryReceipt, HealthObservation, MAX_ACTIVE_BRIDGE_REGISTRATIONS,
+    TriggerIntent,
 };
 
 const SCHEMA_VERSION: i64 = 3;
@@ -114,6 +115,7 @@ impl BridgeStore {
             .map_err(storage_error)?
         {
             if lifecycle == "Unregistered" {
+                require_registration_capacity(&transaction)?;
                 transaction
                     .execute(
                         "UPDATE bridges SET
@@ -211,6 +213,7 @@ impl BridgeStore {
             drop(connection);
             return Ok((self.record(&spec.bridge_id)?, false));
         }
+        require_registration_capacity(&transaction)?;
         transaction
             .execute(
                 "INSERT INTO bridges (
@@ -1965,6 +1968,22 @@ fn bridge_exists(connection: &Connection, bridge_id: &str) -> Result<bool, Bridg
         .map_err(storage_error)
 }
 
+fn require_registration_capacity(connection: &Connection) -> Result<(), BridgeHostError> {
+    let active = connection
+        .query_row(
+            "SELECT COUNT(*) FROM bridges WHERE lifecycle != 'Unregistered'",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .map_err(storage_error)?;
+    let limit = i64::try_from(MAX_ACTIVE_BRIDGE_REGISTRATIONS)
+        .map_err(|_| BridgeHostError::StorageUnavailable)?;
+    if active >= limit {
+        return Err(BridgeHostError::BridgeCapacityExceeded);
+    }
+    Ok(())
+}
+
 fn query_health(
     connection: &Connection,
     bridge_id: &str,
@@ -2327,7 +2346,7 @@ mod tests {
     use crate::{
         AuthenticationMethod, BridgeAlertTarget, BridgeHostError, BridgeIngressMode,
         BridgeLifecycle, BridgeManagement, BridgeSpec, CredentialLifecycle, HealthObservation,
-        PackageChallenge,
+        MAX_ACTIVE_BRIDGE_REGISTRATIONS, PackageChallenge,
     };
 
     fn spec(desired_running: bool) -> BridgeSpec {
@@ -2401,6 +2420,47 @@ mod tests {
             })
             .expect("audit count");
         assert_eq!(audit_count, 3);
+    }
+
+    #[test]
+    fn active_registration_capacity_is_exact_idempotent_and_reusable() {
+        let store = BridgeStore::open_in_memory().expect("store opens");
+        for offset in 0..MAX_ACTIVE_BRIDGE_REGISTRATIONS {
+            let mut bridge = spec(false);
+            bridge.bridge_id = format!("bridge-{offset:03}");
+            bridge.management = BridgeManagement::AgentManaged;
+            store
+                .register(&bridge, offset as u64)
+                .expect("capacity slot admits bridge");
+        }
+
+        let mut existing = spec(false);
+        existing.bridge_id = "bridge-000".into();
+        existing.management = BridgeManagement::AgentManaged;
+        let (record, inserted) = store
+            .register(&existing, 1_000)
+            .expect("idempotent registration remains valid at capacity");
+        assert_eq!(record.generation, 1);
+        assert!(!inserted);
+
+        let mut overflow = spec(false);
+        overflow.bridge_id = "bridge-overflow".into();
+        overflow.management = BridgeManagement::AgentManaged;
+        assert!(matches!(
+            store.register(&overflow, 1_001),
+            Err(BridgeHostError::BridgeCapacityExceeded)
+        ));
+
+        store
+            .unregister("bridge-000", 1, 1_002)
+            .expect("unregister releases capacity");
+        store
+            .register(&overflow, 1_003)
+            .expect("released capacity admits another bridge");
+        assert!(matches!(
+            store.register(&existing, 1_004),
+            Err(BridgeHostError::BridgeCapacityExceeded)
+        ));
     }
 
     #[test]

@@ -44,6 +44,8 @@ use package::validate_launch_json;
 type Clock = Arc<dyn Fn() -> Result<u64, BridgeHostError> + Send + Sync>;
 
 const MAX_BRIDGE_ID_BYTES: usize = 512;
+/// Maximum durable registrations that have not been explicitly retired.
+pub const MAX_ACTIVE_BRIDGE_REGISTRATIONS: usize = 128;
 const MAX_PACKAGE_ID_BYTES: usize = 512;
 const MAX_DISPLAY_NAME_BYTES: usize = 1024;
 const MAX_LAUNCH_JSON_BYTES: usize = 256 * 1024;

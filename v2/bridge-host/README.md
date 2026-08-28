@@ -49,6 +49,9 @@ host-call response with the same ID.
 Raw bridge specs are byte- and count-bounded before the bridge ID enters the per-bridge lock
 registry. The host then parses strict launch/configuration objects and checks launch paths, argv,
 environment names, authentication methods and restart policy before persistence or process launch.
+Inside the durable registration transaction, at most 128 non-retired registrations may exist.
+An idempotent call for an existing registration still succeeds at capacity; unregistering an
+agent-managed bridge releases its slot before another identity can be admitted.
 
 | Boundary | Maximum |
 |---|---:|
@@ -60,6 +63,7 @@ environment names, authentication methods and restart policy before persistence 
 | Launch arguments | 64 × 4,096 bytes |
 | Environment names | 128 × 255 bytes |
 | Process starts per restart window | 64 |
+| Active durable registrations | 128 |
 
 Registration validates path shape without requiring a stopped package to be running. Actual launch
 also requires the configured working directory to exist.
