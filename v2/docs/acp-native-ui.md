@@ -8,8 +8,8 @@ web, desktop, mobile and remote clients; Crab remains the only owner of agent se
 
 ![T3 Code attach architecture](t3code-channel-flow.png)
 
-The decision was validated against `pingdotgg/t3code@f6f2be3`, the Crab fork at
-`fontanierh/t3code@95efc82`, and `deepseek-ai/deepseek-harness@b150a55` on 2026-08-27.
+The decision was validated against `pingdotgg/t3code@c8aba25`, the Crab fork at
+`fontanierh/t3code@dbfccf8`, and `deepseek-ai/deepseek-harness@b150a55` on 2026-08-28.
 
 ## Fit
 
@@ -28,9 +28,9 @@ versioned local IPC transport. It must never launch or own the underlying ACP ag
 
 The complete attach slice is implemented. Crab supplies the authenticated local Boxology transport
 and ACP stdio facade; the Crab fork of T3 ships a built-in provider across web, desktop and mobile.
-The tested compatibility point is `fontanierh/t3code@95efc82`, which contains the Crab delivery
-controls and upstream `pingdotgg/t3code@f6f2be3`. The sync passed 92 focused Crab/UI tests plus
-server, web, client-runtime and scripts typechecks.
+The tested compatibility point is `fontanierh/t3code@dbfccf8`, which contains the Crab delivery
+controls and upstream `pingdotgg/t3code@c8aba25`. The sync passed 251 focused Crab/UI tests across
+12 files, targeted formatting and lint, and scoped server, web, mobile and contracts typechecks.
 
 ![ACP stdio facade flow](acp-channel-facade-flow.png)
 
