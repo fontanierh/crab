@@ -7,7 +7,7 @@ use std::{
 
 use agent_host_implementation::{
     AgentProtocol, AgentSteeringExtension, AuthorityProbeConfig, ConfiguredAgent,
-    ConfiguredMcpServer,
+    ConfiguredMcpServer, MAX_AGENT_SESSION_ACTORS,
 };
 use bridge_host_contract::{
     AuthenticationMethod, BridgeAlertTarget, BridgeIngressMode, BridgeManagement, BridgeSpec,
@@ -19,6 +19,7 @@ use sha2::{Digest, Sha256};
 const CONFIG_SCHEMA: u64 = 1;
 const MAX_RUNTIME_CONFIG_BYTES: usize = 8 * 1024 * 1024;
 const MAX_BOOTSTRAP_PROMPT_BYTES: usize = 2 * 1024 * 1024;
+const MAX_RUNTIME_TOPOLOGY_ENTRIES: usize = MAX_AGENT_SESSION_ACTORS;
 
 /// Secret-free runtime topology loaded from JSON.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -301,6 +302,7 @@ impl RuntimeConfig {
             read_bounded_file(&path, MAX_RUNTIME_CONFIG_BYTES).map_err(RuntimeConfigError::Read)?;
         let mut config: Self =
             serde_json::from_slice(&bytes).map_err(RuntimeConfigError::Decode)?;
+        config.validate_topology_cardinality()?;
         let base = path.parent().unwrap_or_else(|| Path::new("."));
         config.resolve_paths(base);
         config.validate()?;
@@ -404,6 +406,7 @@ impl RuntimeConfig {
     }
 
     pub(crate) fn validate(&self) -> Result<(), RuntimeConfigError> {
+        self.validate_topology_cardinality()?;
         if self.schema != CONFIG_SCHEMA {
             return Err(RuntimeConfigError::UnsupportedSchema);
         }
@@ -510,6 +513,17 @@ impl RuntimeConfig {
             {
                 return Err(RuntimeConfigError::InvalidTopology);
             }
+        }
+        Ok(())
+    }
+
+    fn validate_topology_cardinality(&self) -> Result<(), RuntimeConfigError> {
+        if self.agents.len() > MAX_RUNTIME_TOPOLOGY_ENTRIES
+            || self.channels.len() > MAX_RUNTIME_TOPOLOGY_ENTRIES
+            || self.lanes.len() > MAX_RUNTIME_TOPOLOGY_ENTRIES
+            || self.bridges.len() > MAX_RUNTIME_TOPOLOGY_ENTRIES
+        {
+            return Err(RuntimeConfigError::InvalidTopology);
         }
         Ok(())
     }
@@ -642,9 +656,17 @@ mod tests {
     use std::io::ErrorKind;
 
     use super::{
-        MAX_BOOTSTRAP_PROMPT_BYTES, MAX_RUNTIME_CONFIG_BYTES, RuntimeConfig, RuntimeConfigError,
-        absolute_config_path, read_bootstrap_prompt_file, read_bounded_file,
+        MAX_BOOTSTRAP_PROMPT_BYTES, MAX_RUNTIME_CONFIG_BYTES, MAX_RUNTIME_TOPOLOGY_ENTRIES,
+        RuntimeConfig, RuntimeConfigError, absolute_config_path, read_bootstrap_prompt_file,
+        read_bounded_file,
     };
+
+    fn bundle_config() -> RuntimeConfig {
+        RuntimeConfig::load(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../runtime.bundle.example.json"),
+        )
+        .expect("committed bundle preset loads")
+    }
 
     #[test]
     fn relative_config_paths_gain_an_absolute_resolution_base() {
@@ -697,6 +719,99 @@ mod tests {
                 .kind(),
             ErrorKind::InvalidData
         );
+    }
+
+    #[test]
+    fn top_level_topology_accepts_the_actor_budget_and_rejects_one_more() {
+        let base = bundle_config();
+
+        let mut agents = base.clone();
+        let agent_template = agents.agents[0].clone();
+        agents.agents = (0..MAX_RUNTIME_TOPOLOGY_ENTRIES)
+            .map(|index| {
+                let mut agent = agent_template.clone();
+                agent.agent_id = if index == 0 {
+                    agent_template.agent_id.clone()
+                } else {
+                    format!("agent-{index}")
+                };
+                agent
+            })
+            .collect();
+        assert!(agents.validate().is_ok());
+        let mut extra_agent = agent_template;
+        extra_agent.agent_id = "agent-overflow".into();
+        agents.agents.push(extra_agent);
+        assert!(matches!(
+            agents.validate(),
+            Err(RuntimeConfigError::InvalidTopology)
+        ));
+
+        let mut channels = base.clone();
+        let channel_template = channels.channels[0].clone();
+        channels.channels = (0..MAX_RUNTIME_TOPOLOGY_ENTRIES)
+            .map(|index| {
+                let mut channel = channel_template.clone();
+                channel.channel_id = if index == 0 {
+                    channel_template.channel_id.clone()
+                } else {
+                    format!("channel-{index}")
+                };
+                channel
+            })
+            .collect();
+        assert!(channels.validate().is_ok());
+        let mut extra_channel = channel_template;
+        extra_channel.channel_id = "channel-overflow".into();
+        channels.channels.push(extra_channel);
+        assert!(matches!(
+            channels.validate(),
+            Err(RuntimeConfigError::InvalidTopology)
+        ));
+
+        let mut lanes = base.clone();
+        let lane_template = lanes.lanes[0].clone();
+        lanes.lanes = (0..MAX_RUNTIME_TOPOLOGY_ENTRIES)
+            .map(|index| {
+                let mut lane = lane_template.clone();
+                lane.lane = if index == 0 {
+                    lane_template.lane.clone()
+                } else {
+                    format!("lane-{index}")
+                };
+                lane
+            })
+            .collect();
+        assert!(lanes.validate().is_ok());
+        let mut extra_lane = lane_template;
+        extra_lane.lane = "lane-overflow".into();
+        lanes.lanes.push(extra_lane);
+        assert!(matches!(
+            lanes.validate(),
+            Err(RuntimeConfigError::InvalidTopology)
+        ));
+
+        let mut bridges = base;
+        let bridge_template = bridges.bridges[0].clone();
+        bridges.bridges = (0..MAX_RUNTIME_TOPOLOGY_ENTRIES)
+            .map(|index| {
+                let mut bridge = bridge_template.clone();
+                bridge.bridge_id = if index == 0 {
+                    bridge_template.bridge_id.clone()
+                } else {
+                    format!("bridge-{index}")
+                };
+                bridge
+            })
+            .collect();
+        assert!(bridges.validate().is_ok());
+        let mut extra_bridge = bridge_template;
+        extra_bridge.bridge_id = "bridge-overflow".into();
+        bridges.bridges.push(extra_bridge);
+        assert!(matches!(
+            bridges.validate(),
+            Err(RuntimeConfigError::InvalidTopology)
+        ));
     }
 
     #[test]
