@@ -3,6 +3,24 @@
 `bridge-host` owns generic external-message admission, durable ingress routing and selected
 delivery. Service packages never bypass its identity, JSON or attachment limits.
 
+## Control boundary
+
+![Bridge control admission boundary](bridge-control-boundary.png)
+
+Every control request is semantically bounded before the bridge ID can enter the per-bridge lock
+registry or reach a package/store. This applies equally to read-only status lookups, lifecycle
+commands and the ephemeral authentication exchange.
+
+| Boundary | Maximum |
+|---|---:|
+| Bridge identity | 512 bytes |
+| Delivery message / authentication challenge ID | 1,024 bytes |
+| Authentication context JSON object | 64 KiB |
+| Authentication response JSON | 1 MiB |
+
+Authentication methods must be known contract variants. Invalid requests fail without acquiring a
+lock, calling a bridge package or touching durable state.
+
 ## Registration boundary
 
 ![Bridge registration admission boundary](bridge-registration-boundary.png)
