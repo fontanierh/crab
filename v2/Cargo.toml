@@ -24,12 +24,11 @@ members = [
 edition = "2024"
 
 [workspace.dependencies]
-# Keep the Boxology runtime closure on one reviewed revision. This includes the post-0.1.1
-# optional-field semantics and truthful generator-provenance fixes.
-boxology = { git = "https://github.com/fontanierh/boxology", rev = "4dd00888445c6506704a3e3f69932a3c4bc32efa" }
-boxology-contract = { git = "https://github.com/fontanierh/boxology", rev = "4dd00888445c6506704a3e3f69932a3c4bc32efa" }
-boxology-manifest = { git = "https://github.com/fontanierh/boxology", rev = "4dd00888445c6506704a3e3f69932a3c4bc32efa" }
-boxology-runtime = { git = "https://github.com/fontanierh/boxology", rev = "4dd00888445c6506704a3e3f69932a3c4bc32efa" }
+# Keep the complete Boxology runtime closure on one exact crates.io release.
+boxology = "=0.2.1"
+boxology-contract = "=0.2.1"
+boxology-manifest = "=0.2.1"
+boxology-runtime = "=0.2.1"
 agent-client-protocol = { version = "=2.0.0", features = ["unstable_protocol_v2", "unstable_session_fork"] }
 agent-client-protocol-rmcp = "=3.0.0"
 async-trait = "0.1.89"

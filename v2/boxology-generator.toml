@@ -1,2 +1,2 @@
-boxology-version = "0.1.1"
-dependency-source = "https://github.com/fontanierh/boxology"
+boxology-version = "0.2.1"
+dependency-source = "registry+https://github.com/rust-lang/crates.io-index"
