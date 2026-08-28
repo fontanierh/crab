@@ -2,7 +2,9 @@
 flowchart TB
     UI["Native ACP UI<br/>plug in or build"]
     IPC["owner-only local IPC<br/>Boxology JSON"]
-    EXTERNAL["WhatsApp · email · webhooks"]
+    WHATSAPP["WhatsApp"]
+    WAPROVIDER["whatsapp-bridge-provider<br/>first-party provider package"]
+    RUNTIMEMANIFEST["runtime/boxology.toml<br/>provider selection"]
 
     BRIDGE["bridge-host"]
     TRIGGER["trigger-inbox"]
@@ -28,7 +30,9 @@ flowchart TB
     AGENT <-->|"non-blocking messages"| SUBAGENT
     SUBAGENT <-->|"fresh or inherited context<br/>one process per child"| CHILDREN
 
-    EXTERNAL <-->|"selected messages"| BRIDGE
+    WHATSAPP <-->|"Baileys"| WAPROVIDER
+    WAPROVIDER <-->|"bridge protocol v2"| BRIDGE
+    RUNTIMEMANIFEST -. "metadata only · not binding" .-> WAPROVIDER
     BRIDGE -->|"queue · steer · interrupt<br/>fixed at registration"| TRIGGER
     TRIGGER -->|"leased triggers"| ROUTER
     ROUTER -->|"resolved + settled turns"| CHANNEL
@@ -38,6 +42,8 @@ flowchart TB
     classDef agent fill:#ede9fe,stroke:#7c3aed,stroke-width:2px,color:#2e1065;
     classDef channel fill:#dbeafe,stroke:#2563eb,stroke-width:2px,color:#172554;
     classDef bridge fill:#dcfce7,stroke:#16a34a,stroke-width:2px,color:#14532d;
+    classDef provider fill:#ccfbf1,stroke:#0f766e,stroke-width:2px,color:#134e4a;
+    classDef topology fill:#e0f2fe,stroke:#0284c7,stroke-width:1.5px,color:#0c4a6e;
     classDef trigger fill:#ffedd5,stroke:#ea580c,stroke-width:2px,color:#7c2d12;
     classDef router fill:#fef3c7,stroke:#d97706,stroke-width:2px,color:#78350f;
     classDef subagent fill:#fce7f3,stroke:#db2777,stroke-width:2px,color:#831843;
@@ -49,7 +55,9 @@ flowchart TB
     class CHANNEL,IPC,CONTROL channel;
     class GATEWAY channel;
     class BRIDGE bridge;
+    class WAPROVIDER provider;
+    class RUNTIMEMANIFEST topology;
     class TRIGGER trigger;
     class ROUTER router;
-    class UI,EXTERNAL,CHILDREN external;
+    class UI,WHATSAPP,CHILDREN external;
     class AUTH authority;

@@ -23,6 +23,7 @@ role = "composition"
 
 [composition]
 boxes = ["agent-host", "native-channel", "channel-gateway", "bridge-host", "runtime-control", "sub-agent-host", "trigger-inbox", "turn-router"]
+providers = ["whatsapp-bridge-provider"]
 
 [[composition.bindings]]
 box = "agent-host"
