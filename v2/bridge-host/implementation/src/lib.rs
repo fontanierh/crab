@@ -55,6 +55,8 @@ const MAX_CHALLENGE_ID_BYTES: usize = 1024;
 const MAX_RESTART_LIMIT: u64 = 64;
 const MAX_PACKAGE_DETAIL_JSON_BYTES: usize = 64 * 1024;
 const MAX_AUTHENTICATION_PRESENTATION_JSON_BYTES: usize = 1024 * 1024;
+/// Maximum canonical JSON snapshot accepted from initial authentication or live credential update.
+pub const MAX_CREDENTIAL_SNAPSHOT_JSON_BYTES: usize = 8 * 1024 * 1024;
 const MAX_ACCOUNT_HINT_BYTES: usize = 1024;
 const MAX_EXTERNAL_DELIVERY_ID_BYTES: usize = 1024;
 const MAX_EXTERNAL_EVENT_ID_BYTES: usize = 1024;
@@ -973,9 +975,9 @@ impl BridgeCredentialSink for BridgeCredentialRouter {
         &self,
         request: BridgeCredentialUpdate,
     ) -> Result<BridgeCredentialReceipt, BridgeHostError> {
+        validate_credential_update(&request)?;
         let _update = self.credential_updates.lock().await;
         if request.bridge_id != self.bridge_id
-            || !valid_credential_fingerprint(&request.previous_fingerprint)
             || self
                 .active_package_instances
                 .read()
@@ -1672,8 +1674,26 @@ fn validate_package_challenge(challenge: &PackageChallenge) -> Result<(), Bridge
 }
 
 fn validate_package_credential(credential: &PackageCredential) -> Result<(), BridgeHostError> {
+    validate_bounded_json(
+        &credential.secret_json,
+        MAX_CREDENTIAL_SNAPSHOT_JSON_BYTES,
+        BridgeHostError::PackageProtocolFailed,
+    )?;
     validate_optional_text(credential.account_hint.as_deref(), MAX_ACCOUNT_HINT_BYTES)?;
     validate_package_detail(&credential.detail_json)
+}
+
+fn validate_credential_update(request: &BridgeCredentialUpdate) -> Result<(), BridgeHostError> {
+    if !valid_required(&request.bridge_id, MAX_BRIDGE_ID_BYTES)
+        || !valid_credential_fingerprint(&request.previous_fingerprint)
+    {
+        return Err(BridgeHostError::InvalidSpec);
+    }
+    validate_bounded_json(
+        &request.credential_json,
+        MAX_CREDENTIAL_SNAPSHOT_JSON_BYTES,
+        BridgeHostError::InvalidSpec,
+    )
 }
 
 fn validate_package_validation(
@@ -1920,23 +1940,24 @@ mod tests {
 
     use super::package::{MAX_LAUNCH_ARGUMENT_BYTES, MAX_LAUNCH_ARGUMENTS};
     use super::{
-        AuthenticationMethod, BeginAuthenticationRequest, BridgeAttachment, BridgeHostError,
-        BridgeInbound, BridgeIngressMode, BridgeManagement, BridgeOperationLocks, BridgeOutbound,
-        BridgeSpec, CredentialLifecycle, DeliveryReference, HealthObservation,
-        MAX_ACCOUNT_HINT_BYTES, MAX_AUTHENTICATION_CONTEXT_JSON_BYTES, MAX_AUTHENTICATION_METHODS,
-        MAX_AUTHENTICATION_PRESENTATION_JSON_BYTES, MAX_AUTHENTICATION_RESPONSE_JSON_BYTES,
-        MAX_BRIDGE_ATTACHMENTS, MAX_BRIDGE_ID_BYTES, MAX_CHALLENGE_ID_BYTES,
-        MAX_CONFIGURATION_JSON_BYTES, MAX_CONTENT_HANDLE_BYTES, MAX_DISPLAY_NAME_BYTES,
-        MAX_ENDPOINT_JSON_BYTES, MAX_EXTERNAL_DELIVERY_ID_BYTES, MAX_LAUNCH_JSON_BYTES,
-        MAX_MESSAGE_ID_BYTES, MAX_MESSAGE_JSON_BYTES, MAX_NORMALIZED_TRIGGER_BYTES,
-        MAX_PACKAGE_DETAIL_JSON_BYTES, MAX_PACKAGE_ID_BYTES, MAX_RESTART_LIMIT, PackageChallenge,
-        PackageCredential, PackageCredentialValidation, PackageDelivery, PackageHealth,
-        SubmitAuthenticationRequest, generated, normalized_inbound_message,
-        validate_begin_authentication, validate_bridge_id, validate_delivery_reference,
-        validate_health_observation, validate_inbound, validate_outbound,
-        validate_package_challenge, validate_package_credential, validate_package_delivery,
-        validate_package_health, validate_package_validation, validate_spec,
-        validate_submit_authentication,
+        AuthenticationMethod, BeginAuthenticationRequest, BridgeAttachment, BridgeCredentialRouter,
+        BridgeCredentialSink, BridgeCredentialUpdate, BridgeHostError, BridgeInbound,
+        BridgeIngressMode, BridgeManagement, BridgeOperationLocks, BridgeOutbound, BridgeSpec,
+        BridgeStore, CredentialLifecycle, DeliveryReference, HealthObservation,
+        InMemoryCredentialStore, MAX_ACCOUNT_HINT_BYTES, MAX_AUTHENTICATION_CONTEXT_JSON_BYTES,
+        MAX_AUTHENTICATION_METHODS, MAX_AUTHENTICATION_PRESENTATION_JSON_BYTES,
+        MAX_AUTHENTICATION_RESPONSE_JSON_BYTES, MAX_BRIDGE_ATTACHMENTS, MAX_BRIDGE_ID_BYTES,
+        MAX_CHALLENGE_ID_BYTES, MAX_CONFIGURATION_JSON_BYTES, MAX_CONTENT_HANDLE_BYTES,
+        MAX_CREDENTIAL_SNAPSHOT_JSON_BYTES, MAX_DISPLAY_NAME_BYTES, MAX_ENDPOINT_JSON_BYTES,
+        MAX_EXTERNAL_DELIVERY_ID_BYTES, MAX_LAUNCH_JSON_BYTES, MAX_MESSAGE_ID_BYTES,
+        MAX_MESSAGE_JSON_BYTES, MAX_NORMALIZED_TRIGGER_BYTES, MAX_PACKAGE_DETAIL_JSON_BYTES,
+        MAX_PACKAGE_ID_BYTES, MAX_RESTART_LIMIT, PackageChallenge, PackageCredential,
+        PackageCredentialValidation, PackageDelivery, PackageHealth, SubmitAuthenticationRequest,
+        generated, normalized_inbound_message, validate_begin_authentication, validate_bridge_id,
+        validate_credential_update, validate_delivery_reference, validate_health_observation,
+        validate_inbound, validate_outbound, validate_package_challenge,
+        validate_package_credential, validate_package_delivery, validate_package_health,
+        validate_package_validation, validate_spec, validate_submit_authentication,
     };
 
     fn sized_text_json(size: usize) -> String {
@@ -2238,6 +2259,32 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn invalid_live_credential_update_never_waits_for_global_serialization() {
+        let credential_updates = Arc::new(tokio::sync::Mutex::new(()));
+        let _held = credential_updates.lock().await;
+        let router = BridgeCredentialRouter {
+            bridge_id: "bridge".into(),
+            package_instance_id: "package-instance".into(),
+            store: Arc::new(BridgeStore::open_in_memory().expect("store opens")),
+            credentials: Arc::new(InMemoryCredentialStore::default()),
+            active_package_instances: Arc::new(tokio::sync::RwLock::new(Default::default())),
+            credential_updates: credential_updates.clone(),
+        };
+
+        let result = tokio::time::timeout(
+            Duration::from_millis(100),
+            router.persist(BridgeCredentialUpdate {
+                bridge_id: "bridge".into(),
+                previous_fingerprint: "a".repeat(64),
+                credential_json: sized_text_json(MAX_CREDENTIAL_SNAPSHOT_JSON_BYTES + 1),
+            }),
+        )
+        .await
+        .expect("invalid update does not wait for the held global mutex");
+        assert_eq!(result, Err(BridgeHostError::InvalidSpec));
+    }
+
     #[test]
     fn package_result_admission_accepts_exact_metadata_limits() {
         let detail = sized_text_json(MAX_PACKAGE_DETAIL_JSON_BYTES);
@@ -2257,12 +2304,18 @@ mod tests {
         })
         .expect("exact authentication presentation passes");
         validate_package_credential(&PackageCredential {
-            secret_json: "{}".into(),
+            secret_json: sized_text_json(MAX_CREDENTIAL_SNAPSHOT_JSON_BYTES),
             expires_at_ms: None,
             account_hint: Some("a".repeat(MAX_ACCOUNT_HINT_BYTES)),
             detail_json: detail.clone(),
         })
         .expect("exact credential metadata passes");
+        validate_credential_update(&BridgeCredentialUpdate {
+            bridge_id: "b".repeat(MAX_BRIDGE_ID_BYTES),
+            previous_fingerprint: "a".repeat(64),
+            credential_json: sized_text_json(MAX_CREDENTIAL_SNAPSHOT_JSON_BYTES),
+        })
+        .expect("exact live credential snapshot passes");
         validate_package_validation(&PackageCredentialValidation {
             valid: true,
             expires_at_ms: None,
@@ -2312,12 +2365,54 @@ mod tests {
         );
         assert_eq!(
             validate_package_credential(&PackageCredential {
+                secret_json: sized_text_json(MAX_CREDENTIAL_SNAPSHOT_JSON_BYTES + 1),
+                expires_at_ms: None,
+                account_hint: None,
+                detail_json: "{}".into(),
+            }),
+            Err(BridgeHostError::PackageProtocolFailed)
+        );
+        assert_eq!(
+            validate_package_credential(&PackageCredential {
+                secret_json: "{".into(),
+                expires_at_ms: None,
+                account_hint: None,
+                detail_json: "{}".into(),
+            }),
+            Err(BridgeHostError::PackageProtocolFailed)
+        );
+        assert_eq!(
+            validate_package_credential(&PackageCredential {
                 secret_json: "{}".into(),
                 expires_at_ms: None,
                 account_hint: Some("a".repeat(MAX_ACCOUNT_HINT_BYTES + 1)),
                 detail_json: "{}".into(),
             }),
             Err(BridgeHostError::PackageProtocolFailed)
+        );
+        assert_eq!(
+            validate_credential_update(&BridgeCredentialUpdate {
+                bridge_id: "bridge".into(),
+                previous_fingerprint: "a".repeat(64),
+                credential_json: sized_text_json(MAX_CREDENTIAL_SNAPSHOT_JSON_BYTES + 1),
+            }),
+            Err(BridgeHostError::InvalidSpec)
+        );
+        assert_eq!(
+            validate_credential_update(&BridgeCredentialUpdate {
+                bridge_id: "bridge".into(),
+                previous_fingerprint: "not-a-fingerprint".into(),
+                credential_json: "{}".into(),
+            }),
+            Err(BridgeHostError::InvalidSpec)
+        );
+        assert_eq!(
+            validate_credential_update(&BridgeCredentialUpdate {
+                bridge_id: "bridge".into(),
+                previous_fingerprint: "a".repeat(64),
+                credential_json: "{".into(),
+            }),
+            Err(BridgeHostError::InvalidSpec)
         );
         assert_eq!(
             validate_package_validation(&PackageCredentialValidation {
