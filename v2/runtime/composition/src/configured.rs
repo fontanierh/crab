@@ -8,8 +8,7 @@ use std::{
 use agent_host_contract::{DetachSessionsRequest, SessionReference};
 use boxology_contract::{CallContext, CallError, Caller, CancelToken, TraceContext};
 use bridge_host_contract::{
-    BridgeHostError, BridgeManagement, BridgeReference, BridgeSpec, ListBridgesRequest,
-    ReplaceBridgeRequest,
+    BridgeHostError, BridgeManagement, BridgeReference, BridgeSpec, ReplaceBridgeRequest,
 };
 use channel_gateway_contract::{AttachChannelRequest, ChannelAttachmentDisposition};
 use native_channel_contract::{BindingReference, ChannelLifecycle};
@@ -19,7 +18,9 @@ use turn_router_contract::{DrainLaneRequest, PutRouteRequest, RouteReference};
 
 use crate::{
     ChannelConfig, ChannelIpcPaths, DraftRuntime, LaneConfig, RuntimeConfig, RuntimeStartError,
-    channel_ipc::{ChannelIpcCapabilities, ChannelIpcServer},
+    channel_ipc::{
+        ChannelIpcCapabilities, ChannelIpcServer, complete_active_bridge_catalog_request,
+    },
     start_runtime_with_state_directory,
 };
 
@@ -200,7 +201,7 @@ async fn initialize_bridges(
 ) -> Result<Vec<String>, RuntimeStartError> {
     let specs = config.bridge_specs()?;
     let catalog = bridge_host
-        .list_bridges(call_context(), ListBridgesRequest {})
+        .list_bridge_page(call_context(), complete_active_bridge_catalog_request())
         .await
         .map_err(RuntimeStartError::ListBridges)?;
     let persisted = catalog
@@ -664,14 +665,15 @@ mod tests {
     use bridge_host_contract::{
         AuthenticationMethod as ContractAuthenticationMethod, BeginAuthenticationRequest,
         BridgeLifecycle, BridgeReference, CredentialLifecycle, DeliveryLifecycle,
-        DeliveryReference, ListBridgesRequest, ReconcileBridgeRequest, ReplaceBridgeRequest,
+        DeliveryReference, ListBridgePageRequest, ReconcileBridgeRequest, ReplaceBridgeRequest,
         SubmitAuthenticationRequest, UnregisterBridgeRequest,
     };
     use bridge_host_implementation::{
         AuthenticationMethod, BridgeCredentialSink, BridgeHostState, BridgeInboundSink,
         BridgeManagement, BridgeOutbound, BridgePackage, BridgePackageError, BridgePackageFactory,
-        BridgeSpec, InMemoryCredentialStore, PackageChallenge, PackageCredential,
-        PackageCredentialValidation, PackageDelivery, PackageHealth, generated as bridge_host,
+        BridgeSpec, InMemoryCredentialStore, MAX_BRIDGE_CATALOG_PAGE, PackageChallenge,
+        PackageCredential, PackageCredentialValidation, PackageDelivery, PackageHealth,
+        generated as bridge_host,
     };
     use channel_gateway_contract::{
         AttachChannelRequest, ChannelAttachmentDisposition, ChannelGatewayError,
@@ -2031,7 +2033,14 @@ mod tests {
         let client =
             ChannelIpcClient::from_state_directory(directory.path()).expect("client opens");
 
-        let catalog = client.list_bridges().await.expect("catalog crosses IPC");
+        let catalog = client
+            .list_bridge_page(ListBridgePageRequest {
+                after_bridge_id: None,
+                limit: MAX_BRIDGE_CATALOG_PAGE,
+                include_unregistered: false,
+            })
+            .await
+            .expect("catalog page crosses IPC");
         assert_eq!(catalog.bridges.len(), 1);
         assert_eq!(catalog.bridges[0].bridge_id, "whatsapp");
         let mut dynamic_config = config(directory.path().to_path_buf());
@@ -2079,6 +2088,53 @@ mod tests {
             .expect("retired bridge tombstone crosses IPC");
         assert_eq!(retired.lifecycle, BridgeLifecycle::Unregistered);
         assert_eq!(retired.generation, 3);
+        let first = client
+            .list_bridge_page(ListBridgePageRequest {
+                after_bridge_id: None,
+                limit: 1,
+                include_unregistered: true,
+            })
+            .await
+            .expect("bounded tombstone page crosses IPC");
+        assert_eq!(first.total_bridges, 2);
+        assert_eq!(first.bridges.len(), 1);
+        assert_eq!(first.bridges[0].bridge_id, "signal");
+        assert_eq!(first.bridges[0].lifecycle, BridgeLifecycle::Unregistered);
+        assert_eq!(first.next_after_bridge_id.as_deref(), Some("signal"));
+        let second = client
+            .list_bridge_page(ListBridgePageRequest {
+                after_bridge_id: first.next_after_bridge_id,
+                limit: MAX_BRIDGE_CATALOG_PAGE,
+                include_unregistered: true,
+            })
+            .await
+            .expect("continued catalog page crosses IPC");
+        assert_eq!(second.total_bridges, 2);
+        assert_eq!(second.bridges.len(), 1);
+        assert_eq!(second.bridges[0].bridge_id, "whatsapp");
+        assert!(second.next_after_bridge_id.is_none());
+        let active = client
+            .list_bridge_page(ListBridgePageRequest {
+                after_bridge_id: None,
+                limit: MAX_BRIDGE_CATALOG_PAGE,
+                include_unregistered: false,
+            })
+            .await
+            .expect("active catalog filter crosses IPC");
+        assert_eq!(active.total_bridges, 1);
+        assert_eq!(active.bridges[0].bridge_id, "whatsapp");
+        let invalid = client
+            .list_bridge_page(ListBridgePageRequest {
+                after_bridge_id: None,
+                limit: 0,
+                include_unregistered: true,
+            })
+            .await;
+        assert!(matches!(
+            invalid,
+            Err(ChannelIpcClientError::Remote { ref kind, ref code })
+                if kind == "domain" && code == "InvalidSpec"
+        ));
         let status = client
             .bridge_status(BridgeReference {
                 bridge_id: "whatsapp".into(),
@@ -2556,7 +2612,14 @@ mod tests {
             .expect("changed bridge replaces");
         let replaced = graph
             .bridge_host
-            .list_bridges(call_context(), ListBridgesRequest {})
+            .list_bridge_page(
+                call_context(),
+                ListBridgePageRequest {
+                    after_bridge_id: None,
+                    limit: MAX_BRIDGE_CATALOG_PAGE,
+                    include_unregistered: false,
+                },
+            )
             .await
             .expect("catalog lists")
             .bridges
@@ -2568,7 +2631,14 @@ mod tests {
         assert!(suspend_bridges(&graph.bridge_host, &["whatsapp".into()]).await);
         let suspended = graph
             .bridge_host
-            .list_bridges(call_context(), ListBridgesRequest {})
+            .list_bridge_page(
+                call_context(),
+                ListBridgePageRequest {
+                    after_bridge_id: None,
+                    limit: MAX_BRIDGE_CATALOG_PAGE,
+                    include_unregistered: false,
+                },
+            )
             .await
             .expect("suspended catalog lists")
             .bridges
@@ -2603,7 +2673,14 @@ mod tests {
             .expect("removed configured bridge stops without touching agent bridge");
         let catalog = graph
             .bridge_host
-            .list_bridges(call_context(), ListBridgesRequest {})
+            .list_bridge_page(
+                call_context(),
+                ListBridgePageRequest {
+                    after_bridge_id: None,
+                    limit: MAX_BRIDGE_CATALOG_PAGE,
+                    include_unregistered: false,
+                },
+            )
             .await
             .expect("reconciled catalog lists");
         let removed = catalog
@@ -2663,7 +2740,14 @@ mod tests {
 
         let record = restarted
             .bridge_host
-            .list_bridges(call_context(), ListBridgesRequest {})
+            .list_bridge_page(
+                call_context(),
+                ListBridgePageRequest {
+                    after_bridge_id: None,
+                    limit: MAX_BRIDGE_CATALOG_PAGE,
+                    include_unregistered: false,
+                },
+            )
             .await
             .expect("restarted catalog lists")
             .bridges

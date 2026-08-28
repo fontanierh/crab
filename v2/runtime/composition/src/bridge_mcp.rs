@@ -7,17 +7,22 @@ use agent_client_protocol_rmcp::{McpServerExt as _, McpTool};
 use agent_host_implementation::CRAB_STATE_DIRECTORY_ENV;
 use bridge_host_contract::{
     AuthenticationChallenge, AuthenticationMethod, BeginAuthenticationRequest, BridgeAlertTarget,
-    BridgeAttachment, BridgeCatalog, BridgeIngressMode, BridgeLifecycle, BridgeManagement,
+    BridgeAttachment, BridgeCatalogPage, BridgeIngressMode, BridgeLifecycle, BridgeManagement,
     BridgeOutbound, BridgeReceipt, BridgeRecord, BridgeReference, BridgeSpec, BridgeStatus,
     CredentialLifecycle, CredentialStatus, DeliveryLifecycle, DeliveryReceipt, DeliveryReference,
-    ImportBridgeContentRequest, ImportedBridgeContent, ReconcileBridgeRequest,
-    ReplaceBridgeRequest, SubmitAuthenticationRequest, UnregisterBridgeRequest,
+    ImportBridgeContentRequest, ImportedBridgeContent, ListBridgePageRequest,
+    ReconcileBridgeRequest, ReplaceBridgeRequest, SubmitAuthenticationRequest,
+    UnregisterBridgeRequest,
 };
+use bridge_host_implementation::MAX_BRIDGE_CATALOG_PAGE;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
 
-use crate::{ChannelIpcClient, ChannelIpcClientError, native_stdio};
+use crate::{
+    ChannelIpcClient, ChannelIpcClientError, channel_ipc::complete_active_bridge_catalog_request,
+    native_stdio,
+};
 
 const SERVER_NAME: &str = "crab-bridges";
 
@@ -255,7 +260,18 @@ impl BridgeSpecInput {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct EmptyInput {}
+struct ListInput {
+    #[serde(default)]
+    after_bridge_id: Option<String>,
+    #[serde(default = "maximum_catalog_page")]
+    limit: u64,
+    #[serde(default)]
+    include_unregistered: bool,
+}
+
+fn maximum_catalog_page() -> u64 {
+    MAX_BRIDGE_CATALOG_PAGE
+}
 
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -397,7 +413,7 @@ impl McpTool<mcp::Client> for RegisterTool {
 struct ListTool(BridgeContext);
 
 impl McpTool<mcp::Client> for ListTool {
-    type Input = EmptyInput;
+    type Input = ListInput;
     type Output = Value;
 
     fn name(&self) -> String {
@@ -405,19 +421,23 @@ impl McpTool<mcp::Client> for ListTool {
     }
 
     fn description(&self) -> String {
-        "List non-secret durable bridge registrations and generations.".into()
+        "Read one bounded identity-keyset page of non-secret durable bridge registrations and generations. Retired tombstones are opt-in.".into()
     }
 
     async fn call_tool(
         &self,
-        _input: Self::Input,
+        input: Self::Input,
         _connection: agent_client_protocol::mcp_server::McpConnectionTo<mcp::Client>,
     ) -> Result<Self::Output, Error> {
         self.0
             .client()?
-            .list_bridges()
+            .list_bridge_page(ListBridgePageRequest {
+                after_bridge_id: input.after_bridge_id,
+                limit: input.limit,
+                include_unregistered: input.include_unregistered,
+            })
             .await
-            .map(catalog_json)
+            .map(catalog_page_json)
             .map_err(ipc_error)
     }
 }
@@ -443,7 +463,10 @@ impl McpTool<mcp::Client> for ReplaceTool {
         _connection: agent_client_protocol::mcp_server::McpConnectionTo<mcp::Client>,
     ) -> Result<Self::Output, Error> {
         let client = self.0.client()?;
-        let catalog = client.list_bridges().await.map_err(ipc_error)?;
+        let catalog = client
+            .list_bridge_page(complete_active_bridge_catalog_request())
+            .await
+            .map_err(ipc_error)?;
         let management = replacement_management(&catalog, &input.spec.bridge_id)?;
         client
             .replace_bridge(ReplaceBridgeRequest {
@@ -822,7 +845,7 @@ fn valid_environment_names(names: &[String]) -> bool {
 }
 
 fn replacement_management(
-    catalog: &BridgeCatalog,
+    catalog: &BridgeCatalogPage,
     bridge_id: &str,
 ) -> Result<BridgeManagement, Error> {
     catalog
@@ -881,8 +904,12 @@ fn record_json(record: BridgeRecord) -> Value {
     })
 }
 
-fn catalog_json(catalog: BridgeCatalog) -> Value {
-    json!({"bridges":catalog.bridges.into_iter().map(record_json).collect::<Vec<_>>()})
+fn catalog_page_json(catalog: BridgeCatalogPage) -> Value {
+    json!({
+        "bridges": catalog.bridges.into_iter().map(record_json).collect::<Vec<_>>(),
+        "totalBridges": catalog.total_bridges,
+        "nextAfterBridgeId": catalog.next_after_bridge_id,
+    })
 }
 
 fn status_json(status: BridgeStatus) -> Result<Value, Error> {
@@ -1038,7 +1065,7 @@ fn delivery_name(value: &DeliveryLifecycle) -> &'static str {
 #[cfg(test)]
 mod tests {
     use bridge_host_contract::{
-        BridgeCatalog, BridgeIngressMode, BridgeLifecycle, BridgeManagement, BridgeRecord,
+        BridgeCatalogPage, BridgeIngressMode, BridgeLifecycle, BridgeManagement, BridgeRecord,
         CredentialLifecycle, CredentialStatus,
     };
     use serde_json::json;
@@ -1082,11 +1109,13 @@ mod tests {
 
     #[test]
     fn replacement_preserves_registered_management_and_missing_ids_fail_closed() {
-        let catalog = BridgeCatalog {
+        let catalog = BridgeCatalogPage {
             bridges: vec![
                 bridge_record("configured", BridgeManagement::RuntimeConfigured),
                 bridge_record("agent", BridgeManagement::AgentManaged),
             ],
+            total_bridges: 2,
+            next_after_bridge_id: None,
         };
         assert_eq!(
             replacement_management(&catalog, "configured").expect("configured bridge exists"),

@@ -20,12 +20,13 @@ use boxology_contract::{
     json::{self, Limits},
 };
 use bridge_host_contract::{
-    AuthenticationChallenge, BeginAuthenticationRequest, BridgeCatalog, BridgeHostHandle,
+    AuthenticationChallenge, BeginAuthenticationRequest, BridgeCatalogPage, BridgeHostHandle,
     BridgeOutbound, BridgeReceipt, BridgeRecord, BridgeReference, BridgeSpec, BridgeStatus,
     CredentialStatus, DeliveryReceipt, DeliveryReference, ImportBridgeContentRequest,
-    ImportedBridgeContent, ListBridgesRequest, ReconcileBridgeRequest, ReplaceBridgeRequest,
+    ImportedBridgeContent, ListBridgePageRequest, ReconcileBridgeRequest, ReplaceBridgeRequest,
     SubmitAuthenticationRequest, UnregisterBridgeRequest,
 };
+use bridge_host_implementation::{MAX_ACTIVE_BRIDGE_REGISTRATIONS, MAX_BRIDGE_CATALOG_PAGE};
 use channel_gateway_contract::{AttachChannelRequest, ChannelAttachment, ChannelGatewayHandle};
 use native_channel_contract::{
     AcceptedTurn, BindingReference, ChannelBindingCatalog, ChannelBindingSummary, ChannelStatus,
@@ -68,7 +69,7 @@ const CHANNEL_BINDING_SUMMARY: &str = "native-channel.binding_summary";
 const REPLAY: &str = "native-channel.replay_native_events";
 const ENQUEUE_TRIGGER: &str = "trigger-inbox.enqueue";
 const REGISTER_BRIDGE: &str = "bridge-host.register_bridge";
-const LIST_BRIDGES: &str = "bridge-host.list_bridges";
+const LIST_BRIDGE_PAGE: &str = "bridge-host.list_bridge_page";
 const REPLACE_BRIDGE: &str = "bridge-host.replace_bridge";
 const UNREGISTER_BRIDGE: &str = "bridge-host.unregister_bridge";
 const RECONCILE_BRIDGE: &str = "bridge-host.reconcile_bridge";
@@ -92,6 +93,19 @@ const SEND_TO_PARENT: &str = "sub-agent-host.send_to_parent";
 const READ_SUB_AGENT_EVENTS: &str = "sub-agent-host.read_events";
 const SUB_AGENT_STATUS: &str = "sub-agent-host.status";
 const STOP_SUB_AGENT: &str = "sub-agent-host.stop";
+
+const _: () = assert!(MAX_ACTIVE_BRIDGE_REGISTRATIONS as u64 <= MAX_BRIDGE_CATALOG_PAGE);
+
+/// Request every active registration in one bounded page. The bridge-host admission ceiling keeps
+/// the active set below the page ceiling, while tombstones remain available through explicit audit
+/// pagination.
+pub(crate) fn complete_active_bridge_catalog_request() -> ListBridgePageRequest {
+    ListBridgePageRequest {
+        after_bridge_id: None,
+        limit: MAX_BRIDGE_CATALOG_PAGE,
+        include_unregistered: false,
+    }
+}
 
 /// Stable filesystem endpoints for Crab's local capability transport.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -346,12 +360,15 @@ impl ChannelIpcClient {
         .await
     }
 
-    /// List non-secret durable bridge registrations.
-    pub async fn list_bridges(&self) -> Result<BridgeCatalog, ChannelIpcClientError> {
+    /// Read one bounded, identity-keyset page of non-secret durable bridge registrations.
+    pub async fn list_bridge_page(
+        &self,
+        request: ListBridgePageRequest,
+    ) -> Result<BridgeCatalogPage, ChannelIpcClientError> {
         self.invoke(
-            LIST_BRIDGES,
+            LIST_BRIDGE_PAGE,
             bridge_host_contract::contract_descriptor(),
-            ListBridgesRequest {},
+            request,
         )
         .await
     }
@@ -1143,11 +1160,11 @@ async fn dispatch(request: WireRequest, capabilities: ChannelIpcCapabilities) ->
             )
             .await
         }
-        LIST_BRIDGES => {
-            invoke_bridge::<ListBridgesRequest, BridgeCatalog, _, _>(
+        LIST_BRIDGE_PAGE => {
+            invoke_bridge::<ListBridgePageRequest, BridgeCatalogPage, _, _>(
                 &request.input,
-                LIST_BRIDGES,
-                |input| bridge_host.list_bridges(call_context(), input),
+                LIST_BRIDGE_PAGE,
+                |input| bridge_host.list_bridge_page(call_context(), input),
             )
             .await
         }
