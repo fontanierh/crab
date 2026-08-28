@@ -23,6 +23,10 @@ runtime state/
 Schema `1` is strict JSON. It declares ACP commands, native channels and trigger lanes. Relative
 paths resolve beside the config file. Secrets are referenced only by environment-variable name;
 unknown fields, missing variables, broken references and zero-valued worker bounds fail startup.
+The 8 MiB file boundary is followed by a semantic admission check before path expansion: agents,
+channels, lanes and bridges are each capped at 128 entries. The channel ceiling is the same shared
+budget used for pending and live ACP session actors, so an oversized topology fails before runtime
+assembly can partially open sessions or workers.
 
 Configured bridges may set `alertTarget: {channelId, lane}` to an existing route. Actionable
 supervisor/auth failures and their recovery then wake that agent through durable queue-mode

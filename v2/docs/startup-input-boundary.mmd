@@ -4,9 +4,11 @@ flowchart LR
     BOOTSTRAP["Bootstrap prompt file"]
 
     CONFIG_LIMIT{"Bounded read<br/>≤ 8 MiB?"}
+    TOPOLOGY_LIMIT{"Semantic admission<br/>≤ 128 each: agents · channels<br/>lanes · bridges?"}
     BOOTSTRAP_LIMIT{"Shared bounded read<br/>≤ 2 MiB?"}
 
-    DECODE["Strict JSON decode<br/>+ topology validation"]
+    DECODE["Strict JSON decode"]
+    EXPAND["Resolve paths<br/>+ assemble runtime"]
     UTF8["UTF-8 decode<br/>+ ACP prompt validation"]
 
     subgraph CONSUMERS["Bootstrap consumers"]
@@ -20,11 +22,14 @@ flowchart LR
 
     CONFIG --> CONFIG_LIMIT
     BOOTSTRAP --> BOOTSTRAP_LIMIT
-    CONFIG_LIMIT -->|"accepted"| DECODE
+    CONFIG_LIMIT -->|"accepted"| DECODE --> TOPOLOGY_LIMIT
+    TOPOLOGY_LIMIT -->|"accepted"| EXPAND
+    EXPAND --> RUNTIME
     BOOTSTRAP_LIMIT -->|"accepted"| UTF8
     UTF8 --> RUNTIME
     UTF8 --> FACADE
     CONFIG_LIMIT -->|"oversized"| REJECT
+    TOPOLOGY_LIMIT -->|"oversized"| REJECT
     BOOTSTRAP_LIMIT -->|"oversized"| REJECT
     REJECT --> SAFE
 
@@ -34,6 +39,6 @@ flowchart LR
     classDef failure fill:#fee2e2,stroke:#dc2626,stroke-width:2px,color:#7f1d1d;
 
     class CONFIG,BOOTSTRAP source;
-    class CONFIG_LIMIT,BOOTSTRAP_LIMIT boundary;
-    class DECODE,UTF8,RUNTIME,FACADE accepted;
+    class CONFIG_LIMIT,TOPOLOGY_LIMIT,BOOTSTRAP_LIMIT boundary;
+    class DECODE,EXPAND,UTF8,RUNTIME,FACADE accepted;
     class REJECT,SAFE failure;
