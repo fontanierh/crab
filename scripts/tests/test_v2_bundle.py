@@ -773,6 +773,59 @@ class ServiceDeploymentTests(unittest.TestCase):
 
 
 class BundleBuildPolicyTests(unittest.TestCase):
+    def test_build_uses_one_external_owned_cargo_target_and_cleans_it(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw).resolve() / "repo"
+            (root / "v2").mkdir(parents=True)
+            targets: list[Path] = []
+
+            def fake_run(
+                _command: object, **arguments: object
+            ) -> subprocess.CompletedProcess[str]:
+                environment = arguments["environment"]
+                assert isinstance(environment, dict)
+                target = Path(environment["CARGO_TARGET_DIR"]).resolve()
+                targets.append(target)
+                (target / "release").mkdir(parents=True, exist_ok=True)
+                return subprocess.CompletedProcess([], 0, "", "")
+
+            with mock.patch("scripts.v2_bundle.run", side_effect=fake_run):
+                with bundle_tool.build_artifacts(root) as artifacts:
+                    self.assertEqual(artifacts, targets[0] / "release")
+                    self.assertTrue(artifacts.is_dir())
+                    self.assertNotIn(root, (targets[0], *targets[0].parents))
+                    (artifacts / "marker").write_text("owned\n", encoding="utf-8")
+
+            self.assertEqual(len(targets), 2)
+            self.assertEqual(targets[0], targets[1])
+            self.assertFalse(targets[0].exists())
+
+    def test_owned_cargo_target_is_cleaned_when_a_build_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw).resolve() / "repo"
+            (root / "v2").mkdir(parents=True)
+            targets: list[Path] = []
+
+            def fail_second_build(
+                _command: object, **arguments: object
+            ) -> subprocess.CompletedProcess[str]:
+                environment = arguments["environment"]
+                assert isinstance(environment, dict)
+                target = Path(environment["CARGO_TARGET_DIR"]).resolve()
+                targets.append(target)
+                if len(targets) == 2:
+                    raise BundleError("second build failed")
+                return subprocess.CompletedProcess([], 0, "", "")
+
+            with mock.patch("scripts.v2_bundle.run", side_effect=fail_second_build):
+                with self.assertRaisesRegex(BundleError, "second build failed"):
+                    with bundle_tool.build_artifacts(root):
+                        self.fail("failed build yielded artifacts")
+
+            self.assertEqual(len(targets), 2)
+            self.assertEqual(targets[0], targets[1])
+            self.assertFalse(targets[0].exists())
+
     def test_dirty_build_requires_explicit_development_output(self) -> None:
         root = Path("/repo")
         source = {**SOURCE, "dirty": True}

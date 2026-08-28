@@ -25,9 +25,10 @@ crab-v2-<commit>-<platform>/
 make v2-bundle
 ```
 
-The builder uses `cargo build --release --locked` and `npm ci --omit=dev`; it stages privately,
-verifies every entry, smoke-tests all public CLIs plus the agent and bridge, then publishes with one
-rename. An existing output is never overwritten.
+The builder gives both locked Cargo phases one collision-resistant target outside the checkout and
+removes it on success or failure. It uses `npm ci --omit=dev`, stages privately, verifies every
+entry, smoke-tests all public CLIs plus the agent and bridge, then publishes with one rename. An
+existing output is never overwritten.
 
 ## Verify anywhere
 

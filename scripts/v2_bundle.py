@@ -104,7 +104,11 @@ def run(
     cwd: Path,
     capture: bool = False,
     timeout_seconds: float | None = None,
+    environment: Mapping[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
+    process_environment = None
+    if environment is not None:
+        process_environment = {**os.environ, **environment}
     try:
         result = subprocess.run(
             list(command),
@@ -114,6 +118,7 @@ def run(
             stdout=subprocess.PIPE if capture else None,
             stderr=subprocess.PIPE if capture else None,
             timeout=timeout_seconds,
+            env=process_environment,
         )
     except subprocess.TimeoutExpired as error:
         raise BundleError(
@@ -191,19 +196,6 @@ def require_node(root: Path) -> tuple[str, str]:
     return node, npm
 
 
-def cargo_target_directory(root: Path) -> Path:
-    output = run(
-        ("cargo", "metadata", "--locked", "--no-deps", "--format-version", "1"),
-        cwd=root / "v2",
-        capture=True,
-    ).stdout
-    try:
-        target = json.loads(output)["target_directory"]
-    except (json.JSONDecodeError, KeyError, TypeError) as error:
-        raise BundleError("cargo metadata did not report a target directory") from error
-    return Path(target).resolve()
-
-
 def copy_file(source: Path, destination: Path) -> None:
     destination.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(source, destination, follow_symlinks=False)
@@ -219,28 +211,42 @@ def install_production_package(source: Path, destination: Path) -> None:
     )
 
 
-def build_artifacts(root: Path) -> Path:
+@contextmanager
+def build_artifacts(root: Path) -> Iterator[Path]:
     v2 = root / "v2"
-    run(
-        ("cargo", "build", "--release", "--locked", "-p", "crab-v2-runtime", "--bins"),
-        cwd=v2,
-    )
-    run(
-        (
-            "cargo",
-            "build",
-            "--release",
-            "--locked",
-            "-p",
-            "agent-host-implementation",
-            "--bin",
-            "crab-v2-claude-authority-probe",
-            "--bin",
-            "crab-v2-codex-authority-probe",
-        ),
-        cwd=v2,
-    )
-    return cargo_target_directory(root) / "release"
+    with tempfile.TemporaryDirectory(prefix="crab-v2-cargo-target-") as raw_target:
+        target = Path(raw_target).resolve()
+        environment = {"CARGO_TARGET_DIR": str(target)}
+        run(
+            (
+                "cargo",
+                "build",
+                "--release",
+                "--locked",
+                "-p",
+                "crab-v2-runtime",
+                "--bins",
+            ),
+            cwd=v2,
+            environment=environment,
+        )
+        run(
+            (
+                "cargo",
+                "build",
+                "--release",
+                "--locked",
+                "-p",
+                "agent-host-implementation",
+                "--bin",
+                "crab-v2-claude-authority-probe",
+                "--bin",
+                "crab-v2-codex-authority-probe",
+            ),
+            cwd=v2,
+            environment=environment,
+        )
+        yield target / "release"
 
 
 def stage_bundle(root: Path, staging: Path, artifacts: Path) -> None:
@@ -566,12 +572,12 @@ def build_bundle(root: Path, output: Path | None, *, allow_dirty: bool) -> Path:
     destination.parent.mkdir(parents=True, exist_ok=True)
     node, npm = require_node(root)
     rustc = run(("rustc", "--version"), cwd=root / "v2", capture=True).stdout.strip()
-    artifacts = build_artifacts(root)
     staging = Path(
         tempfile.mkdtemp(prefix=f".{destination.name}.staging-", dir=destination.parent)
     )
     try:
-        stage_bundle(root, staging, artifacts)
+        with build_artifacts(root) as artifacts:
+            stage_bundle(root, staging, artifacts)
         write_manifest(staging, source=source, node=node, npm=npm, rustc=rustc)
         verify_bundle(staging)
         smoke_test(staging)
