@@ -179,7 +179,13 @@ fn spec(mode: BridgeIngressMode) -> BridgeSpec {
         bridge_id: "whatsapp".into(),
         package_id: "whatsapp".into(),
         display_name: "WhatsApp".into(),
-        launch_json: r#"{"fixture":true}"#.into(),
+        launch_json: serde_json::json!({
+            "executable": "/fixture",
+            "arguments": [],
+            "workingDirectory": "/fixture",
+            "environmentNames": [],
+        })
+        .to_string(),
         configuration_json: "{}".into(),
         authentication_methods: vec![AuthenticationMethod::PhoneCode],
         ingress_mode: mode,
