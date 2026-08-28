@@ -1,0 +1,30 @@
+flowchart LR
+    SOURCE["Package inbound or<br/>agent-selected delivery"]
+    TRANSPORT["Bounded transport frame"]
+    ADMIT{"Bridge admission<br/>IDs · JSON bytes · attachment count"}
+    REJECT["Reject before parse, lock,<br/>ownership checks or persistence"]
+    PARSE["Parse bounded JSON"]
+    MODE{"Direction"}
+    NORMALIZE{"Inbound normalized<br/>trigger ≤ 1 MiB?"}
+    INBOX[("Durable trigger inbox")]
+    PACKAGE["Selected bridge<br/>package delivery"]
+
+    SOURCE --> TRANSPORT --> ADMIT
+    ADMIT -->|"over limit"| REJECT
+    ADMIT -->|"within limit"| PARSE --> MODE
+    MODE -->|"inbound"| NORMALIZE
+    NORMALIZE -->|"yes"| INBOX
+    NORMALIZE -->|"no"| REJECT
+    MODE -->|"outbound"| PACKAGE
+
+    classDef source fill:#f3e8ff,stroke:#9333ea,stroke-width:2px,color:#581c87;
+    classDef runtime fill:#dbeafe,stroke:#2563eb,stroke-width:2px,color:#172554;
+    classDef durable fill:#dcfce7,stroke:#16a34a,stroke-width:2px,color:#14532d;
+    classDef gate fill:#fef3c7,stroke:#d97706,stroke-width:2px,color:#78350f;
+    classDef failure fill:#fee2e2,stroke:#dc2626,stroke-width:2px,color:#7f1d1d;
+
+    class SOURCE source;
+    class TRANSPORT,PARSE,PACKAGE runtime;
+    class INBOX durable;
+    class ADMIT,MODE,NORMALIZE gate;
+    class REJECT failure;

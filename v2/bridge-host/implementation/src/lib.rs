@@ -41,6 +41,19 @@ use uuid::Uuid;
 
 type Clock = Arc<dyn Fn() -> Result<u64, BridgeHostError> + Send + Sync>;
 
+const MAX_BRIDGE_ID_BYTES: usize = 512;
+const MAX_EXTERNAL_EVENT_ID_BYTES: usize = 1024;
+const MAX_CHANNEL_ID_BYTES: usize = 512;
+const MAX_MESSAGE_ID_BYTES: usize = 1024;
+const MAX_IDEMPOTENCY_KEY_BYTES: usize = 1024;
+const MAX_ENDPOINT_JSON_BYTES: usize = 64 * 1024;
+const MAX_MESSAGE_JSON_BYTES: usize = 896 * 1024;
+const MAX_NORMALIZED_TRIGGER_BYTES: usize = 1024 * 1024;
+const MAX_BRIDGE_ATTACHMENTS: usize = 64;
+const MAX_ATTACHMENT_MEDIA_TYPE_BYTES: usize = 255;
+const MAX_ATTACHMENT_NAME_BYTES: usize = 1024;
+const MAX_CONTENT_HANDLE_BYTES: usize = 4096;
+
 #[derive(Default)]
 struct BridgeOperationLocks {
     locks: StdMutex<HashMap<String, Weak<Mutex<()>>>>,
@@ -1303,8 +1316,8 @@ impl BridgeHost {
         request: BridgeOutbound,
     ) -> Result<DeliveryReceipt, BridgeHostError> {
         let _ = context;
-        let _operation = self.operations.lock(&request.bridge_id).await?;
         validate_outbound(&request)?;
+        let _operation = self.operations.lock(&request.bridge_id).await?;
         let status = self.store.status(&request.bridge_id, (self.clock)()?)?;
         if !matches!(status.lifecycle, BridgeLifecycle::Healthy)
             || !status
@@ -1402,8 +1415,8 @@ async fn route_inbound(
     context: CallContext,
     request: BridgeInbound,
 ) -> Result<TriggerIntent, BridgeHostError> {
-    let _operation = operations.lock(&request.bridge_id).await?;
     validate_inbound(&request)?;
+    let _operation = operations.lock(&request.bridge_id).await?;
     for attachment in &request.attachments {
         content
             .owns(&request.bridge_id, attachment)
@@ -1422,6 +1435,9 @@ async fn route_inbound(
         return Err(BridgeHostError::BridgeUnhealthy);
     }
     let message_json = normalized_inbound_message(&request)?;
+    if message_json.len() > MAX_NORMALIZED_TRIGGER_BYTES {
+        return Err(BridgeHostError::InvalidSpec);
+    }
     let attachment_handles = request
         .attachments
         .iter()
@@ -1499,27 +1515,31 @@ fn validate_spec(spec: &BridgeSpec) -> Result<(), BridgeHostError> {
 }
 
 fn validate_inbound(request: &BridgeInbound) -> Result<(), BridgeHostError> {
-    if request.bridge_id.trim().is_empty()
-        || request.external_event_id.trim().is_empty()
-        || request.target_channel_id.trim().is_empty()
+    if !valid_required(&request.bridge_id, MAX_BRIDGE_ID_BYTES)
+        || !valid_required(&request.external_event_id, MAX_EXTERNAL_EVENT_ID_BYTES)
+        || !valid_required(&request.target_channel_id, MAX_CHANNEL_ID_BYTES)
+        || request.sender_json.len() > MAX_ENDPOINT_JSON_BYTES
+        || request.message_json.len() > MAX_MESSAGE_JSON_BYTES
     {
         return Err(BridgeHostError::InvalidSpec);
     }
+    validate_attachments(&request.attachments)?;
     validate_json_object(&request.sender_json)?;
-    validate_json(&request.message_json)?;
-    validate_attachments(&request.attachments)
+    validate_json(&request.message_json).map(|_| ())
 }
 
 fn validate_outbound(request: &BridgeOutbound) -> Result<(), BridgeHostError> {
-    if request.bridge_id.trim().is_empty()
-        || request.message_id.trim().is_empty()
-        || request.idempotency_key.trim().is_empty()
+    if !valid_required(&request.bridge_id, MAX_BRIDGE_ID_BYTES)
+        || !valid_required(&request.message_id, MAX_MESSAGE_ID_BYTES)
+        || !valid_required(&request.idempotency_key, MAX_IDEMPOTENCY_KEY_BYTES)
+        || request.destination_json.len() > MAX_ENDPOINT_JSON_BYTES
+        || request.message_json.len() > MAX_MESSAGE_JSON_BYTES
     {
         return Err(BridgeHostError::InvalidSpec);
     }
+    validate_attachments(&request.attachments)?;
     validate_json_object(&request.destination_json)?;
-    validate_json(&request.message_json)?;
-    validate_attachments(&request.attachments)
+    validate_json(&request.message_json).map(|_| ())
 }
 
 fn validate_content_import(
@@ -1548,12 +1568,23 @@ fn validate_content_import(
 }
 
 fn validate_attachments(attachments: &[BridgeAttachment]) -> Result<(), BridgeHostError> {
-    if attachments.iter().any(|attachment| {
-        attachment.media_type.trim().is_empty() || attachment.content_handle.trim().is_empty()
-    }) {
+    if attachments.len() > MAX_BRIDGE_ATTACHMENTS
+        || attachments.iter().any(|attachment| {
+            !valid_required(&attachment.media_type, MAX_ATTACHMENT_MEDIA_TYPE_BYTES)
+                || !valid_required(&attachment.content_handle, MAX_CONTENT_HANDLE_BYTES)
+                || attachment
+                    .name
+                    .as_ref()
+                    .is_some_and(|name| !valid_required(name, MAX_ATTACHMENT_NAME_BYTES))
+        })
+    {
         return Err(BridgeHostError::InvalidSpec);
     }
     Ok(())
+}
+
+fn valid_required(value: &str, maximum_bytes: usize) -> bool {
+    !value.trim().is_empty() && value.len() <= maximum_bytes
 }
 
 fn validate_json(value: &str) -> Result<Value, BridgeHostError> {
@@ -1668,7 +1699,53 @@ mod tests {
 
     use boxology_contract::{BoxId, CapabilityId};
 
-    use super::{BridgeIngressMode, BridgeOperationLocks, generated};
+    use super::{
+        BridgeAttachment, BridgeHostError, BridgeInbound, BridgeIngressMode, BridgeOperationLocks,
+        BridgeOutbound, MAX_BRIDGE_ATTACHMENTS, MAX_CONTENT_HANDLE_BYTES, MAX_ENDPOINT_JSON_BYTES,
+        MAX_MESSAGE_JSON_BYTES, MAX_NORMALIZED_TRIGGER_BYTES, generated,
+        normalized_inbound_message, validate_inbound, validate_outbound,
+    };
+
+    fn sized_text_json(size: usize) -> String {
+        let prefix = r#"{"text":""#;
+        let suffix = r#""}"#;
+        assert!(size >= prefix.len() + suffix.len());
+        format!(
+            "{prefix}{}{suffix}",
+            "x".repeat(size - prefix.len() - suffix.len())
+        )
+    }
+
+    fn attachment() -> BridgeAttachment {
+        BridgeAttachment {
+            media_type: "m".repeat(255),
+            name: Some("n".repeat(1024)),
+            content_handle: "h".repeat(MAX_CONTENT_HANDLE_BYTES),
+        }
+    }
+
+    fn inbound() -> BridgeInbound {
+        BridgeInbound {
+            bridge_id: "bridge-1".into(),
+            external_event_id: "event-1".into(),
+            received_at_ms: 1,
+            target_channel_id: "primary".into(),
+            sender_json: sized_text_json(MAX_ENDPOINT_JSON_BYTES),
+            message_json: sized_text_json(MAX_MESSAGE_JSON_BYTES),
+            attachments: vec![attachment(); MAX_BRIDGE_ATTACHMENTS],
+        }
+    }
+
+    fn outbound() -> BridgeOutbound {
+        BridgeOutbound {
+            bridge_id: "bridge-1".into(),
+            message_id: "message-1".into(),
+            destination_json: sized_text_json(MAX_ENDPOINT_JSON_BYTES),
+            message_json: sized_text_json(MAX_MESSAGE_JSON_BYTES),
+            attachments: vec![attachment(); MAX_BRIDGE_ATTACHMENTS],
+            idempotency_key: "idempotency-1".into(),
+        }
+    }
 
     #[tokio::test]
     async fn bridge_operations_serialize_per_bridge_without_global_blocking() {
@@ -1704,6 +1781,46 @@ mod tests {
             "idle weak lock entries are pruned"
         );
         drop(bridge_c);
+    }
+
+    #[test]
+    fn bridge_message_admission_accepts_exact_byte_and_count_limits() {
+        let inbound = inbound();
+        validate_inbound(&inbound).expect("exact inbound limits pass");
+        let normalized = normalized_inbound_message(&inbound).expect("inbound normalizes");
+        assert!(normalized.len() <= MAX_NORMALIZED_TRIGGER_BYTES);
+        validate_outbound(&outbound()).expect("exact outbound limits pass");
+    }
+
+    #[test]
+    fn bridge_message_admission_rejects_one_byte_or_attachment_over() {
+        let mut oversized_inbound = inbound();
+        oversized_inbound.message_json = sized_text_json(MAX_MESSAGE_JSON_BYTES + 1);
+        assert!(matches!(
+            validate_inbound(&oversized_inbound),
+            Err(BridgeHostError::InvalidSpec)
+        ));
+
+        let mut oversized_outbound = outbound();
+        oversized_outbound.destination_json = sized_text_json(MAX_ENDPOINT_JSON_BYTES + 1);
+        assert!(matches!(
+            validate_outbound(&oversized_outbound),
+            Err(BridgeHostError::InvalidSpec)
+        ));
+
+        let mut too_many = inbound();
+        too_many.attachments.push(attachment());
+        assert!(matches!(
+            validate_inbound(&too_many),
+            Err(BridgeHostError::InvalidSpec)
+        ));
+
+        let mut oversized_handle = outbound();
+        oversized_handle.attachments[0].content_handle = "h".repeat(MAX_CONTENT_HANDLE_BYTES + 1);
+        assert!(matches!(
+            validate_outbound(&oversized_handle),
+            Err(BridgeHostError::InvalidSpec)
+        ));
     }
 
     #[test]

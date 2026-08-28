@@ -1,7 +1,13 @@
 schema = 1
 id = "bridge-host"
 kind = "box"
-owned = ["boxology.toml", "implementation/**"]
+owned = [
+    "boxology.toml",
+    "README.md",
+    "bridge-message-boundary.mmd",
+    "bridge-message-boundary.png",
+    "implementation/**",
+]
 
 [[imports]]
 package = "trigger-inbox"
