@@ -21,6 +21,18 @@ commands and the ephemeral authentication exchange.
 Authentication methods must be known contract variants. Invalid requests fail without acquiring a
 lock, calling a bridge package or touching durable state.
 
+## Credential boundary
+
+![Bridge credential snapshot boundary](bridge-credential-boundary.png)
+
+Initial authentication results and live package rotations share one 8 MiB canonical-JSON limit.
+The host validates each snapshot before credential serialization or provider access. Live updates
+also validate bridge identity and the prior SHA-256 fingerprint before acquiring the global update
+mutex, then replace the opaque credential only when the fingerprint still matches.
+
+Durable bridge state stores the returned provider handle, account hint and validation metadata—not
+the secret snapshot. The credential provider retains its independent 16 MiB defense-in-depth limit.
+
 ## Registration boundary
 
 ![Bridge registration admission boundary](bridge-registration-boundary.png)
@@ -55,6 +67,7 @@ are package protocol failures; invalid delivery results leave the delivery retry
 |---|---:|
 | Health / credential / delivery detail JSON | 64 KiB |
 | Authentication presentation JSON | 1 MiB |
+| Credential snapshot JSON | 8 MiB |
 | Account hint | 1,024 bytes |
 | External delivery ID | 1,024 bytes |
 

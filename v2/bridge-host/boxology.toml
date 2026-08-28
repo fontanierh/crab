@@ -6,6 +6,8 @@ owned = [
     "README.md",
     "bridge-control-boundary.mmd",
     "bridge-control-boundary.png",
+    "bridge-credential-boundary.mmd",
+    "bridge-credential-boundary.png",
     "bridge-registration-boundary.mmd",
     "bridge-registration-boundary.png",
     "bridge-result-boundary.mmd",
