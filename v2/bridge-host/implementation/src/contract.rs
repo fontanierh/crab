@@ -274,6 +274,7 @@ boxology::contract! {
         DraftOnly,
         InvalidSpec,
         UnknownBridge,
+        BridgeCapacityExceeded,
         DuplicateBridgeConflict,
         GenerationConflict,
         ManagementConflict,

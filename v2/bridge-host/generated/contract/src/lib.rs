@@ -23,6 +23,11 @@ static __BOXOLOGY_CONTRACT_DESCRIPTOR: ::std::sync::LazyLock<
                 None,
             ),
             ::boxology_contract::VariantDescriptor::new(
+                "BridgeCapacityExceeded",
+                ::boxology_contract::VariantPayload::Unit,
+                None,
+            ),
+            ::boxology_contract::VariantDescriptor::new(
                 "DuplicateBridgeConflict",
                 ::boxology_contract::VariantPayload::Unit,
                 None,
@@ -2698,7 +2703,7 @@ static __BOXOLOGY_CONTRACT_DESCRIPTOR: ::std::sync::LazyLock<
                 capability_16,
             ],
             ::boxology_contract::ContractRevision::new(
-                    "sha256:ca07fafec76f61af23aa1478f6bc28aca8685173c8d83599d7f816d2e760dc55",
+                    "sha256:6ee843afc640d2eb100167411504248414a82da77e3e0b96b8e90ded984d2dff",
                 )
                 .expect("generated contract revision is non-empty"),
         )
@@ -5046,6 +5051,11 @@ static BRIDGE_HOST_ERROR_DESCRIPTOR: LazyLock<TypeDescriptor> = LazyLock::new(||
             ),
             ::boxology_contract::VariantDescriptor::new(
                 "UnknownBridge",
+                ::boxology_contract::VariantPayload::Unit,
+                None,
+            ),
+            ::boxology_contract::VariantDescriptor::new(
+                "BridgeCapacityExceeded",
                 ::boxology_contract::VariantPayload::Unit,
                 None,
             ),
@@ -9647,6 +9657,7 @@ pub enum BridgeHostError {
     DraftOnly,
     InvalidSpec,
     UnknownBridge,
+    BridgeCapacityExceeded,
     DuplicateBridgeConflict,
     GenerationConflict,
     ManagementConflict,
@@ -9677,6 +9688,9 @@ impl ::boxology_contract::ContractType for BridgeHostError {
             }
             Self::UnknownBridge => {
                 ("UnknownBridge".into(), ::boxology_contract::SlotValue::Null)
+            }
+            Self::BridgeCapacityExceeded => {
+                ("BridgeCapacityExceeded".into(), ::boxology_contract::SlotValue::Null)
             }
             Self::DuplicateBridgeConflict => {
                 ("DuplicateBridgeConflict".into(), ::boxology_contract::SlotValue::Null)
@@ -9768,6 +9782,17 @@ impl ::boxology_contract::ContractType for BridgeHostError {
                 payload, ::boxology_contract::SlotValue::Null
             ) => Ok(Self::UnknownBridge),
             "UnknownBridge" => {
+                Err(
+                    ::boxology_contract::DecodeError::new(
+                            ::boxology_contract::DecodeErrorKind::UnexpectedPayload,
+                        )
+                        .under(::boxology_contract::PathSegment::Variant(tag.into())),
+                )
+            }
+            "BridgeCapacityExceeded" if matches!(
+                payload, ::boxology_contract::SlotValue::Null
+            ) => Ok(Self::BridgeCapacityExceeded),
+            "BridgeCapacityExceeded" => {
                 Err(
                     ::boxology_contract::DecodeError::new(
                             ::boxology_contract::DecodeErrorKind::UnexpectedPayload,
@@ -9966,6 +9991,7 @@ impl ::boxology_contract::ContractError for BridgeHostError {
             Self::DraftOnly => "DraftOnly",
             Self::InvalidSpec => "InvalidSpec",
             Self::UnknownBridge => "UnknownBridge",
+            Self::BridgeCapacityExceeded => "BridgeCapacityExceeded",
             Self::DuplicateBridgeConflict => "DuplicateBridgeConflict",
             Self::GenerationConflict => "GenerationConflict",
             Self::ManagementConflict => "ManagementConflict",
@@ -11715,8 +11741,8 @@ pub mod test_support {
 #[rustfmt::skip]
 #[doc(hidden)]
 pub const __BOXOLOGY_SEMANTIC_DIGEST: [u8; 32] = [
-    173, 141, 86, 207, 70, 200, 209, 5, 195, 76, 12, 75, 167, 66, 20, 172, 82, 3, 220,
-    142, 165, 163, 32, 252, 214, 166, 80, 145, 232, 93, 25, 230,
+    198, 170, 204, 204, 102, 165, 69, 182, 11, 56, 245, 85, 113, 50, 250, 212, 243, 82,
+    245, 37, 165, 208, 135, 42, 14, 108, 19, 92, 107, 238, 9, 144,
 ];
 #[rustfmt::skip]
 #[doc(hidden)]

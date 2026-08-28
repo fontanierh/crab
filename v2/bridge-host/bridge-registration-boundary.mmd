@@ -5,6 +5,7 @@ flowchart LR
     PARSE["Parse strict launch +<br/>configuration objects"]
     SHAPE{"Launch + policy gate<br/>paths · argv · env · restart ≤ 64"}
     LOCK["Per-bridge<br/>operation lock"]
+    CAP{"Transactional admission<br/>existing ID or < 128 active"}
     STORE[("Durable bridge<br/>registration")]
     SPAWN["Optional supervised<br/>package process"]
 
@@ -12,7 +13,9 @@ flowchart LR
     RAW -->|"over limit"| REJECT
     RAW -->|"within limit"| PARSE --> SHAPE
     SHAPE -->|"invalid"| REJECT
-    SHAPE -->|"valid"| LOCK --> STORE
+    SHAPE -->|"valid"| LOCK --> CAP
+    CAP -->|"new/reactivated at capacity"| REJECT
+    CAP -->|"admitted"| STORE
     STORE -->|"desired running"| SPAWN
 
     classDef source fill:#f3e8ff,stroke:#9333ea,stroke-width:2px,color:#581c87;
@@ -24,5 +27,5 @@ flowchart LR
     class SOURCE source;
     class PARSE,LOCK,SPAWN runtime;
     class STORE durable;
-    class RAW,SHAPE gate;
+    class RAW,SHAPE,CAP gate;
     class REJECT failure;
