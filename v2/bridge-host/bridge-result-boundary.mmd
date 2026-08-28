@@ -1,0 +1,28 @@
+flowchart LR
+    PACKAGE["Bridge package<br/>result"]
+    FRAME["Protocol frame<br/>≤ 16 MiB"]
+    ADMIT{"Semantic result gate<br/>detail · presentation · IDs"}
+    REJECT["Protocol failure / retry<br/>no durable write"]
+    KIND{"Result kind"}
+    HEALTH[("Latest health<br/>snapshot")]
+    AUTH[("Credential status /<br/>operator presentation")]
+    DELIVERY[("Durable delivery<br/>receipt")]
+
+    PACKAGE --> FRAME --> ADMIT
+    ADMIT -->|"over limit / invalid JSON"| REJECT
+    ADMIT -->|"within limit"| KIND
+    KIND -->|"health"| HEALTH
+    KIND -->|"authentication"| AUTH
+    KIND -->|"delivery"| DELIVERY
+
+    classDef source fill:#f3e8ff,stroke:#9333ea,stroke-width:2px,color:#581c87;
+    classDef runtime fill:#dbeafe,stroke:#2563eb,stroke-width:2px,color:#172554;
+    classDef durable fill:#dcfce7,stroke:#16a34a,stroke-width:2px,color:#14532d;
+    classDef gate fill:#fef3c7,stroke:#d97706,stroke-width:2px,color:#78350f;
+    classDef failure fill:#fee2e2,stroke:#dc2626,stroke-width:2px,color:#7f1d1d;
+
+    class PACKAGE source;
+    class FRAME runtime;
+    class HEALTH,AUTH,DELIVERY durable;
+    class ADMIT,KIND gate;
+    class REJECT failure;
