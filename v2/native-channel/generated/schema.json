@@ -196,6 +196,44 @@
     {
       "deprecation": null,
       "docs": [
+        " Page durable bindings by stable identity without loading the full catalog."
+      ],
+      "error": "NativeChannelError",
+      "id": "native-channel.list_binding_page",
+      "idempotency": "none",
+      "input": {
+        "name": "request",
+        "type": "ListChannelBindingPageRequest"
+      },
+      "max_exposure": "code_only",
+      "name": "list_binding_page",
+      "output": {
+        "type": "ChannelBindingCatalogPage"
+      },
+      "shape": "unary"
+    },
+    {
+      "deprecation": null,
+      "docs": [
+        " Resolve a bounded set of configured adapter/channel identities without scanning history."
+      ],
+      "error": "NativeChannelError",
+      "id": "native-channel.locate_binding_summaries",
+      "idempotency": "none",
+      "input": {
+        "name": "request",
+        "type": "LocateChannelBindingSummariesRequest"
+      },
+      "max_exposure": "code_only",
+      "name": "locate_binding_summaries",
+      "output": {
+        "type": "LocatedChannelBindingSummaries"
+      },
+      "shape": "unary"
+    },
+    {
+      "deprecation": null,
+      "docs": [
         " Read one durable binding summary even when its ACP session is currently unavailable."
       ],
       "error": "NativeChannelError",
@@ -272,10 +310,10 @@
   ],
   "provenance": {
     "generator": "boxology-generator",
-    "generator_version": "0.2.1",
-    "semantic_digest": "sha256:6e03a7161f5dfd9b0f9fa48f9c48201687ca2d6349972c9ccc94494ba9e57e6e"
+    "generator_version": "0.2.2",
+    "semantic_digest": "sha256:b7bf245dcf01c37087dd8b154ca5f4be10892554c9e76e6493d8aceb676d4fde"
   },
-  "revision": "sha256:0d711ed187fab88500737d701ceac310aa7c7ba4e027195e38a5536996bf6534",
+  "revision": "sha256:d5d21bc145671993f89bb704dd260fa09ed30268dc9febad0fa16271b55498dc",
   "schema_format": 1,
   "types": [
     {
@@ -1133,6 +1171,92 @@
       ],
       "kind": "struct",
       "name": "ChannelBindingCatalog"
+    },
+    {
+      "deprecation": null,
+      "docs": [
+        " One bounded, identity-ordered view over durable native-channel bindings."
+      ],
+      "fields": [
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "bindings",
+          "type": "Vec<ChannelBindingSummary>"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "total_bindings",
+          "type": "u64"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "next_after_binding_id",
+          "type": "Option<String>"
+        }
+      ],
+      "kind": "struct",
+      "name": "ChannelBindingCatalogPage"
+    },
+    {
+      "deprecation": null,
+      "docs": [],
+      "fields": [
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "after_binding_id",
+          "type": "Option<String>"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "limit",
+          "type": "u64"
+        },
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "include_detached",
+          "type": "bool"
+        }
+      ],
+      "kind": "struct",
+      "name": "ListChannelBindingPageRequest"
+    },
+    {
+      "deprecation": null,
+      "docs": [
+        " Bounded identity lookup used by configuration-aware health without scanning history."
+      ],
+      "fields": [
+        {
+          "deprecation": null,
+          "docs": [],
+          "name": "identities",
+          "type": "Vec<LocateBindingRequest>"
+        }
+      ],
+      "kind": "struct",
+      "name": "LocateChannelBindingSummariesRequest"
+    },
+    {
+      "deprecation": null,
+      "docs": [],
+      "fields": [
+        {
+          "deprecation": null,
+          "docs": [
+            " Existing non-detached bindings in request order; missing identities are omitted."
+          ],
+          "name": "bindings",
+          "type": "Vec<ChannelBindingSummary>"
+        }
+      ],
+      "kind": "struct",
+      "name": "LocatedChannelBindingSummaries"
     },
     {
       "deprecation": null,

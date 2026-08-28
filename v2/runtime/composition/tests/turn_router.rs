@@ -6,11 +6,13 @@ use boxology_contract::{CallContext, Caller, CancelToken, ImplementationDescript
 use boxology_runtime::CompositionBuilder;
 use native_channel_implementation::{
     AcceptedTurn, BindChannelRequest, BindingReference, ChannelBinding, ChannelBindingCatalog,
-    ChannelBindingSummary, ChannelInputMode, ChannelLifecycle, ChannelReceipt, ChannelStatus,
-    ChannelTurn, ChannelTurnDisposition, InterruptReceipt, InterruptRequest,
-    InterruptingTurnRequest, ListChannelBindingsRequest, LocateBindingRequest, NativeChannelError,
-    NativeChannelEvent, PublishReceipt, PublishedEventPage, RecoverSessionRequest,
-    ReplaceSessionRequest, ReplayRequest, generated as native_channel,
+    ChannelBindingCatalogPage, ChannelBindingSummary, ChannelInputMode, ChannelLifecycle,
+    ChannelReceipt, ChannelStatus, ChannelTurn, ChannelTurnDisposition, InterruptReceipt,
+    InterruptRequest, InterruptingTurnRequest, ListChannelBindingPageRequest,
+    ListChannelBindingsRequest, LocateBindingRequest, LocateChannelBindingSummariesRequest,
+    LocatedChannelBindingSummaries, NativeChannelError, NativeChannelEvent, PublishReceipt,
+    PublishedEventPage, RecoverSessionRequest, ReplaceSessionRequest, ReplayRequest,
+    generated as native_channel,
 };
 use trigger_inbox_contract::{
     EnqueueTrigger, TriggerAttachment, TriggerMode, TriggerReference, TriggerSource, TriggerState,
@@ -195,6 +197,37 @@ impl FakeNativeChannel {
         Ok(ChannelBindingCatalog {
             bindings: vec![binding_summary("binding-good")],
             total_bindings: 1,
+        })
+    }
+
+    async fn list_binding_page(
+        &self,
+        context: CallContext,
+        request: ListChannelBindingPageRequest,
+    ) -> Result<ChannelBindingCatalogPage, NativeChannelError> {
+        let _ = (context, request);
+        Ok(ChannelBindingCatalogPage {
+            bindings: vec![binding_summary("binding-good")],
+            total_bindings: 1,
+            next_after_binding_id: None,
+        })
+    }
+
+    async fn locate_binding_summaries(
+        &self,
+        context: CallContext,
+        request: LocateChannelBindingSummariesRequest,
+    ) -> Result<LocatedChannelBindingSummaries, NativeChannelError> {
+        let _ = context;
+        Ok(LocatedChannelBindingSummaries {
+            bindings: request
+                .identities
+                .into_iter()
+                .filter(|identity| {
+                    identity.channel_id == "target-good" && identity.adapter_id == "test"
+                })
+                .map(|_| binding_summary("binding-good"))
+                .collect(),
         })
     }
 

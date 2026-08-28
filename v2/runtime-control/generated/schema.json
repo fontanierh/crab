@@ -21,7 +21,7 @@
   ],
   "provenance": {
     "generator": "boxology-generator",
-    "generator_version": "0.2.1",
+    "generator_version": "0.2.2",
     "semantic_digest": "sha256:f49ca1164665d4ef1a5284ae8356d08e65f2523c4cd63f0b2dd13dd86449d6f0"
   },
   "revision": "sha256:93d20d9d1a94d97d7923e52b278b465a8975bfb27e070bf8eec7c33c20a7ebcb",

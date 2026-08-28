@@ -83,8 +83,9 @@ interrupt as a separate explicit action.
   confirms adapter publication in order. Failed bindings can recover the exact resumed session
   without changing identity or delivery cursors. Slow agent calls serialize only within the same
   binding; unrelated bindings proceed concurrently and idle weak lanes prune. New binding creation
-  serializes by adapter/channel identity. Its owner-only `crab-v2-channel` client discovers bindings,
-  pending work and event cursors without exposing adapter destination metadata. See its
+  serializes by adapter/channel identity. Its owner-only `crab-v2-channel` client pages bindings,
+  pending work and event cursors without exposing adapter destination metadata. Runtime health
+  resolves only configured identities, so durable UI history cannot poison readiness. See its
   [operator flow](docs/channel-operations.md), [state contract](docs/native-channel-storage.md),
   [rendered host flow](docs/native-channel-flow.png) and
   [rendered operator flow](docs/channel-operations-flow.png).
@@ -222,12 +223,12 @@ cd ..
 make v2-bundle
 ```
 
-Crab v2 pins Boxology's complete runtime and CLI toolchain to exact crates.io release `0.2.1`.
+Crab v2 pins Boxology's complete runtime and CLI toolchain to exact crates.io release `0.2.2`.
 Install and verify the matching registry CLI before generating or checking:
 
 ```sh
-cargo install boxology-cli --version 0.2.1 --locked
-boxology --version # boxology 0.2.1
+cargo install boxology-cli --version 0.2.2 --locked
+boxology --version # boxology 0.2.2
 ```
 
 The published ACP SDK 2.0.0 is patched at reviewed fork revision `3722fbf` until upstream

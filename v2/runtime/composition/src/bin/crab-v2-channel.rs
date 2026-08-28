@@ -9,14 +9,14 @@ use std::{
 
 use crab_v2_runtime::ChannelIpcClient;
 use native_channel_contract::{
-    BindingReference, ChannelBindingCatalog, ChannelBindingSummary, ChannelLifecycle,
-    InterruptReceipt, InterruptRequest, ListChannelBindingsRequest, NativeEventDirection,
+    BindingReference, ChannelBindingCatalogPage, ChannelBindingSummary, ChannelLifecycle,
+    InterruptReceipt, InterruptRequest, ListChannelBindingPageRequest, NativeEventDirection,
     NativeEventKind, PublishedEventPage, ReplayRequest,
 };
+use native_channel_implementation::MAX_BINDING_CATALOG_PAGE;
 use serde_json::{Value, json};
 
-const USAGE: &str = "usage: crab-v2-channel --state-dir <directory> <list <limit> | status <binding> | events <binding> <after-sequence> <limit> | interrupt <binding> <expected-session> <reason>>";
-const MAX_BINDING_CATALOG: u64 = 256;
+const USAGE: &str = "usage: crab-v2-channel --state-dir <directory> <list [limit [active|all [after-binding-id]]] | status <binding> | events <binding> <after-sequence> <limit> | interrupt <binding> <expected-session> <reason>>";
 const MAX_EVENT_PAGE: u64 = 256;
 
 #[tokio::main]
@@ -37,10 +37,18 @@ async fn main() -> ExitCode {
         Err(error) => return failure(error),
     };
     let result = match arguments.command {
-        ChannelCommand::List { limit } => client
-            .list_channel_bindings(ListChannelBindingsRequest { limit })
+        ChannelCommand::List {
+            after_binding_id,
+            limit,
+            include_detached,
+        } => client
+            .list_channel_binding_page(ListChannelBindingPageRequest {
+                after_binding_id,
+                limit,
+                include_detached,
+            })
             .await
-            .map(catalog_json),
+            .map(catalog_page_json),
         ChannelCommand::Status { binding_id } => client
             .channel_binding_summary(BindingReference { binding_id })
             .await
@@ -103,7 +111,9 @@ struct Arguments {
 #[derive(Debug, PartialEq)]
 enum ChannelCommand {
     List {
+        after_binding_id: Option<String>,
         limit: u64,
+        include_detached: bool,
     },
     Status {
         binding_id: String,
@@ -138,11 +148,24 @@ fn parse_arguments(values: impl IntoIterator<Item = OsString>) -> Result<Option<
     let operation = text(values.next().ok_or(())?)?;
     let command = match operation.as_str() {
         "list" => {
-            let limit = integer(values.next().ok_or(())?)?;
-            if limit == 0 || limit > MAX_BINDING_CATALOG {
+            let limit = match values.next() {
+                Some(value) => integer(value)?,
+                None => MAX_BINDING_CATALOG_PAGE,
+            };
+            if limit == 0 || limit > MAX_BINDING_CATALOG_PAGE {
                 return Err(());
             }
-            ChannelCommand::List { limit }
+            let include_detached = match values.next().map(text).transpose()?.as_deref() {
+                Some("active") | None => false,
+                Some("all") => true,
+                Some(_) => return Err(()),
+            };
+            let after_binding_id = values.next().map(identifier).transpose()?;
+            ChannelCommand::List {
+                after_binding_id,
+                limit,
+                include_detached,
+            }
         }
         "status" => ChannelCommand::Status {
             binding_id: identifier(values.next().ok_or(())?)?,
@@ -196,10 +219,11 @@ fn system_time_ms() -> Result<u64, &'static str> {
     u64::try_from(duration.as_millis()).map_err(|_| "system clock is out of range")
 }
 
-fn catalog_json(catalog: ChannelBindingCatalog) -> Value {
+fn catalog_page_json(catalog: ChannelBindingCatalogPage) -> Value {
     json!({
         "bindings": catalog.bindings.into_iter().map(summary_json).collect::<Vec<_>>(),
         "totalBindings": catalog.total_bindings,
+        "nextAfterBindingId": catalog.next_after_binding_id,
     })
 }
 
@@ -285,14 +309,51 @@ mod tests {
     use std::ffi::OsString;
 
     use native_channel_contract::{
-        ChannelBindingCatalog, ChannelBindingSummary, ChannelLifecycle, NativeChannelEvent,
+        ChannelBindingCatalogPage, ChannelBindingSummary, ChannelLifecycle, NativeChannelEvent,
         NativeEventDirection, NativeEventKind, PublishedEventPage,
     };
 
-    use super::{ChannelCommand, catalog_json, events_json, parse_arguments};
+    use super::{ChannelCommand, catalog_page_json, events_json, parse_arguments};
 
     #[test]
     fn parser_accepts_only_bounded_owner_operations() {
+        let list = parse_arguments(
+            [
+                "--state-dir",
+                "/tmp/crab-v2",
+                "list",
+                "100",
+                "all",
+                "binding-100",
+            ]
+            .into_iter()
+            .map(OsString::from),
+        )
+        .expect("list arguments parse")
+        .expect("list requested");
+        assert_eq!(
+            list.command,
+            ChannelCommand::List {
+                after_binding_id: Some("binding-100".into()),
+                limit: 100,
+                include_detached: true,
+            }
+        );
+        let default_list = parse_arguments(
+            ["--state-dir", "/tmp/crab-v2", "list"]
+                .into_iter()
+                .map(OsString::from),
+        )
+        .expect("default list arguments parse")
+        .expect("default list requested");
+        assert_eq!(
+            default_list.command,
+            ChannelCommand::List {
+                after_binding_id: None,
+                limit: 256,
+                include_detached: false,
+            }
+        );
         let events = parse_arguments(
             [
                 "--state-dir",
@@ -363,7 +424,7 @@ mod tests {
 
     #[test]
     fn catalog_output_is_non_secret_and_reports_pending_work() {
-        let output = catalog_json(ChannelBindingCatalog {
+        let output = catalog_page_json(ChannelBindingCatalogPage {
             bindings: vec![ChannelBindingSummary {
                 binding_id: "binding-1".into(),
                 channel_id: "channel-1".into(),
@@ -376,11 +437,13 @@ mod tests {
                 updated_at_ms: 42,
             }],
             total_bindings: 1,
+            next_after_binding_id: Some("binding-1".into()),
         });
         assert_eq!(output["bindings"][0]["pendingInputCount"], 2);
         assert_eq!(output["bindings"][0]["lifecycle"], "failed");
         assert!(output["bindings"][0].get("nativeChannelJson").is_none());
         assert_eq!(output["totalBindings"], 1);
+        assert_eq!(output["nextAfterBindingId"], "binding-1");
     }
 
     #[test]

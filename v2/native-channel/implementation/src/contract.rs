@@ -208,6 +208,29 @@ boxology::contract! {
         pub total_bindings: u64,
     }
 
+    /// One bounded, identity-ordered view over durable native-channel bindings.
+    pub struct ChannelBindingCatalogPage {
+        pub bindings: Vec<ChannelBindingSummary>,
+        pub total_bindings: u64,
+        pub next_after_binding_id: Option<String>,
+    }
+
+    pub struct ListChannelBindingPageRequest {
+        pub after_binding_id: Option<String>,
+        pub limit: u64,
+        pub include_detached: bool,
+    }
+
+    /// Bounded identity lookup used by configuration-aware health without scanning history.
+    pub struct LocateChannelBindingSummariesRequest {
+        pub identities: Vec<LocateBindingRequest>,
+    }
+
+    pub struct LocatedChannelBindingSummaries {
+        /// Existing non-detached bindings in request order; missing identities are omitted.
+        pub bindings: Vec<ChannelBindingSummary>,
+    }
+
     pub struct ChannelReceipt {
         pub accepted: bool,
         pub recorded_at_ms: u64,
@@ -271,6 +294,14 @@ boxology::contract! {
     /// exposed only through Crab's owner-authenticated local operator transport.
     #[capability]
     pub async fn list_bindings(request: ListChannelBindingsRequest) -> Result<ChannelBindingCatalog, NativeChannelError>;
+
+    /// Page durable bindings by stable identity without loading the full catalog.
+    #[capability]
+    pub async fn list_binding_page(request: ListChannelBindingPageRequest) -> Result<ChannelBindingCatalogPage, NativeChannelError>;
+
+    /// Resolve a bounded set of configured adapter/channel identities without scanning history.
+    #[capability]
+    pub async fn locate_binding_summaries(request: LocateChannelBindingSummariesRequest) -> Result<LocatedChannelBindingSummaries, NativeChannelError>;
 
     /// Read one durable binding summary even when its ACP session is currently unavailable.
     #[capability]

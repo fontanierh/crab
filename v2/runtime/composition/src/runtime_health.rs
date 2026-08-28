@@ -8,7 +8,9 @@ use agent_host_contract::{AgentLifecycle, SessionReference};
 use bridge_host_contract::{
     BridgeLifecycle, BridgeManagement, BridgeReference, CredentialLifecycle,
 };
-use native_channel_contract::{ChannelLifecycle, ListChannelBindingsRequest};
+use native_channel_contract::{
+    ChannelLifecycle, LocateBindingRequest, LocateChannelBindingSummariesRequest,
+};
 use serde::Serialize;
 
 use crate::{
@@ -17,7 +19,6 @@ use crate::{
 };
 
 const HEALTH_SCHEMA: u64 = 2;
-const MAX_BINDING_CATALOG: u64 = 256;
 
 /// A failure to read the authenticated runtime health surface.
 #[derive(Debug)]
@@ -141,11 +142,23 @@ pub async fn inspect_runtime_health(
         .configuration_fingerprint()
         .map_err(RuntimeHealthError::Configuration)?;
     let attestation = client.runtime_status().await?;
-    let binding_catalog = client
-        .list_channel_bindings(ListChannelBindingsRequest {
-            limit: MAX_BINDING_CATALOG,
-        })
-        .await?;
+    let located_bindings = if config.channels.is_empty() {
+        Vec::new()
+    } else {
+        client
+            .locate_channel_binding_summaries(LocateChannelBindingSummariesRequest {
+                identities: config
+                    .channels
+                    .iter()
+                    .map(|channel| LocateBindingRequest {
+                        channel_id: channel.channel_id.clone(),
+                        adapter_id: channel.adapter_id.clone(),
+                    })
+                    .collect(),
+            })
+            .await?
+            .bindings
+    };
     let bridge_catalog = client
         .list_bridge_page(complete_active_bridge_catalog_request())
         .await?;
@@ -168,17 +181,8 @@ pub async fn inspect_runtime_health(
         error: runtime_error,
     };
 
-    if binding_catalog.total_bindings
-        > u64::try_from(binding_catalog.bindings.len()).unwrap_or(u64::MAX)
-    {
-        errors.push(format!(
-            "native channel catalog is truncated at {MAX_BINDING_CATALOG} bindings"
-        ));
-    }
-    let bindings = binding_catalog
-        .bindings
+    let bindings = located_bindings
         .into_iter()
-        .filter(|binding| !matches!(binding.lifecycle, ChannelLifecycle::Detached))
         .map(|binding| {
             (
                 (binding.channel_id.clone(), binding.adapter_id.clone()),
