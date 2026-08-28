@@ -12,12 +12,14 @@ flowchart LR
     CONFIG --> BUILD
     ALLOW --> BUILD
 
-    BUILD --> RUST["cargo build --release --locked"]
+    BUILD --> TARGET["Exclusive external Cargo target<br/>one lifecycle per bundle"]
+    TARGET --> RUST["2 × cargo build --release --locked"]
     BUILD --> NODE["npm ci --omit=dev"]
     RUST --> STAGE["Private staging directory"]
     NODE --> STAGE
+    STAGE --> CLEAN["Delete owned Cargo target"]
 
-    STAGE --> MANIFEST["SHA-256 manifest\nsource + platform + every entry"]
+    CLEAN --> MANIFEST["SHA-256 manifest\nsource + platform + every entry"]
     MANIFEST --> VERIFY["Strict verifier\nmissing / changed / extra / escaping = fail"]
     VERIFY --> SMOKE["CLI + both agents<br/>+ WhatsApp smoke tests"]
     SMOKE --> ATOMIC["Atomic publish"]
@@ -39,6 +41,6 @@ flowchart LR
     classDef failclosed fill:#fff7ed,stroke:#ea580c,color:#111827;
     classDef result fill:#ecfdf5,stroke:#059669,color:#111827;
     class CARGO,NPM,CONFIG,ALLOW source;
-    class BUILD,RUST,NODE,STAGE action;
+    class BUILD,TARGET,RUST,NODE,STAGE,CLEAN action;
     class MANIFEST,VERIFY,SMOKE failclosed;
     class ATOMIC,BUNDLE,BIN,AGENT,BRIDGE,CFG result;
