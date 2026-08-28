@@ -50,6 +50,10 @@ const MAX_LAUNCH_JSON_BYTES: usize = 256 * 1024;
 const MAX_CONFIGURATION_JSON_BYTES: usize = 1024 * 1024;
 const MAX_AUTHENTICATION_METHODS: usize = 6;
 const MAX_RESTART_LIMIT: u64 = 64;
+const MAX_PACKAGE_DETAIL_JSON_BYTES: usize = 64 * 1024;
+const MAX_AUTHENTICATION_PRESENTATION_JSON_BYTES: usize = 1024 * 1024;
+const MAX_ACCOUNT_HINT_BYTES: usize = 1024;
+const MAX_EXTERNAL_DELIVERY_ID_BYTES: usize = 1024;
 const MAX_EXTERNAL_EVENT_ID_BYTES: usize = 1024;
 const MAX_CHANNEL_ID_BYTES: usize = 512;
 const MAX_MESSAGE_ID_BYTES: usize = 1024;
@@ -385,7 +389,7 @@ impl BridgeHost {
         let credential = self.credential_secret(bridge_id).await?;
         let now_ms = (self.clock)()?;
         let health = match package.health(credential.as_deref()).await {
-            Ok(health) => health,
+            Ok(health) if validate_package_health(&health).is_ok() => health,
             Err(_) => {
                 deactivate_package_instance(
                     &self.active_package_instances,
@@ -397,6 +401,18 @@ impl BridgeHost {
                 let spec = self.store.spec(bridge_id)?;
                 self.schedule_backoff(bridge_id, &spec)?;
                 return Err(BridgeHostError::BridgeUnhealthy);
+            }
+            Ok(_) => {
+                deactivate_package_instance(
+                    &self.active_package_instances,
+                    &self.credential_updates,
+                    bridge_id,
+                )
+                .await;
+                self.connections.write().await.remove(bridge_id);
+                let spec = self.store.spec(bridge_id)?;
+                self.schedule_backoff(bridge_id, &spec)?;
+                return Err(BridgeHostError::PackageProtocolFailed);
             }
         };
         let no_auth = self
@@ -716,8 +732,22 @@ impl SupervisorContext {
             None => None,
         };
         let health = match package.health(credential.as_deref()).await {
-            Ok(health) => health,
+            Ok(health) if validate_package_health(&health).is_ok() => health,
             Err(_) => {
+                deactivate_package_instance(
+                    &self.active_package_instances,
+                    &self.credential_updates,
+                    bridge_id,
+                )
+                .await;
+                self.connections.write().await.remove(bridge_id);
+                self.backoff(bridge_id, &spec, now_ms);
+                let _ = self
+                    .notify_incident(bridge_id, BridgeIncidentKind::PackageUnavailable, now_ms)
+                    .await;
+                return;
+            }
+            Ok(_) => {
                 deactivate_package_instance(
                     &self.active_package_instances,
                     &self.credential_updates,
@@ -753,6 +783,24 @@ impl SupervisorContext {
         {
             match package.validate_credentials(secret).await {
                 Ok(validation) => {
+                    if validate_package_validation(&validation).is_err() {
+                        deactivate_package_instance(
+                            &self.active_package_instances,
+                            &self.credential_updates,
+                            bridge_id,
+                        )
+                        .await;
+                        self.connections.write().await.remove(bridge_id);
+                        self.backoff(bridge_id, &spec, now_ms);
+                        let _ = self
+                            .notify_incident(
+                                bridge_id,
+                                BridgeIncidentKind::PackageUnavailable,
+                                now_ms,
+                            )
+                            .await;
+                        return;
+                    }
                     credential_lifecycle = if validation.valid {
                         CredentialLifecycle::Valid
                     } else {
@@ -1103,6 +1151,7 @@ impl BridgeHost {
         request: HealthObservation,
     ) -> Result<BridgeStatus, BridgeHostError> {
         let _ = context;
+        validate_health_observation(&request)?;
         let _operation = self.operations.lock(&request.bridge_id).await?;
         self.store.report_health(&request)
     }
@@ -1129,6 +1178,7 @@ impl BridgeHost {
             .begin_authentication(request.preferred_method.as_ref(), &request.context_json)
             .await
             .map_err(map_package_error)?;
+        validate_package_challenge(&challenge)?;
         if !spec.authentication_methods.contains(&challenge.method) {
             return Err(BridgeHostError::PackageProtocolFailed);
         }
@@ -1152,10 +1202,12 @@ impl BridgeHost {
             .submit_authentication(&request.challenge_id, &request.response_json)
             .await
             .map_err(map_package_error)?;
+        validate_package_credential(&credential)?;
         let validation = package
             .validate_credentials(&credential.secret_json)
             .await
             .map_err(map_package_error)?;
+        validate_package_validation(&validation)?;
         if !validation.valid {
             return Err(BridgeHostError::CredentialRejected);
         }
@@ -1234,6 +1286,7 @@ impl BridgeHost {
             .validate_credentials(&secret)
             .await
             .map_err(map_package_error)?;
+        validate_package_validation(&validation)?;
         self.store.update_validation(
             &request.bridge_id,
             if validation.valid {
@@ -1346,14 +1399,16 @@ impl BridgeHost {
             .deliver(&request, credential.as_deref())
             .await;
         match delivered {
-            Ok(delivered) => self.store.complete_delivery(
-                &request.bridge_id,
-                &request.message_id,
-                &delivered.external_delivery_id,
-                &delivered.detail_json,
-                (self.clock)()?,
-            ),
-            Err(_) => {
+            Ok(delivered) if validate_package_delivery(&delivered).is_ok() => {
+                self.store.complete_delivery(
+                    &request.bridge_id,
+                    &request.message_id,
+                    &delivered.external_delivery_id,
+                    &delivered.detail_json,
+                    (self.clock)()?,
+                )
+            }
+            Ok(_) | Err(_) => {
                 self.store.fail_delivery(
                     &request.bridge_id,
                     &request.message_id,
@@ -1526,6 +1581,85 @@ fn validate_spec(spec: &BridgeSpec) -> Result<(), BridgeHostError> {
         || matches!(spec.management, BridgeManagement::Unknown { .. })
     {
         return Err(BridgeHostError::InvalidSpec);
+    }
+    Ok(())
+}
+
+fn validate_health_observation(observation: &HealthObservation) -> Result<(), BridgeHostError> {
+    if !valid_required(&observation.bridge_id, MAX_BRIDGE_ID_BYTES)
+        || matches!(
+            observation.credential_lifecycle,
+            CredentialLifecycle::Unknown { .. }
+        )
+    {
+        return Err(BridgeHostError::InvalidSpec);
+    }
+    validate_bounded_json(
+        &observation.detail_json,
+        MAX_PACKAGE_DETAIL_JSON_BYTES,
+        BridgeHostError::InvalidSpec,
+    )
+}
+
+fn validate_package_health(health: &PackageHealth) -> Result<(), BridgeHostError> {
+    validate_package_detail(&health.detail_json)
+}
+
+fn validate_package_challenge(challenge: &PackageChallenge) -> Result<(), BridgeHostError> {
+    validate_bounded_json(
+        &challenge.presentation_json,
+        MAX_AUTHENTICATION_PRESENTATION_JSON_BYTES,
+        BridgeHostError::PackageProtocolFailed,
+    )
+}
+
+fn validate_package_credential(credential: &PackageCredential) -> Result<(), BridgeHostError> {
+    validate_optional_text(credential.account_hint.as_deref(), MAX_ACCOUNT_HINT_BYTES)?;
+    validate_package_detail(&credential.detail_json)
+}
+
+fn validate_package_validation(
+    validation: &PackageCredentialValidation,
+) -> Result<(), BridgeHostError> {
+    validate_optional_text(validation.account_hint.as_deref(), MAX_ACCOUNT_HINT_BYTES)?;
+    validate_package_detail(&validation.detail_json)
+}
+
+fn validate_package_delivery(delivery: &PackageDelivery) -> Result<(), BridgeHostError> {
+    if !valid_required(
+        &delivery.external_delivery_id,
+        MAX_EXTERNAL_DELIVERY_ID_BYTES,
+    ) {
+        return Err(BridgeHostError::PackageProtocolFailed);
+    }
+    validate_package_detail(&delivery.detail_json)
+}
+
+fn validate_package_detail(value: &str) -> Result<(), BridgeHostError> {
+    validate_bounded_json(
+        value,
+        MAX_PACKAGE_DETAIL_JSON_BYTES,
+        BridgeHostError::PackageProtocolFailed,
+    )
+}
+
+fn validate_optional_text(
+    value: Option<&str>,
+    maximum_bytes: usize,
+) -> Result<(), BridgeHostError> {
+    if value.is_some_and(|value| value.len() > maximum_bytes) {
+        return Err(BridgeHostError::PackageProtocolFailed);
+    }
+    Ok(())
+}
+
+fn validate_bounded_json(
+    value: &str,
+    maximum_bytes: usize,
+    error: BridgeHostError,
+) -> Result<(), BridgeHostError> {
+    if value.len() > maximum_bytes || serde_json::from_str::<Value>(value).is_err() {
+        return Err(error);
     }
     Ok(())
 }
@@ -1718,12 +1852,18 @@ mod tests {
     use super::package::{MAX_LAUNCH_ARGUMENT_BYTES, MAX_LAUNCH_ARGUMENTS};
     use super::{
         AuthenticationMethod, BridgeAttachment, BridgeHostError, BridgeInbound, BridgeIngressMode,
-        BridgeManagement, BridgeOperationLocks, BridgeOutbound, BridgeSpec,
-        MAX_AUTHENTICATION_METHODS, MAX_BRIDGE_ATTACHMENTS, MAX_BRIDGE_ID_BYTES,
+        BridgeManagement, BridgeOperationLocks, BridgeOutbound, BridgeSpec, CredentialLifecycle,
+        HealthObservation, MAX_ACCOUNT_HINT_BYTES, MAX_AUTHENTICATION_METHODS,
+        MAX_AUTHENTICATION_PRESENTATION_JSON_BYTES, MAX_BRIDGE_ATTACHMENTS, MAX_BRIDGE_ID_BYTES,
         MAX_CONFIGURATION_JSON_BYTES, MAX_CONTENT_HANDLE_BYTES, MAX_DISPLAY_NAME_BYTES,
-        MAX_ENDPOINT_JSON_BYTES, MAX_LAUNCH_JSON_BYTES, MAX_MESSAGE_JSON_BYTES,
-        MAX_NORMALIZED_TRIGGER_BYTES, MAX_PACKAGE_ID_BYTES, MAX_RESTART_LIMIT, generated,
-        normalized_inbound_message, validate_inbound, validate_outbound, validate_spec,
+        MAX_ENDPOINT_JSON_BYTES, MAX_EXTERNAL_DELIVERY_ID_BYTES, MAX_LAUNCH_JSON_BYTES,
+        MAX_MESSAGE_JSON_BYTES, MAX_NORMALIZED_TRIGGER_BYTES, MAX_PACKAGE_DETAIL_JSON_BYTES,
+        MAX_PACKAGE_ID_BYTES, MAX_RESTART_LIMIT, PackageChallenge, PackageCredential,
+        PackageCredentialValidation, PackageDelivery, PackageHealth, generated,
+        normalized_inbound_message, validate_health_observation, validate_inbound,
+        validate_outbound, validate_package_challenge, validate_package_credential,
+        validate_package_delivery, validate_package_health, validate_package_validation,
+        validate_spec,
     };
 
     fn sized_text_json(size: usize) -> String {
@@ -1950,6 +2090,138 @@ mod tests {
                 Err(BridgeHostError::InvalidSpec)
             ));
         }
+    }
+
+    #[test]
+    fn package_result_admission_accepts_exact_metadata_limits() {
+        let detail = sized_text_json(MAX_PACKAGE_DETAIL_JSON_BYTES);
+        validate_package_health(&PackageHealth {
+            process_alive: true,
+            service_connected: true,
+            can_receive: true,
+            can_send: true,
+            credential_valid: true,
+            detail_json: detail.clone(),
+        })
+        .expect("exact health detail passes");
+        validate_package_challenge(&PackageChallenge {
+            method: AuthenticationMethod::QrCode,
+            expires_at_ms: None,
+            presentation_json: sized_text_json(MAX_AUTHENTICATION_PRESENTATION_JSON_BYTES),
+        })
+        .expect("exact authentication presentation passes");
+        validate_package_credential(&PackageCredential {
+            secret_json: "{}".into(),
+            expires_at_ms: None,
+            account_hint: Some("a".repeat(MAX_ACCOUNT_HINT_BYTES)),
+            detail_json: detail.clone(),
+        })
+        .expect("exact credential metadata passes");
+        validate_package_validation(&PackageCredentialValidation {
+            valid: true,
+            expires_at_ms: None,
+            account_hint: Some("a".repeat(MAX_ACCOUNT_HINT_BYTES)),
+            detail_json: detail.clone(),
+        })
+        .expect("exact validation metadata passes");
+        validate_package_delivery(&PackageDelivery {
+            external_delivery_id: "d".repeat(MAX_EXTERNAL_DELIVERY_ID_BYTES),
+            detail_json: detail.clone(),
+        })
+        .expect("exact delivery metadata passes");
+        validate_health_observation(&HealthObservation {
+            bridge_id: "b".repeat(MAX_BRIDGE_ID_BYTES),
+            observed_at_ms: 1,
+            process_alive: true,
+            service_connected: true,
+            can_receive: true,
+            can_send: true,
+            credential_lifecycle: CredentialLifecycle::Valid,
+            detail_json: detail,
+        })
+        .expect("exact direct health observation passes");
+    }
+
+    #[test]
+    fn package_result_admission_rejects_one_byte_over_before_persistence() {
+        let oversized_detail = sized_text_json(MAX_PACKAGE_DETAIL_JSON_BYTES + 1);
+        assert_eq!(
+            validate_package_health(&PackageHealth {
+                process_alive: true,
+                service_connected: true,
+                can_receive: true,
+                can_send: true,
+                credential_valid: true,
+                detail_json: oversized_detail.clone(),
+            }),
+            Err(BridgeHostError::PackageProtocolFailed)
+        );
+        assert_eq!(
+            validate_package_challenge(&PackageChallenge {
+                method: AuthenticationMethod::QrCode,
+                expires_at_ms: None,
+                presentation_json: sized_text_json(MAX_AUTHENTICATION_PRESENTATION_JSON_BYTES + 1),
+            }),
+            Err(BridgeHostError::PackageProtocolFailed)
+        );
+        assert_eq!(
+            validate_package_credential(&PackageCredential {
+                secret_json: "{}".into(),
+                expires_at_ms: None,
+                account_hint: Some("a".repeat(MAX_ACCOUNT_HINT_BYTES + 1)),
+                detail_json: "{}".into(),
+            }),
+            Err(BridgeHostError::PackageProtocolFailed)
+        );
+        assert_eq!(
+            validate_package_validation(&PackageCredentialValidation {
+                valid: true,
+                expires_at_ms: None,
+                account_hint: None,
+                detail_json: oversized_detail.clone(),
+            }),
+            Err(BridgeHostError::PackageProtocolFailed)
+        );
+        assert_eq!(
+            validate_package_delivery(&PackageDelivery {
+                external_delivery_id: "d".repeat(MAX_EXTERNAL_DELIVERY_ID_BYTES + 1),
+                detail_json: "{}".into(),
+            }),
+            Err(BridgeHostError::PackageProtocolFailed)
+        );
+        assert_eq!(
+            validate_package_delivery(&PackageDelivery {
+                external_delivery_id: "delivery".into(),
+                detail_json: "{".into(),
+            }),
+            Err(BridgeHostError::PackageProtocolFailed)
+        );
+        assert_eq!(
+            validate_health_observation(&HealthObservation {
+                bridge_id: "bridge".into(),
+                observed_at_ms: 1,
+                process_alive: true,
+                service_connected: true,
+                can_receive: true,
+                can_send: true,
+                credential_lifecycle: CredentialLifecycle::Valid,
+                detail_json: oversized_detail,
+            }),
+            Err(BridgeHostError::InvalidSpec)
+        );
+        assert_eq!(
+            validate_health_observation(&HealthObservation {
+                bridge_id: "b".repeat(MAX_BRIDGE_ID_BYTES + 1),
+                observed_at_ms: 1,
+                process_alive: true,
+                service_connected: true,
+                can_receive: true,
+                can_send: true,
+                credential_lifecycle: CredentialLifecycle::Valid,
+                detail_json: "{}".into(),
+            }),
+            Err(BridgeHostError::InvalidSpec)
+        );
     }
 
     #[test]

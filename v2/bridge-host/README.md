@@ -25,6 +25,23 @@ environment names, authentication methods and restart policy before persistence 
 Registration validates path shape without requiring a stopped package to be running. Actual launch
 also requires the configured working directory to exist.
 
+## Package result boundary
+
+![Bridge package result admission boundary](bridge-result-boundary.png)
+
+The 16 MiB transport-frame ceiling is not a durable-data policy. Every package result is checked
+again by the host before operator response or persistence. Oversized health and supervisor results
+are package protocol failures; invalid delivery results leave the delivery retryable.
+
+| Package result | Maximum |
+|---|---:|
+| Health / credential / delivery detail JSON | 64 KiB |
+| Authentication presentation JSON | 1 MiB |
+| Account hint | 1,024 bytes |
+| External delivery ID | 1,024 bytes |
+
+Direct health observations use the same detail limit and are rejected before per-bridge locking.
+
 ## Message boundary
 
 ![Bridge message admission boundary](bridge-message-boundary.png)
