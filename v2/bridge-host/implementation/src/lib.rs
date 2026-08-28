@@ -49,6 +49,9 @@ const MAX_DISPLAY_NAME_BYTES: usize = 1024;
 const MAX_LAUNCH_JSON_BYTES: usize = 256 * 1024;
 const MAX_CONFIGURATION_JSON_BYTES: usize = 1024 * 1024;
 const MAX_AUTHENTICATION_METHODS: usize = 6;
+const MAX_AUTHENTICATION_CONTEXT_JSON_BYTES: usize = 64 * 1024;
+const MAX_AUTHENTICATION_RESPONSE_JSON_BYTES: usize = 1024 * 1024;
+const MAX_CHALLENGE_ID_BYTES: usize = 1024;
 const MAX_RESTART_LIMIT: u64 = 64;
 const MAX_PACKAGE_DETAIL_JSON_BYTES: usize = 64 * 1024;
 const MAX_AUTHENTICATION_PRESENTATION_JSON_BYTES: usize = 1024 * 1024;
@@ -1087,6 +1090,7 @@ impl BridgeHost {
         request: UnregisterBridgeRequest,
     ) -> Result<BridgeReceipt, BridgeHostError> {
         let _ = context;
+        validate_bridge_id(&request.bridge_id)?;
         let _operation = self.operations.lock(&request.bridge_id).await?;
         self.store
             .validate_unregister(&request.bridge_id, request.expected_generation)?;
@@ -1129,6 +1133,7 @@ impl BridgeHost {
         request: ReconcileBridgeRequest,
     ) -> Result<BridgeStatus, BridgeHostError> {
         let _ = context;
+        validate_bridge_id(&request.bridge_id)?;
         let _operation = self.operations.lock(&request.bridge_id).await?;
         let record = self.store.set_desired(
             &request.bridge_id,
@@ -1162,8 +1167,8 @@ impl BridgeHost {
         request: BeginAuthenticationRequest,
     ) -> Result<AuthenticationChallenge, BridgeHostError> {
         let _ = context;
+        validate_begin_authentication(&request)?;
         let _operation = self.operations.lock(&request.bridge_id).await?;
-        validate_json_object(&request.context_json)?;
         let spec = self.store.spec(&request.bridge_id)?;
         if let Some(method) = &request.preferred_method
             && !spec.authentication_methods.contains(method)
@@ -1192,8 +1197,8 @@ impl BridgeHost {
         request: SubmitAuthenticationRequest,
     ) -> Result<CredentialStatus, BridgeHostError> {
         let _ = context;
+        validate_submit_authentication(&request)?;
         let _operation = self.operations.lock(&request.bridge_id).await?;
-        validate_json(&request.response_json)?;
         let now_ms = (self.clock)()?;
         self.store
             .verify_challenge(&request.bridge_id, &request.challenge_id, now_ms)?;
@@ -1270,6 +1275,7 @@ impl BridgeHost {
         request: BridgeReference,
     ) -> Result<CredentialStatus, BridgeHostError> {
         let _ = context;
+        validate_bridge_id(&request.bridge_id)?;
         let _operation = self.operations.lock(&request.bridge_id).await?;
         let status = self.store.credential(&request.bridge_id)?;
         let handle = status
@@ -1307,6 +1313,7 @@ impl BridgeHost {
         request: BridgeReference,
     ) -> Result<BridgeReceipt, BridgeHostError> {
         let _ = context;
+        validate_bridge_id(&request.bridge_id)?;
         let _operation = self.operations.lock(&request.bridge_id).await?;
         let status = self.store.credential(&request.bridge_id)?;
         if let Some(handle) = status.credential_handle {
@@ -1425,6 +1432,7 @@ impl BridgeHost {
         request: DeliveryReference,
     ) -> Result<DeliveryReceipt, BridgeHostError> {
         let _ = context;
+        validate_delivery_reference(&request)?;
         self.store.delivery(&request.bridge_id, &request.message_id)
     }
 
@@ -1434,6 +1442,7 @@ impl BridgeHost {
         request: BridgeReference,
     ) -> Result<BridgeStatus, BridgeHostError> {
         let _ = context;
+        validate_bridge_id(&request.bridge_id)?;
         self.store.status(&request.bridge_id, (self.clock)()?)
     }
 
@@ -1443,6 +1452,7 @@ impl BridgeHost {
         request: BridgeReference,
     ) -> Result<BridgeReceipt, BridgeHostError> {
         let _ = context;
+        validate_bridge_id(&request.bridge_id)?;
         let _operation = self.operations.lock(&request.bridge_id).await?;
         self.stop_supervisor(&request.bridge_id);
         deactivate_package_instance(
@@ -1463,6 +1473,7 @@ impl BridgeHost {
         request: BridgeReference,
     ) -> Result<BridgeStatus, BridgeHostError> {
         let _ = context;
+        validate_bridge_id(&request.bridge_id)?;
         let _operation = self.operations.lock(&request.bridge_id).await?;
         self.stop_supervisor(&request.bridge_id);
         self.stop_connection(&request.bridge_id).await
@@ -1585,6 +1596,53 @@ fn validate_spec(spec: &BridgeSpec) -> Result<(), BridgeHostError> {
     Ok(())
 }
 
+fn validate_bridge_id(bridge_id: &str) -> Result<(), BridgeHostError> {
+    if !valid_required(bridge_id, MAX_BRIDGE_ID_BYTES) {
+        return Err(BridgeHostError::InvalidSpec);
+    }
+    Ok(())
+}
+
+fn validate_delivery_reference(request: &DeliveryReference) -> Result<(), BridgeHostError> {
+    validate_bridge_id(&request.bridge_id)?;
+    if !valid_required(&request.message_id, MAX_MESSAGE_ID_BYTES) {
+        return Err(BridgeHostError::InvalidSpec);
+    }
+    Ok(())
+}
+
+fn validate_begin_authentication(
+    request: &BeginAuthenticationRequest,
+) -> Result<(), BridgeHostError> {
+    validate_bridge_id(&request.bridge_id)?;
+    if request
+        .preferred_method
+        .as_ref()
+        .is_some_and(|method| matches!(method, AuthenticationMethod::Unknown { .. }))
+    {
+        return Err(BridgeHostError::InvalidSpec);
+    }
+    validate_bounded_json_object(
+        &request.context_json,
+        MAX_AUTHENTICATION_CONTEXT_JSON_BYTES,
+        BridgeHostError::InvalidSpec,
+    )
+}
+
+fn validate_submit_authentication(
+    request: &SubmitAuthenticationRequest,
+) -> Result<(), BridgeHostError> {
+    validate_bridge_id(&request.bridge_id)?;
+    if !valid_required(&request.challenge_id, MAX_CHALLENGE_ID_BYTES) {
+        return Err(BridgeHostError::InvalidSpec);
+    }
+    validate_bounded_json(
+        &request.response_json,
+        MAX_AUTHENTICATION_RESPONSE_JSON_BYTES,
+        BridgeHostError::InvalidSpec,
+    )
+}
+
 fn validate_health_observation(observation: &HealthObservation) -> Result<(), BridgeHostError> {
     if !valid_required(&observation.bridge_id, MAX_BRIDGE_ID_BYTES)
         || matches!(
@@ -1659,6 +1717,17 @@ fn validate_bounded_json(
     error: BridgeHostError,
 ) -> Result<(), BridgeHostError> {
     if value.len() > maximum_bytes || serde_json::from_str::<Value>(value).is_err() {
+        return Err(error);
+    }
+    Ok(())
+}
+
+fn validate_bounded_json_object(
+    value: &str,
+    maximum_bytes: usize,
+    error: BridgeHostError,
+) -> Result<(), BridgeHostError> {
+    if value.len() > maximum_bytes || serde_json::from_str::<Map<String, Value>>(value).is_err() {
         return Err(error);
     }
     Ok(())
@@ -1847,23 +1916,27 @@ pub mod generated {
 mod tests {
     use std::{sync::Arc, time::Duration};
 
-    use boxology_contract::{BoxId, CapabilityId};
+    use boxology_contract::{BoxId, CapabilityId, OpaquePayload, OpaqueTree};
 
     use super::package::{MAX_LAUNCH_ARGUMENT_BYTES, MAX_LAUNCH_ARGUMENTS};
     use super::{
-        AuthenticationMethod, BridgeAttachment, BridgeHostError, BridgeInbound, BridgeIngressMode,
-        BridgeManagement, BridgeOperationLocks, BridgeOutbound, BridgeSpec, CredentialLifecycle,
-        HealthObservation, MAX_ACCOUNT_HINT_BYTES, MAX_AUTHENTICATION_METHODS,
-        MAX_AUTHENTICATION_PRESENTATION_JSON_BYTES, MAX_BRIDGE_ATTACHMENTS, MAX_BRIDGE_ID_BYTES,
+        AuthenticationMethod, BeginAuthenticationRequest, BridgeAttachment, BridgeHostError,
+        BridgeInbound, BridgeIngressMode, BridgeManagement, BridgeOperationLocks, BridgeOutbound,
+        BridgeSpec, CredentialLifecycle, DeliveryReference, HealthObservation,
+        MAX_ACCOUNT_HINT_BYTES, MAX_AUTHENTICATION_CONTEXT_JSON_BYTES, MAX_AUTHENTICATION_METHODS,
+        MAX_AUTHENTICATION_PRESENTATION_JSON_BYTES, MAX_AUTHENTICATION_RESPONSE_JSON_BYTES,
+        MAX_BRIDGE_ATTACHMENTS, MAX_BRIDGE_ID_BYTES, MAX_CHALLENGE_ID_BYTES,
         MAX_CONFIGURATION_JSON_BYTES, MAX_CONTENT_HANDLE_BYTES, MAX_DISPLAY_NAME_BYTES,
         MAX_ENDPOINT_JSON_BYTES, MAX_EXTERNAL_DELIVERY_ID_BYTES, MAX_LAUNCH_JSON_BYTES,
-        MAX_MESSAGE_JSON_BYTES, MAX_NORMALIZED_TRIGGER_BYTES, MAX_PACKAGE_DETAIL_JSON_BYTES,
-        MAX_PACKAGE_ID_BYTES, MAX_RESTART_LIMIT, PackageChallenge, PackageCredential,
-        PackageCredentialValidation, PackageDelivery, PackageHealth, generated,
-        normalized_inbound_message, validate_health_observation, validate_inbound,
-        validate_outbound, validate_package_challenge, validate_package_credential,
-        validate_package_delivery, validate_package_health, validate_package_validation,
-        validate_spec,
+        MAX_MESSAGE_ID_BYTES, MAX_MESSAGE_JSON_BYTES, MAX_NORMALIZED_TRIGGER_BYTES,
+        MAX_PACKAGE_DETAIL_JSON_BYTES, MAX_PACKAGE_ID_BYTES, MAX_RESTART_LIMIT, PackageChallenge,
+        PackageCredential, PackageCredentialValidation, PackageDelivery, PackageHealth,
+        SubmitAuthenticationRequest, generated, normalized_inbound_message,
+        validate_begin_authentication, validate_bridge_id, validate_delivery_reference,
+        validate_health_observation, validate_inbound, validate_outbound,
+        validate_package_challenge, validate_package_credential, validate_package_delivery,
+        validate_package_health, validate_package_validation, validate_spec,
+        validate_submit_authentication,
     };
 
     fn sized_text_json(size: usize) -> String {
@@ -2090,6 +2163,79 @@ mod tests {
                 Err(BridgeHostError::InvalidSpec)
             ));
         }
+    }
+
+    #[test]
+    fn bridge_control_admission_accepts_exact_identifier_and_authentication_limits() {
+        validate_bridge_id(&"b".repeat(MAX_BRIDGE_ID_BYTES))
+            .expect("exact bridge identifier limit passes");
+        validate_delivery_reference(&DeliveryReference {
+            bridge_id: "b".repeat(MAX_BRIDGE_ID_BYTES),
+            message_id: "m".repeat(MAX_MESSAGE_ID_BYTES),
+        })
+        .expect("exact delivery reference limits pass");
+        validate_begin_authentication(&BeginAuthenticationRequest {
+            bridge_id: "b".repeat(MAX_BRIDGE_ID_BYTES),
+            preferred_method: Some(AuthenticationMethod::PhoneCode),
+            context_json: sized_text_json(MAX_AUTHENTICATION_CONTEXT_JSON_BYTES),
+        })
+        .expect("exact authentication context limit passes");
+        validate_submit_authentication(&SubmitAuthenticationRequest {
+            bridge_id: "b".repeat(MAX_BRIDGE_ID_BYTES),
+            challenge_id: "c".repeat(MAX_CHALLENGE_ID_BYTES),
+            response_json: sized_text_json(MAX_AUTHENTICATION_RESPONSE_JSON_BYTES),
+        })
+        .expect("exact authentication response limits pass");
+    }
+
+    #[test]
+    fn bridge_control_admission_rejects_unknown_or_one_byte_over_inputs() {
+        assert_eq!(
+            validate_bridge_id(&"b".repeat(MAX_BRIDGE_ID_BYTES + 1)),
+            Err(BridgeHostError::InvalidSpec)
+        );
+        assert_eq!(
+            validate_delivery_reference(&DeliveryReference {
+                bridge_id: "bridge".into(),
+                message_id: "m".repeat(MAX_MESSAGE_ID_BYTES + 1),
+            }),
+            Err(BridgeHostError::InvalidSpec)
+        );
+        assert_eq!(
+            validate_begin_authentication(&BeginAuthenticationRequest {
+                bridge_id: "bridge".into(),
+                preferred_method: Some(AuthenticationMethod::PhoneCode),
+                context_json: sized_text_json(MAX_AUTHENTICATION_CONTEXT_JSON_BYTES + 1),
+            }),
+            Err(BridgeHostError::InvalidSpec)
+        );
+        assert_eq!(
+            validate_begin_authentication(&BeginAuthenticationRequest {
+                bridge_id: "bridge".into(),
+                preferred_method: Some(AuthenticationMethod::Unknown {
+                    tag: "FutureAuth".into(),
+                    payload: OpaquePayload::new(OpaqueTree::Null),
+                }),
+                context_json: "{}".into(),
+            }),
+            Err(BridgeHostError::InvalidSpec)
+        );
+        assert_eq!(
+            validate_submit_authentication(&SubmitAuthenticationRequest {
+                bridge_id: "bridge".into(),
+                challenge_id: "c".repeat(MAX_CHALLENGE_ID_BYTES + 1),
+                response_json: "{}".into(),
+            }),
+            Err(BridgeHostError::InvalidSpec)
+        );
+        assert_eq!(
+            validate_submit_authentication(&SubmitAuthenticationRequest {
+                bridge_id: "bridge".into(),
+                challenge_id: "challenge".into(),
+                response_json: sized_text_json(MAX_AUTHENTICATION_RESPONSE_JSON_BYTES + 1),
+            }),
+            Err(BridgeHostError::InvalidSpec)
+        );
     }
 
     #[test]

@@ -1,0 +1,27 @@
+flowchart LR
+    REQUEST["Bridge control<br/>request"]
+    ADMIT{"Semantic admission<br/>IDs · auth JSON · method"}
+    REJECT["InvalidSpec<br/>no side effect"]
+    LOCK["Per-bridge<br/>operation lock"]
+    TARGET{"Control target"}
+    PACKAGE["Bridge package<br/>auth / lifecycle"]
+    STORE[("Durable bridge<br/>state")]
+
+    REQUEST --> ADMIT
+    ADMIT -->|"unknown / oversized / malformed"| REJECT
+    ADMIT -->|"valid"| LOCK --> TARGET
+    TARGET -->|"authentication / lifecycle"| PACKAGE
+    TARGET -->|"status / delivery"| STORE
+    PACKAGE --> STORE
+
+    classDef source fill:#f3e8ff,stroke:#9333ea,stroke-width:2px,color:#581c87;
+    classDef runtime fill:#dbeafe,stroke:#2563eb,stroke-width:2px,color:#172554;
+    classDef durable fill:#dcfce7,stroke:#16a34a,stroke-width:2px,color:#14532d;
+    classDef gate fill:#fef3c7,stroke:#d97706,stroke-width:2px,color:#78350f;
+    classDef failure fill:#fee2e2,stroke:#dc2626,stroke-width:2px,color:#7f1d1d;
+
+    class REQUEST source;
+    class LOCK,TARGET,PACKAGE runtime;
+    class STORE durable;
+    class ADMIT gate;
+    class REJECT failure;
