@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import test from 'node:test';
 
-import { WhatsAppBridgeService } from '../src/bridge-service.js';
+import { CredentialPublisher, WhatsAppBridgeService } from '../src/bridge-service.js';
 import { credentialFingerprint } from '../src/canonical-json.js';
 import { credential, dependencies, flush } from './helpers.js';
 
@@ -21,6 +21,72 @@ async function initialize(service) {
     },
   });
 }
+
+test('credential mutation bursts coalesce behind one durable CAS', async () => {
+  const committed = credential();
+  let current = structuredClone(committed);
+  let releaseFirst;
+  const firstCall = new Promise((resolve) => { releaseFirst = resolve; });
+  const updates = [];
+  const publisher = new CredentialPublisher({
+    bridgeId: 'whatsapp',
+    snapshot: () => structuredClone(current),
+    callHost: async (method, params) => {
+      assert.equal(method, 'bridge/credential/update');
+      updates.push(params);
+      if (updates.length === 1) await firstCall;
+      return { credentialFingerprint: credentialFingerprint(params.credential) };
+    },
+    onFailure: (error) => { throw error; },
+  });
+  publisher.restore(committed);
+
+  current.keys.session = { alice: { revision: 1 } };
+  const first = publisher.changed();
+  assert.equal(updates.length, 1);
+  const waiters = [first];
+  for (let revision = 2; revision <= 1_000; revision += 1) {
+    current.keys.session.alice = { revision };
+    waiters.push(publisher.changed());
+  }
+  assert.equal(updates.length, 1, 'only one CAS is in flight');
+  assert.ok(waiters.every((waiter) => waiter === first));
+
+  releaseFirst();
+  await Promise.all(waiters);
+  assert.equal(updates.length, 2, 'the burst becomes one newest-snapshot follow-up');
+  assert.equal(updates[0].previousFingerprint, credentialFingerprint(committed));
+  assert.equal(
+    updates[1].previousFingerprint,
+    credentialFingerprint(updates[0].credential),
+  );
+  assert.equal(updates[1].credential.keys.session.alice.revision, 1_000);
+});
+
+test('credential persistence failure is terminal for the package instance', async () => {
+  const committed = credential();
+  const current = structuredClone(committed);
+  current.keys.session = { alice: { revision: 1 } };
+  const failure = new Error('host CAS unavailable');
+  const failures = [];
+  let attempts = 0;
+  const publisher = new CredentialPublisher({
+    bridgeId: 'whatsapp',
+    snapshot: () => structuredClone(current),
+    callHost: async () => {
+      attempts += 1;
+      throw failure;
+    },
+    onFailure: (error) => failures.push(error),
+  });
+  publisher.restore(committed);
+
+  await assert.rejects(publisher.changed(), failure);
+  current.keys.session.alice = { revision: 2 };
+  await assert.rejects(publisher.changed(), failure);
+  assert.equal(attempts, 1, 'a stale fingerprint is never retried in-process');
+  assert.deepEqual(failures, [failure]);
+});
 
 test('restores a committed snapshot and publishes ordered key rotations', async () => {
   const updates = [];

@@ -17,9 +17,10 @@ flowchart TB
     HOST -->|"selected outbound text or<br/>one validated content handle"| OUT{"regular file<br/>≤ 8 MiB?"}
     OUT -->|yes| PKG
     OUT -->|no| REJECT
-    PKG -->|"credential snapshot<br/>previous hash"| CAS{"active instance<br/>and hash match?"}
+    PKG -->|"credential mutation"| PUBLISH["single-flight publisher<br/>one dirty follow-up"]
+    PUBLISH -->|"newest snapshot<br/>previous hash"| CAS{"active instance<br/>and hash match?"}
     CAS -->|yes| CREDS[("opaque credential file")]
-    CREDS -->|"durable ack"| PKG
+    CREDS -->|"durable ack"| PUBLISH
     CAS -->|no| REJECT
 
     classDef service fill:#eef2ff,stroke:#4f46e5,color:#111827;
@@ -27,6 +28,6 @@ flowchart TB
     classDef durable fill:#ecfdf5,stroke:#059669,color:#111827;
     classDef guard fill:#fff7ed,stroke:#ea580c,color:#111827;
     class WA,PKG,ACP service;
-    class STREAM,HOST,META action;
+    class STREAM,HOST,META,PUBLISH action;
     class PRIVATE,INBOX,CREDS durable;
     class POLICY,LIMIT,VALIDATE,OUT,CAS,REJECT,DROP guard;
