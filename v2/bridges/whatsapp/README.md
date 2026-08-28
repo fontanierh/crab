@@ -54,6 +54,8 @@ Full history is never synchronized.
 
 ## Credential safety
 
+![Coalesced credential persistence](credential-persistence-flow.png)
+
 The package holds one complete Baileys authentication snapshot in memory. After initial pairing,
 Crab first stores that snapshot and calls `bridge/auth/committed`. Later Signal key changes use:
 
@@ -63,6 +65,10 @@ previous SHA-256 → complete fresh snapshot → durable host ack → next mutat
 
 An update rejection is fatal. The host then restarts the package from its last acknowledged
 snapshot instead of continuing with memory-only Signal state.
+
+Mutation bursts use one in-flight CAS and at most one dirty follow-up. The follow-up snapshots the
+newest complete state after the durable acknowledgement, so redundant key events cannot create an
+unbounded persistence chain or leave later callers ahead of the stored credential.
 
 ## Development
 

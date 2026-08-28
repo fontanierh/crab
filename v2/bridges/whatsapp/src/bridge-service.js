@@ -30,7 +30,9 @@ export class CredentialPublisher {
     this.onFailure = onFailure;
     this.enabled = false;
     this.previousFingerprint = null;
-    this.tail = Promise.resolve();
+    this.dirty = false;
+    this.running = null;
+    this.failure = null;
   }
 
   restore(committedSnapshot) {
@@ -45,22 +47,43 @@ export class CredentialPublisher {
 
   changed() {
     if (!this.enabled) return Promise.resolve();
-    const operation = this.tail.then(async () => {
-      const credential = this.snapshot();
-      const nextFingerprint = credentialFingerprint(credential);
-      if (nextFingerprint === this.previousFingerprint) return;
-      const receipt = await this.callHost('bridge/credential/update', {
-        bridgeId: this.bridgeId,
-        previousFingerprint: this.previousFingerprint,
-        credential,
+    if (this.failure) return Promise.reject(this.failure);
+    this.dirty = true;
+    if (!this.running) {
+      this.running = this.#drain().finally(() => {
+        this.running = null;
       });
-      if (receipt?.credentialFingerprint !== nextFingerprint) {
-        throw new Error('credential acknowledgement mismatch');
+    }
+    return this.running;
+  }
+
+  async #drain() {
+    try {
+      while (this.dirty) {
+        this.dirty = false;
+        const credential = this.snapshot();
+        const nextFingerprint = credentialFingerprint(credential);
+        if (nextFingerprint === this.previousFingerprint) continue;
+        const receipt = await this.callHost('bridge/credential/update', {
+          bridgeId: this.bridgeId,
+          previousFingerprint: this.previousFingerprint,
+          credential,
+        });
+        if (receipt?.credentialFingerprint !== nextFingerprint) {
+          throw new Error('credential acknowledgement mismatch');
+        }
+        this.previousFingerprint = nextFingerprint;
       }
-      this.previousFingerprint = nextFingerprint;
-    });
-    this.tail = operation.catch((error) => this.onFailure(error));
-    return operation;
+    } catch (error) {
+      this.failure = error instanceof Error ? error : new Error('credential persistence failed');
+      this.dirty = false;
+      try {
+        this.onFailure(this.failure);
+      } catch {
+        // Persistence failure remains the canonical rejection even if shutdown throws.
+      }
+      throw this.failure;
+    }
   }
 }
 

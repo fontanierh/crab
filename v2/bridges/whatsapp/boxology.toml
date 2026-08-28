@@ -2,7 +2,18 @@ schema = 1
 id = "whatsapp-bridge-provider"
 # Boxology does not yet accept the semantically correct `provider` kind; tracked upstream in #717.
 kind = "platform"
-owned = ["boxology.toml", "package.json", "package-lock.json", "README.md", "architecture.mmd", "architecture.png", "src/**", "test/**"]
+owned = [
+    "boxology.toml",
+    "package.json",
+    "package-lock.json",
+    "README.md",
+    "architecture.mmd",
+    "architecture.png",
+    "credential-persistence-flow.mmd",
+    "credential-persistence-flow.png",
+    "src/**",
+    "test/**",
+]
 
 [quality]
 commands = ["npm test --prefix bridges/whatsapp"]
