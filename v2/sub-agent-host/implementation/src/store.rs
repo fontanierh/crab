@@ -1,4 +1,4 @@
-use std::{path::Path, sync::Mutex};
+use std::{mem::size_of, path::Path, sync::Mutex};
 
 use boxology_import_agent_host::{AcpEvent, AcpEventDirection, AcpEventKind};
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
@@ -13,6 +13,9 @@ use crate::{
 
 const SCHEMA_VERSION: i64 = 1;
 const MAX_EVENT_PAGE: u64 = 1_000;
+const MAX_NATIVE_ACP_EVENT_BYTES: usize = 16 * 1024 * 1024;
+const MAX_EVENT_PAYLOAD_BYTES: usize = MAX_NATIVE_ACP_EVENT_BYTES + 64 * 1024;
+const MAX_EVENT_PAGE_BYTES: usize = MAX_EVENT_PAYLOAD_BYTES + 64 * 1024;
 const RECOVERY_PENDING_ERROR: &str = "runtime restarted; native child recovery pending";
 
 #[derive(Clone, Copy)]
@@ -610,6 +613,7 @@ impl SubAgentStore {
         sub_agent_id: &str,
         event: &AcpEvent,
     ) -> Result<(), SubAgentHostError> {
+        validate_native_acp_event_bytes(event.native_event_json.len())?;
         let mut connection = self.lock()?;
         let transaction = connection
             .transaction_with_behavior(TransactionBehavior::Immediate)
@@ -744,6 +748,14 @@ impl SubAgentStore {
         &self,
         request: &ReadSubAgentEventsRequest,
     ) -> Result<SubAgentEventPage, SubAgentHostError> {
+        self.read_events_with_byte_limit(request, MAX_EVENT_PAGE_BYTES)
+    }
+
+    fn read_events_with_byte_limit(
+        &self,
+        request: &ReadSubAgentEventsRequest,
+        byte_limit: usize,
+    ) -> Result<SubAgentEventPage, SubAgentHostError> {
         if request.limit == 0 || request.limit > MAX_EVENT_PAGE {
             return Err(SubAgentHostError::InvalidContextBoundary);
         }
@@ -763,47 +775,58 @@ impl SubAgentStore {
         }
         let mut statement = connection
             .prepare(
-                "SELECT sequence, observed_at_ms, kind, payload_json FROM events
+                "SELECT sequence, observed_at_ms, kind,
+                        length(CAST(payload_json AS BLOB)), payload_json FROM events
                  WHERE sub_agent_id = ?1 AND sequence > ?2 ORDER BY sequence LIMIT ?3",
             )
             .map_err(storage_error)?;
-        let events = statement
-            .query_map(
-                params![
-                    request.sub_agent_id,
-                    db_i64(request.after_sequence)?,
-                    db_i64(request.limit)?
-                ],
-                |row| {
-                    Ok((
-                        row.get::<_, i64>(0)?,
-                        row.get::<_, i64>(1)?,
-                        row.get::<_, String>(2)?,
-                        row.get::<_, String>(3)?,
-                    ))
-                },
-            )
-            .map_err(storage_error)?
-            .collect::<rusqlite::Result<Vec<_>>>()
-            .map_err(storage_error)?
-            .into_iter()
-            .map(|(sequence, observed, kind, payload)| {
-                Ok(SubAgentEvent {
-                    sub_agent_id: request.sub_agent_id.clone(),
-                    sequence: db_u64(sequence)?,
-                    observed_at_ms: db_u64(observed)?,
-                    kind: parse_event_kind(&kind)?,
-                    payload_json: payload,
-                })
-            })
-            .collect::<Result<Vec<_>, SubAgentHostError>>()?;
+        let mut rows = statement
+            .query(params![
+                request.sub_agent_id,
+                db_i64(request.after_sequence)?,
+                db_i64(request.limit)?
+            ])
+            .map_err(storage_error)?;
+        let mut events = Vec::new();
+        let mut retained_bytes = 0_usize;
+        while let Some(row) = rows.next().map_err(storage_error)? {
+            let sequence = db_u64(row.get::<_, i64>(0).map_err(storage_error)?)?;
+            let observed_at_ms = db_u64(row.get::<_, i64>(1).map_err(storage_error)?)?;
+            let kind = row.get::<_, String>(2).map_err(storage_error)?;
+            let payload_bytes =
+                usize::try_from(db_u64(row.get::<_, i64>(3).map_err(storage_error)?)?)
+                    .map_err(|_| SubAgentHostError::StorageUnavailable)?;
+            validate_event_payload_bytes(payload_bytes)?;
+            let event_bytes = retained_event_bytes(&request.sub_agent_id, payload_bytes)?;
+            let next_retained_bytes = retained_bytes
+                .checked_add(event_bytes)
+                .ok_or(SubAgentHostError::StorageUnavailable)?;
+            if next_retained_bytes > byte_limit {
+                if events.is_empty() {
+                    return Err(SubAgentHostError::InvalidNativePayload);
+                }
+                break;
+            }
+            let payload_json = row.get::<_, String>(4).map_err(storage_error)?;
+            if payload_json.len() != payload_bytes {
+                return Err(SubAgentHostError::StorageUnavailable);
+            }
+            events.push(SubAgentEvent {
+                sub_agent_id: request.sub_agent_id.clone(),
+                sequence,
+                observed_at_ms,
+                kind: parse_event_kind(&kind)?,
+                payload_json,
+            });
+            retained_bytes = next_retained_bytes;
+        }
         let next_sequence = events
             .last()
             .map_or(request.after_sequence, |event| event.sequence);
         Ok(SubAgentEventPage {
             events,
             next_sequence,
-            caught_up: next_sequence >= last_sequence,
+            caught_up: next_sequence == last_sequence,
         })
     }
 
@@ -941,6 +964,7 @@ fn append_event(
     payload_json: &str,
     observed_at_ms: u64,
 ) -> Result<u64, SubAgentHostError> {
+    validate_event_payload_bytes(payload_json.len())?;
     parse_json(payload_json)?;
     let last = transaction
         .query_row(
@@ -973,6 +997,30 @@ fn append_event(
         )
         .map_err(storage_error)?;
     Ok(next)
+}
+
+fn validate_event_payload_bytes(bytes: usize) -> Result<(), SubAgentHostError> {
+    if bytes > MAX_EVENT_PAYLOAD_BYTES {
+        return Err(SubAgentHostError::InvalidNativePayload);
+    }
+    Ok(())
+}
+
+fn validate_native_acp_event_bytes(bytes: usize) -> Result<(), SubAgentHostError> {
+    if bytes > MAX_NATIVE_ACP_EVENT_BYTES {
+        return Err(SubAgentHostError::InvalidNativePayload);
+    }
+    Ok(())
+}
+
+fn retained_event_bytes(
+    sub_agent_id: &str,
+    payload_bytes: usize,
+) -> Result<usize, SubAgentHostError> {
+    size_of::<SubAgentEvent>()
+        .checked_add(sub_agent_id.len())
+        .and_then(|bytes| bytes.checked_add(payload_bytes))
+        .ok_or(SubAgentHostError::StorageUnavailable)
 }
 
 fn pending_count(
@@ -1222,12 +1270,14 @@ fn storage_error(_: rusqlite::Error) -> SubAgentHostError {
 #[cfg(test)]
 mod tests {
     use boxology_import_agent_host::{AcpEvent, AcpEventDirection, AcpEventKind};
-    use rusqlite::Connection;
+    use rusqlite::{Connection, TransactionBehavior};
 
     use super::{
-        ContextRealization, InputDisposition, InteractionDirection, ReadSubAgentEventsRequest,
-        SpawnSubAgentRequest, SubAgentContextMode, SubAgentEventKind, SubAgentHostError,
-        SubAgentInputMode, SubAgentLifecycle, SubAgentStore, spawn_fingerprint,
+        ContextRealization, InputDisposition, InteractionDirection, MAX_EVENT_PAYLOAD_BYTES,
+        MAX_NATIVE_ACP_EVENT_BYTES, ReadSubAgentEventsRequest, SpawnSubAgentRequest,
+        SubAgentContextMode, SubAgentEventKind, SubAgentHostError, SubAgentInputMode,
+        SubAgentLifecycle, SubAgentStore, append_event, retained_event_bytes, spawn_fingerprint,
+        validate_event_payload_bytes, validate_native_acp_event_bytes,
     };
 
     fn request(client_id: &str) -> SpawnSubAgentRequest {
@@ -1243,6 +1293,107 @@ mod tests {
             metadata_json: r#"{"purpose":"test"}"#.into(),
             crash_restart_limit: 0,
         }
+    }
+
+    fn started_store(client_id: &str) -> (SubAgentStore, String) {
+        let store = SubAgentStore::open_in_memory().expect("store opens");
+        let request = request(client_id);
+        let start = store
+            .begin_spawn(
+                &request,
+                &ContextRealization::FreshSession,
+                &spawn_fingerprint(&request).expect("request fingerprints"),
+                1,
+            )
+            .expect("spawn starts");
+        (store, start.record.sub_agent_id)
+    }
+
+    fn append_test_events(store: &SubAgentStore, sub_agent_id: &str, payloads: &[&str]) {
+        let mut connection = store.lock().expect("store locks");
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .expect("transaction starts");
+        for (index, payload) in payloads.iter().enumerate() {
+            append_event(
+                &transaction,
+                sub_agent_id,
+                &SubAgentEventKind::ChildToParent,
+                payload,
+                u64::try_from(index + 2).expect("timestamp fits"),
+            )
+            .expect("test event appends");
+        }
+        transaction.commit().expect("events commit");
+    }
+
+    #[test]
+    fn event_pages_stop_at_whole_payload_boundaries_and_resume_from_the_cursor() {
+        let (store, sub_agent_id) = started_store("client-page");
+        let payloads = [r#"{"message":1}"#, r#"{"message":2}"#, r#"{"message":3}"#];
+        append_test_events(&store, &sub_agent_id, &payloads);
+        let one_event =
+            retained_event_bytes(&sub_agent_id, payloads[0].len()).expect("event size is bounded");
+
+        let first = store
+            .read_events_with_byte_limit(
+                &ReadSubAgentEventsRequest {
+                    sub_agent_id: sub_agent_id.clone(),
+                    after_sequence: 1,
+                    limit: 1_000,
+                },
+                one_event * 2,
+            )
+            .expect("first byte-bounded page reads");
+        assert_eq!(first.events.len(), 2);
+        assert_eq!(first.next_sequence, 3);
+        assert!(!first.caught_up);
+        assert_eq!(first.events[0].payload_json, payloads[0]);
+        assert_eq!(first.events[1].payload_json, payloads[1]);
+
+        let second = store
+            .read_events_with_byte_limit(
+                &ReadSubAgentEventsRequest {
+                    sub_agent_id,
+                    after_sequence: first.next_sequence,
+                    limit: 1_000,
+                },
+                one_event * 2,
+            )
+            .expect("omitted whole event is retryable");
+        assert_eq!(second.events.len(), 1);
+        assert_eq!(second.events[0].payload_json, payloads[2]);
+        assert_eq!(second.next_sequence, 4);
+        assert!(second.caught_up);
+    }
+
+    #[test]
+    fn event_page_and_payload_boundaries_fail_closed() {
+        let (store, sub_agent_id) = started_store("client-boundary");
+        let payload = r#"{"message":1}"#;
+        append_test_events(&store, &sub_agent_id, &[payload]);
+        let event_bytes =
+            retained_event_bytes(&sub_agent_id, payload.len()).expect("event size is bounded");
+        let request = ReadSubAgentEventsRequest {
+            sub_agent_id,
+            after_sequence: 1,
+            limit: 1,
+        };
+
+        assert_eq!(
+            store.read_events_with_byte_limit(&request, event_bytes - 1),
+            Err(SubAgentHostError::InvalidNativePayload)
+        );
+        assert!(validate_event_payload_bytes(MAX_EVENT_PAYLOAD_BYTES).is_ok());
+        assert_eq!(
+            validate_event_payload_bytes(MAX_EVENT_PAYLOAD_BYTES + 1),
+            Err(SubAgentHostError::InvalidNativePayload)
+        );
+        assert!(validate_native_acp_event_bytes(MAX_NATIVE_ACP_EVENT_BYTES).is_ok());
+        assert_eq!(
+            validate_native_acp_event_bytes(MAX_NATIVE_ACP_EVENT_BYTES + 1),
+            Err(SubAgentHostError::InvalidNativePayload)
+        );
     }
 
     #[test]

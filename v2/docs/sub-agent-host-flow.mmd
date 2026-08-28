@@ -17,7 +17,9 @@ flowchart TB
         IMPORT <-->|"ACP session"| CHILD
     end
     DB[("SQLite journal<br/>children · mailboxes · full ordered events")]
+    PAGE["Cursor page<br/>≤ 1,000 whole events<br/>≤ 16 MiB + 128 KiB retained"]
     HOST <-->|"transactional state"| DB
+    DB -->|"stream rows"| PAGE -->|"stable cursor"| HOST
 
     classDef session fill:#f3e8ff,stroke:#9333ea,stroke-width:2px,color:#581c87;
     classDef runtime fill:#dbeafe,stroke:#2563eb,stroke-width:2px,color:#172554;
@@ -28,6 +30,6 @@ flowchart TB
     class PARENT,CHILD session;
     class ADMIT,HOST runtime;
     class REJECT reject;
-    class DB durable;
+    class DB,PAGE durable;
     class IMPORT boundary;
     style LIVE fill:none,stroke:none;

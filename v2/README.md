@@ -46,7 +46,8 @@ interrupt as a separate explicit action.
 - Crab owns sub-agents as separately supervised ACP subprocesses. Fresh sessions are portable;
   inherited sessions prefer advertised ACP native forks at an exact idle cursor and may explicitly
   fall back to a visible-history snapshot. Parent and child exchange durable non-blocking queue,
-  steer or interrupt messages in both directions.
+  steer or interrupt messages in both directions. Their ordered event journal streams complete
+  events through byte-bounded pages without skipping the first deferred event.
 - Agents run only after a fail-closed preflight proves permission bypass, no sandbox, unrestricted
   filesystem/network access and working passwordless `sudo`. Required ACP session options are then
   applied and verified before readiness. The Claude preset requires `bypassPermissions` and Opus;
