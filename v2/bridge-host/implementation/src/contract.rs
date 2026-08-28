@@ -102,12 +102,26 @@ boxology::contract! {
         pub registered_at_ms: u64,
     }
 
-    /// Non-secret durable registrations ordered by bridge identity.
+    /// Bounded compatibility catalog: active registrations first, then tombstones; each class is
+    /// ordered by bridge identity.
     pub struct BridgeCatalog {
         pub bridges: Vec<BridgeRecord>,
     }
 
     pub struct ListBridgesRequest {}
+
+    /// One bounded, identity-ordered view over the durable bridge catalog.
+    pub struct BridgeCatalogPage {
+        pub bridges: Vec<BridgeRecord>,
+        pub total_bridges: u64,
+        pub next_after_bridge_id: Option<String>,
+    }
+
+    pub struct ListBridgePageRequest {
+        pub after_bridge_id: Option<String>,
+        pub limit: u64,
+        pub include_unregistered: bool,
+    }
 
     pub struct BridgeReference {
         pub bridge_id: String,
@@ -297,6 +311,10 @@ boxology::contract! {
     /// List durable registrations without package configuration or credential material.
     #[capability]
     pub async fn list_bridges(request: ListBridgesRequest) -> Result<BridgeCatalog, BridgeHostError>;
+
+    /// Page durable registrations by bridge identity without loading the full catalog.
+    #[capability]
+    pub async fn list_bridge_page(request: ListBridgePageRequest) -> Result<BridgeCatalogPage, BridgeHostError>;
 
     /// Install a new immutable generation; ingress mode changes only through this operation.
     #[capability]
