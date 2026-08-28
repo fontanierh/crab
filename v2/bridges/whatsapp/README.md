@@ -52,6 +52,14 @@ only the originating bridge can attach it with the exact stored metadata. Oversi
 unstorable downloads preserve their message metadata with a truthful `mediaUnavailable` reason.
 Full history is never synchronized.
 
+![Bounded inbound persistence](inbound-persistence-flow.png)
+
+Authorized bursts enter one FIFO persistence pump. It admits at most 64 messages including the
+active item, keeps exactly one media/storage/trigger transaction in flight, and acknowledges each
+admitted message in arrival order. Backlog overflow or exhausted durable-host retries is terminal:
+the package clears queued work and asks Crab supervision to restart it instead of retaining an
+unbounded in-memory chain.
+
 ## Credential safety
 
 ![Coalesced credential persistence](credential-persistence-flow.png)
