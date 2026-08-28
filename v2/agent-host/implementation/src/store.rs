@@ -1,4 +1,4 @@
-use std::{path::Path, sync::Mutex};
+use std::{mem::size_of, path::Path, sync::Mutex};
 
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use serde_json::Value;
@@ -7,13 +7,15 @@ use crate::{
     AcpEvent, AcpEventDirection, AcpEventKind, AcpNegotiation, AcpProtocolProfile, AgentDiagnostic,
     AgentDiagnosticKind, AgentDiagnosticPage, AgentHostError, AgentInputMode, AgentLifecycle,
     AgentSession, AgentSessionCatalog, AgentSessionSummary, AuthorityAttestation,
-    CompactionReporting, EventPage, FilesystemAuthority, NetworkAuthority, PermissionAuthority,
-    PermissionDecision, PermissionResolution, PromptAccepted, PromptDisposition, PromptRequest,
-    RootAuthority, SandboxAuthority, SessionStatus, SteeringSupport,
+    CompactionReporting, EventPage, FilesystemAuthority, MAX_NATIVE_EVENT_BYTES, NetworkAuthority,
+    PermissionAuthority, PermissionDecision, PermissionResolution, PromptAccepted,
+    PromptDisposition, PromptRequest, RootAuthority, SandboxAuthority, SessionStatus,
+    SteeringSupport,
 };
 
 const SCHEMA_VERSION: i64 = 3;
 const MAX_EVENT_PAGE: u64 = 1_000;
+const MAX_EVENT_PAGE_BYTES: usize = MAX_NATIVE_EVENT_BYTES + 64 * 1024;
 const MAX_DIAGNOSTIC_PAGE: u64 = 256;
 const MAX_RETAINED_DIAGNOSTICS: u64 = 512;
 const MAX_DIAGNOSTIC_MESSAGE_BYTES: usize = 16 * 1024;
@@ -737,6 +739,7 @@ impl AgentStore {
         line: &str,
         now_ms: u64,
     ) -> Result<(), AgentHostError> {
+        validate_native_event_bytes(line.len())?;
         let parsed = serde_json::from_str::<Value>(line).ok();
         let kind = classify_event(parsed.as_ref());
         let mut connection = self.lock()?;
@@ -803,7 +806,17 @@ impl AgentStore {
         after_sequence: u64,
         limit: u64,
     ) -> Result<EventPage, AgentHostError> {
-        if limit > MAX_EVENT_PAGE {
+        self.read_events_with_byte_limit(session_id, after_sequence, limit, MAX_EVENT_PAGE_BYTES)
+    }
+
+    fn read_events_with_byte_limit(
+        &self,
+        session_id: &str,
+        after_sequence: u64,
+        limit: u64,
+        byte_limit: usize,
+    ) -> Result<EventPage, AgentHostError> {
+        if limit == 0 || limit > MAX_EVENT_PAGE {
             return Err(AgentHostError::InvalidCursor);
         }
         let connection = self.lock()?;
@@ -822,44 +835,53 @@ impl AgentStore {
         }
         let mut statement = connection
             .prepare(
-                "SELECT sequence, run_id, observed_at_ms, kind, direction, native_event_json
+                "SELECT sequence, run_id, observed_at_ms, kind, direction,
+                        length(CAST(native_event_json AS BLOB)), native_event_json
                  FROM events WHERE session_id = ?1 AND sequence > ?2
                  ORDER BY sequence ASC LIMIT ?3",
             )
             .map_err(storage_error)?;
-        let rows = statement
-            .query_map(
-                params![session_id, db_i64(after_sequence)?, db_i64(limit)?],
-                |row| {
-                    Ok((
-                        row.get::<_, i64>(0)?,
-                        row.get::<_, Option<String>>(1)?,
-                        row.get::<_, i64>(2)?,
-                        row.get::<_, String>(3)?,
-                        row.get::<_, String>(4)?,
-                        row.get::<_, String>(5)?,
-                    ))
-                },
-            )
-            .map_err(storage_error)?
-            .collect::<rusqlite::Result<Vec<_>>>()
+        let mut rows = statement
+            .query(params![session_id, db_i64(after_sequence)?, db_i64(limit)?])
             .map_err(storage_error)?;
-        let events = rows
-            .into_iter()
-            .map(
-                |(sequence, run_id, observed_at_ms, kind, direction, native_event_json)| {
-                    Ok(AcpEvent {
-                        session_id: session_id.to_owned(),
-                        run_id,
-                        sequence: db_u64(sequence)?,
-                        observed_at_ms: db_u64(observed_at_ms)?,
-                        kind: parse_event_kind(&kind)?,
-                        direction: parse_direction(&direction)?,
-                        native_event_json,
-                    })
-                },
-            )
-            .collect::<Result<Vec<_>, AgentHostError>>()?;
+        let mut events = Vec::new();
+        let mut retained_bytes = 0_usize;
+        while let Some(row) = rows.next().map_err(storage_error)? {
+            let sequence = db_u64(row.get::<_, i64>(0).map_err(storage_error)?)?;
+            let run_id = row.get::<_, Option<String>>(1).map_err(storage_error)?;
+            let observed_at_ms = db_u64(row.get::<_, i64>(2).map_err(storage_error)?)?;
+            let kind = row.get::<_, String>(3).map_err(storage_error)?;
+            let direction = row.get::<_, String>(4).map_err(storage_error)?;
+            let native_event_bytes =
+                usize::try_from(db_u64(row.get::<_, i64>(5).map_err(storage_error)?)?)
+                    .map_err(|_| AgentHostError::StorageUnavailable)?;
+            validate_native_event_bytes(native_event_bytes)?;
+            let event_bytes =
+                retained_event_bytes(session_id, run_id.as_deref(), native_event_bytes)?;
+            let next_retained_bytes = retained_bytes
+                .checked_add(event_bytes)
+                .ok_or(AgentHostError::StorageUnavailable)?;
+            if next_retained_bytes > byte_limit {
+                if events.is_empty() {
+                    return Err(AgentHostError::InvalidNativePayload);
+                }
+                break;
+            }
+            let native_event_json = row.get::<_, String>(6).map_err(storage_error)?;
+            if native_event_json.len() != native_event_bytes {
+                return Err(AgentHostError::StorageUnavailable);
+            }
+            events.push(AcpEvent {
+                session_id: session_id.to_owned(),
+                run_id,
+                sequence,
+                observed_at_ms,
+                kind: parse_event_kind(&kind)?,
+                direction: parse_direction(&direction)?,
+                native_event_json,
+            });
+            retained_bytes = next_retained_bytes;
+        }
         let next_sequence = events.last().map_or(after_sequence, |event| event.sequence);
         Ok(EventPage {
             events,
@@ -1063,6 +1085,25 @@ impl AgentStore {
             .lock()
             .map_err(|_| AgentHostError::StorageUnavailable)
     }
+}
+
+fn validate_native_event_bytes(bytes: usize) -> Result<(), AgentHostError> {
+    if bytes > MAX_NATIVE_EVENT_BYTES {
+        return Err(AgentHostError::InvalidNativePayload);
+    }
+    Ok(())
+}
+
+fn retained_event_bytes(
+    session_id: &str,
+    run_id: Option<&str>,
+    native_event_bytes: usize,
+) -> Result<usize, AgentHostError> {
+    size_of::<AcpEvent>()
+        .checked_add(session_id.len())
+        .and_then(|bytes| bytes.checked_add(run_id.map_or(0, str::len)))
+        .and_then(|bytes| bytes.checked_add(native_event_bytes))
+        .ok_or(AgentHostError::StorageUnavailable)
 }
 
 struct StoredPrompt {
@@ -1579,12 +1620,13 @@ mod tests {
     use rusqlite::Connection;
 
     use crate::{
-        AcpProtocolProfile, AgentDiagnosticKind, AgentInputMode, AgentLifecycle, PromptDisposition,
-        PromptRequest,
+        AcpEventDirection, AcpProtocolProfile, AgentDiagnosticKind, AgentHostError, AgentInputMode,
+        AgentLifecycle, MAX_NATIVE_EVENT_BYTES, PromptDisposition, PromptRequest,
     };
 
     use super::{
         AgentStore, MAX_DIAGNOSTIC_MESSAGE_BYTES, SCHEMA_VERSION, authority, migrate_v0_to_v1,
+        retained_event_bytes, validate_native_event_bytes,
     };
 
     #[test]
@@ -1626,6 +1668,92 @@ mod tests {
             )
             .expect("diagnostics table exists");
         assert_eq!(diagnostic_table, "diagnostics");
+    }
+
+    #[test]
+    fn event_pages_stop_at_whole_event_boundaries_and_resume_from_the_cursor() {
+        let store = AgentStore::open_in_memory().expect("store opens");
+        store
+            .create_starting_session(
+                "session-1",
+                "agent-1",
+                "/workspace",
+                "{}",
+                &AcpProtocolProfile::V1Stable,
+                &authority(1, "{}".into()),
+                1,
+            )
+            .expect("session starts");
+        let lines = [
+            r#"{"jsonrpc":"2.0","id":1}"#,
+            r#"{"jsonrpc":"2.0","id":2}"#,
+            r#"{"jsonrpc":"2.0","id":3}"#,
+        ];
+        for (index, line) in lines.iter().enumerate() {
+            store
+                .record_native_line(
+                    "session-1",
+                    AcpEventDirection::AgentToClient,
+                    line,
+                    u64::try_from(index + 2).expect("timestamp fits"),
+                )
+                .expect("event records");
+        }
+        let one_event =
+            retained_event_bytes("session-1", None, lines[0].len()).expect("event size is bounded");
+
+        let first = store
+            .read_events_with_byte_limit("session-1", 0, 1_000, one_event * 2)
+            .expect("first byte-bounded page reads");
+        assert_eq!(first.events.len(), 2);
+        assert_eq!(first.next_sequence, 2);
+        assert!(!first.caught_up);
+        assert_eq!(first.events[0].native_event_json, lines[0]);
+        assert_eq!(first.events[1].native_event_json, lines[1]);
+
+        let second = store
+            .read_events_with_byte_limit("session-1", first.next_sequence, 1_000, one_event * 2)
+            .expect("omitted whole event is retryable");
+        assert_eq!(second.events.len(), 1);
+        assert_eq!(second.events[0].native_event_json, lines[2]);
+        assert_eq!(second.next_sequence, 3);
+        assert!(second.caught_up);
+    }
+
+    #[test]
+    fn event_page_boundaries_fail_closed_without_non_progressing_successes() {
+        let store = AgentStore::open_in_memory().expect("store opens");
+        store
+            .create_starting_session(
+                "session-1",
+                "agent-1",
+                "/workspace",
+                "{}",
+                &AcpProtocolProfile::V1Stable,
+                &authority(1, "{}".into()),
+                1,
+            )
+            .expect("session starts");
+        let line = r#"{"jsonrpc":"2.0","id":1}"#;
+        store
+            .record_native_line("session-1", AcpEventDirection::AgentToClient, line, 2)
+            .expect("event records");
+        let event_bytes =
+            retained_event_bytes("session-1", None, line.len()).expect("event size is bounded");
+
+        assert_eq!(
+            store.read_events("session-1", 0, 0),
+            Err(AgentHostError::InvalidCursor)
+        );
+        assert_eq!(
+            store.read_events_with_byte_limit("session-1", 0, 1, event_bytes - 1),
+            Err(AgentHostError::InvalidNativePayload)
+        );
+        assert!(validate_native_event_bytes(MAX_NATIVE_EVENT_BYTES).is_ok());
+        assert_eq!(
+            validate_native_event_bytes(MAX_NATIVE_EVENT_BYTES + 1),
+            Err(AgentHostError::InvalidNativePayload)
+        );
     }
 
     #[test]

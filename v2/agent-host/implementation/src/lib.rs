@@ -37,6 +37,7 @@ pub(crate) const MAX_AGENT_IDENTIFIER_BYTES: usize = 256;
 const MAX_WORKING_DIRECTORY_BYTES: usize = 4 * 1024;
 const MAX_SESSION_METADATA_BYTES: usize = 64 * 1024;
 const MAX_BOOTSTRAP_PROMPT_BYTES: usize = 2 * 1024 * 1024;
+pub(crate) const MAX_NATIVE_EVENT_BYTES: usize = 16 * 1024 * 1024;
 
 pub(crate) type Clock = Arc<dyn Fn() -> Result<u64, AgentHostError> + Send + Sync>;
 

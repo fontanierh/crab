@@ -29,8 +29,11 @@ database, which is also the durable operator/UI view.
   ingress rejects payloads over 2 MiB before JSON parsing or durable storage; larger media uses
   resource links or content handles.
 - Native stdin/stdout JSON-RPC lines are stored byte-for-byte with direction and per-session order.
-  Agent stdout is framed before parsing or journaling with a 16 MiB per-line ceiling; overflow
-  fails the transport and tears down its process group instead of growing memory without bound.
+  Every journaled line is rejected above 16 MiB before parsing or persistence. Agent stdout is
+  framed at the same ceiling; overflow fails the transport and tears down its process group.
+- Event reads accept counts from 1 through 1,000 and stream SQLite rows into a page capped at
+  16 MiB plus 64 KiB of retained event data. The host never splits a native event: it leaves the
+  cursor at the last returned sequence so the omitted event is the first item on the next read.
 - Adapter stderr never becomes a native event. The newest 512 private diagnostics per session are
   retained separately with 16 KiB message caps and monotonic cursors; explicit operator reads are
   described in [Private agent diagnostics](agent-diagnostics.md).

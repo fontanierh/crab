@@ -16,13 +16,12 @@ use crate::{
     AcpEventDirection, AcpNegotiation, AgentDiagnosticKind, AgentHostError, AgentInputMode,
     AgentLifecycle, AgentSession, CRAB_AGENT_ID_ENV, CRAB_PARENT_SESSION_ID_ENV,
     CRAB_SESSION_ID_ENV, CRAB_STATE_DIRECTORY_ENV, CRAB_SUB_AGENT_ID_ENV,
-    CRAB_WORKING_DIRECTORY_ENV, ConfiguredAgent, ConfiguredMcpServer, OperationReceipt,
-    PromptAccepted, PromptDisposition, PromptRequest, store::AgentStore,
+    CRAB_WORKING_DIRECTORY_ENV, ConfiguredAgent, ConfiguredMcpServer, MAX_NATIVE_EVENT_BYTES,
+    OperationReceipt, PromptAccepted, PromptDisposition, PromptRequest, store::AgentStore,
 };
 
 const MAX_NATIVE_PROMPT_BYTES: usize = 2 * 1024 * 1024;
-const MAX_ACP_STDOUT_FRAME_BYTES: usize = 16 * 1024 * 1024;
-const _: () = assert!(MAX_ACP_STDOUT_FRAME_BYTES == DEFAULT_LINE_LIMIT);
+const _: () = assert!(MAX_NATIVE_EVENT_BYTES == DEFAULT_LINE_LIMIT);
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonRpcRequest)]
 #[request(method = "_session/steering", response = SessionSteeringResponse)]
@@ -455,7 +454,7 @@ fn instrumented_process(
     signals: ActorSignalSender,
 ) -> AcpAgent {
     let process =
-        AcpAgent::new(agent.process_config()).with_stdout_line_limit(MAX_ACP_STDOUT_FRAME_BYTES);
+        AcpAgent::new(agent.process_config()).with_stdout_line_limit(MAX_NATIVE_EVENT_BYTES);
     process.with_debug(move |line, direction| {
         let direction = match direction {
             LineDirection::Stdin => AcpEventDirection::ClientToAgent,
