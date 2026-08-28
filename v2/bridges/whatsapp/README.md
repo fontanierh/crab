@@ -92,6 +92,9 @@ npm test
 `@whiskeysockets/baileys` is pinned exactly. Upgrade it deliberately and rerun the protocol,
 restart, credential-refresh, inbound, and delivery tests.
 
-Boxology currently lacks the semantically correct `provider` package kind, so the manifest uses a
-documented `platform` compatibility classification until
-[Boxology #717](https://github.com/fontanierh/boxology/issues/717) lands.
+## Boxology provider boundary
+
+This package is the `whatsapp-bridge-provider` Boxology provider selected by the runtime
+composition. Selection is topology metadata only: it neither creates nor configures an instance nor
+binds a capability requirement. Runtime bridge configuration and bridge-host continue to own
+instance policy, registration, authentication, credentials, health, replacement, and shutdown.

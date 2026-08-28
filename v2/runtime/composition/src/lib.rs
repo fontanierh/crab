@@ -402,6 +402,7 @@ mod tests {
     use super::{start_draft, start_draft_with_state_directory, start_draft_with_trigger_store};
 
     const MANIFEST: &str = include_str!("../../boxology.toml");
+    const WHATSAPP_MANIFEST: &str = include_str!("../../../bridges/whatsapp/boxology.toml");
 
     fn context() -> CallContext {
         CallContext::new(
@@ -414,13 +415,25 @@ mod tests {
     }
 
     #[test]
-    fn manifest_and_runtime_expose_the_same_eight_box_graph() {
+    fn manifest_selects_whatsapp_provider_beside_the_same_eight_box_graph() {
         let manifest = Manifest::parse(
             RelativePath::new("boxology.toml").expect("manifest path is valid"),
             MANIFEST.as_bytes(),
         )
         .expect("runtime manifest is valid");
         assert_eq!(manifest.kind(), Kind::Composition);
+        let whatsapp = Manifest::parse(
+            RelativePath::new("bridges/whatsapp/boxology.toml")
+                .expect("provider manifest path is valid"),
+            WHATSAPP_MANIFEST.as_bytes(),
+        )
+        .expect("WhatsApp provider manifest is valid");
+        assert_eq!(whatsapp.kind(), Kind::Provider);
+
+        let topology = manifest.composition().expect("composition exists");
+        assert_eq!(topology.providers(), std::slice::from_ref(whatsapp.id()));
+        assert_eq!(topology.boxes().len(), 8);
+        assert_eq!(topology.bindings().len(), 8);
 
         let runtime = start_draft().expect("draft graph assembles");
         let binding = runtime
@@ -451,14 +464,6 @@ mod tests {
             ]
         );
         assert!(counts.values().all(|count| *count > 0));
-        assert_eq!(
-            manifest
-                .composition()
-                .expect("composition exists")
-                .boxes()
-                .len(),
-            8
-        );
     }
 
     #[test]

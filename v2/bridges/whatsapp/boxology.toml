@@ -1,7 +1,6 @@
 schema = 1
 id = "whatsapp-bridge-provider"
-# Boxology does not yet accept the semantically correct `provider` kind; tracked upstream in #717.
-kind = "platform"
+kind = "provider"
 owned = [
     "boxology.toml",
     "package.json",

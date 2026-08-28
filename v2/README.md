@@ -15,6 +15,7 @@ v2/
 ├── sub-agent-host/   supervised ACP subprocesses with bidirectional live interaction
 ├── trigger-inbox/    transactional SQLite ingress used by bridges, cron and self-work
 ├── turn-router/      durable target resolution, lane ordering and trigger settlement
+├── bridges/whatsapp/ first selected Boxology provider; protocol-specific behavior
 └── runtime/          strict topology, restart recovery and lane supervision
 ```
 
@@ -55,7 +56,9 @@ interrupt as a separate explicit action.
   macOS probes actively verify the host, exact adapter and network conditions rather than trusting
   configuration claims.
 - Bridges are packages the agent may add. Crab owns supervision, auth state, health and delivery
-  semantics—not service-specific behavior. WhatsApp ships as the first first-party package.
+  semantics—not service-specific behavior. WhatsApp ships as the first selected Boxology provider.
+  Provider selection is topology metadata, not a configured instance or requirement binding;
+  runtime bridge configuration and bridge-host still own instance policy and lifecycle.
 - Tests target useful contract and composition behavior. There is no percentage coverage gate.
 - `agent-host` runs real ACP v1/v2 subprocesses with mandatory authority preflight, durable
   prompts/events/permissions, queue/steer/cancel, explicit native resume, and process-group
