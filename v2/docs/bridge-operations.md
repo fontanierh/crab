@@ -20,11 +20,19 @@ Set the state directory once in the examples below:
 ```sh
 CRAB_V2_STATE=/private/path/to/crab-v2-state
 crab-v2-bridge --state-dir "$CRAB_V2_STATE" list
+crab-v2-bridge --state-dir "$CRAB_V2_STATE" list 25 all
+crab-v2-bridge --state-dir "$CRAB_V2_STATE" list 25 all <next-after-bridge-id>
 crab-v2-bridge --state-dir "$CRAB_V2_STATE" status whatsapp
 ```
 
-Catalog entries expose `management` as `runtime-configured` or `agent-managed`, making restart and
-static-removal behavior inspectable without opening the state database.
+`list` defaults to the complete active-only view: its 256-record page ceiling is larger than the
+128-active-registration admission ceiling. The optional form is
+`list [limit [active|all [after-bridge-id]]]`; `limit` must be 1…256, `all` includes durable
+`unregistered` tombstones, and `after-bridge-id` continues the identity-keyset traversal. Every
+result reports `totalBridges` for the selected filter and `nextAfterBridgeId` when another page
+exists. Catalog entries expose `management` as `runtime-configured` or `agent-managed`, making
+restart and static-removal behavior inspectable without opening the state database. See the
+[rendered catalog boundary](../bridge-host/README.md#catalog-boundary).
 
 ## Authenticate
 

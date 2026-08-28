@@ -18,7 +18,7 @@ operators never open Crab's databases or credential store.
 | `trigger-inbox.enqueue` | `trigger-inbox` |
 | `runtime-control.runtime_status` | `runtime-control` |
 | `bridge-host.register_bridge` | `bridge-host` |
-| `bridge-host.list_bridges` | `bridge-host` |
+| `bridge-host.list_bridge_page` | `bridge-host` |
 | `bridge-host.replace_bridge` | `bridge-host` |
 | `bridge-host.unregister_bridge` | `bridge-host` |
 | `bridge-host.reconcile_bridge` | `bridge-host` |
@@ -58,6 +58,9 @@ operators never open Crab's databases or credential store.
 - Responses preserve Boxology domain-error tags and canonical contract output. The bridge CLI
   exposes auth presentations but never credential handles or material. Private agent diagnostics
   cross only on an explicit operator request and are never available to agent MCP tools.
+- `bridge-host.list_bridge_page` requires a 1…256 limit, accepts an optional identity cursor and an
+  active-only/tombstone filter, and returns the filter-wide total plus continuation evidence. The
+  compatibility `list_bridges` capability is not routed through owner IPC.
 - `runtime-control.runtime_status` is immutable for the process lifetime and contains only the
   resolved semantic-config fingerprint, startup time and PID.
 - Client disconnect only closes that transport connection. Session replacement and shutdown remain
