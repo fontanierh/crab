@@ -31,7 +31,8 @@ use uuid::Uuid;
 
 const CONTROL_TIMEOUT: Duration = Duration::from_secs(30);
 const AUTHORITY_TIMEOUT: Duration = Duration::from_secs(30);
-const MAX_AGENT_SESSION_ACTORS: usize = 128;
+/// Host-wide budget shared by pending and live ACP session actors.
+pub const MAX_AGENT_SESSION_ACTORS: usize = 128;
 const MAX_CONCURRENT_AUTHORITY_PREFLIGHTS: usize = 16;
 pub(crate) const MAX_AGENT_IDENTIFIER_BYTES: usize = 256;
 const MAX_WORKING_DIRECTORY_BYTES: usize = 4 * 1024;
