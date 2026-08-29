@@ -146,6 +146,32 @@ class FakeLaunchd:
 
 
 class BundleVerifierTests(unittest.TestCase):
+    @mock.patch("scripts.v2_bundle.subprocess.run")
+    def test_launchd_inspection_ignores_nested_coalition_state(
+        self, run: mock.Mock
+    ) -> None:
+        run.return_value = subprocess.CompletedProcess(
+            args=("launchctl", "print", "gui/501/com.crab.v2.runtime"),
+            returncode=0,
+            stdout="""gui/501/com.crab.v2.runtime = {
+\tactive count = 1
+\tstate = running
+\tpid = 4242
+\tresource coalition = {
+\t\tstate = active
+\t}
+\tjetsam coalition = {
+\t\tstate = active
+\t}
+}
+""",
+            stderr="",
+        )
+
+        state = bundle_tool.SystemLaunchd(uid=501).inspect()
+
+        self.assertEqual(state, LaunchdState(loaded=True, running=True, pid=4242))
+
     @mock.patch(
         "scripts.v2_bundle.subprocess.run",
         side_effect=subprocess.TimeoutExpired(cmd=["health-probe"], timeout=0.25),
