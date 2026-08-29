@@ -615,8 +615,18 @@ class SystemLaunchd:
             raise BundleError(f"could not inspect {self.label}: launchctl failed")
         state: str | None = None
         pid: int | None = None
+        depth = 0
         for line in result.stdout.splitlines():
-            key, separator, value = line.strip().partition(" = ")
+            stripped = line.strip()
+            if stripped.endswith(" = {"):
+                depth += 1
+                continue
+            if stripped == "}":
+                depth = max(0, depth - 1)
+                continue
+            if depth != 1:
+                continue
+            key, separator, value = stripped.partition(" = ")
             if not separator:
                 continue
             if key == "state":
